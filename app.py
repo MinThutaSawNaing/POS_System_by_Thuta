@@ -5,14 +5,12 @@ from datetime import datetime
 import os
 import uuid
 import io
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.units import inch
+from decimal import Decimal, ROUND_HALF_UP
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 import pandas as pd
-from decimal import Decimal, ROUND_HALF_UP
 
 app = Flask(__name__)
 app.secret_key = 'your_super_secret_key_here'  # Change this in production!
@@ -181,59 +179,103 @@ def api_search_products():
         'stock': p.stock
     } for p in products])
 
-# Sales API Endpoints
+# --- Updated Sales Endpoint with Decimal math ---
 @app.route('/api/sales', methods=['POST'])
 def api_sales():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
+
     data = request.get_json()
     if not data or not all(k in data for k in ['items', 'payment_method']):
         return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+
     subtotal = Decimal('0.00')
     tax = Decimal('0.00')
     items = []
-    for item in data['items']:
-        product = Product.query.get(item['product_id'])
-        if not product:
-            return jsonify({'success': False, 'message': f"Product {item['product_id']} not found"}), 404
-        if product.stock < item['quantity']:
-            return jsonify({'success': False, 'message': f'Insufficient stock for {product.name}'}), 400
-        price = Decimal(str(product.price))
-        qty = int(item['quantity'])
-        item_total = (price * qty).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-        item_tax = (item_total * Decimal(str(product.tax_rate)) / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-        subtotal += item_total
-        tax += item_tax
-        items.append({
-            'product_id': product.id,
-            'price': float(price),
-            'quantity': qty,
-            'tax': float(item_tax)
-        })
-    total = (subtotal + tax).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-    transaction_id = str(uuid.uuid4())
-    sale = Sale(
-        transaction_id=transaction_id,
-        total=float(total),
-        tax=float(tax),
-        payment_method=data['payment_method'],
-        user_id=session['user_id']
-    )
-    db.session.add(sale)
-    db.session.commit()
-    for item in items:
-        sale_item = SaleItem(
-            sale_id=sale.id,
-            product_id=item['product_id'],
-            quantity=item['quantity'],
-            price=item['price'],
-            tax=item['tax']
+
+    try:
+        for item in data['items']:
+            if 'product_id' not in item or 'quantity' not in item:
+                return jsonify({'success': False, 'message': 'Each item must have product_id and quantity'}), 400
+
+            product = Product.query.get(item['product_id'])
+            if not product:
+                return jsonify({'success': False, 'message': f'Product {item["product_id"]} not found'}), 404
+
+            try:
+                quantity = int(item['quantity'])
+                if quantity <= 0:
+                    return jsonify({'success': False, 'message': f'Quantity must be positive for {product.name}'}), 400
+            except ValueError:
+                return jsonify({'success': False, 'message': f'Invalid quantity for {product.name}'}), 400
+
+            if product.stock < quantity:
+                return jsonify({'success': False, 'message': f'Insufficient stock for {product.name}'}), 400
+
+            price = Decimal(str(product.price))
+            qty = Decimal(str(quantity))
+            item_total = (price * qty).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            item_tax = (item_total * Decimal(str(product.tax_rate)) / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+            subtotal += item_total
+            tax += item_tax
+
+            items.append({
+                'product_id': product.id,
+                'price': float(price),
+                'quantity': quantity,
+                'tax': float(item_tax)
+            })
+
+        total = (subtotal + tax).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+        sale = Sale(
+            transaction_id=str(uuid.uuid4()),
+            total=float(total),
+            tax=float(tax),
+            payment_method=data['payment_method'],
+            user_id=session['user_id']
         )
-        db.session.add(sale_item)
-        # Decrease stock
-        product = Product.query.get(item['product_id'])
-        product.stock -= item['quantity']
-    db.session.commit()
+        db.session.add(sale)
+        db.session.commit()  # commit sale to get sale.id
+
+        for item in items:
+            sale_item = SaleItem(
+                sale_id=sale.id,
+                product_id=item['product_id'],
+                quantity=item['quantity'],
+                price=item['price'],
+                tax=item['tax']
+            )
+            db.session.add(sale_item)
+
+            product = Product.query.get(item['product_id'])
+            product.stock -= item['quantity']
+
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'message': 'Sale recorded',
+            'transaction_id': sale.transaction_id
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error processing sale: {str(e)}")
+        return jsonify({'success': False, 'message': f'Error completing sale: {str(e)}'}), 500
+
+# --- Get Single Sale with Items ---
+@app.route('/api/sales/<string:transaction_id>', methods=['GET'])
+def api_single_sale(transaction_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    sale = Sale.query.filter_by(transaction_id=transaction_id).first()
+    if not sale:
+        return jsonify({'success': False, 'message': 'Sale not found'}), 404
+
+    items = SaleItem.query.filter_by(sale_id=sale.id).all()
     sale_data = {
         'transaction_id': sale.transaction_id,
         'date': sale.date.isoformat(),
@@ -242,26 +284,28 @@ def api_sales():
         'payment_method': sale.payment_method,
         'items': []
     }
-    for si in SaleItem.query.filter_by(sale_id=sale.id).all():
-        product = Product.query.get(si.product_id)
+    for item in items:
+        product = Product.query.get(item.product_id)
         sale_data['items'].append({
-            'product_id': si.product_id,
+            'product_id': item.product_id,
             'name': product.name,
-            'price': si.price,
-            'quantity': si.quantity,
-            'tax': si.tax,
+            'price': item.price,
+            'quantity': item.quantity,
+            'tax': item.tax,
             'tax_rate': product.tax_rate
         })
     return jsonify(sale_data)
 
-# Fixed PDF receipt endpoint
+# --- PDF Receipt ---
 @app.route('/api/sales/<string:transaction_id>/print', methods=['GET'])
 def print_receipt(transaction_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
+
     sale = Sale.query.filter_by(transaction_id=transaction_id).first()
     if not sale:
         return jsonify({'success': False, 'message': 'Sale not found'}), 404
+
     items = SaleItem.query.filter_by(sale_id=sale.id).all()
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=72, leftMargin=72,
@@ -285,11 +329,11 @@ def print_receipt(transaction_id):
     elements.append(t)
     elements.append(Spacer(1, 24))
     items_data = [["Item", "Price", "Qty", "Tax", "Total"]]
-    subtotal = 0
+    subtotal_calc = Decimal('0.00')
     for item in items:
         product = Product.query.get(item.product_id)
-        item_total = item.price * item.quantity
-        subtotal += item_total
+        item_total = Decimal(str(item.price)) * Decimal(str(item.quantity))
+        subtotal_calc += item_total
         items_data.append([
             product.name,
             f"${item.price:.2f}",
@@ -313,7 +357,7 @@ def print_receipt(transaction_id):
     elements.append(t)
     elements.append(Spacer(1, 12))
     totals_data = [
-        ["Subtotal:", f"${subtotal:.2f}"],
+        ["Subtotal:", f"${subtotal_calc:.2f}"],
         ["Tax:", f"${sale.tax:.2f}"],
         ["Total:", f"${sale.total:.2f}"]
     ]
@@ -334,11 +378,12 @@ def print_receipt(transaction_id):
     response.headers['Content-Disposition'] = f'inline; filename=receipt_{transaction_id}.pdf'
     return response
 
-# Fixed Excel export endpoint
+# --- Excel Export ---
 @app.route('/api/reports/sales/export', methods=['GET'])
 def export_sales_report():
     if 'user_id' not in session or session['role'] != 'manager':
         return jsonify({'error': 'Unauthorized'}), 401
+
     start_date = request.args.get('start')
     end_date = request.args.get('end')
     query = Sale.query
@@ -351,6 +396,7 @@ def export_sales_report():
             query = query.filter(Sale.date <= end_date_obj)
     except ValueError:
         return jsonify({'success': False, 'message': 'Invalid date format'}), 400
+
     sales = query.order_by(Sale.date).all()
     data = []
     for sale in sales:
@@ -406,3 +452,4 @@ def api_report_sales():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
