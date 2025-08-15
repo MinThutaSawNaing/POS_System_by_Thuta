@@ -1,0 +1,1716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>POS Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <style>
+        :root {
+            --sidebar-width: 250px;
+            --sidebar-bg: #343a40;
+            --sidebar-text: rgba(255,255,255,.75);
+            --sidebar-active: white;
+            --sidebar-hover: rgba(255,255,255,.1);
+            --primary-color: #0d6efd;
+        }
+        
+        body {
+            overflow-x: hidden;
+        }
+        
+        .sidebar {
+            width: var(--sidebar-width);
+            height: 100vh;
+            background-color: var(--sidebar-bg);
+            color: var(--sidebar-text);
+            position: fixed;
+            transition: all 0.3s;
+            z-index: 1000;
+        }
+        
+        .sidebar .nav-link {
+            color: var(--sidebar-text);
+            padding: 0.75rem 1rem;
+            border-radius: 0.25rem;
+            margin: 0.25rem 1rem;
+        }
+        
+        .sidebar .nav-link:hover, 
+        .sidebar .nav-link.active {
+            color: var(--sidebar-active);
+            background-color: var(--sidebar-hover);
+        }
+        
+        .sidebar .nav-link i {
+            width: 20px;
+            margin-right: 10px;
+            text-align: center;
+        }
+        
+        .main-content {
+            margin-left: var(--sidebar-width);
+            padding: 20px;
+            transition: all 0.3s;
+        }
+        
+        .product-card {
+            cursor: pointer;
+            transition: all 0.2s;
+            height: 100%;
+        }
+        
+        .product-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        
+        #cart-items {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .card-stat {
+            border-left: 4px solid var(--primary-color);
+        }
+        
+        @media (max-width: 768px) {
+            .sidebar {
+                margin-left: -var(--sidebar-width);
+            }
+            .sidebar.active {
+                margin-left: 0;
+            }
+            .main-content {
+                margin-left: 0;
+            }
+            .main-content.active {
+                margin-left: var(--sidebar-width);
+            }
+        }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <!-- Sidebar Toggle Button (Mobile) -->
+    <button class="btn btn-primary d-md-none position-fixed" style="z-index: 1100; top: 10px; left: 10px;" onclick="toggleSidebar()">
+        <i class="bi bi-list"></i>
+    </button>
+
+    <!-- Sidebar -->
+    <div class="sidebar" id="sidebar">
+        <div class="p-3">
+            <h4 class="text-center">POS System</h4>
+            <hr>
+            <div class="text-center mb-3">
+                <span>Welcome, <strong id="username-display">{{ session.username }}</strong></span>
+            </div>
+        </div>
+        <ul class="nav flex-column">
+            <li class="nav-item">
+                <a class="nav-link active" href="#" onclick="showSection('dashboard')">
+                    <i class="bi bi-speedometer2"></i>Dashboard
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" onclick="showSection('pos')">
+                    <i class="bi bi-cash-coin"></i>POS
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" onclick="showSection('products')">
+                    <i class="bi bi-box-seam"></i>Products
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" onclick="showSection('sales')">
+                    <i class="bi bi-receipt"></i>Sales
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" href="#" onclick="showSection('reports')">
+                    <i class="bi bi-graph-up"></i>Reports
+                </a>
+            </li>
+            <li class="nav-item mt-3">
+                <a class="nav-link text-danger" href="/logout">
+                    <i class="bi bi-box-arrow-right"></i>Logout
+                </a>
+            </li>
+        </ul>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content" id="main-content">
+        <!-- Dashboard Section -->
+        <div id="dashboard-section">
+            <h2>Dashboard</h2>
+            <div class="row mt-4">
+                <div class="col-md-4 mb-3">
+                    <div class="card card-stat bg-white">
+                        <div class="card-body">
+                            <h5 class="card-title">Today's Sales</h5>
+                            <h3 id="today-sales">$0.00</h3>
+                            <p class="text-muted mb-0"><i class="bi bi-arrow-up text-success"></i> <span id="sales-change">0%</span> from yesterday</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4 mb-3">
+                    <div class="card card-stat bg-white">
+                        <div class="card-body">
+                            <h5 class="card-title">Total Products</h5>
+                            <h3 id="total-products">0</h3>
+                            <p class="text-muted mb-0"><span id="low-stock-count">0</span> low stock items</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4 mb-3">
+                    <div class="card card-stat bg-white">
+                        <div class="card-body">
+                            <h5 class="card-title">Recent Transactions</h5>
+                            <h3 id="recent-transactions">0</h3>
+                            <p class="text-muted mb-0">Last 24 hours</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row mt-4">
+                <div class="col-md-8">
+                    <div class="card">
+                        <div class="card-header bg-white">
+                            <h5 class="mb-0">Sales Overview</h5>
+                        </div>
+                        <div class="card-body">
+                            <canvas id="dashboardChart" height="250"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card">
+                        <div class="card-header bg-white">
+                            <h5 class="mb-0">Top Products</h5>
+                        </div>
+                        <div class="card-body">
+                            <div id="top-products-list" class="list-group">
+                                <!-- Top products will be loaded here -->
+                                <div class="text-center text-muted py-3">Loading...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- POS Section -->
+        <div id="pos-section" style="display: none;">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h2 class="mb-0">Point of Sale</h2>
+                <button class="btn btn-outline-secondary" onclick="clearCart()">
+                    <i class="bi bi-x-circle"></i> Clear Cart
+                </button>
+            </div>
+            
+            <div class="row">
+                <div class="col-md-8">
+                    <div class="input-group mb-3">
+                        <input type="text" id="product-search" class="form-control" placeholder="Scan barcode or search products..." autofocus>
+                        <button class="btn btn-primary" type="button" onclick="searchProducts()">
+                            <i class="bi bi-search"></i> Search
+                        </button>
+                    </div>
+                    <div class="row" id="product-grid">
+                        <!-- Products will be loaded here -->
+                        <div class="col-12 text-center py-5">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card shadow">
+                        <div class="card-header bg-primary text-white">
+                            <h5 class="card-title mb-0">Current Sale</h5>
+                        </div>
+                        <div class="card-body">
+                            <div id="cart-items" class="mb-3">
+                                <!-- Cart items will be displayed here -->
+                                <p class="text-muted text-center py-3">No items added</p>
+                            </div>
+                            <hr>
+                            <div class="d-flex justify-content-between mb-2">
+                                <span>Subtotal:</span>
+                                <span id="subtotal">$0.00</span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-2">
+                                <span>Tax:</span>
+                                <span id="tax">$0.00</span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-3 fw-bold">
+                                <span>Total:</span>
+                                <span id="total">$0.00</span>
+                            </div>
+                            <hr>
+                            <div class="mb-3">
+                                <label class="form-label">Payment Method</label>
+                                <select id="payment-method" class="form-select">
+                                    <option value="cash">Cash</option>
+                                    <option value="credit_card">Credit Card</option>
+                                    <option value="debit_card">Debit Card</option>
+                                    <option value="mobile_payment">Mobile Payment</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-success w-100 py-2" onclick="completeSale()">
+                                <i class="bi bi-check-circle"></i> Complete Sale
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Products Section -->
+        <div id="products-section" style="display: none;">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h2 class="mb-0">Product Management</h2>
+                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addProductModal">
+                    <i class="bi bi-plus-circle"></i> Add Product
+                </button>
+            </div>
+            
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Barcode</th>
+                                    <th>Name</th>
+                                    <th>Price</th>
+                                    <th>Stock</th>
+                                    <th>Category</th>
+                                    <th>Tax Rate</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="products-table">
+                                <!-- Products will be loaded here -->
+                                <tr>
+                                    <td colspan="7" class="text-center py-4">
+                                        <div class="spinner-border text-primary" role="status">
+                                            <span class="visually-hidden">Loading...</span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sales Section -->
+        <div id="sales-section" style="display: none;">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h2 class="mb-0">Sales History</h2>
+                <div class="input-group" style="width: 300px;">
+                    <input type="date" id="sales-date-filter" class="form-control">
+                    <button class="btn btn-outline-secondary" type="button" onclick="filterSalesByDate()">
+                        <i class="bi bi-filter"></i> Filter
+                    </button>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Transaction ID</th>
+                                    <th>Date</th>
+                                    <th>Total</th>
+                                    <th>Payment</th>
+                                    <th>User</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="sales-table">
+                                <!-- Sales will be loaded here -->
+                                <tr>
+                                    <td colspan="6" class="text-center py-4">
+                                        <div class="spinner-border text-primary" role="status">
+                                            <span class="visually-hidden">Loading...</span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Reports Section -->
+        <div id="reports-section" style="display: none;">
+            <h2>Reports</h2>
+            <div class="row mb-3">
+                <div class="col-md-3">
+                    <label class="form-label">Start Date</label>
+                    <input type="date" id="start-date" class="form-control">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">End Date</label>
+                    <input type="date" id="end-date" class="form-control">
+                </div>
+                <div class="col-md-3 d-flex align-items-end">
+                    <button class="btn btn-primary" onclick="generateReport()">
+                        <i class="bi bi-file-earmark-text"></i> Generate Report
+                    </button>
+                </div>
+                <div class="col-md-3 d-flex align-items-end">
+                    <button class="btn btn-outline-secondary" onclick="exportReport()">
+                        <i class="bi bi-download"></i> Export
+                    </button>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="col-md-8">
+                    <div class="card mb-3">
+                        <div class="card-header bg-white">
+                            <h5 class="mb-0">Sales Chart</h5>
+                        </div>
+                        <div class="card-body">
+                            <canvas id="salesChart" height="250"></canvas>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="card mb-3">
+                        <div class="card-header bg-white">
+                            <h5 class="mb-0">Payment Methods</h5>
+                        </div>
+                        <div class="card-body">
+                            <canvas id="paymentChart" height="250"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header bg-white">
+                    <h5 class="mb-0">Report Results</h5>
+                </div>
+                <div class="card-body">
+                    <div id="report-results">
+                        <!-- Report results will be displayed here -->
+                        <p class="text-muted text-center py-3">Select date range and generate report</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Product Modal -->
+    <div class="modal fade" id="addProductModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Add New Product</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="add-product-form">
+                        <div class="mb-3">
+                            <label class="form-label">Barcode <small class="text-muted">(optional)</small></label>
+                            <input type="text" class="form-control" id="add-barcode" placeholder="Scan or enter barcode">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Product Name <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="add-product-name" required>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Price <span class="text-danger">*</span></label>
+                                <div class="input-group">
+                                    <span class="input-group-text">$</span>
+                                    <input type="number" step="0.01" class="form-control" id="add-price" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Cost</label>
+                                <div class="input-group">
+                                    <span class="input-group-text">$</span>
+                                    <input type="number" step="0.01" class="form-control" id="add-cost">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Stock <span class="text-danger">*</span></label>
+                                <input type="number" class="form-control" id="add-stock" required>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Tax Rate (%)</label>
+                                <input type="number" step="0.01" class="form-control" id="add-tax-rate" value="0.0">
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Category</label>
+                            <input type="text" class="form-control" id="add-category" placeholder="e.g., Electronics, Grocery">
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="saveProduct()">Save Product</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Product Modal -->
+    <div class="modal fade" id="editProductModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Edit Product</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="edit-product-form">
+                        <input type="hidden" id="edit-product-id">
+                        <div class="mb-3">
+                            <label class="form-label">Barcode <small class="text-muted">(optional)</small></label>
+                            <input type="text" class="form-control" id="edit-barcode">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Product Name <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" id="edit-product-name" required>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Price <span class="text-danger">*</span></label>
+                                <div class="input-group">
+                                    <span class="input-group-text">$</span>
+                                    <input type="number" step="0.01" class="form-control" id="edit-price" required>
+                                </div>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Cost</label>
+                                <div class="input-group">
+                                    <span class="input-group-text">$</span>
+                                    <input type="number" step="0.01" class="form-control" id="edit-cost">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Stock <span class="text-danger">*</span></label>
+                                <input type="number" class="form-control" id="edit-stock" required>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Tax Rate (%)</label>
+                                <input type="number" step="0.01" class="form-control" id="edit-tax-rate">
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Category</label>
+                            <input type="text" class="form-control" id="edit-category">
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="updateProduct()">Update Product</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sale Details Modal -->
+    <div class="modal fade" id="saleDetailsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Sale Details - <span id="sale-id-display"></span></h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="sale-details-content">
+                    <!-- Sale details will be loaded here -->
+                    <div class="text-center py-4">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" onclick="printReceipt()">
+                        <i class="bi bi-printer"></i> Print Receipt
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // Global variables
+        let cart = [];
+        let currentSection = 'dashboard';
+        let currentProduct = null;
+        let dashboardChart = null;
+        let salesChart = null;
+        let paymentChart = null;
+
+        // Initialize the application when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            // Set today's date as default for sales filter
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('sales-date-filter').value = today;
+            
+            // Set default date range for reports (last 7 days)
+            const sevenDaysAgo = new Date();
+            sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+            document.getElementById('start-date').value = sevenDaysAgo.toISOString().split('T')[0];
+            document.getElementById('end-date').value = today;
+            
+            // Load initial data
+            loadDashboardStats();
+            loadProducts();
+            loadSales();
+            
+            // Set up product search to work on Enter key
+            document.getElementById('product-search').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    searchProducts();
+                }
+            });
+        });
+
+        // Toggle sidebar on mobile
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const mainContent = document.getElementById('main-content');
+            sidebar.classList.toggle('active');
+            mainContent.classList.toggle('active');
+        }
+
+        // Show different sections
+        function showSection(sectionId) {
+            document.getElementById(currentSection + '-section').style.display = 'none';
+            document.querySelector(`.nav-link.active`).classList.remove('active');
+            document.getElementById(sectionId + '-section').style.display = 'block';
+            document.querySelector(`[onclick="showSection('${sectionId}')"]`).classList.add('active');
+            currentSection = sectionId;
+            
+            // Load data for the section if needed
+            if (sectionId === 'pos') {
+                loadProductsForPOS();
+            } else if (sectionId === 'reports') {
+                initSalesChart();
+                initPaymentChart();
+            } else if (sectionId === 'products') {
+                loadProducts();
+            } else if (sectionId === 'dashboard') {
+                loadDashboardStats();
+            }
+        }
+        
+        // Dashboard functions
+        function loadDashboardStats() {
+            // Today's sales
+            fetch('/api/reports/sales?start=' + new Date().toISOString().split('T')[0])
+                .then(response => response.json())
+                .then(data => {
+                    const todaySales = data.reduce((sum, sale) => sum + sale.total, 0);
+                    document.getElementById('today-sales').textContent = '$' + todaySales.toFixed(2);
+                    
+                    // Calculate change from yesterday (mock data for demo)
+                    const yesterdaySales = todaySales * 0.8; // 80% of today for demo
+                    const change = ((todaySales - yesterdaySales) / yesterdaySales) * 100;
+                    const changeElement = document.getElementById('sales-change');
+                    changeElement.textContent = Math.abs(change).toFixed(1) + '%';
+                    if (change >= 0) {
+                        changeElement.parentElement.innerHTML = changeElement.parentElement.innerHTML.replace('bi-arrow-up', 'bi-arrow-up text-success');
+                    } else {
+                        changeElement.parentElement.innerHTML = changeElement.parentElement.innerHTML.replace('bi-arrow-up', 'bi-arrow-down text-danger');
+                    }
+                });
+                
+            // Total products and low stock
+            fetch('/api/products')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('total-products').textContent = data.length;
+                    const lowStock = data.filter(p => p.stock < 5).length;
+                    document.getElementById('low-stock-count').textContent = lowStock;
+                });
+                
+            // Recent transactions (last 24 hours)
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            fetch('/api/reports/sales?start=' + yesterday.toISOString())
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('recent-transactions').textContent = data.length;
+                });
+                
+            // Initialize dashboard chart
+            initDashboardChart();
+            
+            // Load top products
+            loadTopProducts();
+        }
+        
+        function initDashboardChart() {
+            const ctx = document.getElementById('dashboardChart').getContext('2d');
+            
+            if (dashboardChart) {
+                dashboardChart.destroy();
+            }
+            
+            // Mock data for the dashboard chart (in a real app, fetch from API)
+            const labels = [];
+            const salesData = [];
+            const today = new Date();
+            
+            for (let i = 6; i >= 0; i--) {
+                const date = new Date(today);
+                date.setDate(date.getDate() - i);
+                labels.push(date.toLocaleDateString('en-US', { weekday: 'short' }));
+                salesData.push(Math.floor(Math.random() * 1000) + 500); // Random sales data
+            }
+            
+            dashboardChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Daily Sales ($)',
+                        data: salesData,
+                        backgroundColor: 'rgba(13, 110, 253, 0.2)',
+                        borderColor: 'rgba(13, 110, 253, 1)',
+                        borderWidth: 2,
+                        tension: 0.4,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+        
+        function loadTopProducts() {
+            // In a real app, fetch top selling products from API
+            fetch('/api/products')
+                .then(response => response.json())
+                .then(products => {
+                    // Sort by stock (for demo - in real app, sort by sales)
+                    const topProducts = [...products].sort((a, b) => b.stock - a.stock).slice(0, 5);
+                    const topProductsList = document.getElementById('top-products-list');
+                    topProductsList.innerHTML = '';
+                    
+                    topProducts.forEach(product => {
+                        const item = document.createElement('a');
+                        item.className = 'list-group-item list-group-item-action';
+                        item.innerHTML = `
+                            <div class="d-flex w-100 justify-content-between">
+                                <h6 class="mb-1">${product.name}</h6>
+                                <small>$${product.price.toFixed(2)}</small>
+                            </div>
+                            <div class="d-flex w-100 justify-content-between">
+                                <small class="text-muted">Stock: ${product.stock}</small>
+                                <small class="${product.stock < 5 ? 'text-danger' : 'text-success'}">
+                                    ${product.stock < 5 ? 'Low Stock' : 'In Stock'}
+                                </small>
+                            </div>
+                        `;
+                        topProductsList.appendChild(item);
+                    });
+                });
+        }
+        
+        // POS functions
+        function loadProductsForPOS() {
+            const productGrid = document.getElementById('product-grid');
+            productGrid.innerHTML = `
+                <div class="col-12 text-center py-5">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            `;
+            
+            fetch('/api/products')
+                .then(response => response.json())
+                .then(data => {
+                    productGrid.innerHTML = '';
+                    
+                    if (data.length === 0) {
+                        productGrid.innerHTML = '<div class="col-12 text-center py-4 text-muted">No products available.</div>';
+                        return;
+                    }
+                    
+                    data.forEach(product => {
+                        const productCard = document.createElement('div');
+                        productCard.className = 'col-md-3 mb-3';
+                        productCard.innerHTML = `
+                            <div class="card product-card" onclick="addToCart(${product.id}, '${escapeHtml(product.name)}', ${product.price}, 1)">
+                                <div class="card-body">
+                                    <h6 class="card-title">${product.name}</h6>
+                                    <p class="card-text">$${product.price.toFixed(2)}</p>
+                                    <small class="text-muted">Stock: ${product.stock}</small>
+                                </div>
+                            </div>
+                        `;
+                        productGrid.appendChild(productCard);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading products:', error);
+                    productGrid.innerHTML = '<div class="col-12 text-center py-4 text-danger">Failed to load products.</div>';
+                });
+        }
+        
+        function searchProducts() {
+            const query = document.getElementById('product-search').value.trim();
+            if (!query) {
+                loadProductsForPOS();
+                return;
+            }
+            
+            fetch('/api/products/search?q=' + encodeURIComponent(query))
+                .then(response => response.json())
+                .then(data => {
+                    const productGrid = document.getElementById('product-grid');
+                    productGrid.innerHTML = '';
+                    
+                    if (data.length === 0) {
+                        productGrid.innerHTML = '<div class="col-12 text-center py-4 text-muted">No products found matching your search.</div>';
+                        return;
+                    }
+                    
+                    data.forEach(product => {
+                        const productCard = document.createElement('div');
+                        productCard.className = 'col-md-3 mb-3';
+                        productCard.innerHTML = `
+                            <div class="card product-card" onclick="addToCart(${product.id}, '${escapeHtml(product.name)}', ${product.price}, 1)">
+                                <div class="card-body">
+                                    <h6 class="card-title">${product.name}</h6>
+                                    <p class="card-text">$${product.price.toFixed(2)}</p>
+                                    <small class="text-muted">Stock: ${product.stock}</small>
+                                </div>
+                            </div>
+                        `;
+                        productGrid.appendChild(productCard);
+                    });
+                    
+                    document.getElementById('product-search').value = '';
+                    document.getElementById('product-search').focus();
+                })
+                .catch(error => {
+                    console.error('Error searching products:', error);
+                    document.getElementById('product-grid').innerHTML = '<div class="col-12 text-center py-4 text-danger">Failed to search products.</div>';
+                });
+        }
+        
+        function addToCart(productId, name, price, quantity) {
+            // Check if product already in cart
+            const existingItem = cart.find(item => item.product_id === productId);
+            
+            if (existingItem) {
+                existingItem.quantity += quantity;
+            } else {
+                cart.push({
+                    product_id: productId,
+                    name: name,
+                    price: price,
+                    quantity: quantity,
+                    tax_rate: 10 // Default tax rate (should fetch from product in real app)
+                });
+            }
+            
+            updateCartDisplay();
+        }
+        
+        function updateCartDisplay() {
+            const cartItems = document.getElementById('cart-items');
+            
+            if (cart.length === 0) {
+                cartItems.innerHTML = '<p class="text-muted text-center py-3">No items added</p>';
+                document.getElementById('subtotal').textContent = '$0.00';
+                document.getElementById('tax').textContent = '$0.00';
+                document.getElementById('total').textContent = '$0.00';
+                return;
+            }
+            
+            let subtotal = 0;
+            let tax = 0;
+            
+            cartItems.innerHTML = '';
+            cart.forEach((item, index) => {
+                const itemTotal = item.price * item.quantity;
+                const itemTax = itemTotal * (item.tax_rate / 100);
+                subtotal += itemTotal;
+                tax += itemTax;
+                
+                const itemElement = document.createElement('div');
+                itemElement.className = 'd-flex justify-content-between align-items-center mb-2 border-bottom pb-2';
+                itemElement.innerHTML = `
+                    <div>
+                        <h6 class="mb-0">${item.name}</h6>
+                        <small class="text-muted">$${item.price.toFixed(2)} x ${item.quantity}</small>
+                    </div>
+                    <div class="text-end">
+                        <h6 class="mb-0">$${itemTotal.toFixed(2)}</h6>
+                        <div class="btn-group btn-group-sm" role="group">
+                            <button class="btn btn-outline-secondary" onclick="adjustQuantity(${index}, -1)">
+                                <i class="bi bi-dash"></i>
+                            </button>
+                            <button class="btn btn-outline-secondary" onclick="adjustQuantity(${index}, 1)">
+                                <i class="bi bi-plus"></i>
+                            </button>
+                            <button class="btn btn-outline-danger" onclick="removeFromCart(${index})">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+                cartItems.appendChild(itemElement);
+            });
+            
+            const total = subtotal + tax;
+            
+            document.getElementById('subtotal').textContent = '$' + subtotal.toFixed(2);
+            document.getElementById('tax').textContent = '$' + tax.toFixed(2);
+            document.getElementById('total').textContent = '$' + total.toFixed(2);
+        }
+        
+        function adjustQuantity(index, change) {
+            cart[index].quantity += change;
+            
+            if (cart[index].quantity <= 0) {
+                cart.splice(index, 1);
+            }
+            
+            updateCartDisplay();
+        }
+        
+        function removeFromCart(index) {
+            cart.splice(index, 1);
+            updateCartDisplay();
+        }
+        
+        function clearCart() {
+            if (cart.length === 0) return;
+            
+            if (confirm('Are you sure you want to clear the cart?')) {
+                cart = [];
+                updateCartDisplay();
+            }
+        }
+        
+        function completeSale() {
+            if (cart.length === 0) {
+                alert('Please add items to the cart before completing the sale');
+                return;
+            }
+            
+            const paymentMethod = document.getElementById('payment-method').value;
+            
+            const saleData = {
+                items: cart.map(item => ({
+                    product_id: item.product_id,
+                    price: item.price,
+                    quantity: item.quantity,
+                    tax_rate: item.tax_rate
+                })),
+                payment_method: paymentMethod
+            };
+            
+            fetch('/api/sales', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(saleData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Sale completed successfully! Transaction ID: ' + data.transaction_id);
+                    cart = [];
+                    updateCartDisplay();
+                    loadSales();
+                    loadDashboardStats();
+                } else {
+                    alert('Error completing sale: ' + (data.message || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error completing sale: ' + error.message);
+            });
+        }
+        
+        // Product management functions
+        function loadProducts() {
+            const productsTable = document.getElementById('products-table');
+            productsTable.innerHTML = `
+                <tr>
+                    <td colspan="7" class="text-center py-4">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </td>
+                </tr>
+            `;
+            
+            fetch('/api/products')
+                .then(response => response.json())
+                .then(data => {
+                    productsTable.innerHTML = '';
+                    
+                    if (data.length === 0) {
+                        productsTable.innerHTML = `
+                            <tr>
+                                <td colspan="7" class="text-center py-4 text-muted">No products found.</td>
+                            </tr>
+                        `;
+                        return;
+                    }
+                    
+                    data.forEach(product => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${product.barcode || 'N/A'}</td>
+                            <td>${product.name}</td>
+                            <td>$${product.price.toFixed(2)}</td>
+                            <td>${product.stock}</td>
+                            <td>${product.category || 'N/A'}</td>
+                            <td>${product.tax_rate}%</td>
+                            <td>
+                                <button class="btn btn-sm btn-primary me-1" onclick="editProduct(${product.id})">
+                                    <i class="bi bi-pencil"></i>
+                                </button>
+                                <button class="btn btn-sm btn-danger" onclick="deleteProduct(${product.id}, '${escapeHtml(product.name)}')">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </td>
+                        `;
+                        productsTable.appendChild(row);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading products:', error);
+                    productsTable.innerHTML = `
+                        <tr>
+                            <td colspan="7" class="text-center py-4 text-danger">Failed to load products.</td>
+                        </tr>
+                    `;
+                });
+        }
+        
+        function saveProduct() {
+            const barcode = document.getElementById('add-barcode').value.trim();
+            const name = document.getElementById('add-product-name').value.trim();
+            const price = parseFloat(document.getElementById('add-price').value);
+            const cost = parseFloat(document.getElementById('add-cost').value) || 0;
+            const stock = parseInt(document.getElementById('add-stock').value);
+            const category = document.getElementById('add-category').value.trim();
+            const taxRate = parseFloat(document.getElementById('add-tax-rate').value) || 0;
+            
+            if (!name || isNaN(price) || isNaN(stock)) {
+                alert('Please fill in all required fields with valid values');
+                return;
+            }
+            
+            const productData = {
+                barcode: barcode || null,
+                name: name,
+                price: price,
+                cost: cost,
+                stock: stock,
+                category: category || null,
+                tax_rate: taxRate
+            };
+            
+            fetch('/api/products', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(productData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Product added successfully!');
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('addProductModal'));
+                    modal.hide();
+                    document.getElementById('add-product-form').reset();
+                    loadProducts();
+                    loadDashboardStats();
+                } else {
+                    alert('Error adding product: ' + (data.message || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error saving product:', error);
+                alert('Error saving product: ' + error.message);
+            });
+        }
+        
+        function editProduct(productId) {
+            fetch('/api/products/' + productId)
+                .then(response => response.json())
+                .then(product => {
+                    currentProduct = product;
+                    document.getElementById('edit-product-id').value = product.id;
+                    document.getElementById('edit-barcode').value = product.barcode || '';
+                    document.getElementById('edit-product-name').value = product.name;
+                    document.getElementById('edit-price').value = product.price;
+                    document.getElementById('edit-cost').value = product.cost || 0;
+                    document.getElementById('edit-stock').value = product.stock;
+                    document.getElementById('edit-category').value = product.category || '';
+                    document.getElementById('edit-tax-rate').value = product.tax_rate;
+                    
+                    const modal = new bootstrap.Modal(document.getElementById('editProductModal'));
+                    modal.show();
+                })
+                .catch(error => {
+                    console.error('Error fetching product:', error);
+                    alert('Failed to load product for editing');
+                });
+        }
+        
+        function updateProduct() {
+            if (!currentProduct) {
+                alert('No product selected for update');
+                return;
+            }
+            
+            const productId = document.getElementById('edit-product-id').value;
+            const barcode = document.getElementById('edit-barcode').value.trim();
+            const name = document.getElementById('edit-product-name').value.trim();
+            const price = parseFloat(document.getElementById('edit-price').value);
+            const cost = parseFloat(document.getElementById('edit-cost').value) || 0;
+            const stock = parseInt(document.getElementById('edit-stock').value);
+            const category = document.getElementById('edit-category').value.trim();
+            const taxRate = parseFloat(document.getElementById('edit-tax-rate').value) || 0;
+            
+            if (!name || isNaN(price) || isNaN(stock)) {
+                alert('Please fill in all required fields with valid values');
+                return;
+            }
+            
+            const productData = {
+                barcode: barcode || null,
+                name: name,
+                price: price,
+                cost: cost,
+                stock: stock,
+                category: category || null,
+                tax_rate: taxRate
+            };
+            
+            fetch('/api/products/' + productId, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(productData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Product updated successfully!');
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('editProductModal'));
+                    modal.hide();
+                    loadProducts();
+                    loadDashboardStats();
+                } else {
+                    alert('Error updating product: ' + (data.message || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error updating product:', error);
+                alert('Error updating product: ' + error.message);
+            });
+        }
+        
+        function deleteProduct(productId, productName) {
+            if (!confirm(`Are you sure you want to delete "${productName}"? This action cannot be undone.`)) {
+                return;
+            }
+            
+            fetch('/api/products/' + productId, {
+                method: 'DELETE'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Product deleted successfully!');
+                    loadProducts();
+                    loadDashboardStats();
+                } else {
+                    alert('Error deleting product: ' + (data.message || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error deleting product:', error);
+                alert('Error deleting product: ' + error.message);
+            });
+        }
+        
+        // Sales history functions
+        function loadSales() {
+            const salesTable = document.getElementById('sales-table');
+            salesTable.innerHTML = `
+                <tr>
+                    <td colspan="6" class="text-center py-4">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </td>
+                </tr>
+            `;
+            
+            fetch('/api/reports/sales')
+                .then(response => response.json())
+                .then(data => {
+                    salesTable.innerHTML = '';
+                    
+                    if (data.length === 0) {
+                        salesTable.innerHTML = `
+                            <tr>
+                                <td colspan="6" class="text-center py-4 text-muted">No sales recorded.</td>
+                            </tr>
+                        `;
+                        return;
+                    }
+                    
+                    data.forEach(sale => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${sale.transaction_id}</td>
+                            <td>${new Date(sale.date).toLocaleString()}</td>
+                            <td>$${sale.total.toFixed(2)}</td>
+                            <td>${sale.payment_method}</td>
+                            <td>${sale.user_id}</td>
+                            <td>
+                                <button class="btn btn-sm btn-info" onclick="viewSaleDetails('${sale.transaction_id}')">
+                                    <i class="bi bi-info-circle"></i> Details
+                                </button>
+                            </td>
+                        `;
+                        salesTable.appendChild(row);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading sales:', error);
+                    salesTable.innerHTML = `
+                        <tr>
+                            <td colspan="6" class="text-center py-4 text-danger">Failed to load sales.</td>
+                        </tr>
+                    `;
+                });
+        }
+        
+        function filterSalesByDate() {
+            const date = document.getElementById('sales-date-filter').value;
+            if (!date) return;
+            
+            const salesTable = document.getElementById('sales-table');
+            salesTable.innerHTML = `
+                <tr>
+                    <td colspan="6" class="text-center py-4">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </td>
+                </tr>
+            `;
+            
+            fetch('/api/reports/sales?start=' + date + '&end=' + date)
+                .then(response => response.json())
+                .then(data => {
+                    salesTable.innerHTML = '';
+                    
+                    if (data.length === 0) {
+                        salesTable.innerHTML = `
+                            <tr>
+                                <td colspan="6" class="text-center py-4 text-muted">No sales recorded for this date.</td>
+                            </tr>
+                        `;
+                        return;
+                    }
+                    
+                    data.forEach(sale => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${sale.transaction_id}</td>
+                            <td>${new Date(sale.date).toLocaleString()}</td>
+                            <td>$${sale.total.toFixed(2)}</td>
+                            <td>${sale.payment_method}</td>
+                            <td>${sale.user_id}</td>
+                            <td>
+                                <button class="btn btn-sm btn-info" onclick="viewSaleDetails('${sale.transaction_id}')">
+                                    <i class="bi bi-info-circle"></i> Details
+                                </button>
+                            </td>
+                        `;
+                        salesTable.appendChild(row);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error filtering sales:', error);
+                    salesTable.innerHTML = `
+                        <tr>
+                            <td colspan="6" class="text-center py-4 text-danger">Failed to filter sales.</td>
+                        </tr>
+                    `;
+                });
+        }
+        
+        function viewSaleDetails(transactionId) {
+            const modal = new bootstrap.Modal(document.getElementById('saleDetailsModal'));
+            document.getElementById('sale-id-display').textContent = transactionId;
+            
+            const content = document.getElementById('sale-details-content');
+            content.innerHTML = `
+                <div class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            `;
+            
+            modal.show();
+            
+            fetch('/api/sales/' + transactionId)
+                .then(response => response.json())
+                .then(sale => {
+                    let itemsHtml = '';
+                    let subtotal = 0;
+                    
+                    sale.items.forEach(item => {
+                        const itemTotal = item.price * item.quantity;
+                        subtotal += itemTotal;
+                        
+                        itemsHtml += `
+                            <tr>
+                                <td>${item.name}</td>
+                                <td>$${item.price.toFixed(2)}</td>
+                                <td>${item.quantity}</td>
+                                <td>${item.tax_rate}%</td>
+                                <td>$${itemTotal.toFixed(2)}</td>
+                            </tr>
+                        `;
+                    });
+                    
+                    const tax = sale.tax || subtotal * 0.1; // Default to 10% if not provided
+                    const total = subtotal + tax;
+                    
+                    content.innerHTML = `
+                        <div class="row mb-4">
+                            <div class="col-md-6">
+                                <h6>Transaction ID</h6>
+                                <p>${sale.transaction_id}</p>
+                            </div>
+                            <div class="col-md-6">
+                                <h6>Date</h6>
+                                <p>${new Date(sale.date).toLocaleString()}</p>
+                            </div>
+                        </div>
+                        
+                        <h5 class="mb-3">Items</h5>
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Product</th>
+                                        <th>Price</th>
+                                        <th>Qty</th>
+                                        <th>Tax</th>
+                                        <th>Total</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${itemsHtml}
+                                </tbody>
+                                <tfoot>
+                                    <tr>
+                                        <th colspan="4" class="text-end">Subtotal:</th>
+                                        <th>$${subtotal.toFixed(2)}</th>
+                                    </tr>
+                                    <tr>
+                                        <th colspan="4" class="text-end">Tax:</th>
+                                        <th>$${tax.toFixed(2)}</th>
+                                    </tr>
+                                    <tr class="table-active">
+                                        <th colspan="4" class="text-end">Total:</th>
+                                        <th>$${total.toFixed(2)}</th>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                        
+                        <div class="row mt-4">
+                            <div class="col-md-6">
+                                <h6>Payment Method</h6>
+                                <p>${sale.payment_method}</p>
+                            </div>
+                            <div class="col-md-6">
+                                <h6>Processed By</h6>
+                                <p>User ID: ${sale.user_id}</p>
+                            </div>
+                        </div>
+                    `;
+                })
+                .catch(error => {
+                    console.error('Error loading sale details:', error);
+                    content.innerHTML = `
+                        <div class="alert alert-danger">
+                            Failed to load sale details. Please try again.
+                        </div>
+                    `;
+                });
+        }
+        
+        function printReceipt() {
+            const transactionId = document.getElementById('sale-id-display').textContent;
+            window.open(`/api/sales/${transactionId}/print`, '_blank');
+            const modal = bootstrap.Modal.getInstance(document.getElementById('saleDetailsModal'));
+            modal.hide();
+        }
+        
+        // Reports functions
+        function initSalesChart() {
+            const ctx = document.getElementById('salesChart').getContext('2d');
+            
+            if (salesChart) {
+                salesChart.destroy();
+            }
+            
+            // Default to last 7 days
+            const startDate = document.getElementById('start-date').value || new Date(new Date().setDate(new Date().getDate() - 7)).toISOString().split('T')[0];
+            const endDate = document.getElementById('end-date').value || new Date().toISOString().split('T')[0];
+            
+            fetch('/api/reports/sales?start=' + startDate + '&end=' + endDate)
+                .then(response => response.json())
+                .then(data => {
+                    // Group sales by date
+                    const salesByDate = {};
+                    data.forEach(sale => {
+                        const date = sale.date.split('T')[0];
+                        if (!salesByDate[date]) {
+                            salesByDate[date] = 0;
+                        }
+                        salesByDate[date] += sale.total;
+                    });
+                    
+                    // Prepare chart data
+                    const labels = Object.keys(salesByDate).sort();
+                    const chartData = labels.map(date => salesByDate[date]);
+                    
+                    salesChart = new Chart(ctx, {
+                        type: 'bar',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: 'Daily Sales ($)',
+                                data: chartData,
+                                backgroundColor: 'rgba(54, 162, 235, 0.7)',
+                                borderColor: 'rgba(54, 162, 235, 1)',
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            },
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    title: {
+                                        display: true,
+                                        text: 'Amount ($)'
+                                    }
+                                },
+                                x: {
+                                    title: {
+                                        display: true,
+                                        text: 'Date'
+                                    }
+                                }
+                            }
+                        }
+                    });
+                })
+                .catch(error => {
+                    console.error('Error initializing sales chart:', error);
+                    ctx.font = '16px Arial';
+                    ctx.fillStyle = 'red';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Failed to load chart data', ctx.canvas.width / 2, ctx.canvas.height / 2);
+                });
+        }
+        
+        function initPaymentChart() {
+            const ctx = document.getElementById('paymentChart').getContext('2d');
+            
+            if (paymentChart) {
+                paymentChart.destroy();
+            }
+            
+            // Default to last 7 days
+            const startDate = document.getElementById('start-date').value || new Date(new Date().setDate(new Date().getDate() - 7)).toISOString().split('T')[0];
+            const endDate = document.getElementById('end-date').value || new Date().toISOString().split('T')[0];
+            
+            fetch('/api/reports/sales?start=' + startDate + '&end=' + endDate)
+                .then(response => response.json())
+                .then(data => {
+                    // Group sales by payment method
+                    const paymentMethods = {};
+                    data.forEach(sale => {
+                        if (!paymentMethods[sale.payment_method]) {
+                            paymentMethods[sale.payment_method] = 0;
+                        }
+                        paymentMethods[sale.payment_method] += sale.total;
+                    });
+                    
+                    // Prepare chart data
+                    const labels = Object.keys(paymentMethods);
+                    const chartData = labels.map(method => paymentMethods[method]);
+                    const backgroundColors = [
+                        'rgba(255, 99, 132, 0.7)',
+                        'rgba(54, 162, 235, 0.7)',
+                        'rgba(255, 206, 86, 0.7)',
+                        'rgba(75, 192, 192, 0.7)'
+                    ];
+                    
+                    paymentChart = new Chart(ctx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                data: chartData,
+                                backgroundColor: backgroundColors,
+                                borderWidth: 1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                legend: {
+                                    position: 'bottom'
+                                }
+                            }
+                        }
+                    });
+                })
+                .catch(error => {
+                    console.error('Error initializing payment chart:', error);
+                    ctx.font = '16px Arial';
+                    ctx.fillStyle = 'red';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Failed to load chart data', ctx.canvas.width / 2, ctx.canvas.height / 2);
+                });
+        }
+        
+        function generateReport() {
+            const startDate = document.getElementById('start-date').value;
+            const endDate = document.getElementById('end-date').value;
+            
+            if (!startDate || !endDate) {
+                alert('Please select both start and end dates');
+                return;
+            }
+            
+            const resultsDiv = document.getElementById('report-results');
+            resultsDiv.innerHTML = `
+                <div class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            `;
+            
+            fetch('/api/reports/sales?start=' + startDate + '&end=' + endDate)
+                .then(response => response.json())
+                .then(data => {
+                    const totalSales = data.reduce((sum, sale) => sum + sale.total, 0);
+                    const totalTax = data.reduce((sum, sale) => sum + sale.tax, 0);
+                    const totalTransactions = data.length;
+                    
+                    // Group by payment method
+                    const paymentMethods = {};
+                    data.forEach(sale => {
+                        if (!paymentMethods[sale.payment_method]) {
+                            paymentMethods[sale.payment_method] = {
+                                count: 0,
+                                total: 0
+                            };
+                        }
+                        paymentMethods[sale.payment_method].count++;
+                        paymentMethods[sale.payment_method].total += sale.total;
+                    });
+                    
+                    let paymentMethodsHtml = '';
+                    for (const [method, stats] of Object.entries(paymentMethods)) {
+                        paymentMethodsHtml += `
+                            <tr>
+                                <td>${method}</td>
+                                <td>${stats.count}</td>
+                                <td>$${stats.total.toFixed(2)}</td>
+                                <td>${((stats.total / totalSales) * 100).toFixed(1)}%</td>
+                            </tr>
+                        `;
+                    }
+                    
+                    resultsDiv.innerHTML = `
+                        <div class="row mb-4">
+                            <div class="col-md-4">
+                                <div class="card bg-light">
+                                    <div class="card-body text-center">
+                                        <h5 class="card-title">Total Sales</h5>
+                                        <h3>$${totalSales.toFixed(2)}</h3>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card bg-light">
+                                    <div class="card-body text-center">
+                                        <h5 class="card-title">Total Tax</h5>
+                                        <h3>$${totalTax.toFixed(2)}</h3>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="card bg-light">
+                                    <div class="card-body text-center">
+                                        <h5 class="card-title">Transactions</h5>
+                                        <h3>${totalTransactions}</h3>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <h5 class="mb-3">Payment Methods</h5>
+                        <div class="table-responsive mb-4">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Method</th>
+                                        <th>Transactions</th>
+                                        <th>Total</th>
+                                        <th>Percentage</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${paymentMethodsHtml}
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <h5 class="mb-3">Recent Transactions</h5>
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>Transaction ID</th>
+                                        <th>Date</th>
+                                        <th>Total</th>
+                                        <th>Payment</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${data.slice(0, 5).map(sale => `
+                                        <tr>
+                                            <td>${sale.transaction_id}</td>
+                                            <td>${new Date(sale.date).toLocaleString()}</td>
+                                            <td>$${sale.total.toFixed(2)}</td>
+                                            <td>${sale.payment_method}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                    
+                    // Refresh charts with new date range
+                    initSalesChart();
+                    initPaymentChart();
+                })
+                .catch(error => {
+                    console.error('Error generating report:', error);
+                    resultsDiv.innerHTML = `
+                        <div class="alert alert-danger">
+                            Failed to generate report. Please try again.
+                        </div>
+                    `;
+                });
+        }
+        
+        function exportReport() {
+            const startDate = document.getElementById('start-date').value;
+            const endDate = document.getElementById('end-date').value;
+            
+            if (!startDate || !endDate) {
+                alert('Please select both start and end dates');
+                return;
+            }
+            
+            window.open(`/api/reports/sales/export?start=${startDate}&end=${endDate}`, '_blank');
+        }
+        
+        // Utility functions
+        function escapeHtml(unsafe) {
+            return unsafe
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+    </script>
+</body>
+</html>
