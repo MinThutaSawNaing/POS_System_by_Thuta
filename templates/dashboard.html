@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,16 +11,16 @@
         :root {
             --sidebar-width: 250px;
             --sidebar-bg: #343a40;
-            --sidebar-text: rgba(255,255,255,.75);
+            --sidebar-text: rgba(255, 255, 255, .75);
             --sidebar-active: white;
-            --sidebar-hover: rgba(255,255,255,.1);
+            --sidebar-hover: rgba(255, 255, 255, .1);
             --primary-color: #0d6efd;
         }
-        
+
         body {
             overflow-x: hidden;
         }
-        
+
         .sidebar {
             width: var(--sidebar-width);
             height: 100vh;
@@ -29,89 +30,94 @@
             transition: all 0.3s;
             z-index: 1000;
         }
-        
+
         .sidebar .nav-link {
             color: var(--sidebar-text);
             padding: 0.75rem 1rem;
             border-radius: 0.25rem;
             margin: 0.25rem 1rem;
         }
-        
-        .sidebar .nav-link:hover, 
+
+        .sidebar .nav-link:hover,
         .sidebar .nav-link.active {
             color: var(--sidebar-active);
             background-color: var(--sidebar-hover);
         }
-        
+
         .sidebar .nav-link i {
             width: 20px;
             margin-right: 10px;
             text-align: center;
         }
-        
+
         .main-content {
             margin-left: var(--sidebar-width);
             padding: 20px;
             transition: all 0.3s;
         }
-        
+
         .product-card {
             cursor: pointer;
             transition: all 0.2s;
             height: 100%;
         }
-        
+
         .product-card:hover {
             transform: translateY(-5px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
         }
-        
+
         #cart-items {
             max-height: 400px;
             overflow-y: auto;
         }
-        
+
         .card-stat {
             border-left: 4px solid var(--primary-color);
         }
-        
+
         @media (max-width: 768px) {
             .sidebar {
                 margin-left: -var(--sidebar-width);
             }
+
             .sidebar.active {
                 margin-left: 0;
             }
+
             .main-content {
                 margin-left: 0;
             }
+
             .main-content.active {
                 margin-left: var(--sidebar-width);
             }
         }
-        
+
         /* Custom scrollbar */
         ::-webkit-scrollbar {
             width: 8px;
         }
-        
+
         ::-webkit-scrollbar-track {
             background: #f1f1f1;
         }
-        
+
         ::-webkit-scrollbar-thumb {
             background: #888;
             border-radius: 4px;
         }
-        
+
         ::-webkit-scrollbar-thumb:hover {
             background: #555;
         }
     </style>
 </head>
+
 <body>
     <!-- Sidebar Toggle Button (Mobile) -->
-    <button class="btn btn-primary d-md-none position-fixed" style="z-index: 1100; top: 10px; left: 10px;" onclick="toggleSidebar()">
+    <button class="btn btn-primary d-md-none position-fixed" style="z-index: 1100; top: 10px; left: 10px;"
+        onclick="toggleSidebar()">
         <i class="bi bi-list"></i>
     </button>
 
@@ -169,7 +175,8 @@
                         <div class="card-body">
                             <h5 class="card-title">Today's Sales</h5>
                             <h3 id="today-sales">$0.00</h3>
-                            <p class="text-muted mb-0"><i class="bi bi-arrow-up text-success"></i> <span id="sales-change">0%</span> from yesterday</p>
+                            <p class="text-muted mb-0"><i class="bi bi-arrow-up text-success"></i> <span
+                                    id="sales-change">0%</span> from yesterday</p>
                         </div>
                     </div>
                 </div>
@@ -192,7 +199,7 @@
                     </div>
                 </div>
             </div>
-            
+
             <div class="row mt-4">
                 <div class="col-md-8">
                     <div class="card">
@@ -228,11 +235,12 @@
                     <i class="bi bi-x-circle"></i> Clear Cart
                 </button>
             </div>
-            
+
             <div class="row">
                 <div class="col-md-8">
                     <div class="input-group mb-3">
-                        <input type="text" id="product-search" class="form-control" placeholder="Scan barcode or search products..." autofocus>
+                        <input type="text" id="product-search" class="form-control"
+                            placeholder="Scan barcode or search products..." autofocus>
                         <button class="btn btn-primary" type="button" onclick="searchProducts()">
                             <i class="bi bi-search"></i> Search
                         </button>
@@ -290,13 +298,18 @@
 
         <!-- Products Section -->
         <div id="products-section" style="display: none;">
-            <div class="d-flex justify-content-between align-items-center mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
                 <h2 class="mb-0">Product Management</h2>
-                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addProductModal">
-                    <i class="bi bi-plus-circle"></i> Add Product
-                </button>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addProductModal">
+                        <i class="bi bi-plus-circle"></i> Add Product
+                    </button>
+                    <button class="btn btn-success" onclick="showBarcodeLabelDialog()">
+                        <i class="bi bi-upc-scan"></i> Print Barcode Labels
+                    </button>
+                </div>
             </div>
-            
+
             <div class="card">
                 <div class="card-body">
                     <div class="table-responsive">
@@ -339,7 +352,7 @@
                     </button>
                 </div>
             </div>
-            
+
             <div class="card">
                 <div class="card-body">
                     <div class="table-responsive">
@@ -393,7 +406,7 @@
                     </button>
                 </div>
             </div>
-            
+
             <div class="row">
                 <div class="col-md-8">
                     <div class="card mb-3">
@@ -416,7 +429,7 @@
                     </div>
                 </div>
             </div>
-            
+
             <div class="card">
                 <div class="card-header bg-white">
                     <h5 class="mb-0">Report Results</h5>
@@ -443,7 +456,8 @@
                     <form id="add-product-form">
                         <div class="mb-3">
                             <label class="form-label">Barcode <small class="text-muted">(optional)</small></label>
-                            <input type="text" class="form-control" id="add-barcode" placeholder="Scan or enter barcode">
+                            <input type="text" class="form-control" id="add-barcode"
+                                placeholder="Scan or enter barcode">
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Product Name <span class="text-danger">*</span></label>
@@ -477,7 +491,8 @@
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Category</label>
-                            <input type="text" class="form-control" id="add-category" placeholder="e.g., Electronics, Grocery">
+                            <input type="text" class="form-control" id="add-category"
+                                placeholder="e.g., Electronics, Grocery">
                         </div>
                     </form>
                 </div>
@@ -547,7 +562,56 @@
             </div>
         </div>
     </div>
+    <!-- Barcode Label Modal -->
+    <div class="modal fade" id="barcodeLabelModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Generate Barcode Labels</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i> Select products to generate barcode labels.
+                        Labels will be printed 3 per row with the product name and price.
+                    </div>
 
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th width="50px">
+                                        <input type="checkbox" id="select-all-products"
+                                            onclick="toggleSelectAllProducts()">
+                                    </th>
+                                    <th>Barcode</th>
+                                    <th>Name</th>
+                                    <th>Price</th>
+                                    <th>Stock</th>
+                                </tr>
+                            </thead>
+                            <tbody id="barcode-products-table">
+                                <!-- Products will be loaded here -->
+                                <tr>
+                                    <td colspan="5" class="text-center py-4">
+                                        <div class="spinner-border text-primary" role="status">
+                                            <span class="visually-hidden">Loading...</span>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="generateBarcodeLabels()">
+                        <i class="bi bi-printer"></i> Generate Labels
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
     <!-- Sale Details Modal -->
     <div class="modal fade" id="saleDetailsModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-lg">
@@ -586,24 +650,24 @@
         let paymentChart = null;
 
         // Initialize the application when page loads
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', function () {
             // Set today's date as default for sales filter
             const today = new Date().toISOString().split('T')[0];
             document.getElementById('sales-date-filter').value = today;
-            
+
             // Set default date range for reports (last 7 days)
             const sevenDaysAgo = new Date();
             sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
             document.getElementById('start-date').value = sevenDaysAgo.toISOString().split('T')[0];
             document.getElementById('end-date').value = today;
-            
+
             // Load initial data
             loadDashboardStats();
             loadProducts();
             loadSales();
-            
+
             // Set up product search to work on Enter key
-            document.getElementById('product-search').addEventListener('keypress', function(e) {
+            document.getElementById('product-search').addEventListener('keypress', function (e) {
                 if (e.key === 'Enter') {
                     searchProducts();
                 }
@@ -625,7 +689,7 @@
             document.getElementById(sectionId + '-section').style.display = 'block';
             document.querySelector(`[onclick="showSection('${sectionId}')"]`).classList.add('active');
             currentSection = sectionId;
-            
+
             // Load data for the section if needed
             if (sectionId === 'pos') {
                 loadProductsForPOS();
@@ -638,7 +702,7 @@
                 loadDashboardStats();
             }
         }
-        
+
         // Dashboard functions
         function loadDashboardStats() {
             // Today's sales
@@ -647,7 +711,7 @@
                 .then(data => {
                     const todaySales = data.reduce((sum, sale) => sum + sale.total, 0);
                     document.getElementById('today-sales').textContent = '$' + todaySales.toFixed(2);
-                    
+
                     // Calculate change from yesterday (mock data for demo)
                     const yesterdaySales = todaySales * 0.8; // 80% of today for demo
                     const change = ((todaySales - yesterdaySales) / yesterdaySales) * 100;
@@ -659,7 +723,7 @@
                         changeElement.parentElement.innerHTML = changeElement.parentElement.innerHTML.replace('bi-arrow-up', 'bi-arrow-down text-danger');
                     }
                 });
-                
+
             // Total products and low stock
             fetch('/api/products')
                 .then(response => response.json())
@@ -668,7 +732,7 @@
                     const lowStock = data.filter(p => p.stock < 5).length;
                     document.getElementById('low-stock-count').textContent = lowStock;
                 });
-                
+
             // Recent transactions (last 24 hours)
             const yesterday = new Date();
             yesterday.setDate(yesterday.getDate() - 1);
@@ -677,33 +741,33 @@
                 .then(data => {
                     document.getElementById('recent-transactions').textContent = data.length;
                 });
-                
+
             // Initialize dashboard chart
             initDashboardChart();
-            
+
             // Load top products
             loadTopProducts();
         }
-        
+
         function initDashboardChart() {
             const ctx = document.getElementById('dashboardChart').getContext('2d');
-            
+
             if (dashboardChart) {
                 dashboardChart.destroy();
             }
-            
+
             // Mock data for the dashboard chart (in a real app, fetch from API)
             const labels = [];
             const salesData = [];
             const today = new Date();
-            
+
             for (let i = 6; i >= 0; i--) {
                 const date = new Date(today);
                 date.setDate(date.getDate() - i);
                 labels.push(date.toLocaleDateString('en-US', { weekday: 'short' }));
                 salesData.push(Math.floor(Math.random() * 1000) + 500); // Random sales data
             }
-            
+
             dashboardChart = new Chart(ctx, {
                 type: 'line',
                 data: {
@@ -733,7 +797,7 @@
                 }
             });
         }
-        
+
         function loadTopProducts() {
             // In a real app, fetch top selling products from API
             fetch('/api/products')
@@ -743,7 +807,7 @@
                     const topProducts = [...products].sort((a, b) => b.stock - a.stock).slice(0, 5);
                     const topProductsList = document.getElementById('top-products-list');
                     topProductsList.innerHTML = '';
-                    
+
                     topProducts.forEach(product => {
                         const item = document.createElement('a');
                         item.className = 'list-group-item list-group-item-action';
@@ -763,7 +827,7 @@
                     });
                 });
         }
-        
+
         // POS functions
         function loadProductsForPOS() {
             const productGrid = document.getElementById('product-grid');
@@ -774,17 +838,17 @@
                     </div>
                 </div>
             `;
-            
+
             fetch('/api/products')
                 .then(response => response.json())
                 .then(data => {
                     productGrid.innerHTML = '';
-                    
+
                     if (data.length === 0) {
                         productGrid.innerHTML = '<div class="col-12 text-center py-4 text-muted">No products available.</div>';
                         return;
                     }
-                    
+
                     data.forEach(product => {
                         const productCard = document.createElement('div');
                         productCard.className = 'col-md-3 mb-3';
@@ -805,25 +869,25 @@
                     productGrid.innerHTML = '<div class="col-12 text-center py-4 text-danger">Failed to load products.</div>';
                 });
         }
-        
+
         function searchProducts() {
             const query = document.getElementById('product-search').value.trim();
             if (!query) {
                 loadProductsForPOS();
                 return;
             }
-            
+
             fetch('/api/products/search?q=' + encodeURIComponent(query))
                 .then(response => response.json())
                 .then(data => {
                     const productGrid = document.getElementById('product-grid');
                     productGrid.innerHTML = '';
-                    
+
                     if (data.length === 0) {
                         productGrid.innerHTML = '<div class="col-12 text-center py-4 text-muted">No products found matching your search.</div>';
                         return;
                     }
-                    
+
                     data.forEach(product => {
                         const productCard = document.createElement('div');
                         productCard.className = 'col-md-3 mb-3';
@@ -838,7 +902,7 @@
                         `;
                         productGrid.appendChild(productCard);
                     });
-                    
+
                     document.getElementById('product-search').value = '';
                     document.getElementById('product-search').focus();
                 })
@@ -847,11 +911,11 @@
                     document.getElementById('product-grid').innerHTML = '<div class="col-12 text-center py-4 text-danger">Failed to search products.</div>';
                 });
         }
-        
+
         function addToCart(productId, name, price, quantity) {
             // Check if product already in cart
             const existingItem = cart.find(item => item.product_id === productId);
-            
+
             if (existingItem) {
                 existingItem.quantity += quantity;
             } else {
@@ -863,32 +927,32 @@
                     tax_rate: 10 // Default tax rate (should fetch from product in real app)
                 });
             }
-            
+
             updateCartDisplay();
         }
-        
+
         function updateCartDisplay() {
-    const cartItems = document.getElementById('cart-items');
-    if (cart.length === 0) {
-        cartItems.innerHTML = '<p class="text-muted text-center py-3">No items added</p>';
-        document.getElementById('subtotal').textContent = '$0.00';
-        document.getElementById('tax').textContent = '$0.00';
-        document.getElementById('total').textContent = '$0.00';
-        return;
-    }
-    let subtotalCents = 0;
-    let taxCents = 0;
-    cartItems.innerHTML = '';
-    cart.forEach((item, index) => {
-        const priceCents = Math.round(Number(item.price) * 100);
-        const itemTotalCents = priceCents * Number(item.quantity);
-        const itemTaxCents = Math.round(itemTotalCents * Number(item.tax_rate) / 100);
-        subtotalCents += itemTotalCents;
-        taxCents += itemTaxCents;
-        const itemElement = document.createElement('div');
-        itemElement.className = 'd-flex justify-content-between align-items-center mb-2 border-bottom pb-2';
-        const itemTotal = (itemTotalCents / 100).toFixed(2);
-        itemElement.innerHTML = `
+            const cartItems = document.getElementById('cart-items');
+            if (cart.length === 0) {
+                cartItems.innerHTML = '<p class="text-muted text-center py-3">No items added</p>';
+                document.getElementById('subtotal').textContent = '$0.00';
+                document.getElementById('tax').textContent = '$0.00';
+                document.getElementById('total').textContent = '$0.00';
+                return;
+            }
+            let subtotalCents = 0;
+            let taxCents = 0;
+            cartItems.innerHTML = '';
+            cart.forEach((item, index) => {
+                const priceCents = Math.round(Number(item.price) * 100);
+                const itemTotalCents = priceCents * Number(item.quantity);
+                const itemTaxCents = Math.round(itemTotalCents * Number(item.tax_rate) / 100);
+                subtotalCents += itemTotalCents;
+                taxCents += itemTaxCents;
+                const itemElement = document.createElement('div');
+                itemElement.className = 'd-flex justify-content-between align-items-center mb-2 border-bottom pb-2';
+                const itemTotal = (itemTotalCents / 100).toFixed(2);
+                itemElement.innerHTML = `
             <div>
                 <h6 class="mb-0">${item.name}</h6>
                 <small class="text-muted">$${Number(item.price).toFixed(2)} x ${item.quantity}</small>
@@ -908,46 +972,46 @@
                 </div>
             </div>
         `;
-        cartItems.appendChild(itemElement);
-    });
-    const totalCents = subtotalCents + taxCents;
-    document.getElementById('subtotal').textContent = '$' + (subtotalCents / 100).toFixed(2);
-    document.getElementById('tax').textContent = '$' + (taxCents / 100).toFixed(2);
-    document.getElementById('total').textContent = '$' + (totalCents / 100).toFixed(2);
-}
-        
+                cartItems.appendChild(itemElement);
+            });
+            const totalCents = subtotalCents + taxCents;
+            document.getElementById('subtotal').textContent = '$' + (subtotalCents / 100).toFixed(2);
+            document.getElementById('tax').textContent = '$' + (taxCents / 100).toFixed(2);
+            document.getElementById('total').textContent = '$' + (totalCents / 100).toFixed(2);
+        }
+
         function adjustQuantity(index, change) {
             cart[index].quantity += change;
-            
+
             if (cart[index].quantity <= 0) {
                 cart.splice(index, 1);
             }
-            
+
             updateCartDisplay();
         }
-        
+
         function removeFromCart(index) {
             cart.splice(index, 1);
             updateCartDisplay();
         }
-        
+
         function clearCart() {
             if (cart.length === 0) return;
-            
+
             if (confirm('Are you sure you want to clear the cart?')) {
                 cart = [];
                 updateCartDisplay();
             }
         }
-        
+
         function completeSale() {
             if (cart.length === 0) {
                 alert('Please add items to the cart before completing the sale');
                 return;
             }
-            
+
             const paymentMethod = document.getElementById('payment-method').value;
-            
+
             const saleData = {
                 items: cart.map(item => ({
                     product_id: item.product_id,
@@ -957,7 +1021,7 @@
                 })),
                 payment_method: paymentMethod
             };
-            
+
             fetch('/api/sales', {
                 method: 'POST',
                 headers: {
@@ -965,24 +1029,131 @@
                 },
                 body: JSON.stringify(saleData)
             })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    alert('Sale completed successfully! Transaction ID: ' + data.transaction_id);
-                    cart = [];
-                    updateCartDisplay();
-                    loadSales();
-                    loadDashboardStats();
-                } else {
-                    alert('Error completing sale: ' + (data.message || 'Unknown error'));
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                alert('Error completing sale: ' + error.message);
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Sale completed successfully! Transaction ID: ' + data.transaction_id);
+                        cart = [];
+                        updateCartDisplay();
+                        loadSales();
+                        loadDashboardStats();
+                    } else {
+                        alert('Error completing sale: ' + (data.message || 'Unknown error'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error completing sale: ' + error.message);
+                });
+        }
+        // Barcode Label functions
+        function showBarcodeLabelDialog() {
+            const modal = new bootstrap.Modal(document.getElementById('barcodeLabelModal'));
+            loadProductsForBarcodeLabels();
+            modal.show();
+        }
+
+        function loadProductsForBarcodeLabels() {
+            const table = document.getElementById('barcode-products-table');
+            table.innerHTML = `
+        <tr>
+            <td colspan="5" class="text-center py-4">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+            </td>
+        </tr>
+    `;
+
+            fetch('/api/products')
+                .then(response => response.json())
+                .then(data => {
+                    table.innerHTML = '';
+
+                    if (data.length === 0) {
+                        table.innerHTML = `
+                    <tr>
+                        <td colspan="5" class="text-center py-4 text-muted">No products found.</td>
+                    </tr>
+                `;
+                        return;
+                    }
+
+                    data.forEach(product => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                    <td><input type="checkbox" class="product-checkbox" data-id="${product.id}"></td>
+                    <td>${product.barcode || 'N/A'}</td>
+                    <td>${product.name}</td>
+                    <td>$${product.price.toFixed(2)}</td>
+                    <td>${product.stock}</td>
+                `;
+                        table.appendChild(row);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading products:', error);
+                    table.innerHTML = `
+                <tr>
+                    <td colspan="5" class="text-center py-4 text-danger">Failed to load products.</td>
+                </tr>
+            `;
+                });
+        }
+
+        function toggleSelectAllProducts() {
+            const selectAll = document.getElementById('select-all-products').checked;
+            document.querySelectorAll('.product-checkbox').forEach(checkbox => {
+                checkbox.checked = selectAll;
             });
         }
-        
+
+        function generateBarcodeLabels() {
+            const selectedProducts = [];
+            document.querySelectorAll('.product-checkbox:checked').forEach(checkbox => {
+                selectedProducts.push(parseInt(checkbox.getAttribute('data-id')));
+            });
+
+            if (selectedProducts.length === 0) {
+                alert('Please select at least one product to generate labels');
+                return;
+            }
+
+            fetch('/api/products/barcode_labels', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    product_ids: selectedProducts
+                })
+            })
+                .then(response => {
+                    if (response.ok) {
+                        return response.blob();
+                    }
+                    throw new Error('Failed to generate labels');
+                })
+                .then(blob => {
+                    // Create a download link and trigger it
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'barcode_labels.pdf';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+
+                    // Close the modal
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('barcodeLabelModal'));
+                    modal.hide();
+                })
+                .catch(error => {
+                    console.error('Error generating labels:', error);
+                    alert('Error generating labels: ' + error.message);
+                });
+        }
         // Product management functions
         function loadProducts() {
             const productsTable = document.getElementById('products-table');
@@ -995,12 +1166,12 @@
                     </td>
                 </tr>
             `;
-            
+
             fetch('/api/products')
                 .then(response => response.json())
                 .then(data => {
                     productsTable.innerHTML = '';
-                    
+
                     if (data.length === 0) {
                         productsTable.innerHTML = `
                             <tr>
@@ -1009,7 +1180,7 @@
                         `;
                         return;
                     }
-                    
+
                     data.forEach(product => {
                         const row = document.createElement('tr');
                         row.innerHTML = `
@@ -1040,7 +1211,7 @@
                     `;
                 });
         }
-        
+
         function saveProduct() {
             const barcode = document.getElementById('add-barcode').value.trim();
             const name = document.getElementById('add-product-name').value.trim();
@@ -1049,12 +1220,12 @@
             const stock = parseInt(document.getElementById('add-stock').value);
             const category = document.getElementById('add-category').value.trim();
             const taxRate = parseFloat(document.getElementById('add-tax-rate').value) || 0;
-            
+
             if (!name || isNaN(price) || isNaN(stock)) {
                 alert('Please fill in all required fields with valid values');
                 return;
             }
-            
+
             const productData = {
                 barcode: barcode || null,
                 name: name,
@@ -1064,7 +1235,7 @@
                 category: category || null,
                 tax_rate: taxRate
             };
-            
+
             fetch('/api/products', {
                 method: 'POST',
                 headers: {
@@ -1072,25 +1243,25 @@
                 },
                 body: JSON.stringify(productData)
             })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    alert('Product added successfully!');
-                    const modal = bootstrap.Modal.getInstance(document.getElementById('addProductModal'));
-                    modal.hide();
-                    document.getElementById('add-product-form').reset();
-                    loadProducts();
-                    loadDashboardStats();
-                } else {
-                    alert('Error adding product: ' + (data.message || 'Unknown error'));
-                }
-            })
-            .catch(error => {
-                console.error('Error saving product:', error);
-                alert('Error saving product: ' + error.message);
-            });
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Product added successfully!');
+                        const modal = bootstrap.Modal.getInstance(document.getElementById('addProductModal'));
+                        modal.hide();
+                        document.getElementById('add-product-form').reset();
+                        loadProducts();
+                        loadDashboardStats();
+                    } else {
+                        alert('Error adding product: ' + (data.message || 'Unknown error'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error saving product:', error);
+                    alert('Error saving product: ' + error.message);
+                });
         }
-        
+
         function editProduct(productId) {
             fetch('/api/products/' + productId)
                 .then(response => response.json())
@@ -1104,7 +1275,7 @@
                     document.getElementById('edit-stock').value = product.stock;
                     document.getElementById('edit-category').value = product.category || '';
                     document.getElementById('edit-tax-rate').value = product.tax_rate;
-                    
+
                     const modal = new bootstrap.Modal(document.getElementById('editProductModal'));
                     modal.show();
                 })
@@ -1113,13 +1284,13 @@
                     alert('Failed to load product for editing');
                 });
         }
-        
+
         function updateProduct() {
             if (!currentProduct) {
                 alert('No product selected for update');
                 return;
             }
-            
+
             const productId = document.getElementById('edit-product-id').value;
             const barcode = document.getElementById('edit-barcode').value.trim();
             const name = document.getElementById('edit-product-name').value.trim();
@@ -1128,12 +1299,12 @@
             const stock = parseInt(document.getElementById('edit-stock').value);
             const category = document.getElementById('edit-category').value.trim();
             const taxRate = parseFloat(document.getElementById('edit-tax-rate').value) || 0;
-            
+
             if (!name || isNaN(price) || isNaN(stock)) {
                 alert('Please fill in all required fields with valid values');
                 return;
             }
-            
+
             const productData = {
                 barcode: barcode || null,
                 name: name,
@@ -1143,7 +1314,7 @@
                 category: category || null,
                 tax_rate: taxRate
             };
-            
+
             fetch('/api/products/' + productId, {
                 method: 'PUT',
                 headers: {
@@ -1151,48 +1322,48 @@
                 },
                 body: JSON.stringify(productData)
             })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    alert('Product updated successfully!');
-                    const modal = bootstrap.Modal.getInstance(document.getElementById('editProductModal'));
-                    modal.hide();
-                    loadProducts();
-                    loadDashboardStats();
-                } else {
-                    alert('Error updating product: ' + (data.message || 'Unknown error'));
-                }
-            })
-            .catch(error => {
-                console.error('Error updating product:', error);
-                alert('Error updating product: ' + error.message);
-            });
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Product updated successfully!');
+                        const modal = bootstrap.Modal.getInstance(document.getElementById('editProductModal'));
+                        modal.hide();
+                        loadProducts();
+                        loadDashboardStats();
+                    } else {
+                        alert('Error updating product: ' + (data.message || 'Unknown error'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error updating product:', error);
+                    alert('Error updating product: ' + error.message);
+                });
         }
-        
+
         function deleteProduct(productId, productName) {
             if (!confirm(`Are you sure you want to delete "${productName}"? This action cannot be undone.`)) {
                 return;
             }
-            
+
             fetch('/api/products/' + productId, {
                 method: 'DELETE'
             })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    alert('Product deleted successfully!');
-                    loadProducts();
-                    loadDashboardStats();
-                } else {
-                    alert('Error deleting product: ' + (data.message || 'Unknown error'));
-                }
-            })
-            .catch(error => {
-                console.error('Error deleting product:', error);
-                alert('Error deleting product: ' + error.message);
-            });
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Product deleted successfully!');
+                        loadProducts();
+                        loadDashboardStats();
+                    } else {
+                        alert('Error deleting product: ' + (data.message || 'Unknown error'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error deleting product:', error);
+                    alert('Error deleting product: ' + error.message);
+                });
         }
-        
+
         // Sales history functions
         function loadSales() {
             const salesTable = document.getElementById('sales-table');
@@ -1205,12 +1376,12 @@
                     </td>
                 </tr>
             `;
-            
+
             fetch('/api/reports/sales')
                 .then(response => response.json())
                 .then(data => {
                     salesTable.innerHTML = '';
-                    
+
                     if (data.length === 0) {
                         salesTable.innerHTML = `
                             <tr>
@@ -1219,7 +1390,7 @@
                         `;
                         return;
                     }
-                    
+
                     data.forEach(sale => {
                         const row = document.createElement('tr');
                         row.innerHTML = `
@@ -1246,11 +1417,11 @@
                     `;
                 });
         }
-        
+
         function filterSalesByDate() {
             const date = document.getElementById('sales-date-filter').value;
             if (!date) return;
-            
+
             const salesTable = document.getElementById('sales-table');
             salesTable.innerHTML = `
                 <tr>
@@ -1261,12 +1432,12 @@
                     </td>
                 </tr>
             `;
-            
+
             fetch('/api/reports/sales?start=' + date + '&end=' + date)
                 .then(response => response.json())
                 .then(data => {
                     salesTable.innerHTML = '';
-                    
+
                     if (data.length === 0) {
                         salesTable.innerHTML = `
                             <tr>
@@ -1275,7 +1446,7 @@
                         `;
                         return;
                     }
-                    
+
                     data.forEach(sale => {
                         const row = document.createElement('tr');
                         row.innerHTML = `
@@ -1302,11 +1473,11 @@
                     `;
                 });
         }
-        
+
         function viewSaleDetails(transactionId) {
             const modal = new bootstrap.Modal(document.getElementById('saleDetailsModal'));
             document.getElementById('sale-id-display').textContent = transactionId;
-            
+
             const content = document.getElementById('sale-details-content');
             content.innerHTML = `
                 <div class="text-center py-4">
@@ -1315,19 +1486,19 @@
                     </div>
                 </div>
             `;
-            
+
             modal.show();
-            
+
             fetch('/api/sales/' + transactionId)
                 .then(response => response.json())
                 .then(sale => {
                     let itemsHtml = '';
                     let subtotal = 0;
-                    
+
                     sale.items.forEach(item => {
                         const itemTotal = item.price * item.quantity;
                         subtotal += itemTotal;
-                        
+
                         itemsHtml += `
                             <tr>
                                 <td>${item.name}</td>
@@ -1338,10 +1509,10 @@
                             </tr>
                         `;
                     });
-                    
+
                     const tax = sale.tax || subtotal * 0.1; // Default to 10% if not provided
                     const total = subtotal + tax;
-                    
+
                     content.innerHTML = `
                         <div class="row mb-4">
                             <div class="col-md-6">
@@ -1407,26 +1578,26 @@
                     `;
                 });
         }
-        
+
         function printReceipt() {
             const transactionId = document.getElementById('sale-id-display').textContent;
             window.open(`/api/sales/${transactionId}/print`, '_blank');
             const modal = bootstrap.Modal.getInstance(document.getElementById('saleDetailsModal'));
             modal.hide();
         }
-        
+
         // Reports functions
         function initSalesChart() {
             const ctx = document.getElementById('salesChart').getContext('2d');
-            
+
             if (salesChart) {
                 salesChart.destroy();
             }
-            
+
             // Default to last 7 days
             const startDate = document.getElementById('start-date').value || new Date(new Date().setDate(new Date().getDate() - 7)).toISOString().split('T')[0];
             const endDate = document.getElementById('end-date').value || new Date().toISOString().split('T')[0];
-            
+
             fetch('/api/reports/sales?start=' + startDate + '&end=' + endDate)
                 .then(response => response.json())
                 .then(data => {
@@ -1439,11 +1610,11 @@
                         }
                         salesByDate[date] += sale.total;
                     });
-                    
+
                     // Prepare chart data
                     const labels = Object.keys(salesByDate).sort();
                     const chartData = labels.map(date => salesByDate[date]);
-                    
+
                     salesChart = new Chart(ctx, {
                         type: 'bar',
                         data: {
@@ -1489,18 +1660,18 @@
                     ctx.fillText('Failed to load chart data', ctx.canvas.width / 2, ctx.canvas.height / 2);
                 });
         }
-        
+
         function initPaymentChart() {
             const ctx = document.getElementById('paymentChart').getContext('2d');
-            
+
             if (paymentChart) {
                 paymentChart.destroy();
             }
-            
+
             // Default to last 7 days
             const startDate = document.getElementById('start-date').value || new Date(new Date().setDate(new Date().getDate() - 7)).toISOString().split('T')[0];
             const endDate = document.getElementById('end-date').value || new Date().toISOString().split('T')[0];
-            
+
             fetch('/api/reports/sales?start=' + startDate + '&end=' + endDate)
                 .then(response => response.json())
                 .then(data => {
@@ -1512,7 +1683,7 @@
                         }
                         paymentMethods[sale.payment_method] += sale.total;
                     });
-                    
+
                     // Prepare chart data
                     const labels = Object.keys(paymentMethods);
                     const chartData = labels.map(method => paymentMethods[method]);
@@ -1522,7 +1693,7 @@
                         'rgba(255, 206, 86, 0.7)',
                         'rgba(75, 192, 192, 0.7)'
                     ];
-                    
+
                     paymentChart = new Chart(ctx, {
                         type: 'doughnut',
                         data: {
@@ -1551,16 +1722,16 @@
                     ctx.fillText('Failed to load chart data', ctx.canvas.width / 2, ctx.canvas.height / 2);
                 });
         }
-        
+
         function generateReport() {
             const startDate = document.getElementById('start-date').value;
             const endDate = document.getElementById('end-date').value;
-            
+
             if (!startDate || !endDate) {
                 alert('Please select both start and end dates');
                 return;
             }
-            
+
             const resultsDiv = document.getElementById('report-results');
             resultsDiv.innerHTML = `
                 <div class="text-center py-4">
@@ -1569,14 +1740,14 @@
                     </div>
                 </div>
             `;
-            
+
             fetch('/api/reports/sales?start=' + startDate + '&end=' + endDate)
                 .then(response => response.json())
                 .then(data => {
                     const totalSales = data.reduce((sum, sale) => sum + sale.total, 0);
                     const totalTax = data.reduce((sum, sale) => sum + sale.tax, 0);
                     const totalTransactions = data.length;
-                    
+
                     // Group by payment method
                     const paymentMethods = {};
                     data.forEach(sale => {
@@ -1589,7 +1760,7 @@
                         paymentMethods[sale.payment_method].count++;
                         paymentMethods[sale.payment_method].total += sale.total;
                     });
-                    
+
                     let paymentMethodsHtml = '';
                     for (const [method, stats] of Object.entries(paymentMethods)) {
                         paymentMethodsHtml += `
@@ -1601,7 +1772,7 @@
                             </tr>
                         `;
                     }
-                    
+
                     resultsDiv.innerHTML = `
                         <div class="row mb-4">
                             <div class="col-md-4">
@@ -1671,7 +1842,7 @@
                             </table>
                         </div>
                     `;
-                    
+
                     // Refresh charts with new date range
                     initSalesChart();
                     initPaymentChart();
@@ -1685,19 +1856,19 @@
                     `;
                 });
         }
-        
+
         function exportReport() {
             const startDate = document.getElementById('start-date').value;
             const endDate = document.getElementById('end-date').value;
-            
+
             if (!startDate || !endDate) {
                 alert('Please select both start and end dates');
                 return;
             }
-            
+
             window.open(`/api/reports/sales/export?start=${startDate}&end=${endDate}`, '_blank');
         }
-        
+
         // Utility functions
         function escapeHtml(unsafe) {
             return unsafe
@@ -1709,4 +1880,5 @@
         }
     </script>
 </body>
+
 </html>
