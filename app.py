@@ -11,6 +11,9 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 import pandas as pd
+from reportlab.graphics.barcode import createBarcodeDrawing
+from reportlab.graphics import renderPDF
+from reportlab.graphics.shapes import Drawing
 
 app = Flask(__name__)
 app.secret_key = 'your_super_secret_key_here'  # Change this in production!
@@ -179,91 +182,130 @@ def api_search_products():
         'stock': p.stock
     } for p in products])
 
-# --- Updated Sales Endpoint with Decimal math ---
-@app.route('/api/sales', methods=['POST'])
-def api_sales():
+from reportlab.graphics.barcode import createBarcodeDrawing
+
+@app.route('/api/products/barcode_labels', methods=['POST'])
+def generate_barcode_labels():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
     data = request.get_json()
-    if not data or not all(k in data for k in ['items', 'payment_method']):
-        return jsonify({'success': False, 'message': 'Missing required fields'}), 400
-
-    subtotal = Decimal('0.00')
-    tax = Decimal('0.00')
-    items = []
+    if not data or 'product_ids' not in data:
+        return jsonify({'success': False, 'message': 'Missing product IDs'}), 400
 
     try:
-        for item in data['items']:
-            if 'product_id' not in item or 'quantity' not in item:
-                return jsonify({'success': False, 'message': 'Each item must have product_id and quantity'}), 400
+        products = Product.query.filter(Product.id.in_(data['product_ids'])).all()
+        if not products:
+            return jsonify({'success': False, 'message': 'No products found'}), 404
 
-            product = Product.query.get(item['product_id'])
-            if not product:
-                return jsonify({'success': False, 'message': f'Product {item["product_id"]} not found'}), 404
+        buffer = io.BytesIO()
 
-            try:
-                quantity = int(item['quantity'])
-                if quantity <= 0:
-                    return jsonify({'success': False, 'message': f'Quantity must be positive for {product.name}'}), 400
-            except ValueError:
-                return jsonify({'success': False, 'message': f'Invalid quantity for {product.name}'}), 400
+        # Label dimensions (points, 1mm = 2.83465 points)
+        label_width = 32 * 2.83465   # 32mm
+        label_height = 19 * 2.83465  # 19mm
+        horizontal_gap = 3 * 2.83465
+        vertical_gap = 3 * 2.83465
 
-            if product.stock < quantity:
-                return jsonify({'success': False, 'message': f'Insufficient stock for {product.name}'}), 400
+        page_width = (label_width * 3) + (horizontal_gap * 2)
+        page_height = (label_height * 10) + (vertical_gap * 9)
 
-            price = Decimal(str(product.price))
-            qty = Decimal(str(quantity))
-            item_total = (price * qty).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-            item_tax = (item_total * Decimal(str(product.tax_rate)) / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-
-            subtotal += item_total
-            tax += item_tax
-
-            items.append({
-                'product_id': product.id,
-                'price': float(price),
-                'quantity': quantity,
-                'tax': float(item_tax)
-            })
-
-        total = (subtotal + tax).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-
-        sale = Sale(
-            transaction_id=str(uuid.uuid4()),
-            total=float(total),
-            tax=float(tax),
-            payment_method=data['payment_method'],
-            user_id=session['user_id']
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=(page_width, page_height),
+            rightMargin=0, leftMargin=0,
+            topMargin=0, bottomMargin=0
         )
-        db.session.add(sale)
-        db.session.commit()  # commit sale to get sale.id
 
-        for item in items:
-            sale_item = SaleItem(
-                sale_id=sale.id,
-                product_id=item['product_id'],
-                quantity=item['quantity'],
-                price=item['price'],
-                tax=item['tax']
+        elements = []
+        styles = getSampleStyleSheet()
+        normal_style = styles["Normal"]
+        normal_style.fontSize = 8
+        normal_style.alignment = 1  # center
+
+        label_list = []
+
+        # ✅ Add products multiple times based on stock qty
+        for product in products:
+            qty = product.stock if hasattr(product, "stock") and product.stock else 1
+            for _ in range(qty):
+                label_list.append(product)
+
+        # ✅ Build rows of 3 labels
+        for i in range(0, len(label_list), 3):
+            row_products = label_list[i:i + 3]
+            row_data = []
+
+            for product in row_products:
+                # Create barcode drawing
+                barcode_value = product.barcode if product.barcode else str(product.id)
+                barcode_drawing = createBarcodeDrawing(
+                    "Code128",
+                    value=barcode_value,
+                    barHeight=12,
+                    barWidth=0.8
+                )
+
+                # Create text flowables
+                product_name = Paragraph(product.name, normal_style)
+                price = Paragraph(f"${product.price:.2f}", normal_style)
+
+                # Stack vertically
+                label_table = Table(
+                    [[barcode_drawing],
+                     [product_name],
+                     [price]],
+                    colWidths=[label_width],
+                    rowHeights=[label_height * 0.55,
+                                label_height * 0.2,
+                                label_height * 0.25],
+                    style=TableStyle([
+                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                        ('TOPPADDING', (0, 0), (-1, -1), 0),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ])
+                )
+
+                row_data.append(label_table)
+
+            # Fill empty cells
+            while len(row_data) < 3:
+                row_data.append(Spacer(label_width, label_height))
+
+            # Add row of labels
+            t = Table(
+                [row_data],
+                colWidths=[label_width] * 3,
+                rowHeights=[label_height],
+                style=TableStyle([
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ('TOPPADDING', (0, 0), (-1, -1), 0),
+                ])
             )
-            db.session.add(sale_item)
 
-            product = Product.query.get(item['product_id'])
-            product.stock -= item['quantity']
+            elements.append(t)
+            if i + 3 < len(label_list):
+                elements.append(Spacer(1, vertical_gap))
 
-        db.session.commit()
+        # Build PDF
+        doc.build(elements)
+        buffer.seek(0)
 
-        return jsonify({
-            'success': True,
-            'message': 'Sale recorded',
-            'transaction_id': sale.transaction_id
-        }), 201
+        # ✅ Inline view only (no forced download)
+        response = make_response(buffer.getvalue())
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = 'inline; filename=barcode_labels.pdf'
+        return response
 
     except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"Error processing sale: {str(e)}")
-        return jsonify({'success': False, 'message': f'Error completing sale: {str(e)}'}), 500
+        app.logger.error(f"Error generating barcode labels: {str(e)}")
+        return jsonify({'success': False, 'message': f'Error generating labels: {str(e)}'}), 500
 
 # --- Get Single Sale with Items ---
 @app.route('/api/sales/<string:transaction_id>', methods=['GET'])
@@ -452,4 +494,3 @@ def api_report_sales():
 
 if __name__ == '__main__':
     app.run(debug=True)
-
