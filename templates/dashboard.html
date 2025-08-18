@@ -1149,7 +1149,7 @@
 
             data.forEach((product) => {
               const productCard = document.createElement("div");
-              productCard.className = "col-md-3 mb-3";
+              productCard.className = "col-md-4 mb-3";
               productCard.innerHTML = `
                             <div class="card product-card" onclick="addToCart(${
                               product.id
@@ -1158,7 +1158,7 @@
               }, 1, ${product.tax_rate})"
 
                                 <div class="card-body">
-                                    <h6 class="card-title">${product.name}</h6>
+                                    <h6 class="card-title fw-bold text-success mb-2">${product.name}</h6>
                                     <p class="card-text">$${product.price.toFixed(
                                       2
                                     )}</p>
