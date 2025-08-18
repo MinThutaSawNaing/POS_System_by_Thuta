@@ -14,6 +14,8 @@ import pandas as pd
 from reportlab.graphics.barcode import createBarcodeDrawing
 from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
+from datetime import datetime
+import pytz
 
 app = Flask(__name__)
 app.secret_key = 'your_super_secret_key_here'  # Change this in production!
@@ -307,6 +309,81 @@ def generate_barcode_labels():
         app.logger.error(f"Error generating barcode labels: {str(e)}")
         return jsonify({'success': False, 'message': f'Error generating labels: {str(e)}'}), 500
 
+@app.route('/api/sales', methods=['POST'])
+def api_create_sale():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    data = request.get_json()
+    if not data or 'items' not in data or 'payment_method' not in data:
+        return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+
+    try:
+        # Calculate totals
+        subtotal = 0
+        tax_total = 0
+        items = []
+
+        for item in data['items']:
+            product = Product.query.get(item['product_id'])
+            if not product:
+                return jsonify({'success': False, 'message': f'Product {item["product_id"]} not found'}), 404
+
+            item_total = item['price'] * item['quantity']
+            item_tax = item_total * (product.tax_rate / 100)
+            
+            subtotal += item_total
+            tax_total += item_tax
+            
+            items.append({
+                'product': product,
+                'price': item['price'],
+                'quantity': item['quantity'],
+                'tax': item_tax
+            })
+
+        total = subtotal + tax_total
+        
+        myanmar_tz = pytz.timezone('Asia/Yangon')
+        sale_time = datetime.now(myanmar_tz)
+
+        # Create sale record
+        sale = Sale(
+            transaction_id=str(uuid.uuid4()),
+            date=sale_time,
+            total=total,
+            tax=tax_total,
+            payment_method=data['payment_method'],
+            user_id=session['user_id']
+        )
+        db.session.add(sale)
+        db.session.flush()  # To get the sale.id before commit
+
+        # Create sale items
+        for item in items:
+            sale_item = SaleItem(
+                sale_id=sale.id,
+                product_id=item['product'].id,
+                quantity=item['quantity'],
+                price=item['price'],
+                tax=item['tax']
+            )
+            db.session.add(sale_item)
+            # Update product stock
+            item['product'].stock -= item['quantity']
+
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'message': 'Sale completed',
+            'transaction_id': sale.transaction_id
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error creating sale: {str(e)}")
+        return jsonify({'success': False, 'message': f'Error creating sale: {str(e)}'}), 500
 # --- Get Single Sale with Items ---
 @app.route('/api/sales/<string:transaction_id>', methods=['GET'])
 def api_single_sale(transaction_id):
@@ -469,28 +546,37 @@ def export_sales_report():
 def api_report_sales():
     if 'user_id' not in session or session['role'] != 'manager':
         return jsonify({'error': 'Unauthorized'}), 401
-    start_date = request.args.get('start')
-    end_date = request.args.get('end')
+
+    start_date = request.args.get('start')  # Format: 'YYYY-MM-DD'
+    end_date = request.args.get('end')      # Format: 'YYYY-MM-DD'
+
     query = Sale.query
+
     try:
-        if start_date:
+        if start_date: 
             start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+            start_date_obj = pytz.timezone('Asia/Yangon').localize(start_date_obj)
             query = query.filter(Sale.date >= start_date_obj)
         if end_date:
+            # Filter sales <= end_date (ignoring time)
             end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+            end_date_obj = pytz.timezone('Asia/Yangon').localize(end_date_obj).replace(hour=23, minute=59, second=59)
             query = query.filter(Sale.date <= end_date_obj)
+
+        sales = query.order_by(Sale.date.desc()).all()
+
+        return jsonify([{
+            'id': s.id,
+            'transaction_id': s.transaction_id,
+            'date': s.date.isoformat(),
+            'total': s.total,
+            'tax': s.tax,
+            'payment_method': s.payment_method,
+            'user_id': s.user_id
+        } for s in sales])
+
     except ValueError:
-        return jsonify({'success': False, 'message': 'Invalid date format'}), 400
-    sales = query.order_by(Sale.date).all()
-    return jsonify([{
-        'id': s.id,
-        'transaction_id': s.transaction_id,
-        'date': s.date.isoformat(),
-        'total': s.total,
-        'tax': s.tax,
-        'payment_method': s.payment_method,
-        'user_id': s.user_id
-    } for s in sales])
+        return jsonify({'success': False, 'message': 'Invalid date format. Use YYYY-MM-DD.'}), 400
 
 if __name__ == '__main__':
     app.run(debug=True)
