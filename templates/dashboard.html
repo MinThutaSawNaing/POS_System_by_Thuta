@@ -65,6 +65,10 @@
         cursor: pointer;
         transition: all 0.2s;
         height: 100%;
+        padding: 9px;
+        font-size: 15px;
+        font-weight: 600;
+        margin-bottom: 6px;
       }
 
       .product-card:hover {
@@ -1097,24 +1101,23 @@
 
             data.forEach((product) => {
               const productCard = document.createElement("div");
-              productCard.className = "col-md-3 mb-3";
+              productCard.className = "col-md-4 mb-3";
               productCard.innerHTML = `
-                            <div class="card product-card" onclick="addToCart(${
-                              product.id
-                            }, '${escapeHtml(product.name)}', ${
-                product.price
-              }, 1)">
-                                <div class="card-body">
-                                    <h6 class="card-title">${product.name}</h6>
-                                    <p class="card-text">$${product.price.toFixed(
-                                      2
-                                    )}</p>
-                                    <small class="text-muted">Stock: ${
-                                      product.stock
-                                    }</small>
-                                </div>
-                            </div>
-                        `;
+    <div class="card product-card" onclick="addToCart(${
+      product.id
+    }, '${escapeHtml(product.name)}', ${product.price}, 1, ${
+                product.tax_rate
+              })">
+        <div class="card-body p-3">
+            <h6 class="card-title fw-bold text-success mb-2">${
+              product.name
+            }</h6>
+            <p class="card-text mb-1">$${product.price.toFixed(2)}</p>
+            <small class="text-muted">Stock: ${product.stock}</small>
+        </div>
+    </div>
+`;
+
               productGrid.appendChild(productCard);
             });
           })
@@ -1152,7 +1155,8 @@
                               product.id
                             }, '${escapeHtml(product.name)}', ${
                 product.price
-              }, 1)">
+              }, 1, ${product.tax_rate})"
+
                                 <div class="card-body">
                                     <h6 class="card-title">${product.name}</h6>
                                     <p class="card-text">$${product.price.toFixed(
@@ -1177,8 +1181,7 @@
           });
       }
 
-      function addToCart(productId, name, price, quantity) {
-        // Check if product already in cart
+      function addToCart(productId, name, price, quantity, tax_rate) {
         const existingItem = cart.find((item) => item.product_id === productId);
 
         if (existingItem) {
@@ -1189,7 +1192,7 @@
             name: name,
             price: price,
             quantity: quantity,
-            tax_rate: 10, // Default tax rate (should fetch from product in real app)
+            tax_rate: tax_rate || 0, // now uses actual product tax rate
           });
         }
 
