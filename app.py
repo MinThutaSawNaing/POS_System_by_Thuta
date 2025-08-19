@@ -16,6 +16,8 @@ from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
 from datetime import datetime, timedelta
 import pytz
+from functools import wraps
+from reportlab.graphics.barcode import createBarcodeDrawing
 
 app = Flask(__name__)
 app.secret_key = 'your_super_secret_key_here'  # Change this in production!
@@ -23,6 +25,13 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pos.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
+def manager_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session or session.get('role') != 'manager':
+            return jsonify({'error': 'Manager access required'}), 403
+        return f(*args, **kwargs)
+    return decorated_function
 # Database Models
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -184,7 +193,7 @@ def api_search_products():
         'stock': p.stock
     } for p in products])
 
-from reportlab.graphics.barcode import createBarcodeDrawing
+
 
 @app.route('/api/products/barcode_labels', methods=['POST'])
 def generate_barcode_labels():
@@ -612,6 +621,79 @@ def api_dashboard_sales_data():
         current_date += timedelta(days=1)
 
     return jsonify(result)
+# User API Endpoints
+@app.route('/api/users', methods=['GET'])
+@manager_required
+def api_users():
+    users = User.query.all()
+    return jsonify([{
+        'id': u.id,
+        'username': u.username,
+        'role': u.role
+    } for u in users])
+
+@app.route('/api/users', methods=['POST'])
+@manager_required
+def api_create_user():
+    data = request.get_json()
+    if not data or not all(k in data for k in ['username', 'password', 'role']):
+        return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+        
+    if User.query.filter_by(username=data['username']).first():
+        return jsonify({'success': False, 'message': 'Username already exists'}), 400
+        
+    user = User(
+        username=data['username'],
+        password=generate_password_hash(data['password']),
+        role=data['role']
+    )
+    db.session.add(user)
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'User created'}), 201
+
+@app.route('/api/users/<int:user_id>', methods=['GET', 'PUT', 'DELETE'])
+@manager_required
+def api_single_user(user_id):
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+        
+    if request.method == 'GET':
+        return jsonify({
+            'id': user.id,
+            'username': user.username,
+            'role': user.role
+        })
+        
+    elif request.method == 'PUT':
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+            
+        # Check if username already exists (excluding current user)
+        if 'username' in data and data['username'] != user.username:
+            existing_user = User.query.filter_by(username=data['username']).first()
+            if existing_user and existing_user.id != user.id:
+                return jsonify({'success': False, 'message': 'Username already exists'}), 400
+                
+        user.username = data.get('username', user.username)
+        user.role = data.get('role', user.role)
+        
+        # Update password if provided
+        if 'password' in data and data['password']:
+            user.password = generate_password_hash(data['password'])
+            
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'User updated'})
+        
+    elif request.method == 'DELETE':
+        # Prevent deleting yourself
+        if user.id == session['user_id']:
+            return jsonify({'success': False, 'message': 'Cannot delete your own account'}), 400
+            
+        db.session.delete(user)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'User deleted'})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
