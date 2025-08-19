@@ -14,7 +14,7 @@ import pandas as pd
 from reportlab.graphics.barcode import createBarcodeDrawing
 from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 app = Flask(__name__)
@@ -551,16 +551,16 @@ def api_report_sales():
     end_date = request.args.get('end')      # Format: 'YYYY-MM-DD'
 
     query = Sale.query
+    myanmar_tz = pytz.timezone('Asia/Yangon')
 
     try:
         if start_date: 
             start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
-            start_date_obj = pytz.timezone('Asia/Yangon').localize(start_date_obj)
+            start_date_obj = myanmar_tz.localize(start_date_obj)
             query = query.filter(Sale.date >= start_date_obj)
         if end_date:
-            # Filter sales <= end_date (ignoring time)
             end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
-            end_date_obj = pytz.timezone('Asia/Yangon').localize(end_date_obj).replace(hour=23, minute=59, second=59)
+            end_date_obj = myanmar_tz.localize(end_date_obj).replace(hour=23, minute=59, second=59)
             query = query.filter(Sale.date <= end_date_obj)
 
         sales = query.order_by(Sale.date.desc()).all()
@@ -577,6 +577,41 @@ def api_report_sales():
 
     except ValueError:
         return jsonify({'success': False, 'message': 'Invalid date format. Use YYYY-MM-DD.'}), 400
+    
+@app.route('/api/dashboard/sales_data')
+def api_dashboard_sales_data():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    # Get sales for the last 7 days
+    end_date = datetime.now(pytz.timezone('Asia/Yangon'))
+    start_date = end_date - timedelta(days=7)
+    
+    sales = Sale.query.filter(
+        Sale.date >= start_date,
+        Sale.date <= end_date
+    ).order_by(Sale.date).all()
+
+    # Group sales by day
+    sales_by_day = {}
+    for sale in sales:
+        sale_date = sale.date.strftime('%Y-%m-%d')
+        if sale_date not in sales_by_day:
+            sales_by_day[sale_date] = 0
+        sales_by_day[sale_date] += sale.total
+
+    # Fill in missing days with 0
+    result = []
+    current_date = start_date
+    while current_date <= end_date:
+        date_str = current_date.strftime('%Y-%m-%d')
+        result.append({
+            'date': date_str,
+            'total': sales_by_day.get(date_str, 0)
+        })
+        current_date += timedelta(days=1)
+
+    return jsonify(result)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
