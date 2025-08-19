@@ -923,7 +923,6 @@
           loadDashboardStats();
         }
       }
-
       // Dashboard functions
       function loadDashboardStats() {
         // Today's sales
@@ -936,10 +935,47 @@
             document.getElementById("today-sales").textContent =
               "$" + todaySales.toFixed(2);
 
-            // Calculate change from yesterday (mock data for demo)
-            const yesterdaySales = todaySales * 0.8; // 80% of today for demo
-            const change =
-              ((todaySales - yesterdaySales) / yesterdaySales) * 100;
+            // Calculate change from yesterday
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            const yesterdayStr = yesterday.toISOString().split("T")[0];
+
+            fetch(
+              `/api/reports/sales?start=${yesterdayStr}&end=${yesterdayStr}`
+            )
+              .then((response) => response.json())
+              .then((yesterdayData) => {
+                const yesterdaySales = yesterdayData.reduce(
+                  (sum, sale) => sum + sale.total,
+                  0
+                );
+                const change =
+                  yesterdaySales > 0
+                    ? ((todaySales - yesterdaySales) / yesterdaySales) * 100
+                    : todaySales > 0
+                    ? 100
+                    : 0;
+
+                const changeElement = document.getElementById("sales-change");
+                changeElement.textContent = Math.abs(change).toFixed(1) + "%";
+                if (change >= 0) {
+                  changeElement.parentElement.innerHTML =
+                    changeElement.parentElement.innerHTML.replace(
+                      "bi-arrow-up",
+                      "bi-arrow-up text-success"
+                    );
+                } else {
+                  changeElement.parentElement.innerHTML =
+                    changeElement.parentElement.innerHTML.replace(
+                      "bi-arrow-up",
+                      "bi-arrow-down text-danger"
+                    );
+                }
+              })
+              .catch((error) => {
+                console.error("Error loading yesterday's sales:", error);
+                document.getElementById("sales-change").textContent = "N/A";
+              });
             const changeElement = document.getElementById("sales-change");
             changeElement.textContent = Math.abs(change).toFixed(1) + "%";
             if (change >= 0) {
@@ -966,14 +1002,26 @@
             document.getElementById("low-stock-count").textContent = lowStock;
           });
 
-        // Recent transactions (last 24 hours)
-        const yesterday = new Date();
-        yesterday.setDate(yesterday.getDate() - 1);
-        fetch("/api/reports/sales?start=" + yesterday.toISOString())
-          .then((response) => response.json())
+        // Recent transactions (last 24 hours) - FIXED
+        const now = new Date();
+        const twentyFourHoursAgo = new Date(
+          now.getTime() - 24 * 60 * 60 * 1000
+        );
+        const startDate = twentyFourHoursAgo.toISOString().split("T")[0]; // Get YYYY-MM-DD format
+
+        fetch(`/api/reports/sales?start=${startDate}`)
+          .then((response) => {
+            if (!response.ok) throw new Error("API request failed");
+            return response.json();
+          })
           .then((data) => {
+            console.log("Recent transactions:", data.length, "sales"); // Debug
             document.getElementById("recent-transactions").textContent =
               data.length;
+          })
+          .catch((error) => {
+            console.error("Error loading recent transactions:", error);
+            document.getElementById("recent-transactions").textContent = "0";
           });
 
         // Initialize dashboard chart
@@ -990,48 +1038,57 @@
           dashboardChart.destroy();
         }
 
-        // Mock data for the dashboard chart (in a real app, fetch from API)
-        const labels = [];
-        const salesData = [];
-        const today = new Date();
+        fetch("/api/dashboard/sales_data")
+          .then((response) => response.json())
+          .then((data) => {
+            const labels = data.map((item) => {
+              const date = new Date(item.date);
+              return date.toLocaleDateString("en-US", { weekday: "short" });
+            });
+            const salesData = data.map((item) => item.total);
 
-        for (let i = 6; i >= 0; i--) {
-          const date = new Date(today);
-          date.setDate(date.getDate() - i);
-          labels.push(date.toLocaleDateString("en-US", { weekday: "short" }));
-          salesData.push(Math.floor(Math.random() * 1000) + 500); // Random sales data
-        }
-
-        dashboardChart = new Chart(ctx, {
-          type: "line",
-          data: {
-            labels: labels,
-            datasets: [
-              {
-                label: "Daily Sales ($)",
-                data: salesData,
-                backgroundColor: "rgba(13, 110, 253, 0.2)",
-                borderColor: "rgba(13, 110, 253, 1)",
-                borderWidth: 2,
-                tension: 0.4,
-                fill: true,
+            dashboardChart = new Chart(ctx, {
+              type: "line",
+              data: {
+                labels: labels,
+                datasets: [
+                  {
+                    label: "Daily Sales ($)",
+                    data: salesData,
+                    backgroundColor: "rgba(13, 110, 253, 0.2)",
+                    borderColor: "rgba(13, 110, 253, 1)",
+                    borderWidth: 2,
+                    tension: 0.4,
+                    fill: true,
+                  },
+                ],
               },
-            ],
-          },
-          options: {
-            responsive: true,
-            plugins: {
-              legend: {
-                display: false,
+              options: {
+                responsive: true,
+                plugins: {
+                  legend: {
+                    display: false,
+                  },
+                },
+                scales: {
+                  y: {
+                    beginAtZero: true,
+                  },
+                },
               },
-            },
-            scales: {
-              y: {
-                beginAtZero: true,
-              },
-            },
-          },
-        });
+            });
+          })
+          .catch((error) => {
+            console.error("Error loading dashboard sales data:", error);
+            ctx.font = "16px Arial";
+            ctx.fillStyle = "red";
+            ctx.textAlign = "center";
+            ctx.fillText(
+              "Failed to load chart data",
+              ctx.canvas.width / 2,
+              ctx.canvas.height / 2
+            );
+          });
       }
 
       function loadTopProducts() {
@@ -1158,7 +1215,9 @@
               }, 1, ${product.tax_rate})"
 
                                 <div class="card-body">
-                                    <h6 class="card-title fw-bold text-success mb-2">${product.name}</h6>
+                                    <h6 class="card-title fw-bold text-success mb-2">${
+                                      product.name
+                                    }</h6>
                                     <p class="card-text">$${product.price.toFixed(
                                       2
                                     )}</p>
