@@ -57,6 +57,7 @@ class Sale(db.Model):
     tax = db.Column(db.Float, nullable=False)
     payment_method = db.Column(db.String(20))
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    user = db.relationship('User', backref='sales')
 
 class SaleItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -410,6 +411,8 @@ def api_single_sale(transaction_id):
         'total': sale.total,
         'tax': sale.tax,
         'payment_method': sale.payment_method,
+        'user_id' : sale.user_id,
+        'username' : sale.user.username if sale.user else 'Unknown',
         'items': []
     }
     for item in items:
@@ -442,10 +445,11 @@ def print_receipt(transaction_id):
     elements = []
     elements.append(Paragraph("POS SYSTEM RECEIPT", styles['Title']))
     elements.append(Spacer(1, 12))
+    cashier_name = sale.user.username if sale.user else 'Unknown'
     transaction_info = [
         ["Transaction ID:", sale.transaction_id],
         ["Date:", sale.date.strftime("%Y-%m-%d %H:%M:%S")],
-        ["Cashier:", session.get('username', '')],
+        ["Cashier:", cashier_name],
         ["Payment Method:", sale.payment_method.capitalize()]
     ]
     t = Table(transaction_info, colWidths=[120, 200])
