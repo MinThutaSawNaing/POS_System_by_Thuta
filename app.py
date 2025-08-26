@@ -58,7 +58,16 @@ class Sale(db.Model):
     payment_method = db.Column(db.String(20))
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     user = db.relationship('User', backref='sales')
-
+# Database Model for Promotions
+class Promotion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
+    discount_type = db.Column(db.String(10), nullable=False)  # 'percent' or 'fixed'
+    discount_value = db.Column(db.Float, nullable=False)     # e.g., 10 for 10%, or $2 off
+    start_date = db.Column(db.DateTime, nullable=False)
+    end_date = db.Column(db.DateTime, nullable=False)
+    
+    product = db.relationship('Product', backref='promotions')
 class SaleItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     sale_id = db.Column(db.Integer, db.ForeignKey('sale.id'))
@@ -66,10 +75,15 @@ class SaleItem(db.Model):
     quantity = db.Column(db.Integer, nullable=False)
     price = db.Column(db.Float, nullable=False)
     tax = db.Column(db.Float, nullable=False)
+    
+
 
 # Create database tables and admin user
 with app.app_context():
     db.create_all()
+    # Create Promotion table
+    if not hasattr(Product, 'promotions'):
+        db.create_all()
     if not User.query.filter_by(username='admin').first():
         admin_user = User(
             username='admin',
@@ -111,6 +125,7 @@ def dashboard():
 def api_products():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
+
     if request.method == 'GET':
         products = Product.query.all()
         return jsonify([{
@@ -123,10 +138,12 @@ def api_products():
             'category': p.category,
             'tax_rate': p.tax_rate
         } for p in products])
+
     elif request.method == 'POST':
         data = request.get_json()
         if not data or not all(k in data for k in ['name', 'price', 'stock']):
             return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+
         product = Product(
             barcode=data.get('barcode'),
             name=data['name'],
@@ -140,13 +157,17 @@ def api_products():
         db.session.commit()
         return jsonify({'success': True, 'message': 'Product added'}), 201
 
+
+# --- Single Product Endpoint (GET, PUT, DELETE) ---
 @app.route('/api/products/<int:product_id>', methods=['GET', 'PUT', 'DELETE'])
 def api_single_product(product_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
-    product = Product.query.get(product_id)
+
+    product = db.session.get(Product, product_id)
     if not product:
         return jsonify({'success': False, 'message': 'Product not found'}), 404
+
     if request.method == 'GET':
         return jsonify({
             'id': product.id,
@@ -156,21 +177,38 @@ def api_single_product(product_id):
             'cost': product.cost,
             'stock': product.stock,
             'category': product.category,
-            'tax_rate': product.tax_rate
+            'tax_rate': product.tax_rate,
+            'promotions': [{
+                'id': p.id,
+                'discount_type': p.discount_type,
+                'discount_value': p.discount_value,
+                'start_date': p.start_date.isoformat(),
+                'end_date': p.end_date.isoformat()
+            } for p in product.promotions]
         })
+
     elif request.method == 'PUT':
         data = request.get_json()
         if not data:
             return jsonify({'success': False, 'message': 'No data provided'}), 400
-        product.barcode = data.get('barcode', product.barcode)
+
+        # Check for duplicate barcode
+        if 'barcode' in data and data['barcode']:
+            existing = Product.query.filter(Product.barcode == data['barcode'], Product.id != product_id).first()
+            if existing:
+                return jsonify({'success': False, 'message': 'Barcode already in use'}), 400
+            product.barcode = data['barcode']
+
         product.name = data.get('name', product.name)
         product.price = data.get('price', product.price)
         product.cost = data.get('cost', product.cost)
         product.stock = data.get('stock', product.stock)
         product.category = data.get('category', product.category)
         product.tax_rate = data.get('tax_rate', product.tax_rate)
+
         db.session.commit()
         return jsonify({'success': True, 'message': 'Product updated'})
+
     elif request.method == 'DELETE':
         db.session.delete(product)
         db.session.commit()
@@ -335,7 +373,7 @@ def api_create_sale():
         items = []
 
         for item in data['items']:
-            product = Product.query.get(item['product_id'])
+            product = db.session.get(Product, item['product_id'])
             if not product:
                 return jsonify({'success': False, 'message': f'Product {item["product_id"]} not found'}), 404
 
@@ -557,7 +595,7 @@ def export_sales_report():
 
 @app.route('/api/reports/sales', methods=['GET'])
 def api_report_sales():
-    if 'user_id' not in session or session['role'] != 'manager':
+    if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
     start_date = request.args.get('start')  # Format: 'YYYY-MM-DD'
@@ -567,15 +605,22 @@ def api_report_sales():
     myanmar_tz = pytz.timezone('Asia/Yangon')
 
     try:
-        if start_date: 
+        # Apply date filters if provided
+        if start_date:
             start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
             start_date_obj = myanmar_tz.localize(start_date_obj)
             query = query.filter(Sale.date >= start_date_obj)
+
         if end_date:
             end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
             end_date_obj = myanmar_tz.localize(end_date_obj).replace(hour=23, minute=59, second=59)
             query = query.filter(Sale.date <= end_date_obj)
 
+        # Cashiers can only see their own sales
+        if session.get('role') == 'cashier':
+            query = query.filter(Sale.user_id == session['user_id'])
+
+        # Fetch and return sales
         sales = query.order_by(Sale.date.desc()).all()
 
         return jsonify([{
@@ -585,12 +630,13 @@ def api_report_sales():
             'total': s.total,
             'tax': s.tax,
             'payment_method': s.payment_method,
-            'user_id': s.user_id
+            'user_id': s.user_id,
+            'username': s.user.username if s.user else 'Unknown'
         } for s in sales])
 
-    except ValueError:
+    except ValueError as e:
+        app.logger.error(f"Date parsing error: {str(e)}")
         return jsonify({'success': False, 'message': 'Invalid date format. Use YYYY-MM-DD.'}), 400
-    
 @app.route('/api/dashboard/sales_data')
 def api_dashboard_sales_data():
     if 'user_id' not in session:
@@ -658,7 +704,7 @@ def api_create_user():
 @app.route('/api/users/<int:user_id>', methods=['GET', 'PUT', 'DELETE'])
 @manager_required
 def api_single_user(user_id):
-    user = User.query.get(user_id)
+    user = db.session.get(User, user_id)
     if not user:
         return jsonify({'success': False, 'message': 'User not found'}), 404
         
@@ -698,6 +744,96 @@ def api_single_user(user_id):
         db.session.delete(user)
         db.session.commit()
         return jsonify({'success': True, 'message': 'User deleted'})
+# --- PROMOTIONS API ---
+
+@app.route('/api/promotions', methods=['GET', 'POST'])
+@manager_required
+def api_promotions():
+    myanmar_tz = pytz.timezone('Asia/Yangon')
+    
+    if request.method == 'GET':
+        promotions = Promotion.query.all()
+        now = datetime.now(myanmar_tz)
+
+        return jsonify([{
+            'id': p.id,
+            'product_id': p.product_id,
+            'product_name': p.product.name,
+            'discount_type': p.discount_type,
+            'discount_value': p.discount_value,
+            'start_date': p.start_date.astimezone(myanmar_tz).isoformat() if p.start_date.tzinfo else myanmar_tz.localize(p.start_date).isoformat(),
+            'end_date': p.end_date.astimezone(myanmar_tz).isoformat() if p.end_date.tzinfo else myanmar_tz.localize(p.end_date).isoformat(),
+            'is_active': (myanmar_tz.localize(p.start_date) <= now <= myanmar_tz.localize(p.end_date))
+        } for p in promotions])
+
+    elif request.method == 'POST':
+        data = request.get_json()
+        required = ['product_id', 'discount_type', 'discount_value', 'start_date', 'end_date']
+        if not data or not all(k in data for k in required):
+            return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+
+        try:
+            # Convert to Myanmar timezone
+            start_date = datetime.fromisoformat(data['start_date'].replace('Z', '+00:00'))
+            end_date = datetime.fromisoformat(data['end_date'].replace('Z', '+00:00'))
+            
+            start_date = start_date.astimezone(myanmar_tz)
+            end_date = end_date.astimezone(myanmar_tz)
+
+            if end_date <= start_date:
+                return jsonify({'success': False, 'message': 'End date must be after start date'}), 400
+
+            promotion = Promotion(
+                product_id=data['product_id'],
+                discount_type=data['discount_type'],
+                discount_value=data['discount_value'],
+                start_date=start_date,
+                end_date=end_date
+            )
+            db.session.add(promotion)
+            db.session.commit()
+
+            return jsonify({'success': True, 'message': 'Promotion created!'}), 201
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/promotions/<int:promo_id>', methods=['PUT', 'DELETE'])
+@manager_required
+def api_single_promotion(promo_id):
+    promo = Promotion.query.get_or_404(promo_id)
+    myanmar_tz = pytz.timezone('Asia/Yangon')
+
+    if request.method == 'DELETE':
+        db.session.delete(promo)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Promotion deleted'})
+
+    elif request.method == 'PUT':
+        data = request.get_json()
+        try:
+            # Update fields if provided
+            if 'start_date' in data:
+                start_dt = datetime.fromisoformat(data['start_date'])
+                promo.start_date = myanmar_tz.localize(start_dt)
+            if 'end_date' in data:
+                end_dt = datetime.fromisoformat(data['end_date'])
+                promo.end_date = myanmar_tz.localize(end_dt)
+            if 'discount_type' in data:
+                promo.discount_type = data['discount_type']
+            if 'discount_value' in data:
+                promo.discount_value = data['discount_value']
+
+            # Validate date range
+            if promo.end_date <= promo.start_date:
+                return jsonify({'success': False, 'message': 'End date must be after start date'}), 400
+
+            db.session.commit()
+            return jsonify({'success': True, 'message': 'Promotion updated'})
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'success': False, 'message': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
