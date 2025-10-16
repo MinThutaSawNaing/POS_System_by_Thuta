@@ -5,51 +5,253 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>POS Login</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         body {
-            background-color: #f8f9fa;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
             height: 100vh;
             display: flex;
             align-items: center;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
+        
         .login-container {
             max-width: 400px;
             width: 100%;
-            padding: 20px;
+            padding: 30px;
             background: white;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
             margin: 0 auto;
+            transition: transform 0.3s ease;
         }
+        
+        .login-container:hover {
+            transform: translateY(-5px);
+        }
+        
         .logo {
             text-align: center;
             margin-bottom: 20px;
-            font-size: 24px;
+            font-size: 28px;
             font-weight: bold;
             color: #0d6efd;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .logo i {
+            margin-right: 10px;
+            font-size: 32px;
+        }
+        
+        .form-control {
+            border-radius: 8px;
+            padding: 12px;
+            border: 1px solid #e0e0e0;
+            transition: all 0.3s;
+        }
+        
+        .form-control:focus {
+            border-color: #0d6efd;
+            box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
+        }
+        
+        .btn-primary {
+            background: linear-gradient(45deg, #0d6efd, #0056b3);
+            border: none;
+            border-radius: 8px;
+            padding: 12px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary:hover {
+            background: linear-gradient(45deg, #0056b3, #0d6efd);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(13, 110, 253, 0.3);
+        }
+        
+        .captcha-container {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 8px;
+        }
+        
+        .captcha-display {
+            flex-grow: 1;
+            height: 50px;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            font-weight: bold;
+            letter-spacing: 5px;
+            color: #0d6efd;
+            position: relative;
+            overflow: hidden;
+            user-select: none;
+        }
+        
+        .captcha-display::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: repeating-linear-gradient(
+                45deg,
+                transparent,
+                transparent 10px,
+                rgba(255, 255, 255, 0.1) 10px,
+                rgba(255, 255, 255, 0.1) 20px
+            );
+        }
+        
+        .captcha-refresh {
+            background: #f8f9fa;
+            border: none;
+            color: #0d6efd;
+            padding: 10px;
+            border-radius: 6px;
+            margin-left: 10px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .captcha-refresh:hover {
+            background: #e9ecef;
+            transform: rotate(180deg);
+        }
+        
+        .alert {
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 20px;
+        }
+        
+        .form-label {
+            font-weight: 600;
+            color: #495057;
+            margin-bottom: 8px;
+        }
+        
+        .input-group-text {
+            background-color: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 0 8px 8px 0;
+        }
+        
+        .footer-text {
+            text-align: center;
+            margin-top: 20px;
+            color: #6c757d;
+            font-size: 14px;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="login-container">
-            <div class="logo">POS System</div>
+            <div class="logo">
+                <i class="fas fa-cash-register"></i>
+                POS System
+            </div>
             <h2 class="text-center mb-4">Login</h2>
             {% if error %}
                 <div class="alert alert-danger">{{ error }}</div>
             {% endif %}
-            <form method="POST">
+            <form method="POST" id="loginForm">
                 <div class="mb-3">
                     <label for="username" class="form-label">Username</label>
-                    <input type="text" class="form-control" id="username" name="username" required autofocus>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="fas fa-user"></i></span>
+                        <input type="text" class="form-control" id="username" name="username" required autofocus>
+                    </div>
                 </div>
                 <div class="mb-3">
                     <label for="password" class="form-label">Password</label>
-                    <input type="password" class="form-control" id="password" name="password" required>
+                    <div class="input-group">
+                        <span class="input-group-text"><i class="fas fa-lock"></i></span>
+                        <input type="password" class="form-control" id="password" name="password" required>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label for="captchaInput" class="form-label">Security Code</label>
+                    <div class="captcha-container">
+                        <div class="captcha-display" id="captchaDisplay"></div>
+                        <button type="button" class="captcha-refresh" id="refreshCaptcha">
+                            <i class="fas fa-sync-alt"></i>
+                        </button>
+                    </div>
+                    <input type="text" class="form-control" id="captchaInput" name="captchaInput" placeholder="Enter the 4-digit code" required>
+                    <input type="hidden" id="captchaCode" name="captchaCode">
                 </div>
                 <button type="submit" class="btn btn-primary w-100">Login</button>
             </form>
+            <div class="footer-text">
+                &copy; 2023 POS System. All rights reserved.
+            </div>
         </div>
     </div>
+
+    <script>
+        // Generate a random 4-digit captcha
+        function generateCaptcha() {
+            const captcha = Math.floor(1000 + Math.random() * 9000).toString();
+            document.getElementById('captchaDisplay').textContent = captcha;
+            document.getElementById('captchaCode').value = captcha;
+            
+            // Add some visual distortion to the captcha
+            const captchaDisplay = document.getElementById('captchaDisplay');
+            captchaDisplay.style.transform = `rotate(${Math.random() * 4 - 2}deg)`;
+            captchaDisplay.style.letterSpacing = `${5 + Math.random() * 3}px`;
+            
+            // Randomly change some characters' color
+            const characters = captchaDisplay.textContent.split('');
+            captchaDisplay.innerHTML = characters.map(char => {
+                const color = Math.random() > 0.5 ? '#0d6efd' : '#0056b3';
+                return `<span style="color: ${color}; display: inline-block; transform: rotate(${Math.random() * 10 - 5}deg)">${char}</span>`;
+            }).join('');
+        }
+        
+        // Initialize captcha on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            generateCaptcha();
+            
+            // Refresh captcha when button is clicked
+            document.getElementById('refreshCaptcha').addEventListener('click', generateCaptcha);
+            
+            // Validate captcha before form submission
+            document.getElementById('loginForm').addEventListener('submit', function(e) {
+                const captchaInput = document.getElementById('captchaInput').value;
+                const captchaCode = document.getElementById('captchaCode').value;
+                
+                if (captchaInput !== captchaCode) {
+                    e.preventDefault();
+                    
+                    // Create error message if it doesn't exist
+                    let errorDiv = document.getElementById('captchaError');
+                    if (!errorDiv) {
+                        errorDiv = document.createElement('div');
+                        errorDiv.id = 'captchaError';
+                        errorDiv.className = 'alert alert-danger';
+                        document.getElementById('loginForm').prepend(errorDiv);
+                    }
+                    
+                    errorDiv.textContent = 'Invalid security code. Please try again.';
+                    generateCaptcha(); // Generate new captcha
+                    document.getElementById('captchaInput').value = ''; // Clear input
+                }
+            });
+        });
+    </script>
 </body>
 </html>
