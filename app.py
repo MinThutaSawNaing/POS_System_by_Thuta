@@ -1,3322 +1,1076 @@
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>POS Dashboard</title>
-    <link
-      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
-      rel="stylesheet"
-    />
-    <link
-      rel="stylesheet"
-      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css"
-    />
-    <style>
-      :root {
-        --sidebar-width: 250px;
-        --sidebar-bg: #343a40;
-        --sidebar-text: rgba(255, 255, 255, 0.75);
-        --sidebar-active: white;
-        --sidebar-hover: rgba(255, 255, 255, 0.1);
-        --primary-color: #0d6efd;
-      }
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, make_response
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
+import os
+import uuid
+import io
+from decimal import Decimal, ROUND_HALF_UP
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+import pandas as pd
+from reportlab.graphics.barcode import createBarcodeDrawing
+from reportlab.graphics import renderPDF
+from reportlab.graphics.shapes import Drawing
+from datetime import datetime, timedelta
+import pytz
+from functools import wraps
+from reportlab.graphics.barcode import createBarcodeDrawing
 
-      body {
-        overflow-x: hidden;
-      }
+app = Flask(__name__)
+app.secret_key = 'your_super_secret_key_here'  # Change this in production!
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pos.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
 
-      .sidebar {
-        width: var(--sidebar-width);
-        height: 100vh;
-        background-color: var(--sidebar-bg);
-        color: var(--sidebar-text);
-        position: fixed;
-        transition: all 0.3s;
-        z-index: 1000;
-      }
+def manager_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session or session.get('role') != 'manager':
+            return jsonify({'error': 'Manager access required'}), 403
+        return f(*args, **kwargs)
+    return decorated_function
 
-      .sidebar .nav-link {
-        color: var(--sidebar-text);
-        padding: 0.75rem 1rem;
-        border-radius: 0.25rem;
-        margin: 0.25rem 1rem;
-      }
+# Database Models
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password = db.Column(db.String(120), nullable=False)
+    role = db.Column(db.String(20), default='cashier')
 
-      .sidebar .nav-link:hover,
-      .sidebar .nav-link.active {
-        color: var(--sidebar-active);
-        background-color: var(--sidebar-hover);
-      }
+class Product(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    barcode = db.Column(db.String(50), unique=True)
+    name = db.Column(db.String(100), nullable=False)
+    price = db.Column(db.Float, nullable=False)
+    cost = db.Column(db.Float)
+    stock = db.Column(db.Integer, default=0)
+    category = db.Column(db.String(50))
+    tax_rate = db.Column(db.Float, default=0.0)
 
-      .sidebar .nav-link i {
-        width: 20px;
-        margin-right: 10px;
-        text-align: center;
-      }
+class Sale(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    transaction_id = db.Column(db.String(36), unique=True)
+    date = db.Column(db.DateTime, default=datetime.utcnow)
+    total = db.Column(db.Float, nullable=False)
+    tax = db.Column(db.Float, nullable=False)
+    payment_method = db.Column(db.String(20))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    user = db.relationship('User', backref='sales')
 
-      .main-content {
-        margin-left: var(--sidebar-width);
-        padding: 20px;
-        transition: all 0.3s;
-      }
+# Database Model for Promotions
+class Promotion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
+    discount_type = db.Column(db.String(10), nullable=False)  # 'percent' or 'fixed'
+    discount_value = db.Column(db.Float, nullable=False)     # e.g., 10 for 10%, or $2 off
+    start_date = db.Column(db.DateTime, nullable=False)
+    end_date = db.Column(db.DateTime, nullable=False)
+    
+    product = db.relationship('Product', backref='promotions')
 
-      .product-card {
-        cursor: pointer;
-        transition: all 0.2s;
-        height: 100%;
-        padding: 9px;
-        font-size: 15px;
-        font-weight: 600;
-        margin-bottom: 6px;
-      }
+class SaleItem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    sale_id = db.Column(db.Integer, db.ForeignKey('sale.id'))
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'))
+    quantity = db.Column(db.Integer, nullable=False)
+    price = db.Column(db.Float, nullable=False)
+    tax = db.Column(db.Float, nullable=False)
 
-      .product-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-      }
+# New Models for Customer Debt/Credit Feature
+class Customer(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    phone = db.Column(db.String(20))
+    email = db.Column(db.String(100))
+    address = db.Column(db.String(200))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationship with debts
+    debts = db.relationship('Debt', backref='customer', lazy=True)
 
-      #cart-items {
-        max-height: 400px;
-        overflow-y: auto;
-      }
+class Debt(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    customer_id = db.Column(db.Integer, db.ForeignKey('customer.id'), nullable=False)
+    sale_id = db.Column(db.Integer, db.ForeignKey('sale.id'), nullable=True)
+    amount = db.Column(db.Float, nullable=False)
+    balance = db.Column(db.Float, nullable=False)  # Remaining balance
+    type = db.Column(db.String(20), default='debt')  # 'debt' or 'payment'
+    date = db.Column(db.DateTime, default=datetime.utcnow)
+    notes = db.Column(db.String(200))
+    
+    # Relationship with sale
+    sale = db.relationship('Sale', backref='debt', lazy=True)
 
-      .card-stat {
-        border-left: 4px solid var(--primary-color);
-      }
-
-      @media (max-width: 768px) {
-        .sidebar {
-          margin-left: -var(--sidebar-width);
-        }
-
-        .sidebar.active {
-          margin-left: 0;
-        }
-
-        .main-content {
-          margin-left: 0;
-        }
-
-        .main-content.active {
-          margin-left: var(--sidebar-width);
-        }
-      }
-
-      /* Custom scrollbar */
-      ::-webkit-scrollbar {
-        width: 8px;
-      }
-
-      ::-webkit-scrollbar-track {
-        background: #f1f1f1;
-      }
-
-      ::-webkit-scrollbar-thumb {
-        background: #888;
-        border-radius: 4px;
-      }
-
-      ::-webkit-scrollbar-thumb:hover {
-        background: #555;
-      }
-
-      /* Toast notifications */
-      .toast-container {
-        position: fixed;
-        top: 20px;
-        right: 20px;
-        z-index: 9999;
-      }
-
-      .toast {
-        min-width: 300px;
-        margin-bottom: 10px;
-        box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
-      }
-    </style>
-  </head>
-
-  <body>
-    <!-- Sidebar Toggle Button (Mobile) -->
-    <button
-      class="btn btn-primary d-md-none position-fixed"
-      style="z-index: 1100; top: 10px; left: 10px"
-      onclick="toggleSidebar()"
-    >
-      <i class="bi bi-list"></i>
-    </button>
-
-    <!-- Sidebar -->
-    <div class="sidebar" id="sidebar">
-      <div class="p-3">
-        <h4 class="text-center">POS System</h4>
-        <hr />
-        <div class="text-center mb-3">
-          <span
-            >Welcome,
-            <strong id="username-display">{{ session.username }}</strong></span
-          >
-        </div>
-      </div>
-      <ul class="nav flex-column">
-        <li class="nav-item">
-          <a
-            class="nav-link active"
-            href="#"
-            onclick="showSection('dashboard')"
-          >
-            <i class="bi bi-speedometer2"></i>Dashboard
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('pos')">
-            <i class="bi bi-cash-coin"></i>POS
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('products')">
-            <i class="bi bi-box-seam"></i>Products
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('sales')">
-            <i class="bi bi-receipt"></i>Sales
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('reports')">
-            <i class="bi bi-graph-up"></i>Reports
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('promotions')">
-            <i class="bi bi-tag"></i> Promotions
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('users')">
-            <i class="bi bi-people"></i>Users
-          </a>
-        </li>
-        <li class="nav-item mt-3">
-          <a class="nav-link text-danger" href="/logout">
-            <i class="bi bi-box-arrow-right"></i>Logout
-          </a>
-        </li>
-      </ul>
-    </div>
-
-    <!-- Main Content -->
-    <div class="main-content" id="main-content">
-      <!-- Dashboard Section -->
-      <div id="dashboard-section">
-        <h2>Dashboard</h2>
-        <div class="row mt-4">
-          <div class="col-md-4 mb-3">
-            <div class="card card-stat bg-white">
-              <div class="card-body">
-                <h5 class="card-title">Today's Sales</h5>
-                <h3 id="today-sales">$0.00</h3>
-                <p class="text-muted mb-0">
-                  <i class="bi bi-arrow-up text-success"></i>
-                  <span id="sales-change">0%</span> from yesterday
-                </p>
-              </div>
-            </div>
-          </div>
-          <div class="col-md-4 mb-3">
-            <div class="card card-stat bg-white">
-              <div class="card-body">
-                <h5 class="card-title">Total Products</h5>
-                <h3 id="total-products">0</h3>
-                <p class="text-muted mb-0">
-                  <span id="low-stock-count">0</span> low stock items
-                </p>
-              </div>
-            </div>
-          </div>
-          <div class="col-md-4 mb-3">
-            <div class="card card-stat bg-white">
-              <div class="card-body">
-                <h5 class="card-title">Recent Transactions</h5>
-                <h3 id="recent-transactions">0</h3>
-                <p class="text-muted mb-0">Last 24 hours</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="row mt-4">
-          <div class="col-md-8">
-            <div class="card">
-              <div class="card-header bg-white">
-                <h5 class="mb-0">Sales Overview</h5>
-              </div>
-              <div class="card-body">
-                <canvas id="dashboardChart" height="250"></canvas>
-              </div>
-            </div>
-          </div>
-          <div class="col-md-4">
-            <div class="card">
-              <div class="card-header bg-white">
-                <h5 class="mb-0">Top Products</h5>
-              </div>
-              <div class="card-body">
-                <div id="top-products-list" class="list-group">
-                  <!-- Top products will be loaded here -->
-                  <div class="text-center text-muted py-3">Loading...</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- POS Section -->
-      <div id="pos-section" style="display: none">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-          <h2 class="mb-0">Point of Sale</h2>
-          <button class="btn btn-outline-secondary" onclick="clearCart()">
-            <i class="bi bi-x-circle"></i> Clear Cart
-          </button>
-        </div>
-
-        <div class="row">
-          <div class="col-md-8">
-            <div class="input-group mb-3">
-              <input
-                type="text"
-                id="product-search"
-                class="form-control"
-                placeholder="Scan barcode or search products..."
-                autofocus
-              />
-              <button
-                class="btn btn-primary"
-                type="button"
-                onclick="searchProducts()"
-              >
-                <i class="bi bi-search"></i> Search
-              </button>
-            </div>
-            <div class="row" id="product-grid">
-              <!-- Products will be loaded here -->
-              <div class="col-12 text-center py-5">
-                <div class="spinner-border text-primary" role="status">
-                  <span class="visually-hidden">Loading...</span>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="col-md-4">
-            <div class="card shadow">
-              <div class="card-header bg-primary text-white">
-                <h5 class="card-title mb-0">Current Sale</h5>
-              </div>
-              <div class="card-body">
-                <div id="cart-items" class="mb-3">
-                  <!-- Cart items will be displayed here -->
-                  <p class="text-muted text-center py-3">No items added</p>
-                </div>
-                <hr />
-                <div class="d-flex justify-content-between mb-2">
-                  <span>Subtotal:</span>
-                  <span id="subtotal">$0.00</span>
-                </div>
-                <div class="d-flex justify-content-between mb-2">
-                  <span>Tax:</span>
-                  <span id="tax">$0.00</span>
-                </div>
-                <div class="d-flex justify-content-between mb-3 fw-bold">
-                  <span>Total:</span>
-                  <span id="total">$0.00</span>
-                </div>
-                <hr />
-                <div class="mb-3">
-                  <label class="form-label">Payment Method</label>
-                  <select id="payment-method" class="form-select">
-                    <option value="cash">Cash</option>
-                    <option value="credit_card">Credit Card</option>
-                    <option value="debit_card">Debit Card</option>
-                    <option value="mobile_payment">Mobile Payment</option>
-                  </select>
-                </div>
-                <button
-                  class="btn btn-success w-100 py-2"
-                  onclick="completeSale()"
-                >
-                  <i class="bi bi-check-circle"></i> Complete Sale
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Products Section -->
-      <div id="products-section" style="display: none">
-        <div
-          class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2"
-        >
-          <h2 class="mb-0">Product Management</h2>
-          <div class="d-flex gap-2">
-            <button
-              class="btn btn-primary"
-              data-bs-toggle="modal"
-              data-bs-target="#addProductModal"
-            >
-              <i class="bi bi-plus-circle"></i> Add Product
-            </button>
-            <button class="btn btn-success" onclick="showBarcodeLabelDialog()">
-              <i class="bi bi-upc-scan"></i> Print Barcode Labels
-            </button>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-body">
-            <div class="table-responsive">
-              <table class="table table-striped table-hover">
-                <thead>
-                  <tr>
-                    <th>Barcode</th>
-                    <th>Name</th>
-                    <th>Price</th>
-                    <th>Stock</th>
-                    <th>Category</th>
-                    <th>Tax Rate</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="products-table">
-                  <!-- Products will be loaded here -->
-                  <tr>
-                    <td colspan="7" class="text-center py-4">
-                      <div class="spinner-border text-primary" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Sales Section -->
-      <div id="sales-section" style="display: none">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-          <h2 class="mb-0">Sales History</h2>
-          <div class="input-group" style="width: 300px">
-            <input type="date" id="sales-date-filter" class="form-control" />
-            <button
-              class="btn btn-outline-secondary"
-              type="button"
-              onclick="filterSalesByDate()"
-            >
-              <i class="bi bi-filter"></i> Filter
-            </button>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-body">
-            <div class="table-responsive">
-              <table class="table table-striped table-hover">
-                <thead>
-                  <tr>
-                    <th>Transaction ID</th>
-                    <th>Date</th>
-                    <th>Total</th>
-                    <th>Payment</th>
-                    <th>User</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="sales-table">
-                  <!-- Sales will be loaded here -->
-                  <tr>
-                    <td colspan="6" class="text-center py-4">
-                      <div class="spinner-border text-primary" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </div>
-      <!-- Users Section -->
-      <div id="users-section" style="display: none">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-          <h2 class="mb-0">User Management</h2>
-          <button
-            class="btn btn-primary"
-            data-bs-toggle="modal"
-            data-bs-target="#addUserModal"
-          >
-            <i class="bi bi-person-plus"></i> Add User
-          </button>
-        </div>
-
-        <div class="card">
-          <div class="card-body">
-            <div class="table-responsive">
-              <table class="table table-striped table-hover">
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Username</th>
-                    <th>Role</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="users-table">
-                  <!-- Users will be loaded here -->
-                  <tr>
-                    <td colspan="4" class="text-center py-4">
-                      <div class="spinner-border text-primary" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </div>
-      <!-- Promotions Section -->
-      <div id="promotions-section" style="display: none">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-          <h2 class="mb-0">Promotions Management</h2>
-          <button
-            class="btn btn-primary"
-            data-bs-toggle="modal"
-            data-bs-target="#addPromotionModal"
-          >
-            <i class="bi bi-plus-circle"></i> Add Promotion
-          </button>
-        </div>
-        <div class="card">
-          <div class="card-body">
-            <div class="table-responsive">
-              <table class="table table-striped table-hover">
-                <thead>
-                  <tr>
-                    <th>Product</th>
-                    <th>Discount</th>
-                    <th>Start Date</th>
-                    <th>End Date</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="promotions-table">
-                  <tr>
-                    <td colspan="6" class="text-center py-4">
-                      <div class="spinner-border text-primary" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </div>
-      <!-- Reports Section -->
-      <div id="reports-section" style="display: none">
-        <h2>Reports</h2>
-        <div class="row mb-3">
-          <div class="col-md-3">
-            <label class="form-label">Start Date</label>
-            <input type="date" id="start-date" class="form-control" />
-          </div>
-          <div class="col-md-3">
-            <label class="form-label">End Date</label>
-            <input type="date" id="end-date" class="form-control" />
-          </div>
-          <div class="col-md-3 d-flex align-items-end">
-            <button class="btn btn-primary" onclick="generateReport()">
-              <i class="bi bi-file-earmark-text"></i> Generate Report
-            </button>
-          </div>
-          <div class="col-md-3 d-flex align-items-end">
-            <button class="btn btn-outline-secondary" onclick="exportReport()">
-              <i class="bi bi-download"></i> Export
-            </button>
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="col-md-8">
-            <div class="card mb-3">
-              <div class="card-header bg-white">
-                <h5 class="mb-0">Sales Chart</h5>
-              </div>
-              <div class="card-body">
-                <canvas id="salesChart" height="250"></canvas>
-              </div>
-            </div>
-          </div>
-          <div class="col-md-4">
-            <div class="card mb-3">
-              <div class="card-header bg-white">
-                <h5 class="mb-0">Payment Methods</h5>
-              </div>
-              <div class="card-body">
-                <canvas id="paymentChart" height="250"></canvas>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-header bg-white">
-            <h5 class="mb-0">Report Results</h5>
-          </div>
-          <div class="card-body">
-            <div id="report-results">
-              <!-- Report results will be displayed here -->
-              <p class="text-muted text-center py-3">
-                Select date range and generate report
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Add Product Modal -->
-    <div
-      class="modal fade"
-      id="addProductModal"
-      tabindex="-1"
-      aria-hidden="true"
-    >
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">Add New Product</h5>
-            <button
-              type="button"
-              class="btn-close"
-              data-bs-dismiss="modal"
-              aria-label="Close"
-            ></button>
-          </div>
-          <div class="modal-body">
-            <form id="add-product-form">
-              <div class="mb-3">
-                <label class="form-label"
-                  >Barcode <small class="text-muted">(optional)</small></label
-                >
-                <input
-                  type="text"
-                  class="form-control"
-                  id="add-barcode"
-                  placeholder="Scan or enter barcode"
-                />
-              </div>
-              <div class="mb-3">
-                <label class="form-label"
-                  >Product Name <span class="text-danger">*</span></label
-                >
-                <input
-                  type="text"
-                  class="form-control"
-                  id="add-product-name"
-                  required
-                />
-              </div>
-              <div class="row">
-                <div class="col-md-6 mb-3">
-                  <label class="form-label"
-                    >Price <span class="text-danger">*</span></label
-                  >
-                  <div class="input-group">
-                    <span class="input-group-text">$</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      class="form-control"
-                      id="add-price"
-                      required
-                    />
-                  </div>
-                </div>
-                <div class="col-md-6 mb-3">
-                  <label class="form-label">Cost</label>
-                  <div class="input-group">
-                    <span class="input-group-text">$</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      class="form-control"
-                      id="add-cost"
-                    />
-                  </div>
-                </div>
-              </div>
-              <div class="row">
-                <div class="col-md-6 mb-3">
-                  <label class="form-label"
-                    >Stock <span class="text-danger">*</span></label
-                  >
-                  <input
-                    type="number"
-                    class="form-control"
-                    id="add-stock"
-                    required
-                  />
-                </div>
-                <div class="col-md-6 mb-3">
-                  <label class="form-label">Tax Rate (%)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    class="form-control"
-                    id="add-tax-rate"
-                    value="0.0"
-                  />
-                </div>
-              </div>
-              <div class="mb-3">
-                <label class="form-label">Category</label>
-                <input
-                  type="text"
-                  class="form-control"
-                  id="add-category"
-                  placeholder="e.g., Electronics, Grocery"
-                />
-              </div>
-            </form>
-          </div>
-          <div class="modal-footer">
-            <button
-              type="button"
-              class="btn btn-secondary"
-              data-bs-dismiss="modal"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              class="btn btn-primary"
-              onclick="saveProduct()"
-            >
-              Save Product
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Edit Product Modal -->
-    <div
-      class="modal fade"
-      id="editProductModal"
-      tabindex="-1"
-      aria-hidden="true"
-    >
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">Edit Product</h5>
-            <button
-              type="button"
-              class="btn-close"
-              data-bs-dismiss="modal"
-              aria-label="Close"
-            ></button>
-          </div>
-          <div class="modal-body">
-            <form id="edit-product-form">
-              <input type="hidden" id="edit-product-id" />
-              <div class="mb-3">
-                <label class="form-label"
-                  >Barcode <small class="text-muted">(optional)</small></label
-                >
-                <input type="text" class="form-control" id="edit-barcode" />
-              </div>
-              <div class="mb-3">
-                <label class="form-label"
-                  >Product Name <span class="text-danger">*</span></label
-                >
-                <input
-                  type="text"
-                  class="form-control"
-                  id="edit-product-name"
-                  required
-                />
-              </div>
-              <div class="row">
-                <div class="col-md-6 mb-3">
-                  <label class="form-label"
-                    >Price <span class="text-danger">*</span></label
-                  >
-                  <div class="input-group">
-                    <span class="input-group-text">$</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      class="form-control"
-                      id="edit-price"
-                      required
-                    />
-                  </div>
-                </div>
-                <div class="col-md-6 mb-3">
-                  <label class="form-label">Cost</label>
-                  <div class="input-group">
-                    <span class="input-group-text">$</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      class="form-control"
-                      id="edit-cost"
-                    />
-                  </div>
-                </div>
-              </div>
-              <div class="row">
-                <div class="col-md-6 mb-3">
-                  <label class="form-label"
-                    >Stock <span class="text-danger">*</span></label
-                  >
-                  <input
-                    type="number"
-                    class="form-control"
-                    id="edit-stock"
-                    required
-                  />
-                </div>
-                <div class="col-md-6 mb-3">
-                  <label class="form-label">Tax Rate (%)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    class="form-control"
-                    id="edit-tax-rate"
-                  />
-                </div>
-              </div>
-              <div class="mb-3">
-                <label class="form-label">Category</label>
-                <input type="text" class="form-control" id="edit-category" />
-              </div>
-            </form>
-          </div>
-          <div class="modal-footer">
-            <button
-              type="button"
-              class="btn btn-secondary"
-              data-bs-dismiss="modal"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              class="btn btn-primary"
-              onclick="updateProduct()"
-            >
-              Update Product
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-    <!-- Add Promotion Modal -->
-    <div
-      class="modal fade"
-      id="addPromotionModal"
-      tabindex="-1"
-      aria-hidden="true"
-    >
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">Create Promotion</h5>
-            <button
-              type="button"
-              class="btn-close"
-              data-bs-dismiss="modal"
-              aria-label="Close"
-            ></button>
-          </div>
-          <div class="modal-body">
-            <form id="add-promotion-form">
-              <div class="mb-3">
-                <label class="form-label"
-                  >Product <span class="text-danger">*</span></label
-                >
-                <select
-                  class="form-select"
-                  id="promotion-product-id"
-                  required
-                ></select>
-              </div>
-              <div class="mb-3">
-                <label class="form-label">Discount Type</label>
-                <select class="form-select" id="promotion-discount-type">
-                  <option value="percent">Percentage Off</option>
-                  <option value="fixed">Fixed Amount Off</option>
-                </select>
-              </div>
-              <div class="mb-3">
-                <label class="form-label"
-                  >Discount Value <span class="text-danger">*</span></label
-                >
-                <input
-                  type="number"
-                  step="0.01"
-                  class="form-control"
-                  id="promotion-discount-value"
-                  required
-                />
-              </div>
-              <div class="row">
-                <div class="col-md-6 mb-3">
-                  <label class="form-label">Start Date</label>
-                  <input
-                    type="datetime-local"
-                    class="form-control"
-                    id="promotion-start-date"
-                    required
-                  />
-                </div>
-                <div class="col-md-6 mb-3">
-                  <label class="form-label">End Date</label>
-                  <input
-                    type="datetime-local"
-                    class="form-control"
-                    id="promotion-end-date"
-                    required
-                  />
-                </div>
-              </div>
-            </form>
-          </div>
-          <div class="modal-footer">
-            <button
-              type="button"
-              class="btn btn-secondary"
-              data-bs-dismiss="modal"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              class="btn btn-primary"
-              onclick="savePromotion()"
-            >
-              Save Promotion
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-    <!-- Barcode Label Modal -->
-    <div
-      class="modal fade"
-      id="barcodeLabelModal"
-      tabindex="-1"
-      aria-hidden="true"
-    >
-      <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">Generate Barcode Labels</h5>
-            <button
-              type="button"
-              class="btn-close"
-              data-bs-dismiss="modal"
-              aria-label="Close"
-            ></button>
-          </div>
-          <div class="modal-body">
-            <div class="alert alert-info">
-              <i class="bi bi-info-circle"></i> Select products to generate
-              barcode labels. Labels will be printed 3 per row with the product
-              name and price.
-            </div>
-
-            <div class="table-responsive">
-              <table class="table table-striped table-hover">
-                <thead>
-                  <tr>
-                    <th width="50px">
-                      <input
-                        type="checkbox"
-                        id="select-all-products"
-                        onclick="toggleSelectAllProducts()"
-                      />
-                    </th>
-                    <th>Barcode</th>
-                    <th>Name</th>
-                    <th>Price</th>
-                    <th>Stock</th>
-                  </tr>
-                </thead>
-                <tbody id="barcode-products-table">
-                  <!-- Products will be loaded here -->
-                  <tr>
-                    <td colspan="5" class="text-center py-4">
-                      <div class="spinner-border text-primary" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button
-              type="button"
-              class="btn btn-secondary"
-              data-bs-dismiss="modal"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              class="btn btn-primary"
-              onclick="generateBarcodeLabels()"
-            >
-              <i class="bi bi-printer"></i> Generate Labels
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-    <!-- Sale Details Modal -->
-    <div
-      class="modal fade"
-      id="saleDetailsModal"
-      tabindex="-1"
-      aria-hidden="true"
-    >
-      <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">
-              Sale Details - <span id="sale-id-display"></span>
-            </h5>
-            <button
-              type="button"
-              class="btn-close"
-              data-bs-dismiss="modal"
-              aria-label="Close"
-            ></button>
-          </div>
-          <div class="modal-body" id="sale-details-content">
-            <!-- Sale details will be loaded here -->
-            <div class="text-center py-4">
-              <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">Loading...</span>
-              </div>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button
-              type="button"
-              class="btn btn-secondary"
-              data-bs-dismiss="modal"
-            >
-              Close
-            </button>
-            <button
-              type="button"
-              class="btn btn-primary"
-              onclick="printReceipt()"
-            >
-              <i class="bi bi-printer"></i> Print Receipt
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-    <!-- Add User Modal -->
-    <div class="modal fade" id="addUserModal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">Add New User</h5>
-            <button
-              type="button"
-              class="btn-close"
-              data-bs-dismiss="modal"
-              aria-label="Close"
-            ></button>
-          </div>
-          <div class="modal-body">
-            <form id="add-user-form">
-              <div class="mb-3">
-                <label class="form-label"
-                  >Username <span class="text-danger">*</span></label
-                >
-                <input
-                  type="text"
-                  class="form-control"
-                  id="add-username"
-                  required
-                />
-              </div>
-              <div class="mb-3">
-                <label class="form-label"
-                  >Password <span class="text-danger">*</span></label
-                >
-                <input
-                  type="password"
-                  class="form-control"
-                  id="add-password"
-                  required
-                />
-              </div>
-              <div class="mb-3">
-                <label class="form-label"
-                  >Confirm Password <span class="text-danger">*</span></label
-                >
-                <input
-                  type="password"
-                  class="form-control"
-                  id="add-confirm-password"
-                  required
-                />
-              </div>
-              <div class="mb-3">
-                <label class="form-label"
-                  >Role <span class="text-danger">*</span></label
-                >
-                <select class="form-select" id="add-role" required>
-                  <option value="cashier">Cashier</option>
-                  <option value="manager">Manager</option>
-                </select>
-              </div>
-            </form>
-          </div>
-          <div class="modal-footer">
-            <button
-              type="button"
-              class="btn btn-secondary"
-              data-bs-dismiss="modal"
-            >
-              Cancel
-            </button>
-            <button type="button" class="btn btn-primary" onclick="saveUser()">
-              Save User
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Edit User Modal -->
-    <div class="modal fade" id="editUserModal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">Edit User</h5>
-            <button
-              type="button"
-              class="btn-close"
-              data-bs-dismiss="modal"
-              aria-label="Close"
-            ></button>
-          </div>
-          <div class="modal-body">
-            <form id="edit-user-form">
-              <input type="hidden" id="edit-user-id" />
-              <div class="mb-3">
-                <label class="form-label"
-                  >Username <span class="text-danger">*</span></label
-                >
-                <input
-                  type="text"
-                  class="form-control"
-                  id="edit-username"
-                  required
-                />
-              </div>
-              <div class="mb-3">
-                <label class="form-label"
-                  >Password (leave blank to keep current)</label
-                >
-                <input
-                  type="password"
-                  class="form-control"
-                  id="edit-password"
-                />
-              </div>
-              <div class="mb-3">
-                <label class="form-label">Confirm Password</label>
-                <input
-                  type="password"
-                  class="form-control"
-                  id="edit-confirm-password"
-                />
-              </div>
-              <div class="mb-3">
-                <label class="form-label"
-                  >Role <span class="text-danger">*</span></label
-                >
-                <select class="form-select" id="edit-role" required>
-                  <option value="cashier">Cashier</option>
-                  <option value="manager">Manager</option>
-                </select>
-              </div>
-            </form>
-          </div>
-          <div class="modal-footer">
-            <button
-              type="button"
-              class="btn btn-secondary"
-              data-bs-dismiss="modal"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              class="btn btn-primary"
-              onclick="updateUser()"
-            >
-              Update User
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script>
-      // Global variables
-      let cart = [];
-      let currentSection = "dashboard";
-      let currentProduct = null;
-      let dashboardChart = null;
-      let salesChart = null;
-      let paymentChart = null;
-      
-      // ===== CACHING IMPLEMENTATION =====
-      // Product data caching to reduce API calls
-      let cachedProducts = [];
-      let productsCacheTimestamp = 0;
-      const CACHE_DURATION = 60000; // 1 minute cache duration
-      
-      // Function to load products with caching
-      async function loadProductsCached() {
-        const now = Date.now();
-        // If cache is still valid, return cached data
-        if (cachedProducts.length > 0 && (now - productsCacheTimestamp) < CACHE_DURATION) {
-          return cachedProducts;
-        }
-        
-        // Otherwise, fetch fresh data
-        try {
-          const res = await fetch("/api/products");
-          const data = await res.json();
-          cachedProducts = data;
-          productsCacheTimestamp = now;
-          return data;
-        } catch (error) {
-          console.error("Error loading products:", error);
-          // Return cached data even if it's expired, to avoid complete failure
-          return cachedProducts;
-        }
-      }
-      
-      // Function to invalidate cache when needed (e.g., after adding/updating/deleting a product)
-      function invalidateProductsCache() {
-        cachedProducts = [];
-        productsCacheTimestamp = 0;
-      }
-      // ===== END CACHING IMPLEMENTATION =====
-
-      // Initialize the application when page loads
-      document.addEventListener("DOMContentLoaded", function () {
-        // Set today's date as default for sales filter
-        const today = new Date().toISOString().split("T")[0];
-        document.getElementById("sales-date-filter").value = today;
-
-        // Set default date range for reports (last 7 days)
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-        document.getElementById("start-date").value = sevenDaysAgo
-          .toISOString()
-          .split("T")[0];
-        document.getElementById("end-date").value = today;
-
-        // Load initial data
-        loadDashboardStats();
-        loadProducts();
-        loadSales();
-
-        // Set up product search to work on Enter key
-        document
-          .getElementById("product-search")
-          .addEventListener("keypress", function (e) {
-            if (e.key === "Enter") {
-              searchProducts();
-            }
-          });
-      });
-
-      // Toggle sidebar on mobile
-      function toggleSidebar() {
-        const sidebar = document.getElementById("sidebar");
-        const mainContent = document.getElementById("main-content");
-        sidebar.classList.toggle("active");
-        mainContent.classList.toggle("active");
-      }
-
-      // Show different sections
-      function showSection(sectionId) {
-        document.getElementById(currentSection + "-section").style.display =
-          "none";
-        document.querySelector(`.nav-link.active`).classList.remove("active");
-        document.getElementById(sectionId + "-section").style.display = "block";
-        document
-          .querySelector(`[onclick="showSection('${sectionId}')"]`)
-          .classList.add("active");
-        currentSection = sectionId;
-
-        // Load data for the section if needed
-        if (sectionId === "pos") {
-          loadProductsForPOS();
-        } else if (sectionId === "reports") {
-          initSalesChart();
-          initPaymentChart();
-        } else if (sectionId === "products") {
-          loadProducts();
-        } else if (sectionId === "dashboard") {
-          loadDashboardStats();
-        } else if (sectionId === "users") {
-          loadUsers();
-        } else if (sectionId === "sales") {
-          loadSales();
-        } else if (sectionId === "promotions") {
-          loadPromotions();
-          loadProductsForPromotionModal(); // Load products when opening modal
-        }
-
-        // Scroll to top when switching sections
-        window.scrollTo(0, 0);
-      }
-
-      // Add this function to check for authorization errors
-      function checkAuthError(error) {
-        if (error.message.includes("401") || error.message.includes("403")) {
-          alert(
-            "You do not have permission to access this feature. Please contact a manager."
-          );
-          return true;
-        }
-        return false;
-      }
-
-      // Update your fetch calls to use this check
-      fetch("/api/users")
-        .then((response) => {
-          if (response.status === 401 || response.status === 403) {
-            throw new Error("Unauthorized access");
-          }
-          return response.json();
-        })
-        .then((data) => {
-          // process data
-        })
-        .catch((error) => {
-          if (checkAuthError(error)) return;
-          console.error("Error:", error);
-          // show error to user
-        });
-      // Dashboard functions
-      function loadDashboardStats() {
-        // Today's sales
-        fetch(
-          "/api/reports/sales?start=" + new Date().toISOString().split("T")[0]
+# Create database tables and admin user
+with app.app_context():
+    db.create_all()
+    # Create Promotion table
+    if not hasattr(Product, 'promotions'):
+        db.create_all()
+    if not User.query.filter_by(username='admin').first():
+        admin_user = User(
+            username='admin',
+            password=generate_password_hash('admin123'),
+            role='manager'
         )
-          .then((response) => response.json())
-          .then((data) => {
-            const todaySales = data.reduce((sum, sale) => sum + sale.total, 0);
-            document.getElementById("today-sales").textContent =
-              "$" + todaySales.toFixed(2);
+        db.session.add(admin_user)
+        db.session.commit()
 
-            // Calculate change from yesterday
-            const yesterday = new Date();
-            yesterday.setDate(yesterday.getDate() - 1);
-            const yesterdayStr = yesterday.toISOString().split("T")[0];
+# Authentication routes
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        if user and check_password_hash(user.password, password):
+            session['user_id'] = user.id
+            session['username'] = user.username
+            session['role'] = user.role
+            return redirect(url_for('dashboard'))
+        return render_template('login.html', error='Invalid credentials')
+    return render_template('login.html')
 
-            fetch(
-              `/api/reports/sales?start=${yesterdayStr}&end=${yesterdayStr}`
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+# Dashboard route
+@app.route('/')
+def dashboard():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    return render_template('dashboard.html')
+
+# Product API Endpoints
+@app.route('/api/products', methods=['GET', 'POST'])
+def api_products():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if request.method == 'GET':
+        products = Product.query.all()
+        return jsonify([{
+            'id': p.id,
+            'barcode': p.barcode,
+            'name': p.name,
+            'price': p.price,
+            'cost': p.cost,
+            'stock': p.stock,
+            'category': p.category,
+            'tax_rate': p.tax_rate
+        } for p in products])
+
+    elif request.method == 'POST':
+        data = request.get_json()
+        if not data or not all(k in data for k in ['name', 'price', 'stock']):
+            return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+
+        product = Product(
+            barcode=data.get('barcode'),
+            name=data['name'],
+            price=data['price'],
+            cost=data.get('cost', 0),
+            stock=data['stock'],
+            category=data.get('category'),
+            tax_rate=data.get('tax_rate', 0)
+        )
+        db.session.add(product)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Product added'}), 201
+
+# --- Single Product Endpoint (GET, PUT, DELETE) ---
+@app.route('/api/products/<int:product_id>', methods=['GET', 'PUT', 'DELETE'])
+def api_single_product(product_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    product = db.session.get(Product, product_id)
+    if not product:
+        return jsonify({'success': False, 'message': 'Product not found'}), 404
+
+    if request.method == 'GET':
+        return jsonify({
+            'id': product.id,
+            'barcode': product.barcode,
+            'name': product.name,
+            'price': product.price,
+            'cost': product.cost,
+            'stock': product.stock,
+            'category': product.category,
+            'tax_rate': product.tax_rate,
+            'promotions': [{
+                'id': p.id,
+                'discount_type': p.discount_type,
+                'discount_value': p.discount_value,
+                'start_date': p.start_date.isoformat(),
+                'end_date': p.end_date.isoformat()
+            } for p in product.promotions]
+        })
+
+    elif request.method == 'PUT':
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+
+        # Check for duplicate barcode
+        if 'barcode' in data and data['barcode']:
+            existing = Product.query.filter(Product.barcode == data['barcode'], Product.id != product_id).first()
+            if existing:
+                return jsonify({'success': False, 'message': 'Barcode already in use'}), 400
+            product.barcode = data['barcode']
+
+        product.name = data.get('name', product.name)
+        product.price = data.get('price', product.price)
+        product.cost = data.get('cost', product.cost)
+        product.stock = data.get('stock', product.stock)
+        product.category = data.get('category', product.category)
+        product.tax_rate = data.get('tax_rate', product.tax_rate)
+
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Product updated'})
+
+    elif request.method == 'DELETE':
+        db.session.delete(product)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Product deleted'})
+
+@app.route('/api/products/search', methods=['GET'])
+def api_search_products():
+    query = request.args.get('q', '')
+    if not query:
+        return jsonify([])
+    products = Product.query.filter(
+        (Product.name.ilike(f'%{query}%')) | 
+        (Product.barcode.ilike(f'%{query}%')) |
+        (Product.category.ilike(f'%{query}%'))
+    ).limit(10).all()
+    return jsonify([{
+        'id': p.id,
+        'barcode': p.barcode,
+        'name': p.name,
+        'price': p.price,
+        'stock': p.stock
+    } for p in products])
+
+@app.route('/api/products/barcode_labels', methods=['POST'])
+def generate_barcode_labels():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    data = request.get_json()
+    if not data or 'product_ids' not in data:
+        return jsonify({'success': False, 'message': 'Missing product IDs'}), 400
+
+    try:
+        products = Product.query.filter(Product.id.in_(data['product_ids'])).all()
+        if not products:
+            return jsonify({'success': False, 'message': 'No products found'}), 404
+
+        buffer = io.BytesIO()
+
+        # Label dimensions (points, 1mm = 2.83465 points)
+        label_width = 32 * 2.83465   # 32mm
+        label_height = 19 * 2.83465  # 19mm
+        horizontal_gap = 3 * 2.83465
+        vertical_gap = 3 * 2.83465
+
+        page_width = (label_width * 3) + (horizontal_gap * 2)
+        page_height = (label_height * 10) + (vertical_gap * 9)
+
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=(page_width, page_height),
+            rightMargin=0, leftMargin=0,
+            topMargin=0, bottomMargin=0
+        )
+
+        elements = []
+        styles = getSampleStyleSheet()
+        normal_style = styles["Normal"]
+        normal_style.fontSize = 8
+        normal_style.alignment = 1  # center
+
+        label_list = []
+
+        # ✅ Add products multiple times based on stock qty
+        for product in products:
+            qty = product.stock if hasattr(product, "stock") and product.stock else 1
+            for _ in range(qty):
+                label_list.append(product)
+
+        # ✅ Build rows of 3 labels
+        for i in range(0, len(label_list), 3):
+            row_products = label_list[i:i + 3]
+            row_data = []
+
+            for product in row_products:
+                # Create barcode drawing
+                barcode_value = product.barcode if product.barcode else str(product.id)
+                barcode_drawing = createBarcodeDrawing(
+                    "Code128",
+                    value=barcode_value,
+                    barHeight=12,
+                    barWidth=0.8
+                )
+
+                # Create text flowables
+                product_name = Paragraph(product.name, normal_style)
+                price = Paragraph(f"${product.price:.2f}", normal_style)
+
+                # Stack vertically
+                label_table = Table(
+                    [[barcode_drawing],
+                     [product_name],
+                     [price]],
+                    colWidths=[label_width],
+                    rowHeights=[label_height * 0.55,
+                                label_height * 0.2,
+                                label_height * 0.25],
+                    style=TableStyle([
+                        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                        ('TOPPADDING', (0, 0), (-1, -1), 0),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ])
+                )
+
+                row_data.append(label_table)
+
+            # Fill empty cells
+            while len(row_data) < 3:
+                row_data.append(Spacer(label_width, label_height))
+
+            # Add row of labels
+            t = Table(
+                [row_data],
+                colWidths=[label_width] * 3,
+                rowHeights=[label_height],
+                style=TableStyle([
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 0),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+                    ('TOPPADDING', (0, 0), (-1, -1), 0),
+                ])
             )
-              .then((response) => response.json())
-              .then((yesterdayData) => {
-                const yesterdaySales = yesterdayData.reduce(
-                  (sum, sale) => sum + sale.total,
-                  0
-                );
-                const change =
-                  yesterdaySales > 0
-                    ? ((todaySales - yesterdaySales) / yesterdaySales) * 100
-                    : todaySales > 0
-                    ? 100
-                    : 0;
 
-                const changeElement = document.getElementById("sales-change");
-                changeElement.textContent = Math.abs(change).toFixed(1) + "%";
-                if (change >= 0) {
-                  changeElement.parentElement.innerHTML =
-                    changeElement.parentElement.innerHTML.replace(
-                      "bi-arrow-up",
-                      "bi-arrow-up text-success"
-                    );
-                } else {
-                  changeElement.parentElement.innerHTML =
-                    changeElement.parentElement.innerHTML.replace(
-                      "bi-arrow-up",
-                      "bi-arrow-down text-danger"
-                    );
-                }
-              })
-              .catch((error) => {
-                console.error("Error loading yesterday's sales:", error);
-                document.getElementById("sales-change").textContent = "N/A";
-              });
-            const changeElement = document.getElementById("sales-change");
-            changeElement.textContent = Math.abs(change).toFixed(1) + "%";
-            if (change >= 0) {
-              changeElement.parentElement.innerHTML =
-                changeElement.parentElement.innerHTML.replace(
-                  "bi-arrow-up",
-                  "bi-arrow-up text-success"
-                );
-            } else {
-              changeElement.parentElement.innerHTML =
-                changeElement.parentElement.innerHTML.replace(
-                  "bi-arrow-up",
-                  "bi-arrow-down text-danger"
-                );
-            }
-          });
+            elements.append(t)
+            if i + 3 < len(label_list):
+                elements.append(Spacer(1, vertical_gap))
 
-        // Total products and low stock - USING CACHED PRODUCTS
-        loadProductsCached().then((data) => {
-          document.getElementById("total-products").textContent = data.length;
-          const lowStock = data.filter((p) => p.stock < 5).length;
-          document.getElementById("low-stock-count").textContent = lowStock;
-        });
+        # Build PDF
+        doc.build(elements)
+        buffer.seek(0)
 
-        // Recent transactions (last 24 hours) - FIXED
-        const now = new Date();
-        const twentyFourHoursAgo = new Date(
-          now.getTime() - 24 * 60 * 60 * 1000
-        );
-        const startDate = twentyFourHoursAgo.toISOString().split("T")[0]; // Get YYYY-MM-DD format
+        # ✅ Inline view only (no forced download)
+        response = make_response(buffer.getvalue())
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = 'inline; filename=barcode_labels.pdf'
+        return response
 
-        fetch(`/api/reports/sales?start=${startDate}`)
-          .then((response) => {
-            if (!response.ok) throw new Error("API request failed");
-            return response.json();
-          })
-          .then((data) => {
-            console.log("Recent transactions:", data.length, "sales"); // Debug
-            document.getElementById("recent-transactions").textContent =
-              data.length;
-          })
-          .catch((error) => {
-            console.error("Error loading recent transactions:", error);
-            document.getElementById("recent-transactions").textContent = "0";
-          });
+    except Exception as e:
+        app.logger.error(f"Error generating barcode labels: {str(e)}")
+        return jsonify({'success': False, 'message': f'Error generating labels: {str(e)}'}), 500
 
-        // Initialize dashboard chart
-        initDashboardChart();
+@app.route('/api/sales', methods=['POST'])
+def api_create_sale():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
 
-        // Load top products - USING CACHED PRODUCTS
-        loadTopProducts();
-      }
+    data = request.get_json()
+    if not data or 'items' not in data:
+        return jsonify({'success': False, 'message': 'Missing required fields'}), 400
 
-      function initDashboardChart() {
-        const ctx = document.getElementById("dashboardChart").getContext("2d");
+    try:
+        # Calculate totals
+        subtotal = 0
+        tax_total = 0
+        items = []
 
-        if (dashboardChart) {
-          dashboardChart.destroy();
-        }
+        for item in data['items']:
+            product = db.session.get(Product, item['product_id'])
+            if not product:
+                return jsonify({'success': False, 'message': f'Product {item["product_id"]} not found'}), 404
 
-        fetch("/api/dashboard/sales_data")
-          .then((response) => response.json())
-          .then((data) => {
-            const labels = data.map((item) => {
-              const date = new Date(item.date);
-              return date.toLocaleDateString("en-US", { weekday: "short" });
-            });
-            const salesData = data.map((item) => item.total);
-
-            dashboardChart = new Chart(ctx, {
-              type: "line",
-              data: {
-                labels: labels,
-                datasets: [
-                  {
-                    label: "Daily Sales ($)",
-                    data: salesData,
-                    backgroundColor: "rgba(13, 110, 253, 0.2)",
-                    borderColor: "rgba(13, 110, 253, 1)",
-                    borderWidth: 2,
-                    tension: 0.4,
-                    fill: true,
-                  },
-                ],
-              },
-              options: {
-                responsive: true,
-                plugins: {
-                  legend: {
-                    display: false,
-                  },
-                },
-                scales: {
-                  y: {
-                    beginAtZero: true,
-                  },
-                },
-              },
-            });
-          })
-          .catch((error) => {
-            console.error("Error loading dashboard sales data:", error);
-            ctx.font = "16px Arial";
-            ctx.fillStyle = "red";
-            ctx.textAlign = "center";
-            ctx.fillText(
-              "Failed to load chart data",
-              ctx.canvas.width / 2,
-              ctx.canvas.height / 2
-            );
-          });
-      }
-      function loadPromotions() {
-        const table = document.getElementById("promotions-table");
-        table.innerHTML = `
-          <tr>
-            <td colspan="6" class="text-center py-4">
-              <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">Loading...</span>
-              </div>
-            </td>
-          </tr>
-        `;
-
-        fetch("/api/promotions")
-          .then((r) => r.json())
-          .then((data) => {
-            table.innerHTML = "";
-            if (data.length === 0) {
-              table.innerHTML = `
-                <tr><td colspan="6" class="text-center py-4 text-muted">No promotions found.</td></tr>
-              `;
-              return;
-            }
-            data.forEach((p) => {
-              const startDate = new Date(p.start_date).toLocaleString();
-              const endDate = new Date(p.end_date).toLocaleString();
-              const badge = p.is_active
-                ? '<span class="badge bg-success">Active</span>'
-                : '<span class="badge bg-secondary">Inactive</span>';
-              const row = document.createElement("tr");
-              row.innerHTML = `
-                <td>${p.product_name}</td>
-                <td>${
-                  p.discount_type === "percent"
-                    ? p.discount_value + "%"
-                    : "$" + p.discount_value
-                } off</td>
-                <td>${startDate}</td>
-                <td>${endDate}</td>
-                <td>${badge}</td>
-                <td>
-                  <button class="btn btn-sm btn-warning me-1" onclick="editPromotion(${
-                    p.id
-                  })">
-                    <i class="bi bi-pencil"></i>
-                  </button>
-                  <button class="btn btn-sm btn-danger" onclick="deletePromotion(${
-                    p.id
-                  })">
-                    <i class="bi bi-trash"></i>
-                  </button>
-                </td>
-              `;
-              table.appendChild(row);
-            });
-          })
-          .catch((err) => {
-            table.innerHTML = `<tr><td colspan="6" class="text-center py-4 text-danger">Failed to load promotions.</td></tr>`;
-            console.error(err);
-          });
-      }
-      function loadProductsForPromotionModal() {
-        return new Promise((resolve, reject) => {
-          // USING CACHED PRODUCTS
-          loadProductsCached()
-            .then((products) => {
-              const select = document.getElementById("promotion-product-id");
-              select.innerHTML = "";
-              products.forEach((p) => {
-                const opt = document.createElement("option");
-                opt.value = p.id;
-                opt.textContent = `${p.name} ($${p.price.toFixed(2)})`;
-                select.appendChild(opt);
-              });
-              resolve();
+            item_total = item['price'] * item['quantity']
+            item_tax = item_total * (product.tax_rate / 100)
+            
+            subtotal += item_total
+            tax_total += item_tax
+            
+            items.append({
+                'product': product,
+                'price': item['price'],
+                'quantity': item['quantity'],
+                'tax': item_tax
             })
-            .catch((err) => {
-              console.error("Error loading products:", err);
-              reject(err);
-            });
-        });
-      }
-      function loadTopProducts() {
-        // USING CACHED PRODUCTS
-        loadProductsCached()
-          .then((products) => {
-            // Sort by stock (for demo - in real app, sort by sales)
-            const topProducts = [...products]
-              .sort((a, b) => b.stock - a.stock)
-              .slice(0, 5);
-            const topProductsList =
-              document.getElementById("top-products-list");
-            topProductsList.innerHTML = "";
 
-            topProducts.forEach((product) => {
-              const item = document.createElement("a");
-              item.className = "list-group-item list-group-item-action";
-              item.innerHTML = `
-                                  <div class="d-flex w-100 justify-content-between">
-                                      <h6 class="mb-1">${product.name}</h6>
-                                      <small>$${product.price.toFixed(
-                                        2
-                                      )}</small>
-                                  </div>
-                                  <div class="d-flex w-100 justify-content-between">
-                                      <small class="text-muted">Stock: ${
-                                        product.stock
-                                      }</small>
-                                      <small class="${
-                                        product.stock < 5
-                                          ? "text-danger"
-                                          : "text-success"
-                                      }">
-                                          ${
-                                            product.stock < 5
-                                              ? "Low Stock"
-                                              : "In Stock"
-                                          }
-                                      </small>
-                                  </div>
-                              `;
-              topProductsList.appendChild(item);
-            });
-          })
-          .catch((error) => {
-            console.error("Error loading top products:", error);
-          });
-      }
+        total = subtotal + tax_total
+        
+        myanmar_tz = pytz.timezone('Asia/Yangon')
+        sale_time = datetime.now(myanmar_tz)
 
-      // POS functions
-      function loadProductsForPOS() {
-        const productGrid = document.getElementById("product-grid");
-        productGrid.innerHTML = `
-                      <div class="col-12 text-center py-5">
-                          <div class="spinner-border text-primary" role="status">
-                              <span class="visually-hidden">Loading...</span>
-                          </div>
-                      </div>
-                  `;
+        # Create sale record
+        sale = Sale(
+            transaction_id=str(uuid.uuid4()),
+            date=sale_time,
+            total=total,
+            tax=tax_total,
+            payment_method=data.get('payment_method', 'cash'),
+            user_id=session['user_id']
+        )
+        db.session.add(sale)
+        db.session.flush()  # To get the sale.id before commit
 
-        // USING CACHED PRODUCTS
-        loadProductsCached()
-          .then((data) => {
-            productGrid.innerHTML = "";
+        # Create sale items
+        for item in items:
+            sale_item = SaleItem(
+                sale_id=sale.id,
+                product_id=item['product'].id,
+                quantity=item['quantity'],
+                price=item['price'],
+                tax=item['tax']
+            )
+            db.session.add(sale_item)
+            # Update product stock
+            item['product'].stock -= item['quantity']
 
-            if (data.length === 0) {
-              productGrid.innerHTML =
-                '<div class="col-12 text-center py-4 text-muted">No products available.</div>';
-              return;
-            }
+        # Handle debt transactions if customer_id is provided
+        if 'customer_id' in data and data['customer_id']:
+            customer_id = data['customer_id']
+            customer = db.session.get(Customer, customer_id)
+            if not customer:
+                return jsonify({'success': False, 'message': 'Customer not found'}), 404
+            
+            # Create a debt record for this sale
+            debt = Debt(
+                customer_id=customer_id,
+                sale_id=sale.id,
+                amount=total,
+                balance=total,
+                type='debt',
+                notes=f'Sale transaction {sale.transaction_id}'
+            )
+            db.session.add(debt)
+            
+            # Update sale payment method to indicate debt
+            sale.payment_method = 'debt'
 
-            data.forEach((product) => {
-              const productCard = document.createElement("div");
-              productCard.className = "col-md-4 mb-3";
-              productCard.innerHTML = `
-          <div class="card product-card" onclick="addToCart(${
-            product.id
-          }, '${escapeHtml(product.name)}', ${product.price}, 1, ${
-                product.tax_rate
-              })">
-              <div class="card-body p-3">
-                  <h6 class="card-title fw-bold text-success mb-2">${
-                    product.name
-                  }</h6>
-                  <p class="card-text mb-1">$${product.price.toFixed(2)}</p>
-                  <small class="text-muted">Stock: ${product.stock}</small>
-              </div>
-          </div>
-      `;
+        db.session.commit()
 
-              productGrid.appendChild(productCard);
-            });
-          })
-          .catch((error) => {
-            console.error("Error loading products:", error);
-            productGrid.innerHTML =
-              '<div class="col-12 text-center py-4 text-danger">Failed to load products.</div>';
-          });
-      }
+        return jsonify({
+            'success': True,
+            'message': 'Sale completed',
+            'transaction_id': sale.transaction_id
+        }), 201
 
-      function searchProducts() {
-        const query = document.getElementById("product-search").value.trim();
-        if (!query) {
-          loadProductsForPOS();
-          return;
-        }
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error creating sale: {str(e)}")
+        return jsonify({'success': False, 'message': f'Error creating sale: {str(e)}'}), 500
 
-        fetch("/api/products/search?q=" + encodeURIComponent(query))
-          .then((response) => response.json())
-          .then((data) => {
-            const productGrid = document.getElementById("product-grid");
-            productGrid.innerHTML = "";
+# --- Get Single Sale with Items ---
+@app.route('/api/sales/<string:transaction_id>', methods=['GET'])
+def api_single_sale(transaction_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
 
-            if (data.length === 0) {
-              productGrid.innerHTML =
-                '<div class="col-12 text-center py-4 text-muted">No products found matching your search.</div>';
-              return;
-            }
+    sale = Sale.query.filter_by(transaction_id=transaction_id).first()
+    if not sale:
+        return jsonify({'success': False, 'message': 'Sale not found'}), 404
 
-            data.forEach((product) => {
-              const productCard = document.createElement("div");
-              productCard.className = "col-md-4 mb-3";
-              productCard.innerHTML = `
-                                  <div class="card product-card" onclick="addToCart(${
-                                    product.id
-                                  }, '${escapeHtml(product.name)}', ${
-                product.price
-              }, 1, ${product.tax_rate})"
-
-                                      <div class="card-body">
-                                          <h6 class="card-title fw-bold text-success mb-2">${
-                                            product.name
-                                          }</h6>
-                                          <p class="card-text">$${product.price.toFixed(
-                                            2
-                                          )}</p>
-                                          <small class="text-muted">Stock: ${
-                                            product.stock
-                                          }</small>
-                                      </div>
-                                  </div>
-                              `;
-              productGrid.appendChild(productCard);
-            });
-
-            document.getElementById("product-search").value = "";
-            document.getElementById("product-search").focus();
-          })
-          .catch((error) => {
-            console.error("Error searching products:", error);
-            document.getElementById("product-grid").innerHTML =
-              '<div class="col-12 text-center py-4 text-danger">Failed to search products.</div>';
-          });
-      }
-
-      function addToCart(productId, name, price, quantity, tax_rate) {
-        // First, fetch the product to check stock AND promotions
-        fetch(`/api/products/${productId}`)
-          .then((response) => {
-            if (!response.ok) {
-              throw new Error("Product not found: " + response.status);
-            }
-            return response.json();
-          })
-          .then((product) => {
-            if (!product) {
-              alert("Product not found!");
-              return;
-            }
-
-            // Check stock
-            const maxAvailable = product.stock;
-            if (quantity > maxAvailable) {
-              const available = confirm(
-                `${product.name} has only ${maxAvailable} in stock.\n` +
-                  `Would you like to add ${maxAvailable} instead?`
-              );
-              if (!available) return;
-              quantity = maxAvailable;
-            }
-
-            // Apply promotions (if any)
-            let finalPrice = product.price;
-            const now = new Date();
-
-            if (product.promotions && Array.isArray(product.promotions)) {
-              const activePromo = product.promotions.find((p) => {
-                const start = new Date(p.start_date);
-                const end = new Date(p.end_date);
-                return now >= start && now <= end;
-              });
-
-              if (activePromo) {
-                if (activePromo.discount_type === "percent") {
-                  const discountAmount =
-                    product.price * (activePromo.discount_value / 100);
-                  finalPrice = Math.max(0, product.price - discountAmount);
-                } else if (activePromo.discount_type === "fixed") {
-                  finalPrice = Math.max(
-                    0,
-                    product.price - activePromo.discount_value
-                  );
-                }
-                showToast(
-                  `${product.name} discounted to $${finalPrice.toFixed(2)}!`,
-                  "success"
-                );
-              }
-            }
-
-            // Add or update cart
-            const existingItem = cart.find(
-              (item) => item.product_id === productId
-            );
-            if (existingItem) {
-              const newQty = existingItem.quantity + quantity;
-              if (newQty > maxAvailable) {
-                alert(
-                  `Cannot add more than ${maxAvailable} units of ${product.name}.`
-                );
-                return;
-              }
-              existingItem.quantity = newQty;
-              existingItem.price = finalPrice;
-            } else {
-              cart.push({
-                product_id: productId,
-                name: product.name,
-                price: finalPrice,
-                quantity: quantity,
-                tax_rate: product.tax_rate || 0,
-                original_price: product.price,
-              });
-            }
-
-            updateCartDisplay();
-            showToast(`${quantity} × ${product.name} added to cart`, "info");
-
-            // Refocus search
-            const searchInput = document.getElementById("product-search");
-            searchInput.value = "";
-            searchInput.focus();
-          })
-          .catch((err) => {
-            console.error("Error adding to cart:", err);
-            alert("Failed to add product. Check connection.");
-          });
-      }
-
-      function updateCartDisplay() {
-        const cartItems = document.getElementById("cart-items");
-        if (cart.length === 0) {
-          cartItems.innerHTML =
-            '<p class="text-muted text-center py-3">No items added</p>';
-          document.getElementById("subtotal").textContent = "$0.00";
-          document.getElementById("tax").textContent = "$0.00";
-          document.getElementById("total").textContent = "$0.00";
-          return;
-        }
-        let subtotalCents = 0;
-        let taxCents = 0;
-        cartItems.innerHTML = "";
-        cart.forEach((item, index) => {
-          const priceCents = Math.round(Number(item.price) * 100);
-          const itemTotalCents = priceCents * Number(item.quantity);
-          const itemTaxCents = Math.round(
-            (itemTotalCents * Number(item.tax_rate)) / 100
-          );
-          subtotalCents += itemTotalCents;
-          taxCents += itemTaxCents;
-          const itemElement = document.createElement("div");
-          itemElement.className =
-            "d-flex justify-content-between align-items-center mb-2 border-bottom pb-2";
-          const itemTotal = (itemTotalCents / 100).toFixed(2);
-          itemElement.innerHTML = `
-                  <div>
-                      <h6 class="mb-0">${item.name}</h6>
-      ${
-        item.original_price && item.original_price > item.price
-          ? `<small class="text-danger">Was $${item.original_price.toFixed(
-              2
-            )}</small>`
-          : ""
-      }
-                      <small class="text-muted">$${Number(item.price).toFixed(
-                        2
-                      )} x ${item.quantity}</small>
-                  </div>
-                  <div class="text-end">
-                      <h6 class="mb-0">$${itemTotal}</h6>
-                      <div class="btn-group btn-group-sm" role="group">
-                          <button class="btn btn-outline-secondary" onclick="adjustQuantity(${index}, -1)">
-                              <i class="bi bi-dash"></i>
-                          </button>
-                          <button class="btn btn-outline-secondary" onclick="adjustQuantity(${index}, 1)">
-                              <i class="bi bi-plus"></i>
-                          </button>
-                          <button class="btn btn-outline-danger" onclick="removeFromCart(${index})">
-                              <i class="bi bi-trash"></i>
-                          </button>
-                      </div>
-                  </div>
-              `;
-          cartItems.appendChild(itemElement);
-        });
-        const totalCents = subtotalCents + taxCents;
-        document.getElementById("subtotal").textContent =
-          "$" + (subtotalCents / 100).toFixed(2);
-        document.getElementById("tax").textContent =
-          "$" + (taxCents / 100).toFixed(2);
-        document.getElementById("total").textContent =
-          "$" + (totalCents / 100).toFixed(2);
-      }
-
-      function adjustQuantity(index, change) {
-        cart[index].quantity += change;
-
-        if (cart[index].quantity <= 0) {
-          cart.splice(index, 1);
-        }
-
-        updateCartDisplay();
-      }
-
-      function removeFromCart(index) {
-        cart.splice(index, 1);
-        updateCartDisplay();
-      }
-
-      function clearCart() {
-        if (cart.length === 0) return;
-
-        if (confirm("Are you sure you want to clear the cart?")) {
-          cart = [];
-          updateCartDisplay();
-        }
-      }
-
-      function completeSale() {
-        if (cart.length === 0) {
-          alert("Please add items to the cart before completing the sale");
-          return;
-        }
-
-        const paymentMethod = document.getElementById("payment-method").value;
-
-        const saleData = {
-          items: cart.map((item) => ({
-            product_id: item.product_id,
-            price: item.price,
-            quantity: item.quantity,
-            tax_rate: item.tax_rate,
-          })),
-          payment_method: paymentMethod,
-        };
-
-        fetch("/api/sales", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(saleData),
+    items = SaleItem.query.filter_by(sale_id=sale.id).all()
+    sale_data = {
+        'transaction_id': sale.transaction_id,
+        'date': sale.date.isoformat(),
+        'total': sale.total,
+        'tax': sale.tax,
+        'payment_method': sale.payment_method,
+        'user_id' : sale.user_id,
+        'username' : sale.user.username if sale.user else 'Unknown',
+        'items': []
+    }
+    for item in items:
+        product = Product.query.get(item.product_id)
+        sale_data['items'].append({
+            'product_id': item.product_id,
+            'name': product.name,
+            'price': item.price,
+            'quantity': item.quantity,
+            'tax': item.tax,
+            'tax_rate': product.tax_rate
         })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
-              alert(
-                "Sale completed successfully! Transaction ID: " +
-                  data.transaction_id
-              );
-              cart = [];
-              updateCartDisplay();
-              loadSales();
-              loadDashboardStats();
-              // Invalidate cache since stock has changed
-              invalidateProductsCache();
-            } else {
-              alert(
-                "Error completing sale: " + (data.message || "Unknown error")
-              );
-            }
-          })
-          .catch((error) => {
-            console.error("Error:", error);
-            alert("Error completing sale: " + error.message);
-          });
-      }
-      // Barcode Label functions
-      function showBarcodeLabelDialog() {
-        const modal = new bootstrap.Modal(
-          document.getElementById("barcodeLabelModal")
-        );
-        loadProductsForBarcodeLabels();
-        modal.show();
-      }
+    return jsonify(sale_data)
 
-      function loadProductsForBarcodeLabels() {
-        const table = document.getElementById("barcode-products-table");
-        table.innerHTML = `
-              <tr>
-                  <td colspan="5" class="text-center py-4">
-                      <div class="spinner-border text-primary" role="status">
-                          <span class="visually-hidden">Loading...</span>
-                      </div>
-                  </td>
-              </tr>
-          `;
+# --- PDF Receipt ---
+@app.route('/api/sales/<string:transaction_id>/print', methods=['GET'])
+def print_receipt(transaction_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
 
-        // USING CACHED PRODUCTS
-        loadProductsCached()
-          .then((data) => {
-            table.innerHTML = "";
+    sale = Sale.query.filter_by(transaction_id=transaction_id).first()
+    if not sale:
+        return jsonify({'success': False, 'message': 'Sale not found'}), 404
 
-            if (data.length === 0) {
-              table.innerHTML = `
-                          <tr>
-                              <td colspan="5" class="text-center py-4 text-muted">No products found.</td>
-                          </tr>
-                      `;
-              return;
-            }
+    items = SaleItem.query.filter_by(sale_id=sale.id).all()
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=72, leftMargin=72,
+                           topMargin=72, bottomMargin=18)
+    styles = getSampleStyleSheet()
+    elements = []
+    elements.append(Paragraph("POS SYSTEM RECEIPT", styles['Title']))
+    elements.append(Spacer(1, 12))
+    cashier_name = sale.user.username if sale.user else 'Unknown'
+    transaction_info = [
+        ["Transaction ID:", sale.transaction_id],
+        ["Date:", sale.date.strftime("%Y-%m-%d %H:%M:%S")],
+        ["Cashier:", cashier_name],
+        ["Payment Method:", sale.payment_method.capitalize()]
+    ]
+    t = Table(transaction_info, colWidths=[120, 200])
+    t.setStyle(TableStyle([
+        ('FONT', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(t)
+    elements.append(Spacer(1, 24))
+    items_data = [["Item", "Price", "Qty", "Tax", "Total"]]
+    subtotal_calc = Decimal('0.00')
+    for item in items:
+        product = Product.query.get(item.product_id)
+        item_total = Decimal(str(item.price)) * Decimal(str(item.quantity))
+        subtotal_calc += item_total
+        items_data.append([
+            product.name,
+            f"${item.price:.2f}",
+            str(item.quantity),
+            f"{product.tax_rate:.0f}%",
+            f"${item_total:.2f}"
+        ])
+    t = Table(items_data, colWidths=[200, 60, 40, 40, 60])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('FONT', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 9),
+    ]))
+    elements.append(t)
+    elements.append(Spacer(1, 12))
+    totals_data = [
+        ["Subtotal:", f"${subtotal_calc:.2f}"],
+        ["Tax:", f"${sale.tax:.2f}"],
+        ["Total:", f"${sale.total:.2f}"]
+    ]
+    t = Table(totals_data, colWidths=[100, 60])
+    t.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+    ]))
+    elements.append(t)
+    elements.append(Spacer(1, 24))
+    elements.append(Paragraph("Thank you for your business!", styles['Normal']))
+    elements.append(Paragraph("Please visit us again soon!", styles['Normal']))
+    doc.build(elements)
+    buffer.seek(0)
+    response = make_response(buffer.getvalue())
+    response.headers['Content-Type'] = 'application/pdf'
+    response.headers['Content-Disposition'] = f'inline; filename=receipt_{transaction_id}.pdf'
+    return response
 
-            data.forEach((product) => {
-              const row = document.createElement("tr");
-              row.innerHTML = `
-                          <td><input type="checkbox" class="product-checkbox" data-id="${
-                            product.id
-                          }"></td>
-                          <td>${product.barcode || "N/A"}</td>
-                          <td>${product.name}</td>
-                          <td>$${product.price.toFixed(2)}</td>
-                          <td>${product.stock}</td>
-                      `;
-              table.appendChild(row);
-            });
-          })
-          .catch((error) => {
-            console.error("Error loading products:", error);
-            table.innerHTML = `
-                      <tr>
-                          <td colspan="5" class="text-center py-4 text-danger">Failed to load products.</td>
-                      </tr>
-                  `;
-          });
-      }
+# --- Excel Export ---
+@app.route('/api/reports/sales/export', methods=['GET'])
+def export_sales_report():
+    if 'user_id' not in session or session['role'] != 'manager':
+        return jsonify({'error': 'Unauthorized'}), 401
 
-      function toggleSelectAllProducts() {
-        const selectAll = document.getElementById(
-          "select-all-products"
-        ).checked;
-        document.querySelectorAll(".product-checkbox").forEach((checkbox) => {
-          checkbox.checked = selectAll;
-        });
-      }
+    start_date = request.args.get('start')
+    end_date = request.args.get('end')
+    query = Sale.query
+    try:
+        if start_date:
+            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+            query = query.filter(Sale.date >= start_date_obj)
+        if end_date:
+            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+            query = query.filter(Sale.date <= end_date_obj)
+    except ValueError:
+        return jsonify({'success': False, 'message': 'Invalid date format'}), 400
 
-      function generateBarcodeLabels() {
-        const selectedProducts = [];
-        document
-          .querySelectorAll(".product-checkbox:checked")
-          .forEach((checkbox) => {
-            selectedProducts.push(parseInt(checkbox.getAttribute("data-id")));
-          });
-
-        if (selectedProducts.length === 0) {
-          alert("Please select at least one product to generate labels");
-          return;
-        }
-
-        fetch("/api/products/barcode_labels", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            product_ids: selectedProducts,
-          }),
+    sales = query.order_by(Sale.date).all()
+    data = []
+    for sale in sales:
+        data.append({
+            'Transaction ID': sale.transaction_id,
+            'Date': sale.date.strftime('%Y-%m-%d %H:%M:%S'),
+            'Total': sale.total,
+            'Tax': sale.tax,
+            'Payment Method': sale.payment_method,
+            'User ID': sale.user_id
         })
-          .then((response) => {
-            if (response.ok) {
-              return response.blob();
-            }
-            throw new Error("Failed to generate labels");
-          })
-          .then((blob) => {
-            // Create a download link and trigger it
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = "barcode_labels.pdf";
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            window.URL.revokeObjectURL(url);
+    df = pd.DataFrame(data)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, sheet_name='Sales Report', index=False)
+        for column in df:
+            column_width = max(df[column].astype(str).map(len).max(), len(column))
+            col_idx = df.columns.get_loc(column)
+            writer.sheets['Sales Report'].set_column(col_idx, col_idx, column_width)
+    output.seek(0)
+    filename = f"sales_report_{start_date or 'all'}_to_{end_date or 'all'}.xlsx"
+    response = make_response(output.getvalue())
+    response.headers['Content-Type'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+    return response
 
-            // Close the modal
-            const modal = bootstrap.Modal.getInstance(
-              document.getElementById("barcodeLabelModal")
-            );
-            modal.hide();
-          })
-          .catch((error) => {
-            console.error("Error generating labels:", error);
-            alert("Error generating labels: " + error.message);
-          });
-      }
-      // Product management functions
-      function loadProducts() {
-        const productsTable = document.getElementById("products-table");
-        productsTable.innerHTML = `
-                      <tr>
-                          <td colspan="7" class="text-center py-4">
-                              <div class="spinner-border text-primary" role="status">
-                                  <span class="visually-hidden">Loading...</span>
-                              </div>
-                          </td>
-                      </tr>
-                  `;
+@app.route('/api/reports/sales', methods=['GET'])
+def api_report_sales():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
 
-        // USING CACHED PRODUCTS
-        loadProductsCached()
-          .then((data) => {
-            productsTable.innerHTML = "";
+    start_date = request.args.get('start')  # Format: 'YYYY-MM-DD'
+    end_date = request.args.get('end')      # Format: 'YYYY-MM-DD'
 
-            if (data.length === 0) {
-              productsTable.innerHTML = `
-                                  <tr>
-                                      <td colspan="7" class="text-center py-4 text-muted">No products found.</td>
-                                  </tr>
-                              `;
-              return;
-            }
+    query = Sale.query
+    myanmar_tz = pytz.timezone('Asia/Yangon')
 
-            data.forEach((product) => {
-              const row = document.createElement("tr");
-              row.innerHTML = `
-                                  <td>${product.barcode || "N/A"}</td>
-                                  <td>${product.name}</td>
-                                  <td>$${product.price.toFixed(2)}</td>
-                                  <td>${product.stock}</td>
-                                  <td>${product.category || "N/A"}</td>
-                                  <td>${product.tax_rate}%</td>
-                                  <td>
-                                      <button class="btn btn-sm btn-primary me-1" onclick="editProduct(${
-                                        product.id
-                                      })">
-                                          <i class="bi bi-pencil"></i>
-                                      </button>
-                                      <button class="btn btn-sm btn-danger" onclick="deleteProduct(${
-                                        product.id
-                                      }, '${escapeHtml(product.name)}')">
-                                          <i class="bi bi-trash"></i>
-                                      </button>
-                                  </td>
-                              `;
-              productsTable.appendChild(row);
-            });
-          })
-          .catch((error) => {
-            console.error("Error loading products:", error);
-            productsTable.innerHTML = `
-                              <tr>
-                                  <td colspan="7" class="text-center py-4 text-danger">Failed to load products.</td>
-                              </tr>
-                          `;
-          });
-      }
+    try:
+        # Apply date filters if provided
+        if start_date:
+            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
+            start_date_obj = myanmar_tz.localize(start_date_obj)
+            query = query.filter(Sale.date >= start_date_obj)
 
-      function saveProduct() {
-        const barcode = document.getElementById("add-barcode").value.trim();
-        const name = document.getElementById("add-product-name").value.trim();
-        const price = parseFloat(document.getElementById("add-price").value);
-        const cost = parseFloat(document.getElementById("add-cost").value) || 0;
-        const stock = parseInt(document.getElementById("add-stock").value);
-        const category = document.getElementById("add-category").value.trim();
-        const taxRate =
-          parseFloat(document.getElementById("add-tax-rate").value) || 0;
+        if end_date:
+            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
+            end_date_obj = myanmar_tz.localize(end_date_obj).replace(hour=23, minute=59, second=59)
+            query = query.filter(Sale.date <= end_date_obj)
 
-        if (!name || isNaN(price) || isNaN(stock)) {
-          alert("Please fill in all required fields with valid values");
-          return;
-        }
+        # Cashiers can only see their own sales
+        if session.get('role') == 'cashier':
+            query = query.filter(Sale.user_id == session['user_id'])
 
-        const productData = {
-          barcode: barcode || null,
-          name: name,
-          price: price,
-          cost: cost,
-          stock: stock,
-          category: category || null,
-          tax_rate: taxRate,
-        };
+        # Fetch and return sales
+        sales = query.order_by(Sale.date.desc()).all()
 
-        fetch("/api/products", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(productData),
+        return jsonify([{
+            'id': s.id,
+            'transaction_id': s.transaction_id,
+            'date': s.date.isoformat(),
+            'total': s.total,
+            'tax': s.tax,
+            'payment_method': s.payment_method,
+            'user_id': s.user_id,
+            'username': s.user.username if s.user else 'Unknown'
+        } for s in sales])
+
+    except ValueError as e:
+        app.logger.error(f"Date parsing error: {str(e)}")
+        return jsonify({'success': False, 'message': 'Invalid date format. Use YYYY-MM-DD.'}), 400
+
+@app.route('/api/dashboard/sales_data')
+def api_dashboard_sales_data():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    # Get sales for the last 7 days
+    end_date = datetime.now(pytz.timezone('Asia/Yangon'))
+    start_date = end_date - timedelta(days=7)
+    
+    sales = Sale.query.filter(
+        Sale.date >= start_date,
+        Sale.date <= end_date
+    ).order_by(Sale.date).all()
+
+    # Group sales by day
+    sales_by_day = {}
+    for sale in sales:
+        sale_date = sale.date.strftime('%Y-%m-%d')
+        if sale_date not in sales_by_day:
+            sales_by_day[sale_date] = 0
+        sales_by_day[sale_date] += sale.total
+
+    # Fill in missing days with 0
+    result = []
+    current_date = start_date
+    while current_date <= end_date:
+        date_str = current_date.strftime('%Y-%m-%d')
+        result.append({
+            'date': date_str,
+            'total': sales_by_day.get(date_str, 0)
         })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
-              alert("Product added successfully!");
-              const modal = bootstrap.Modal.getInstance(
-                document.getElementById("addProductModal")
-              );
-              modal.hide();
-              document.getElementById("add-product-form").reset();
-              // Invalidate cache since products have changed
-              invalidateProductsCache();
-              loadProducts();
-              loadDashboardStats();
-            } else {
-              alert(
-                "Error adding product: " + (data.message || "Unknown error")
-              );
-            }
-          })
-          .catch((error) => {
-            console.error("Error saving product:", error);
-            alert("Error saving product: " + error.message);
-          });
-      }
+        current_date += timedelta(days=1)
 
-      function editProduct(productId) {
-        fetch("/api/products/" + productId)
-          .then((response) => response.json())
-          .then((product) => {
-            currentProduct = product;
-            document.getElementById("edit-product-id").value = product.id;
-            document.getElementById("edit-barcode").value =
-              product.barcode || "";
-            document.getElementById("edit-product-name").value = product.name;
-            document.getElementById("edit-price").value = product.price;
-            document.getElementById("edit-cost").value = product.cost || 0;
-            document.getElementById("edit-stock").value = product.stock;
-            document.getElementById("edit-category").value =
-              product.category || "";
-            document.getElementById("edit-tax-rate").value = product.tax_rate;
+    return jsonify(result)
 
-            const modal = new bootstrap.Modal(
-              document.getElementById("editProductModal")
-            );
-            modal.show();
-          })
-          .catch((error) => {
-            console.error("Error fetching product:", error);
-            alert("Failed to load product for editing");
-          });
-      }
+# User API Endpoints
+@app.route('/api/users', methods=['GET'])
+@manager_required
+def api_users():
+    users = User.query.all()
+    return jsonify([{
+        'id': u.id,
+        'username': u.username,
+        'role': u.role
+    } for u in users])
 
-      function updateProduct() {
-        if (!currentProduct) {
-          alert("No product selected for update");
-          return;
-        }
+@app.route('/api/users', methods=['POST'])
+@manager_required
+def api_create_user():
+    data = request.get_json()
+    if not data or not all(k in data for k in ['username', 'password', 'role']):
+        return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+        
+    if User.query.filter_by(username=data['username']).first():
+        return jsonify({'success': False, 'message': 'Username already exists'}), 400
+        
+    user = User(
+        username=data['username'],
+        password=generate_password_hash(data['password']),
+        role=data['role']
+    )
+    db.session.add(user)
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'User created'}), 201
 
-        const productId = document.getElementById("edit-product-id").value;
-        const barcode = document.getElementById("edit-barcode").value.trim();
-        const name = document.getElementById("edit-product-name").value.trim();
-        const price = parseFloat(document.getElementById("edit-price").value);
-        const cost =
-          parseFloat(document.getElementById("edit-cost").value) || 0;
-        const stock = parseInt(document.getElementById("edit-stock").value);
-        const category = document.getElementById("edit-category").value.trim();
-        const taxRate =
-          parseFloat(document.getElementById("edit-tax-rate").value) || 0;
-
-        if (!name || isNaN(price) || isNaN(stock)) {
-          alert("Please fill in all required fields with valid values");
-          return;
-        }
-
-        const productData = {
-          barcode: barcode || null,
-          name: name,
-          price: price,
-          cost: cost,
-          stock: stock,
-          category: category || null,
-          tax_rate: taxRate,
-        };
-
-        fetch("/api/products/" + productId, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(productData),
+@app.route('/api/users/<int:user_id>', methods=['GET', 'PUT', 'DELETE'])
+@manager_required
+def api_single_user(user_id):
+    user = db.session.get(User, user_id)
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+        
+    if request.method == 'GET':
+        return jsonify({
+            'id': user.id,
+            'username': user.username,
+            'role': user.role
         })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
-              alert("Product updated successfully!");
-              const modal = bootstrap.Modal.getInstance(
-                document.getElementById("editProductModal")
-              );
-              modal.hide();
-              // Invalidate cache since products have changed
-              invalidateProductsCache();
-              loadProducts();
-              loadDashboardStats();
-            } else {
-              alert(
-                "Error updating product: " + (data.message || "Unknown error")
-              );
-            }
-          })
-          .catch((error) => {
-            console.error("Error updating product:", error);
-            alert("Error updating product: " + error.message);
-          });
-      }
+        
+    elif request.method == 'PUT':
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+            
+        # Check if username already exists (excluding current user)
+        if 'username' in data and data['username'] != user.username:
+            existing_user = User.query.filter_by(username=data['username']).first()
+            if existing_user and existing_user.id != user.id:
+                return jsonify({'success': False, 'message': 'Username already exists'}), 400
+                
+        user.username = data.get('username', user.username)
+        user.role = data.get('role', user.role)
+        
+        # Update password if provided
+        if 'password' in data and data['password']:
+            user.password = generate_password_hash(data['password'])
+            
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'User updated'})
+        
+    elif request.method == 'DELETE':
+        # Prevent deleting yourself
+        if user.id == session['user_id']:
+            return jsonify({'success': False, 'message': 'Cannot delete your own account'}), 400
+            
+        db.session.delete(user)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'User deleted'})
 
-      function deleteProduct(productId, productName) {
-        if (
-          !confirm(
-            `Are you sure you want to delete "${productName}"? This action cannot be undone.`
-          )
-        ) {
-          return;
-        }
+# --- PROMOTIONS API ---
+@app.route('/api/promotions', methods=['GET', 'POST'])
+@manager_required
+def api_promotions():
+    myanmar_tz = pytz.timezone('Asia/Yangon')
+    
+    if request.method == 'GET':
+        promotions = Promotion.query.all()
+        now = datetime.now(myanmar_tz)
 
-        fetch("/api/products/" + productId, {
-          method: "DELETE",
+        return jsonify([{
+            'id': p.id,
+            'product_id': p.product_id,
+            'product_name': p.product.name,
+            'discount_type': p.discount_type,
+            'discount_value': p.discount_value,
+            'start_date': p.start_date.astimezone(myanmar_tz).isoformat() if p.start_date.tzinfo else myanmar_tz.localize(p.start_date).isoformat(),
+            'end_date': p.end_date.astimezone(myanmar_tz).isoformat() if p.end_date.tzinfo else myanmar_tz.localize(p.end_date).isoformat(),
+            'is_active': (myanmar_tz.localize(p.start_date) <= now <= myanmar_tz.localize(p.end_date))
+        } for p in promotions])
+
+    elif request.method == 'POST':
+        data = request.get_json()
+        required = ['product_id', 'discount_type', 'discount_value', 'start_date', 'end_date']
+        if not data or not all(k in data for k in required):
+            return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+
+        try:
+            # Convert to Myanmar timezone
+            start_date = datetime.fromisoformat(data['start_date'].replace('Z', '+00:00'))
+            end_date = datetime.fromisoformat(data['end_date'].replace('Z', '+00:00'))
+            
+            start_date = start_date.astimezone(myanmar_tz)
+            end_date = end_date.astimezone(myanmar_tz)
+
+            if end_date <= start_date:
+                return jsonify({'success': False, 'message': 'End date must be after start date'}), 400
+
+            promotion = Promotion(
+                product_id=data['product_id'],
+                discount_type=data['discount_type'],
+                discount_value=data['discount_value'],
+                start_date=start_date,
+                end_date=end_date
+            )
+            db.session.add(promotion)
+            db.session.commit()
+
+            return jsonify({'success': True, 'message': 'Promotion created!'}), 201
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/promotions/<int:promo_id>', methods=['PUT', 'DELETE'])
+@manager_required
+def api_single_promotion(promo_id):
+    promo = Promotion.query.get_or_404(promo_id)
+    myanmar_tz = pytz.timezone('Asia/Yangon')
+
+    if request.method == 'DELETE':
+        db.session.delete(promo)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Promotion deleted'})
+
+    elif request.method == 'PUT':
+        data = request.get_json()
+        try:
+            # Update fields if provided
+            if 'start_date' in data:
+                start_dt = datetime.fromisoformat(data['start_date'])
+                promo.start_date = myanmar_tz.localize(start_dt)
+            if 'end_date' in data:
+                end_dt = datetime.fromisoformat(data['end_date'])
+                promo.end_date = myanmar_tz.localize(end_dt)
+            if 'discount_type' in data:
+                promo.discount_type = data['discount_type']
+            if 'discount_value' in data:
+                promo.discount_value = data['discount_value']
+
+            # Validate date range
+            if promo.end_date <= promo.start_date:
+                return jsonify({'success': False, 'message': 'End date must be after start date'}), 400
+
+            db.session.commit()
+            return jsonify({'success': True, 'message': 'Promotion updated'})
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({'success': False, 'message': str(e)}), 500
+
+# Customer API Endpoints
+@app.route('/api/customers', methods=['GET', 'POST'])
+@manager_required
+def api_customers():
+    if request.method == 'GET':
+        customers = Customer.query.all()
+        return jsonify([{
+            'id': c.id,
+            'name': c.name,
+            'phone': c.phone,
+            'email': c.email,
+            'address': c.address,
+            'created_at': c.created_at.isoformat(),
+            'total_debt': sum(d.balance for d in c.debts if d.type == 'debt')
+        } for c in customers])
+    
+    elif request.method == 'POST':
+        data = request.get_json()
+        if not data or not 'name' in data:
+            return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+        
+        customer = Customer(
+            name=data['name'],
+            phone=data.get('phone'),
+            email=data.get('email'),
+            address=data.get('address')
+        )
+        db.session.add(customer)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Customer added'}), 201
+
+@app.route('/api/customers/<int:customer_id>', methods=['GET', 'PUT', 'DELETE'])
+@manager_required
+def api_single_customer(customer_id):
+    customer = db.session.get(Customer, customer_id)
+    if not customer:
+        return jsonify({'success': False, 'message': 'Customer not found'}), 404
+    
+    if request.method == 'GET':
+        return jsonify({
+            'id': customer.id,
+            'name': customer.name,
+            'phone': customer.phone,
+            'email': customer.email,
+            'address': customer.address,
+            'created_at': customer.created_at.isoformat()
         })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
-              alert("Product deleted successfully!");
-              // Invalidate cache since products have changed
-              invalidateProductsCache();
-              loadProducts();
-              loadDashboardStats();
-            } else {
-              alert(
-                "Error deleting product: " + (data.message || "Unknown error")
-              );
-            }
-          })
-          .catch((error) => {
-            console.error("Error deleting product:", error);
-            alert("Error deleting product: " + error.message);
-          });
-      }
+    
+    elif request.method == 'PUT':
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        
+        customer.name = data.get('name', customer.name)
+        customer.phone = data.get('phone', customer.phone)
+        customer.email = data.get('email', customer.email)
+        customer.address = data.get('address', customer.address)
+        
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Customer updated'})
+    
+    elif request.method == 'DELETE':
+        # Check if customer has outstanding debts
+        total_debt = sum(d.balance for d in customer.debts if d.type == 'debt')
+        if total_debt > 0:
+            return jsonify({'success': False, 'message': 'Cannot delete customer with outstanding debts'}), 400
+        
+        db.session.delete(customer)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Customer deleted'})
 
-      // Sales history functions
-      function loadSales() {
-        const salesTable = document.getElementById("sales-table");
-        salesTable.innerHTML = `
-                      <tr>
-                          <td colspan="6" class="text-center py-4">
-                              <div class="spinner-border text-primary" role="status">
-                                  <span class="visually-hidden">Loading...</span>
-                              </div>
-                          </td>
-                      </tr>
-                  `;
+# Debt API Endpoints
+@app.route('/api/debts', methods=['GET', 'POST'])
+@manager_required
+def api_debts():
+    if request.method == 'GET':
+        debts = Debt.query.all()
+        return jsonify([{
+            'id': d.id,
+            'customer_id': d.customer_id,
+            'customer_name': d.customer.name,
+            'sale_id': d.sale_id,
+            'amount': d.amount,
+            'balance': d.balance,
+            'type': d.type,
+            'date': d.date.isoformat(),
+            'notes': d.notes
+        } for d in debts])
+    
+    elif request.method == 'POST':
+        data = request.get_json()
+        if not data or not all(k in data for k in ['customer_id', 'amount']):
+            return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+        
+        debt = Debt(
+            customer_id=data['customer_id'],
+            amount=data['amount'],
+            balance=data['amount'],
+            type=data.get('type', 'debt'),
+            notes=data.get('notes')
+        )
+        db.session.add(debt)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Debt record added'}), 201
 
-        fetch("/api/reports/sales")
-          .then((response) => response.json())
-          .then((data) => {
-            salesTable.innerHTML = "";
-
-            if (data.length === 0) {
-              salesTable.innerHTML = `
-                                  <tr>
-                                      <td colspan="6" class="text-center py-4 text-muted">No sales recorded.</td>
-                                  </tr>
-                              `;
-              return;
-            }
-
-            data.forEach((sale) => {
-              const row = document.createElement("tr");
-              row.innerHTML = `
-                                  <td>${sale.transaction_id}</td>
-                                  <td>${new Date(
-                                    sale.date
-                                  ).toLocaleString()}</td>
-                                  <td>$${sale.total.toFixed(2)}</td>
-                                  <td>${sale.payment_method}</td>
-                                  <td>${sale.username || "Unknown"}</td>
-                                  <td>
-                                      <button class="btn btn-sm btn-info" onclick="viewSaleDetails('${
-                                        sale.transaction_id
-                                      }')">
-                                          <i class="bi bi-info-circle"></i> Details
-                                      </button>
-                                  </td>
-                              `;
-              salesTable.appendChild(row);
-            });
-          })
-          .catch((error) => {
-            console.error("Error loading sales:", error);
-            salesTable.innerHTML = `
-                              <tr>
-                                  <td colspan="6" class="text-center py-4 text-danger">Failed to load sales.</td>
-                              </tr>
-                          `;
-          });
-      }
-
-      function filterSalesByDate() {
-        const date = document.getElementById("sales-date-filter").value;
-        if (!date) return;
-
-        const salesTable = document.getElementById("sales-table");
-        salesTable.innerHTML = `
-              <tr>
-                  <td colspan="6" class="text-center py-4">
-                      <div class="spinner-border text-primary" role="status">
-                          <span class="visually-hidden">Loading...</span>
-                      </div>
-                  </td>
-              </tr>
-          `;
-
-        fetch("/api/reports/sales?start=" + date + "&end=" + date)
-          .then((response) => response.json())
-          .then((data) => {
-            salesTable.innerHTML = "";
-
-            if (data.length === 0) {
-              salesTable.innerHTML = `
-                          <tr>
-                              <td colspan="6" class="text-center py-4 text-muted">No sales recorded for this date.</td>
-                          </tr>
-                      `;
-              return;
-            }
-
-            data.forEach((sale) => {
-              const row = document.createElement("tr");
-              row.innerHTML = `
-                          <td>${sale.transaction_id}</td>
-                          <td>${new Date(sale.date).toLocaleString()}</td>
-                          <td>$${sale.total.toFixed(2)}</td>
-                          <td>${sale.payment_method}</td>
-                          <td>${sale.user_id}</td>
-                          <td>
-                              <button class="btn btn-sm btn-info" onclick="viewSaleDetails('${
-                                sale.transaction_id
-                              }')">
-                                  <i class="bi bi-info-circle"></i> Details
-                              </button>
-                          </td>
-                      `;
-              salesTable.appendChild(row);
-            });
-          })
-          .catch((error) => {
-            console.error("Error filtering sales:", error);
-            salesTable.innerHTML = `
-                      <tr>
-                          <td colspan="6" class="text-center py-4 text-danger">Failed to filter sales.</td>
-                      </tr>
-                  `;
-          });
-      }
-
-      function viewSaleDetails(transactionId) {
-        const modal = new bootstrap.Modal(
-          document.getElementById("saleDetailsModal")
-        );
-        document.getElementById("sale-id-display").textContent = transactionId;
-
-        const content = document.getElementById("sale-details-content");
-        content.innerHTML = `
-                      <div class="text-center py-4">
-                          <div class="spinner-border text-primary" role="status">
-                              <span class="visually-hidden">Loading...</span>
-                          </div>
-                      </div>
-                  `;
-
-        modal.show();
-
-        fetch("/api/sales/" + transactionId)
-          .then((response) => response.json())
-          .then((sale) => {
-            let itemsHtml = "";
-            let subtotal = 0;
-
-            sale.items.forEach((item) => {
-              const itemTotal = item.price * item.quantity;
-              subtotal += itemTotal;
-
-              itemsHtml += `
-                                  <tr>
-                                      <td>${item.name}</td>
-                                      <td>$${item.price.toFixed(2)}</td>
-                                      <td>${item.quantity}</td>
-                                      <td>${item.tax_rate}%</td>
-                                      <td>$${itemTotal.toFixed(2)}</td>
-                                  </tr>
-                              `;
-            });
-
-            const tax = sale.tax || subtotal * 0.1; // Default to 10% if not provided
-            const total = subtotal + tax;
-
-            content.innerHTML = `
-                              <div class="row mb-4">
-                                  <div class="col-md-6">
-                                      <h6>Transaction ID</h6>
-                                      <p>${sale.transaction_id}</p>
-                                  </div>
-                                  <div class="col-md-6">
-                                      <h6>Date</h6>
-                                      <p>${new Date(
-                                        sale.date
-                                      ).toLocaleString()}</p>
-                                  </div>
-                              </div>
-
-                              <h5 class="mb-3">Items</h5>
-                              <div class="table-responsive">
-                                  <table class="table table-striped">
-                                      <thead>
-                                          <tr>
-                                              <th>Product</th>
-                                              <th>Price</th>
-                                              <th>Qty</th>
-                                              <th>Tax</th>
-                                              <th>Total</th>
-                                          </tr>
-                                      </thead>
-                                      <tbody>
-                                          ${itemsHtml}
-                                      </tbody>
-                                      <tfoot>
-                                          <tr>
-                                              <th colspan="4" class="text-end">Subtotal:</th>
-                                              <th>$${subtotal.toFixed(2)}</th>
-                                          </tr>
-                                          <tr>
-                                              <th colspan="4" class="text-end">Tax:</th>
-                                              <th>$${tax.toFixed(2)}</th>
-                                          </tr>
-                                          <tr class="table-active">
-                                              <th colspan="4" class="text-end">Total:</th>
-                                              <th>$${total.toFixed(2)}</th>
-                                          </tr>
-                                      </tfoot>
-                                  </table>
-                              </div>
-
-                              <div class="row mt-4">
-                                  <div class="col-md-6">
-                                      <h6>Payment Method</h6>
-                                      <p>${sale.payment_method}</p>
-                                  </div>
-                                  <div class="col-md-6">
-                                      <h6>Processed By</h6>
-                                      <p>User ID: ${sale.username}</p>
-                                  </div>
-                              </div>
-                          `;
-          })
-          .catch((error) => {
-            console.error("Error loading sale details:", error);
-            content.innerHTML = `
-                              <div class="alert alert-danger">
-                                  Failed to load sale details. Please try again.
-                              </div>
-                          `;
-          });
-      }
-
-      function printReceipt() {
-        const transactionId =
-          document.getElementById("sale-id-display").textContent;
-        window.open(`/api/sales/${transactionId}/print`, "_blank");
-        const modal = bootstrap.Modal.getInstance(
-          document.getElementById("saleDetailsModal")
-        );
-        modal.hide();
-      }
-
-      // Reports functions
-      function initSalesChart() {
-        const ctx = document.getElementById("salesChart").getContext("2d");
-
-        if (salesChart) {
-          salesChart.destroy();
-        }
-
-        // Default to last 7 days
-        const startDate =
-          document.getElementById("start-date").value ||
-          new Date(new Date().setDate(new Date().getDate() - 7))
-            .toISOString()
-            .split("T")[0];
-        const endDate =
-          document.getElementById("end-date").value ||
-          new Date().toISOString().split("T")[0];
-
-        fetch("/api/reports/sales?start=" + startDate + "&end=" + endDate)
-          .then((response) => response.json())
-          .then((data) => {
-            // Group sales by date
-            const salesByDate = {};
-            data.forEach((sale) => {
-              const date = sale.date.split("T")[0];
-              if (!salesByDate[date]) {
-                salesByDate[date] = 0;
-              }
-              salesByDate[date] += sale.total;
-            });
-
-            // Prepare chart data
-            const labels = Object.keys(salesByDate).sort();
-            const chartData = labels.map((date) => salesByDate[date]);
-
-            salesChart = new Chart(ctx, {
-              type: "bar",
-              data: {
-                labels: labels,
-                datasets: [
-                  {
-                    label: "Daily Sales ($)",
-                    data: chartData,
-                    backgroundColor: "rgba(54, 162, 235, 0.7)",
-                    borderColor: "rgba(54, 162, 235, 1)",
-                    borderWidth: 1,
-                  },
-                ],
-              },
-              options: {
-                responsive: true,
-                plugins: {
-                  legend: {
-                    display: false,
-                  },
-                },
-                scales: {
-                  y: {
-                    beginAtZero: true,
-                    title: {
-                      display: true,
-                      text: "Amount ($)",
-                    },
-                  },
-                  x: {
-                    title: {
-                      display: true,
-                      text: "Date",
-                    },
-                  },
-                },
-              },
-            });
-          })
-          .catch((error) => {
-            console.error("Error initializing sales chart:", error);
-            ctx.font = "16px Arial";
-            ctx.fillStyle = "red";
-            ctx.textAlign = "center";
-            ctx.fillText(
-              "Failed to load chart data",
-              ctx.canvas.width / 2,
-              ctx.canvas.height / 2
-            );
-          });
-      }
-
-      function initPaymentChart() {
-        const ctx = document.getElementById("paymentChart").getContext("2d");
-
-        if (paymentChart) {
-          paymentChart.destroy();
-        }
-
-        // Default to last 7 days
-        const startDate =
-          document.getElementById("start-date").value ||
-          new Date(new Date().setDate(new Date().getDate() - 7))
-            .toISOString()
-            .split("T")[0];
-        const endDate =
-          document.getElementById("end-date").value ||
-          new Date().toISOString().split("T")[0];
-
-        fetch("/api/reports/sales?start=" + startDate + "&end=" + endDate)
-          .then((response) => response.json())
-          .then((data) => {
-            // Group sales by payment method
-            const paymentMethods = {};
-            data.forEach((sale) => {
-              if (!paymentMethods[sale.payment_method]) {
-                paymentMethods[sale.payment_method] = 0;
-              }
-              paymentMethods[sale.payment_method] += sale.total;
-            });
-
-            // Prepare chart data
-            const labels = Object.keys(paymentMethods);
-            const chartData = labels.map((method) => paymentMethods[method]);
-            const backgroundColors = [
-              "rgba(255, 99, 132, 0.7)",
-              "rgba(54, 162, 235, 0.7)",
-              "rgba(255, 206, 86, 0.7)",
-              "rgba(75, 192, 192, 0.7)",
-            ];
-
-            paymentChart = new Chart(ctx, {
-              type: "doughnut",
-              data: {
-                labels: labels,
-                datasets: [
-                  {
-                    data: chartData,
-                    backgroundColor: backgroundColors,
-                    borderWidth: 1,
-                  },
-                ],
-              },
-              options: {
-                responsive: true,
-                plugins: {
-                  legend: {
-                    position: "bottom",
-                  },
-                },
-              },
-            });
-          })
-          .catch((error) => {
-            console.error("Error initializing payment chart:", error);
-            ctx.font = "16px Arial";
-            ctx.fillStyle = "red";
-            ctx.textAlign = "center";
-            ctx.fillText(
-              "Failed to load chart data",
-              ctx.canvas.width / 2,
-              ctx.canvas.height / 2
-            );
-          });
-      }
-
-      function generateReport() {
-        const startDate = document.getElementById("start-date").value;
-        const endDate = document.getElementById("end-date").value;
-
-        if (!startDate || !endDate) {
-          alert("Please select both start and end dates");
-          return;
-        }
-
-        const resultsDiv = document.getElementById("report-results");
-        resultsDiv.innerHTML = `
-                      <div class="text-center py-4">
-                          <div class="spinner-border text-primary" role="status">
-                              <span class="visually-hidden">Loading...</span>
-                          </div>
-                      </div>
-                  `;
-
-        fetch("/api/reports/sales?start=" + startDate + "&end=" + endDate)
-          .then((response) => response.json())
-          .then((data) => {
-            const totalSales = data.reduce((sum, sale) => sum + sale.total, 0);
-            const totalTax = data.reduce((sum, sale) => sum + sale.tax, 0);
-            const totalTransactions = data.length;
-
-            // Group by payment method
-            const paymentMethods = {};
-            data.forEach((sale) => {
-              if (!paymentMethods[sale.payment_method]) {
-                paymentMethods[sale.payment_method] = {
-                  count: 0,
-                  total: 0,
-                };
-              }
-              paymentMethods[sale.payment_method].count++;
-              paymentMethods[sale.payment_method].total += sale.total;
-            });
-
-            let paymentMethodsHtml = "";
-            for (const [method, stats] of Object.entries(paymentMethods)) {
-              paymentMethodsHtml += `
-                                  <tr>
-                                      <td>${method}</td>
-                                      <td>${stats.count}</td>
-                                      <td>$${stats.total.toFixed(2)}</td>
-                                      <td>${(
-                                        (stats.total / totalSales) *
-                                        100
-                                      ).toFixed(1)}%</td>
-                                  </tr>
-                              `;
-            }
-
-            resultsDiv.innerHTML = `
-                              <div class="row mb-4">
-                                  <div class="col-md-4">
-                                      <div class="card bg-light">
-                                          <div class="card-body text-center">
-                                              <h5 class="card-title">Total Sales</h5>
-                                              <h3>$${totalSales.toFixed(2)}</h3>
-                                          </div>
-                                      </div>
-                                  </div>
-                                  <div class="col-md-4">
-                                      <div class="card bg-light">
-                                          <div class="card-body text-center">
-                                              <h5 class="card-title">Total Tax</h5>
-                                              <h3>$${totalTax.toFixed(2)}</h3>
-                                          </div>
-                                      </div>
-                                  </div>
-                                  <div class="col-md-4">
-                                      <div class="card bg-light">
-                                          <div class="card-body text-center">
-                                              <h5 class="card-title">Transactions</h5>
-                                              <h3>${totalTransactions}</h3>
-                                          </div>
-                                      </div>
-                                  </div>
-                              </div>
-
-                              <h5 class="mb-3">Payment Methods</h5>
-                              <div class="table-responsive mb-4">
-                                  <table class="table table-striped">
-                                      <thead>
-                                          <tr>
-                                              <th>Method</th>
-                                              <th>Transactions</th>
-                                              <th>Total</th>
-                                              <th>Percentage</th>
-                                          </tr>
-                                      </thead>
-                                      <tbody>
-                                          ${paymentMethodsHtml}
-                                      </tbody>
-                                  </table>
-                              </div>
-
-                              <h5 class="mb-3">Recent Transactions</h5>
-                              <div class="table-responsive">
-                                  <table class="table table-striped">
-                                      <thead>
-                                          <tr>
-                                              <th>Transaction ID</th>
-                                              <th>Date</th>
-                                              <th>Total</th>
-                                              <th>Payment</th>
-                                          </tr>
-                                      </thead>
-                                      <tbody>
-                                          ${data
-                                            .slice(0, 5)
-                                            .map(
-                                              (sale) => `
-                                              <tr>
-                                                  <td>${
-                                                    sale.transaction_id
-                                                  }</td>
-                                                  <td>${new Date(
-                                                    sale.date
-                                                  ).toLocaleString()}</td>
-                                                  <td>$${sale.total.toFixed(
-                                                    2
-                                                  )}</td>
-                                                  <td>${
-                                                    sale.payment_method
-                                                  }</td>
-                                              </tr>
-                                          `
-                                            )
-                                            .join("")}
-                                      </tbody>
-                                  </table>
-                              </div>
-                          `;
-
-            // Refresh charts with new date range
-            initSalesChart();
-            initPaymentChart();
-          })
-          .catch((error) => {
-            console.error("Error generating report:", error);
-            resultsDiv.innerHTML = `
-                              <div class="alert alert-danger">
-                                  Failed to generate report. Please try again.
-                              </div>
-                          `;
-          });
-      }
-      // User management functions
-      // Update the loadUsers function to properly handle the response
-      function loadUsers() {
-        const usersTable = document.getElementById("users-table");
-        usersTable.innerHTML = `
-          <tr>
-            <td colspan="4" class="text-center py-4">
-              <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">Loading...</span>
-              </div>
-            </td>
-          </tr>
-        `;
-
-        fetch("/api/users")
-          .then((response) => {
-            if (!response.ok) {
-              throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            return response.json();
-          })
-          .then((data) => {
-            usersTable.innerHTML = "";
-
-            if (data.length === 0) {
-              usersTable.innerHTML = `
-                <tr>
-                  <td colspan="4" class="text-center py-4 text-muted">No users found.</td>
-                </tr>
-              `;
-              return;
-            }
-
-            data.forEach((user) => {
-              const row = document.createElement("tr");
-              row.innerHTML = `
-                <td>${user.id}</td>
-                <td>${user.username}</td>
-                <td><span class="badge bg-${
-                  user.role === "manager" ? "primary" : "secondary"
-                }">${user.role}</span></td>
-                <td>
-                  <button class="btn btn-sm btn-primary me-1" onclick="editUser(${
-                    user.id
-                  })">
-                    <i class="bi bi-pencil"></i>
-                  </button>
-                  <button class="btn btn-sm btn-danger" onclick="deleteUser(${
-                    user.id
-                  }, '${escapeHtml(user.username)}')">
-                    <i class="bi bi-trash"></i>
-                  </button>
-                </td>
-              `;
-              usersTable.appendChild(row);
-            });
-          })
-          .catch((error) => {
-            console.error("Error loading users:", error);
-            usersTable.innerHTML = `
-              <tr>
-                <td colspan="4" class="text-center py-4 text-danger">Failed to load users. ${error.message}</td>
-              </tr>
-            `;
-          });
-      }
-
-      // Update the saveUser function
-      function saveUser() {
-        const username = document.getElementById("add-username").value.trim();
-        const password = document.getElementById("add-password").value;
-        const confirmPassword = document.getElementById(
-          "add-confirm-password"
-        ).value;
-        const role = document.getElementById("add-role").value;
-
-        if (!username || !password) {
-          alert("Please fill in all required fields");
-          return;
-        }
-
-        if (password !== confirmPassword) {
-          alert("Passwords do not match");
-          return;
-        }
-
-        const userData = {
-          username: username,
-          password: password,
-          role: role,
-        };
-
-        fetch("/api/users", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(userData),
+@app.route('/api/debts/<int:debt_id>', methods=['GET', 'PUT', 'DELETE'])
+@manager_required
+def api_single_debt(debt_id):
+    debt = db.session.get(Debt, debt_id)
+    if not debt:
+        return jsonify({'success': False, 'message': 'Debt record not found'}), 404
+    
+    if request.method == 'GET':
+        return jsonify({
+            'id': debt.id,
+            'customer_id': debt.customer_id,
+            'customer_name': debt.customer.name,
+            'sale_id': debt.sale_id,
+            'amount': debt.amount,
+            'balance': debt.balance,
+            'type': debt.type,
+            'date': debt.date.isoformat(),
+            'notes': debt.notes
         })
-          .then((response) => {
-            if (!response.ok) {
-              return response.json().then((error) => {
-                throw new Error(error.message || "Unknown error");
-              });
-            }
-            return response.json();
-          })
-          .then((data) => {
-            if (data.success) {
-              alert("User added successfully!");
-              const modal = bootstrap.Modal.getInstance(
-                document.getElementById("addUserModal")
-              );
-              modal.hide();
-              document.getElementById("add-user-form").reset();
-              loadUsers();
-            } else {
-              alert("Error adding user: " + (data.message || "Unknown error"));
-            }
-          })
-          .catch((error) => {
-            console.error("Error saving user:", error);
-            alert("Error saving user: " + error.message);
-          });
-      }
+    
+    elif request.method == 'PUT':
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        
+        debt.notes = data.get('notes', debt.notes)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Debt record updated'})
+    
+    elif request.method == 'DELETE':
+        db.session.delete(debt)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Debt record deleted'})
 
-      function editUser(userId) {
-        fetch("/api/users/" + userId)
-          .then((response) => response.json())
-          .then((user) => {
-            document.getElementById("edit-user-id").value = user.id;
-            document.getElementById("edit-username").value = user.username;
-            document.getElementById("edit-role").value = user.role;
+@app.route('/api/customers/<int:customer_id>/debts', methods=['GET'])
+@manager_required
+def api_customer_debts(customer_id):
+    customer = db.session.get(Customer, customer_id)
+    if not customer:
+        return jsonify({'success': False, 'message': 'Customer not found'}), 404
+    
+    debts = Debt.query.filter_by(customer_id=customer_id).all()
+    return jsonify([{
+        'id': d.id,
+        'sale_id': d.sale_id,
+        'amount': d.amount,
+        'balance': d.balance,
+        'type': d.type,
+        'date': d.date.isoformat(),
+        'notes': d.notes
+    } for d in debts])
 
-            const modal = new bootstrap.Modal(
-              document.getElementById("editUserModal")
-            );
-            modal.show();
-          })
-          .catch((error) => {
-            console.error("Error fetching user:", error);
-            alert("Failed to load user for editing");
-          });
-      }
+@app.route('/api/debts/<int:debt_id>/payment', methods=['POST'])
+@manager_required
+def make_debt_payment(debt_id):
+    debt = db.session.get(Debt, debt_id)
+    if not debt:
+        return jsonify({'success': False, 'message': 'Debt record not found'}), 404
+    
+    data = request.get_json()
+    if not data or 'amount' not in data:
+        return jsonify({'success': False, 'message': 'Payment amount is required'}), 400
+    
+    payment_amount = float(data['amount'])
+    if payment_amount <= 0:
+        return jsonify({'success': False, 'message': 'Payment amount must be greater than 0'}), 400
+    
+    if payment_amount > debt.balance:
+        return jsonify({'success': False, 'message': 'Payment amount exceeds remaining balance'}), 400
+    
+    # Create a payment record
+    payment = Debt(
+        customer_id=debt.customer_id,
+        amount=payment_amount,
+        balance=0,  # Payment records have no balance
+        type='payment',
+        notes=data.get('notes', f'Payment towards debt #{debt.id}')
+    )
+    db.session.add(payment)
+    
+    # Update the original debt balance
+    debt.balance -= payment_amount
+    
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'Payment recorded successfully'})
 
-      function updateUser() {
-        const userId = document.getElementById("edit-user-id").value;
-        const username = document.getElementById("edit-username").value.trim();
-        const password = document.getElementById("edit-password").value;
-        const confirmPassword = document.getElementById(
-          "edit-confirm-password"
-        ).value;
-        const role = document.getElementById("edit-role").value;
-
-        if (!username) {
-          alert("Please fill in all required fields");
-          return;
-        }
-
-        if (password && password !== confirmPassword) {
-          alert("Passwords do not match");
-          return;
-        }
-
-        const userData = {
-          username: username,
-          role: role,
-        };
-
-        // Only include password if it was provided
-        if (password) {
-          userData.password = password;
-        }
-
-        fetch("/api/users/" + userId, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(userData),
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
-              alert("User updated successfully!");
-              const modal = bootstrap.Modal.getInstance(
-                document.getElementById("editUserModal")
-              );
-              modal.hide();
-              loadUsers();
-            } else {
-              alert(
-                "Error updating user: " + (data.message || "Unknown error")
-              );
-            }
-          })
-          .catch((error) => {
-            console.error("Error updating user:", error);
-            alert("Error updating user: " + error.message);
-          });
-      }
-
-      function deleteUser(userId, username) {
-        if (
-          !confirm(
-            `Are you sure you want to delete user "${username}"? This action cannot be undone.`
-          )
-        ) {
-          return;
-        }
-
-        fetch("/api/users/" + userId, {
-          method: "DELETE",
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
-              alert("User deleted successfully!");
-              loadUsers();
-            } else {
-              alert(
-                "Error deleting user: " + (data.message || "Unknown error")
-              );
-            }
-          })
-          .catch((error) => {
-            console.error("Error deleting user:", error);
-            alert("Error deleting user: " + error.message);
-          });
-      }
-      function savePromotion() {
-        const productId = document.getElementById("promotion-product-id").value;
-        const discountType = document.getElementById(
-          "promotion-discount-type"
-        ).value;
-        const discountValue = parseFloat(
-          document.getElementById("promotion-discount-value").value
-        );
-        const startDate = document.getElementById("promotion-start-date").value;
-        const endDate = document.getElementById("promotion-end-date").value;
-
-        if (!productId || isNaN(discountValue) || !startDate || !endDate) {
-          alert("Please fill all fields");
-          return;
-        }
-
-        fetch("/api/promotions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            product_id: parseInt(productId),
-            discount_type: discountType,
-            discount_value: discountValue,
-            start_date: startDate,
-            end_date: endDate,
-          }),
-        })
-          .then((r) => r.json())
-          .then((data) => {
-            if (data.success) {
-              alert("Promotion created!");
-              const modal = bootstrap.Modal.getInstance(
-                document.getElementById("addPromotionModal")
-              );
-              modal.hide();
-              loadPromotions();
-            } else {
-              alert("Error: " + data.message);
-            }
-          });
-      }
-
-      function editPromotion(promoId) {
-        fetch(`/api/promotions/${promoId}`)
-          .then((r) => r.json())
-          .then((promo) => {
-            // Load products for dropdown
-            loadProductsForPromotionModal().then(() => {
-              document.getElementById("promotion-product-id").value =
-                promo.product_id;
-              document.getElementById("promotion-discount-type").value =
-                promo.discount_type;
-              document.getElementById("promotion-discount-value").value =
-                promo.discount_value;
-
-              // Convert dates to local datetime format for input fields
-              const startDate = new Date(promo.start_date);
-              const endDate = new Date(promo.end_date);
-
-              document.getElementById("promotion-start-date").value = startDate
-                .toISOString()
-                .slice(0, 16);
-              document.getElementById("promotion-end-date").value = endDate
-                .toISOString()
-                .slice(0, 16);
-
-              const modal = new bootstrap.Modal(
-                document.getElementById("addPromotionModal")
-              );
-
-              // Update modal title and button
-              document.querySelector(
-                "#addPromotionModal .modal-title"
-              ).textContent = "Edit Promotion";
-              const saveBtn = document.querySelector(
-                "#addPromotionModal .btn-primary"
-              );
-              saveBtn.textContent = "Update Promotion";
-              saveBtn.onclick = () => updatePromotion(promoId);
-
-              modal.show();
-            });
-          })
-          .catch((err) => {
-            console.error("Error loading promotion:", err);
-            alert("Failed to load promotion");
-          });
-      }
-
-      function updatePromotion(promoId) {
-        const productId = document.getElementById("promotion-product-id").value;
-        const discountType = document.getElementById(
-          "promotion-discount-type"
-        ).value;
-        const discountValue = parseFloat(
-          document.getElementById("promotion-discount-value").value
-        );
-        const startDate = document.getElementById("promotion-start-date").value;
-        const endDate = document.getElementById("promotion-end-date").value;
-
-        if (!productId || isNaN(discountValue) || !startDate || !endDate) {
-          alert("Please fill all fields");
-          return;
-        }
-
-        fetch(`/api/promotions/${promoId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            product_id: parseInt(productId),
-            discount_type: discountType,
-            discount_value: discountValue,
-            start_date: startDate,
-            end_date: endDate,
-          }),
-        })
-          .then((r) => r.json())
-          .then((data) => {
-            if (data.success) {
-              showToast("Promotion updated successfully!", "success");
-              const modal = bootstrap.Modal.getInstance(
-                document.getElementById("addPromotionModal")
-              );
-              modal.hide();
-              loadPromotions();
-
-              // Reset modal for next use
-              document.querySelector(
-                "#addPromotionModal .modal-title"
-              ).textContent = "Create Promotion";
-              const saveBtn = document.querySelector(
-                "#addPromotionModal .btn-primary"
-              );
-              saveBtn.textContent = "Save Promotion";
-              saveBtn.onclick = savePromotion;
-            } else {
-              showToast("Error: " + data.message, "danger");
-            }
-          })
-          .catch((err) => {
-            console.error("Error updating promotion:", err);
-            showToast("Failed to update promotion", "danger");
-          });
-      }
-      // Add this function to show toast notifications
-      function showToast(message, type = "info") {
-        // Create toast element if it doesn't exist
-        let toastContainer = document.getElementById("toast-container");
-        if (!toastContainer) {
-          toastContainer = document.createElement("div");
-          toastContainer.id = "toast-container";
-          toastContainer.style.position = "fixed";
-          toastContainer.style.top = "20px";
-          toastContainer.style.right = "20px";
-          toastContainer.style.zIndex = "9999";
-          document.body.appendChild(toastContainer);
-        }
-
-        const toast = document.createElement("div");
-        toast.className = `alert alert-${type} alert-dismissible fade show`;
-        toast.style.minWidth = "300px";
-        toast.style.marginBottom = "10px";
-        toast.innerHTML = `
-                    ${message}
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                `;
-
-        toastContainer.appendChild(toast);
-
-        // Auto remove after 3 seconds
-        setTimeout(() => {
-          if (toast.parentNode) {
-            toast.remove();
-          }
-        }, 3000);
-      }
-
-      function deletePromotion(promoId) {
-        if (!confirm("Delete this promotion?")) return;
-        fetch(`/api/promotions/${promoId}`, { method: "DELETE" })
-          .then((r) => r.json())
-          .then((data) => {
-            if (data.success) {
-              alert("Promotion deleted!");
-              loadPromotions();
-            } else {
-              alert("Error: " + data.message);
-            }
-          });
-      }
-      function exportReport() {
-        const startDate = document.getElementById("start-date").value;
-        const endDate = document.getElementById("end-date").value;
-
-        if (!startDate || !endDate) {
-          alert("Please select both start and end dates");
-          return;
-        }
-
-        window.open(
-          `/api/reports/sales/export?start=${startDate}&end=${endDate}`,
-          "_blank"
-        );
-      }
-
-      // Utility functions
-      function escapeHtml(unsafe) {
-        return unsafe
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;")
-          .replace(/'/g, "&#039;");
-      }
-    </script>
-  </body>
-</html>
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8888, debug=True)
