@@ -195,6 +195,16 @@
           </a>
         </li>
         <li class="nav-item">
+          <a class="nav-link" href="#" onclick="showSection('customers')">
+            <i class="bi bi-people"></i> Customers
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="#" onclick="showSection('debts')">
+            <i class="bi bi-credit-card"></i> Debts
+          </a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link" href="#" onclick="showSection('users')">
             <i class="bi bi-people"></i>Users
           </a>
@@ -285,6 +295,25 @@
 
         <div class="row">
           <div class="col-md-8">
+            <!-- Add customer selection here -->
+            <div class="card mb-3">
+              <div class="card-body">
+                <div class="row">
+                  <div class="col-md-8">
+                    <label class="form-label">Customer (Optional)</label>
+                    <select class="form-select" id="pos-customer-select">
+                      <option value="">Walk-in Customer</option>
+                    </select>
+                  </div>
+                  <div class="col-md-4 d-flex align-items-end">
+                    <button class="btn btn-outline-primary w-100" onclick="showCustomerDetails()">
+                      <i class="bi bi-person"></i> View Details
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="input-group mb-3">
               <input
                 type="text"
@@ -341,6 +370,7 @@
                     <option value="credit_card">Credit Card</option>
                     <option value="debit_card">Debit Card</option>
                     <option value="mobile_payment">Mobile Payment</option>
+                    <option value="debt">Charge to Customer</option>
                   </select>
                 </div>
                 <button
@@ -451,6 +481,7 @@
           </div>
         </div>
       </div>
+
       <!-- Users Section -->
       <div id="users-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3">
@@ -491,6 +522,7 @@
           </div>
         </div>
       </div>
+
       <!-- Promotions Section -->
       <div id="promotions-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3">
@@ -531,6 +563,92 @@
           </div>
         </div>
       </div>
+
+      <!-- Customers Section -->
+      <div id="customers-section" style="display: none">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h2 class="mb-0">Customer Management</h2>
+          <button
+            class="btn btn-primary"
+            data-bs-toggle="modal"
+            data-bs-target="#addCustomerModal"
+          >
+            <i class="bi bi-person-plus"></i> Add Customer
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <div class="table-responsive">
+              <table class="table table-striped table-hover">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Phone</th>
+                    <th>Email</th>
+                    <th>Total Debt</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="customers-table">
+                  <!-- Customers will be loaded here -->
+                  <tr>
+                    <td colspan="5" class="text-center py-4">
+                      <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Debts Section -->
+      <div id="debts-section" style="display: none">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h2 class="mb-0">Debt Management</h2>
+          <button
+            class="btn btn-primary"
+            data-bs-toggle="modal"
+            data-bs-target="#addDebtModal"
+          >
+            <i class="bi bi-plus-circle"></i> Add Debt
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <div class="table-responsive">
+              <table class="table table-striped table-hover">
+                <thead>
+                  <tr>
+                    <th>Customer</th>
+                    <th>Amount</th>
+                    <th>Balance</th>
+                    <th>Type</th>
+                    <th>Date</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="debts-table">
+                  <!-- Debts will be loaded here -->
+                  <tr>
+                    <td colspan="6" class="text-center py-4">
+                      <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Reports Section -->
       <div id="reports-section" style="display: none">
         <h2>Reports</h2>
@@ -833,6 +951,7 @@
         </div>
       </div>
     </div>
+
     <!-- Add Promotion Modal -->
     <div
       class="modal fade"
@@ -923,6 +1042,7 @@
         </div>
       </div>
     </div>
+
     <!-- Barcode Label Modal -->
     <div
       class="modal fade"
@@ -997,6 +1117,7 @@
         </div>
       </div>
     </div>
+
     <!-- Sale Details Modal -->
     <div
       class="modal fade"
@@ -1044,6 +1165,7 @@
         </div>
       </div>
     </div>
+
     <!-- Add User Modal -->
     <div class="modal fade" id="addUserModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog">
@@ -1194,6 +1316,373 @@
         </div>
       </div>
     </div>
+
+    <!-- Add Customer Modal -->
+    <div
+      class="modal fade"
+      id="addCustomerModal"
+      tabindex="-1"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Add New Customer</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="add-customer-form">
+              <div class="mb-3">
+                <label class="form-label"
+                  >Name <span class="text-danger">*</span></label
+                >
+                <input
+                  type="text"
+                  class="form-control"
+                  id="add-customer-name"
+                  required
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Phone</label>
+                <input
+                  type="text"
+                  class="form-control"
+                  id="add-customer-phone"
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Email</label>
+                <input
+                  type="email"
+                  class="form-control"
+                  id="add-customer-email"
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Address</label>
+                <textarea
+                  class="form-control"
+                  id="add-customer-address"
+                  rows="3"
+                ></textarea>
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              onclick="saveCustomer()"
+            >
+              Save Customer
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Customer Modal -->
+    <div
+      class="modal fade"
+      id="editCustomerModal"
+      tabindex="-1"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Edit Customer</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="edit-customer-form">
+              <input type="hidden" id="edit-customer-id" />
+              <div class="mb-3">
+                <label class="form-label"
+                  >Name <span class="text-danger">*</span></label
+                >
+                <input
+                  type="text"
+                  class="form-control"
+                  id="edit-customer-name"
+                  required
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Phone</label>
+                <input
+                  type="text"
+                  class="form-control"
+                  id="edit-customer-phone"
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Email</label>
+                <input
+                  type="email"
+                  class="form-control"
+                  id="edit-customer-email"
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Address</label>
+                <textarea
+                  class="form-control"
+                  id="edit-customer-address"
+                  rows="3"
+                ></textarea>
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              onclick="updateCustomer()"
+            >
+              Update Customer
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add Debt Modal -->
+    <div
+      class="modal fade"
+      id="addDebtModal"
+      tabindex="-1"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Add Debt Record</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="add-debt-form">
+              <div class="mb-3">
+                <label class="form-label"
+                  >Customer <span class="text-danger">*</span></label
+                >
+                <select class="form-select" id="debt-customer-id" required>
+                  <option value="">Select a customer</option>
+                </select>
+              </div>
+              <div class="mb-3">
+                <label class="form-label"
+                  >Amount <span class="text-danger">*</span></label
+                >
+                <div class="input-group">
+                  <span class="input-group-text">$</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    class="form-control"
+                    id="debt-amount"
+                    required
+                  />
+                </div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Notes</label>
+                <textarea
+                  class="form-control"
+                  id="debt-notes"
+                  rows="3"
+                ></textarea>
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              onclick="saveDebt()"
+            >
+              Save Debt
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Make Payment Modal -->
+    <div
+      class="modal fade"
+      id="makePaymentModal"
+      tabindex="-1"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Make Payment</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="make-payment-form">
+              <input type="hidden" id="payment-debt-id" />
+              <div class="mb-3">
+                <label class="form-label">Customer</label>
+                <input
+                  type="text"
+                  class="form-control"
+                  id="payment-customer-name"
+                  readonly
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Original Amount</label>
+                <div class="input-group">
+                  <span class="input-group-text">$</span>
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="payment-original-amount"
+                    readonly
+                  />
+                </div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Remaining Balance</label>
+                <div class="input-group">
+                  <span class="input-group-text">$</span>
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="payment-balance"
+                    readonly
+                  />
+                </div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label"
+                  >Payment Amount <span class="text-danger">*</span></label
+                >
+                <div class="input-group">
+                  <span class="input-group-text">$</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    class="form-control"
+                    id="payment-amount"
+                    required
+                  />
+                </div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Notes</label>
+                <textarea
+                  class="form-control"
+                  id="payment-notes"
+                  rows="3"
+                ></textarea>
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              onclick="makePayment()"
+            >
+              Make Payment
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Customer Details Modal -->
+    <div
+      class="modal fade"
+      id="customerDetailsModal"
+      tabindex="-1"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Customer Details</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body" id="customer-details-content">
+            <!-- Customer details will be loaded here -->
+            <div class="text-center py-4">
+              <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
@@ -1204,6 +1693,41 @@
       let dashboardChart = null;
       let salesChart = null;
       let paymentChart = null;
+      
+      // ===== CACHING IMPLEMENTATION =====
+      // Product data caching to reduce API calls
+      let cachedProducts = [];
+      let productsCacheTimestamp = 0;
+      const CACHE_DURATION = 60000; // 1 minute cache duration
+      
+      // Function to load products with caching
+      async function loadProductsCached() {
+        const now = Date.now();
+        // If cache is still valid, return cached data
+        if (cachedProducts.length > 0 && (now - productsCacheTimestamp) < CACHE_DURATION) {
+          return cachedProducts;
+        }
+        
+        // Otherwise, fetch fresh data
+        try {
+          const res = await fetch("/api/products");
+          const data = await res.json();
+          cachedProducts = data;
+          productsCacheTimestamp = now;
+          return data;
+        } catch (error) {
+          console.error("Error loading products:", error);
+          // Return cached data even if it's expired, to avoid complete failure
+          return cachedProducts;
+        }
+      }
+      
+      // Function to invalidate cache when needed (e.g., after adding/updating/deleting a product)
+      function invalidateProductsCache() {
+        cachedProducts = [];
+        productsCacheTimestamp = 0;
+      }
+      // ===== END CACHING IMPLEMENTATION =====
 
       // Initialize the application when page loads
       document.addEventListener("DOMContentLoaded", function () {
@@ -1256,6 +1780,7 @@
         // Load data for the section if needed
         if (sectionId === "pos") {
           loadProductsForPOS();
+          loadCustomersForPOS();
         } else if (sectionId === "reports") {
           initSalesChart();
           initPaymentChart();
@@ -1269,7 +1794,12 @@
           loadSales();
         } else if (sectionId === "promotions") {
           loadPromotions();
-          loadProductsForPromotionModal(); // Load products when opening modal
+          loadProductsForPromotionModal();
+        } else if (sectionId === "customers") {
+          loadCustomers();
+        } else if (sectionId === "debts") {
+          loadDebts();
+          loadCustomersForDebtModal();
         }
 
         // Scroll to top when switching sections
@@ -1303,6 +1833,7 @@
           console.error("Error:", error);
           // show error to user
         });
+
       // Dashboard functions
       function loadDashboardStats() {
         // Today's sales
@@ -1373,14 +1904,12 @@
             }
           });
 
-        // Total products and low stock
-        fetch("/api/products")
-          .then((response) => response.json())
-          .then((data) => {
-            document.getElementById("total-products").textContent = data.length;
-            const lowStock = data.filter((p) => p.stock < 5).length;
-            document.getElementById("low-stock-count").textContent = lowStock;
-          });
+        // Total products and low stock - USING CACHED PRODUCTS
+        loadProductsCached().then((data) => {
+          document.getElementById("total-products").textContent = data.length;
+          const lowStock = data.filter((p) => p.stock < 5).length;
+          document.getElementById("low-stock-count").textContent = lowStock;
+        });
 
         // Recent transactions (last 24 hours) - FIXED
         const now = new Date();
@@ -1407,7 +1936,7 @@
         // Initialize dashboard chart
         initDashboardChart();
 
-        // Load top products
+        // Load top products - USING CACHED PRODUCTS
         loadTopProducts();
       }
 
@@ -1470,6 +1999,7 @@
             );
           });
       }
+
       function loadPromotions() {
         const table = document.getElementById("promotions-table");
         table.innerHTML = `
@@ -1530,10 +2060,11 @@
             console.error(err);
           });
       }
+
       function loadProductsForPromotionModal() {
         return new Promise((resolve, reject) => {
-          fetch("/api/products")
-            .then((r) => r.json())
+          // USING CACHED PRODUCTS
+          loadProductsCached()
             .then((products) => {
               const select = document.getElementById("promotion-product-id");
               select.innerHTML = "";
@@ -1551,10 +2082,10 @@
             });
         });
       }
+
       function loadTopProducts() {
-        // In a real app, fetch top selling products from API
-        fetch("/api/products")
-          .then((response) => response.json())
+        // USING CACHED PRODUCTS
+        loadProductsCached()
           .then((products) => {
             // Sort by stock (for demo - in real app, sort by sales)
             const topProducts = [...products]
@@ -1593,6 +2124,9 @@
                               `;
               topProductsList.appendChild(item);
             });
+          })
+          .catch((error) => {
+            console.error("Error loading top products:", error);
           });
       }
 
@@ -1607,8 +2141,8 @@
                       </div>
                   `;
 
-        fetch("/api/products")
-          .then((response) => response.json())
+        // USING CACHED PRODUCTS
+        loadProductsCached()
           .then((data) => {
             productGrid.innerHTML = "";
 
@@ -1892,6 +2426,13 @@
         }
 
         const paymentMethod = document.getElementById("payment-method").value;
+        const customerId = document.getElementById("pos-customer-select").value;
+
+        // If payment method is debt, ensure a customer is selected
+        if (paymentMethod === "debt" && !customerId) {
+          alert("Please select a customer for debt transactions");
+          return;
+        }
 
         const saleData = {
           items: cart.map((item) => ({
@@ -1903,6 +2444,11 @@
           payment_method: paymentMethod,
         };
 
+        // Include customer_id if a customer is selected
+        if (customerId) {
+          saleData.customer_id = parseInt(customerId);
+        }
+
         fetch("/api/sales", {
           method: "POST",
           headers: {
@@ -1913,18 +2459,18 @@
           .then((response) => response.json())
           .then((data) => {
             if (data.success) {
-              alert(
-                "Sale completed successfully! Transaction ID: " +
-                  data.transaction_id
-              );
+              const message = paymentMethod === "debt" 
+                ? `Sale completed and charged to customer! Transaction ID: ${data.transaction_id}`
+                : `Sale completed successfully! Transaction ID: ${data.transaction_id}`;
+              
+              alert(message);
               cart = [];
               updateCartDisplay();
               loadSales();
               loadDashboardStats();
+              invalidateProductsCache();
             } else {
-              alert(
-                "Error completing sale: " + (data.message || "Unknown error")
-              );
+              alert("Error completing sale: " + (data.message || "Unknown error"));
             }
           })
           .catch((error) => {
@@ -1932,6 +2478,7 @@
             alert("Error completing sale: " + error.message);
           });
       }
+
       // Barcode Label functions
       function showBarcodeLabelDialog() {
         const modal = new bootstrap.Modal(
@@ -1953,8 +2500,8 @@
               </tr>
           `;
 
-        fetch("/api/products")
-          .then((response) => response.json())
+        // USING CACHED PRODUCTS
+        loadProductsCached()
           .then((data) => {
             table.innerHTML = "";
 
@@ -2050,6 +2597,7 @@
             alert("Error generating labels: " + error.message);
           });
       }
+
       // Product management functions
       function loadProducts() {
         const productsTable = document.getElementById("products-table");
@@ -2063,8 +2611,8 @@
                       </tr>
                   `;
 
-        fetch("/api/products")
-          .then((response) => response.json())
+        // USING CACHED PRODUCTS
+        loadProductsCached()
           .then((data) => {
             productsTable.innerHTML = "";
 
@@ -2153,6 +2701,8 @@
               );
               modal.hide();
               document.getElementById("add-product-form").reset();
+              // Invalidate cache since products have changed
+              invalidateProductsCache();
               loadProducts();
               loadDashboardStats();
             } else {
@@ -2241,6 +2791,8 @@
                 document.getElementById("editProductModal")
               );
               modal.hide();
+              // Invalidate cache since products have changed
+              invalidateProductsCache();
               loadProducts();
               loadDashboardStats();
             } else {
@@ -2271,6 +2823,8 @@
           .then((data) => {
             if (data.success) {
               alert("Product deleted successfully!");
+              // Invalidate cache since products have changed
+              invalidateProductsCache();
               loadProducts();
               loadDashboardStats();
             } else {
@@ -2830,6 +3384,7 @@
                           `;
           });
       }
+
       // User management functions
       // Update the loadUsers function to properly handle the response
       function loadUsers() {
@@ -3060,6 +3615,7 @@
             alert("Error deleting user: " + error.message);
           });
       }
+
       function savePromotion() {
         const productId = document.getElementById("promotion-product-id").value;
         const discountType = document.getElementById(
@@ -3204,6 +3760,7 @@
             showToast("Failed to update promotion", "danger");
           });
       }
+
       // Add this function to show toast notifications
       function showToast(message, type = "info") {
         // Create toast element if it doesn't exist
@@ -3250,6 +3807,7 @@
             }
           });
       }
+
       function exportReport() {
         const startDate = document.getElementById("start-date").value;
         const endDate = document.getElementById("end-date").value;
@@ -3263,6 +3821,572 @@
           `/api/reports/sales/export?start=${startDate}&end=${endDate}`,
           "_blank"
         );
+      }
+
+      // Customer management functions
+      function loadCustomers() {
+        const customersTable = document.getElementById("customers-table");
+        customersTable.innerHTML = `
+          <tr>
+            <td colspan="5" class="text-center py-4">
+              <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+              </div>
+            </td>
+          </tr>
+        `;
+
+        fetch("/api/customers")
+          .then((response) => response.json())
+          .then((data) => {
+            customersTable.innerHTML = "";
+
+            if (data.length === 0) {
+              customersTable.innerHTML = `
+                <tr>
+                  <td colspan="5" class="text-center py-4 text-muted">No customers found.</td>
+                </tr>
+              `;
+              return;
+            }
+
+            data.forEach((customer) => {
+              const row = document.createElement("tr");
+              row.innerHTML = `
+                <td>${customer.name}</td>
+                <td>${customer.phone || "N/A"}</td>
+                <td>${customer.email || "N/A"}</td>
+                <td>$${customer.total_debt.toFixed(2)}</td>
+                <td>
+                  <button class="btn btn-sm btn-info me-1" onclick="viewCustomerDetails(${customer.id})">
+                    <i class="bi bi-eye"></i>
+                  </button>
+                  <button class="btn btn-sm btn-primary me-1" onclick="editCustomer(${customer.id})">
+                    <i class="bi bi-pencil"></i>
+                  </button>
+                  <button class="btn btn-sm btn-danger" onclick="deleteCustomer(${customer.id}, '${escapeHtml(customer.name)}')">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </td>
+              `;
+              customersTable.appendChild(row);
+            });
+          })
+          .catch((error) => {
+            console.error("Error loading customers:", error);
+            customersTable.innerHTML = `
+              <tr>
+                <td colspan="5" class="text-center py-4 text-danger">Failed to load customers.</td>
+              </tr>
+            `;
+          });
+      }
+
+      function saveCustomer() {
+        const name = document.getElementById("add-customer-name").value.trim();
+        const phone = document.getElementById("add-customer-phone").value.trim();
+        const email = document.getElementById("add-customer-email").value.trim();
+        const address = document.getElementById("add-customer-address").value.trim();
+
+        if (!name) {
+          alert("Please fill in the customer name");
+          return;
+        }
+
+        const customerData = {
+          name: name,
+          phone: phone || null,
+          email: email || null,
+          address: address || null,
+        };
+
+        fetch("/api/customers", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(customerData),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              alert("Customer added successfully!");
+              const modal = bootstrap.Modal.getInstance(
+                document.getElementById("addCustomerModal")
+              );
+              modal.hide();
+              document.getElementById("add-customer-form").reset();
+              loadCustomers();
+              loadCustomersForPOS();
+              loadCustomersForDebtModal();
+            } else {
+              alert("Error adding customer: " + (data.message || "Unknown error"));
+            }
+          })
+          .catch((error) => {
+            console.error("Error saving customer:", error);
+            alert("Error saving customer: " + error.message);
+          });
+      }
+
+      function editCustomer(customerId) {
+        fetch("/api/customers/" + customerId)
+          .then((response) => response.json())
+          .then((customer) => {
+            document.getElementById("edit-customer-id").value = customer.id;
+            document.getElementById("edit-customer-name").value = customer.name;
+            document.getElementById("edit-customer-phone").value = customer.phone || "";
+            document.getElementById("edit-customer-email").value = customer.email || "";
+            document.getElementById("edit-customer-address").value = customer.address || "";
+
+            const modal = new bootstrap.Modal(
+              document.getElementById("editCustomerModal")
+            );
+            modal.show();
+          })
+          .catch((error) => {
+            console.error("Error fetching customer:", error);
+            alert("Failed to load customer for editing");
+          });
+      }
+
+      function updateCustomer() {
+        const customerId = document.getElementById("edit-customer-id").value;
+        const name = document.getElementById("edit-customer-name").value.trim();
+        const phone = document.getElementById("edit-customer-phone").value.trim();
+        const email = document.getElementById("edit-customer-email").value.trim();
+        const address = document.getElementById("edit-customer-address").value.trim();
+
+        if (!name) {
+          alert("Please fill in the customer name");
+          return;
+        }
+
+        const customerData = {
+          name: name,
+          phone: phone || null,
+          email: email || null,
+          address: address || null,
+        };
+
+        fetch("/api/customers/" + customerId, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(customerData),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              alert("Customer updated successfully!");
+              const modal = bootstrap.Modal.getInstance(
+                document.getElementById("editCustomerModal")
+              );
+              modal.hide();
+              loadCustomers();
+              loadCustomersForPOS();
+              loadCustomersForDebtModal();
+            } else {
+              alert("Error updating customer: " + (data.message || "Unknown error"));
+            }
+          })
+          .catch((error) => {
+            console.error("Error updating customer:", error);
+            alert("Error updating customer: " + error.message);
+          });
+      }
+
+      function deleteCustomer(customerId, customerName) {
+        if (
+          !confirm(
+            `Are you sure you want to delete "${customerName}"? This action cannot be undone.`
+          )
+        ) {
+          return;
+        }
+
+        fetch("/api/customers/" + customerId, {
+          method: "DELETE",
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              alert("Customer deleted successfully!");
+              loadCustomers();
+              loadCustomersForPOS();
+              loadCustomersForDebtModal();
+            } else {
+              alert("Error deleting customer: " + (data.message || "Unknown error"));
+            }
+          })
+          .catch((error) => {
+            console.error("Error deleting customer:", error);
+            alert("Error deleting customer: " + error.message);
+          });
+      }
+
+      function viewCustomerDetails(customerId) {
+        const modal = new bootstrap.Modal(
+          document.getElementById("customerDetailsModal")
+        );
+
+        const content = document.getElementById("customer-details-content");
+        content.innerHTML = `
+          <div class="text-center py-4">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+          </div>
+        `;
+
+        modal.show();
+
+        // Load customer details
+        fetch("/api/customers/" + customerId)
+          .then((response) => response.json())
+          .then((customer) => {
+            // Load customer debts
+            fetch("/api/customers/" + customerId + "/debts")
+              .then((response) => response.json())
+              .then((debts) => {
+                let debtsHtml = "";
+                let totalDebt = 0;
+
+                debts.forEach((debt) => {
+                  if (debt.type === "debt") {
+                    totalDebt += debt.balance;
+                    debtsHtml += `
+                      <tr>
+                        <td>${debt.notes || "N/A"}</td>
+                        <td>$${debt.amount.toFixed(2)}</td>
+                        <td>$${debt.balance.toFixed(2)}</td>
+                        <td>${new Date(debt.date).toLocaleDateString()}</td>
+                        <td>
+                          <button class="btn btn-sm btn-success" onclick="showMakePaymentModal(${debt.id})">
+                            <i class="bi bi-cash"></i> Pay
+                          </button>
+                        </td>
+                      </tr>
+                    `;
+                  }
+                });
+
+                content.innerHTML = `
+                  <div class="row mb-4">
+                    <div class="col-md-6">
+                      <h6>Name</h6>
+                      <p>${customer.name}</p>
+                    </div>
+                    <div class="col-md-6">
+                      <h6>Phone</h6>
+                      <p>${customer.phone || "N/A"}</p>
+                    </div>
+                    <div class="col-md-6">
+                      <h6>Email</h6>
+                      <p>${customer.email || "N/A"}</p>
+                    </div>
+                    <div class="col-md-6">
+                      <h6>Address</h6>
+                      <p>${customer.address || "N/A"}</p>
+                    </div>
+                  </div>
+
+                  <h5 class="mb-3">Debt History</h5>
+                  <div class="table-responsive mb-4">
+                    <table class="table table-striped">
+                      <thead>
+                        <tr>
+                          <th>Description</th>
+                          <th>Amount</th>
+                          <th>Balance</th>
+                          <th>Date</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${debtsHtml || '<tr><td colspan="5" class="text-center text-muted">No debt records found.</td></tr>'}
+                      </tbody>
+                      <tfoot>
+                        <tr class="table-active">
+                          <th colspan="2" class="text-end">Total Debt:</th>
+                          <th>$${totalDebt.toFixed(2)}</th>
+                          <th colspan="2"></th>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                `;
+              })
+              .catch((error) => {
+                console.error("Error loading customer debts:", error);
+                content.innerHTML = `
+                  <div class="alert alert-danger">
+                    Failed to load customer details. Please try again.
+                  </div>
+                `;
+              });
+          })
+          .catch((error) => {
+            console.error("Error loading customer details:", error);
+            content.innerHTML = `
+              <div class="alert alert-danger">
+                Failed to load customer details. Please try again.
+              </div>
+            `;
+          });
+      }
+
+      // Debt management functions
+      function loadDebts() {
+        const debtsTable = document.getElementById("debts-table");
+        debtsTable.innerHTML = `
+          <tr>
+            <td colspan="6" class="text-center py-4">
+              <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+              </div>
+            </td>
+          </tr>
+        `;
+
+        fetch("/api/debts")
+          .then((response) => response.json())
+          .then((data) => {
+            debtsTable.innerHTML = "";
+
+            if (data.length === 0) {
+              debtsTable.innerHTML = `
+                <tr>
+                  <td colspan="6" class="text-center py-4 text-muted">No debt records found.</td>
+                </tr>
+              `;
+              return;
+            }
+
+            data.forEach((debt) => {
+              const row = document.createElement("tr");
+              const typeBadge = debt.type === "debt" 
+                ? '<span class="badge bg-danger">Debt</span>' 
+                : '<span class="badge bg-success">Payment</span>';
+              
+              row.innerHTML = `
+                <td>${debt.customer_name}</td>
+                <td>$${debt.amount.toFixed(2)}</td>
+                <td>$${debt.balance.toFixed(2)}</td>
+                <td>${typeBadge}</td>
+                <td>${new Date(debt.date).toLocaleDateString()}</td>
+                <td>
+                  ${debt.type === "debt" ? `
+                    <button class="btn btn-sm btn-success me-1" onclick="showMakePaymentModal(${debt.id})">
+                      <i class="bi bi-cash"></i> Pay
+                    </button>
+                  ` : ""}
+                  <button class="btn btn-sm btn-info me-1" onclick="viewDebtDetails(${debt.id})">
+                    <i class="bi bi-eye"></i>
+                  </button>
+                  <button class="btn btn-sm btn-danger" onclick="deleteDebt(${debt.id})">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </td>
+              `;
+              debtsTable.appendChild(row);
+            });
+          })
+          .catch((error) => {
+            console.error("Error loading debts:", error);
+            debtsTable.innerHTML = `
+              <tr>
+                <td colspan="6" class="text-center py-4 text-danger">Failed to load debts.</td>
+              </tr>
+            `;
+          });
+      }
+
+      function saveDebt() {
+        const customerId = document.getElementById("debt-customer-id").value;
+        const amount = parseFloat(document.getElementById("debt-amount").value);
+        const notes = document.getElementById("debt-notes").value.trim();
+
+        if (!customerId || isNaN(amount) || amount <= 0) {
+          alert("Please fill in all required fields with valid values");
+          return;
+        }
+
+        const debtData = {
+          customer_id: parseInt(customerId),
+          amount: amount,
+          notes: notes || null,
+        };
+
+        fetch("/api/debts", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(debtData),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              alert("Debt record added successfully!");
+              const modal = bootstrap.Modal.getInstance(
+                document.getElementById("addDebtModal")
+              );
+              modal.hide();
+              document.getElementById("add-debt-form").reset();
+              loadDebts();
+              loadCustomers();
+            } else {
+              alert("Error adding debt record: " + (data.message || "Unknown error"));
+            }
+          })
+          .catch((error) => {
+            console.error("Error saving debt:", error);
+            alert("Error saving debt: " + error.message);
+          });
+      }
+
+      function deleteDebt(debtId) {
+        if (!confirm("Are you sure you want to delete this debt record?")) {
+          return;
+        }
+
+        fetch("/api/debts/" + debtId, {
+          method: "DELETE",
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              alert("Debt record deleted successfully!");
+              loadDebts();
+              loadCustomers();
+            } else {
+              alert("Error deleting debt record: " + (data.message || "Unknown error"));
+            }
+          })
+          .catch((error) => {
+            console.error("Error deleting debt:", error);
+            alert("Error deleting debt: " + error.message);
+          });
+      }
+
+      function showMakePaymentModal(debtId) {
+        fetch("/api/debts/" + debtId)
+          .then((response) => response.json())
+          .then((debt) => {
+            document.getElementById("payment-debt-id").value = debt.id;
+            document.getElementById("payment-customer-name").value = debt.customer_name;
+            document.getElementById("payment-original-amount").value = debt.amount.toFixed(2);
+            document.getElementById("payment-balance").value = debt.balance.toFixed(2);
+            document.getElementById("payment-amount").value = debt.balance.toFixed(2);
+            document.getElementById("payment-notes").value = "";
+
+            const modal = new bootstrap.Modal(
+              document.getElementById("makePaymentModal")
+            );
+            modal.show();
+          })
+          .catch((error) => {
+            console.error("Error loading debt details:", error);
+            alert("Failed to load debt details");
+          });
+      }
+
+      function makePayment() {
+        const debtId = document.getElementById("payment-debt-id").value;
+        const amount = parseFloat(document.getElementById("payment-amount").value);
+        const notes = document.getElementById("payment-notes").value.trim();
+
+        if (!debtId || isNaN(amount) || amount <= 0) {
+          alert("Please enter a valid payment amount");
+          return;
+        }
+
+        const paymentData = {
+          amount: amount,
+          notes: notes || null,
+        };
+
+        fetch("/api/debts/" + debtId + "/payment", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(paymentData),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              alert("Payment recorded successfully!");
+              const modal = bootstrap.Modal.getInstance(
+                document.getElementById("makePaymentModal")
+              );
+              modal.hide();
+              loadDebts();
+              loadCustomers();
+            } else {
+              alert("Error recording payment: " + (data.message || "Unknown error"));
+            }
+          })
+          .catch((error) => {
+            console.error("Error making payment:", error);
+            alert("Error making payment: " + error.message);
+          });
+      }
+
+      // POS functions for customer selection
+      function loadCustomersForPOS() {
+        const select = document.getElementById("pos-customer-select");
+        select.innerHTML = '<option value="">Walk-in Customer</option>';
+
+        fetch("/api/customers")
+          .then((response) => response.json())
+          .then((data) => {
+            data.forEach((customer) => {
+              const option = document.createElement("option");
+              option.value = customer.id;
+              option.textContent = `${customer.name} (${customer.phone || "No Phone"})`;
+              select.appendChild(option);
+            });
+          })
+          .catch((error) => {
+            console.error("Error loading customers for POS:", error);
+          });
+      }
+
+      function loadCustomersForDebtModal() {
+        const select = document.getElementById("debt-customer-id");
+        select.innerHTML = '<option value="">Select a customer</option>';
+
+        fetch("/api/customers")
+          .then((response) => response.json())
+          .then((data) => {
+            data.forEach((customer) => {
+              const option = document.createElement("option");
+              option.value = customer.id;
+              option.textContent = `${customer.name} (${customer.phone || "No Phone"})`;
+              select.appendChild(option);
+            });
+          })
+          .catch((error) => {
+            console.error("Error loading customers for debt modal:", error);
+          });
+      }
+
+      function showCustomerDetails() {
+        const customerId = document.getElementById("pos-customer-select").value;
+        if (!customerId) {
+          alert("Please select a customer first");
+          return;
+        }
+        viewCustomerDetails(parseInt(customerId));
+      }
+
+      function viewDebtDetails(debtId) {
+        // This function could be implemented to show detailed debt information
+        // For now, we'll just show the payment modal
+        showMakePaymentModal(debtId);
       }
 
       // Utility functions
