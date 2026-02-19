@@ -1,10 +1,12 @@
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, make_response
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, make_response, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 from datetime import datetime
 import os
 import uuid
 import io
+from sqlalchemy import inspect, text
 from decimal import Decimal, ROUND_HALF_UP
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -23,15 +25,48 @@ app = Flask(__name__)
 app.secret_key = 'your_super_secret_key_here'  # Change this in production!
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pos.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['UPLOAD_FOLDER'] = os.path.join(app.root_path, 'uploads', 'products')
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB per request
 db = SQLAlchemy(app)
 
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
 MONEY_QUANT = Decimal('0.01')
+ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 
 def to_decimal(value):
     return Decimal(str(value))
 
 def round_money(value):
     return float(to_decimal(value).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP))
+
+def allowed_image_file(filename):
+    if not filename or '.' not in filename:
+        return False
+    return filename.rsplit('.', 1)[1].lower() in ALLOWED_IMAGE_EXTENSIONS
+
+def save_product_image(file_storage):
+    if not file_storage or not file_storage.filename:
+        return None
+    if not allowed_image_file(file_storage.filename):
+        raise ValueError('Only image files are allowed (png, jpg, jpeg, gif, webp)')
+
+    original = secure_filename(file_storage.filename)
+    extension = original.rsplit('.', 1)[1].lower()
+    unique_name = f"{uuid.uuid4().hex}.{extension}"
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_name)
+    file_storage.save(file_path)
+    return unique_name
+
+def delete_product_image(filename):
+    if not filename:
+        return
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+def product_photo_url(filename):
+    return url_for('product_image', filename=filename) if filename else None
 
 def manager_required(f):
     @wraps(f)
@@ -57,6 +92,7 @@ class Product(db.Model):
     stock = db.Column(db.Integer, default=0)
     category = db.Column(db.String(50))
     tax_rate = db.Column(db.Float, default=0.0)
+    photo_filename = db.Column(db.String(255))
 
 class Supplier(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -124,6 +160,12 @@ class Debt(db.Model):
 # Create database tables and admin user
 with app.app_context():
     db.create_all()
+    inspector = inspect(db.engine)
+    product_columns = [col['name'] for col in inspector.get_columns('product')]
+    if 'photo_filename' not in product_columns:
+        db.session.execute(text('ALTER TABLE product ADD COLUMN photo_filename VARCHAR(255)'))
+        db.session.commit()
+
     # Create Promotion table
     if not hasattr(Product, 'promotions'):
         db.create_all()
@@ -163,6 +205,10 @@ def dashboard():
         return redirect(url_for('login'))
     return render_template('dashboard.html')
 
+@app.route('/uploads/products/<path:filename>')
+def product_image(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
 # Product API Endpoints
 @app.route('/api/products', methods=['GET', 'POST'])
 def api_products():
@@ -179,22 +225,47 @@ def api_products():
             'cost': p.cost,
             'stock': p.stock,
             'category': p.category,
-            'tax_rate': p.tax_rate
+            'tax_rate': p.tax_rate,
+            'photo_filename': p.photo_filename,
+            'photo_url': product_photo_url(p.photo_filename)
         } for p in products])
 
     elif request.method == 'POST':
-        data = request.get_json()
-        if not data or not all(k in data for k in ['name', 'price', 'stock']):
+        is_multipart = request.content_type and 'multipart/form-data' in request.content_type.lower()
+        data = request.form if is_multipart else (request.get_json() or {})
+
+        name = (data.get('name') or '').strip()
+        price = data.get('price')
+        stock = data.get('stock')
+
+        if not name or price is None or stock is None:
             return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+
+        try:
+            price = float(price)
+            stock = int(stock)
+            cost = float(data.get('cost', 0) or 0)
+            tax_rate = float(data.get('tax_rate', 0) or 0)
+        except (ValueError, TypeError):
+            return jsonify({'success': False, 'message': 'Invalid numeric values'}), 400
+
+        photo_filename = None
+        photo_file = request.files.get('photo') if is_multipart else None
+        if photo_file and photo_file.filename:
+            try:
+                photo_filename = save_product_image(photo_file)
+            except ValueError as e:
+                return jsonify({'success': False, 'message': str(e)}), 400
 
         product = Product(
             barcode=data.get('barcode'),
-            name=data['name'],
-            price=data['price'],
-            cost=data.get('cost', 0),
-            stock=data['stock'],
+            name=name,
+            price=price,
+            cost=cost,
+            stock=stock,
             category=data.get('category'),
-            tax_rate=data.get('tax_rate', 0)
+            tax_rate=tax_rate,
+            photo_filename=photo_filename
         )
         db.session.add(product)
         db.session.commit()
@@ -220,6 +291,8 @@ def api_single_product(product_id):
             'stock': product.stock,
             'category': product.category,
             'tax_rate': product.tax_rate,
+            'photo_filename': product.photo_filename,
+            'photo_url': product_photo_url(product.photo_filename),
             'promotions': [{
                 'id': p.id,
                 'discount_type': p.discount_type,
@@ -230,7 +303,8 @@ def api_single_product(product_id):
         })
 
     elif request.method == 'PUT':
-        data = request.get_json()
+        is_multipart = request.content_type and 'multipart/form-data' in request.content_type.lower()
+        data = request.form if is_multipart else (request.get_json() or {})
         if not data:
             return jsonify({'success': False, 'message': 'No data provided'}), 400
 
@@ -241,17 +315,51 @@ def api_single_product(product_id):
                 return jsonify({'success': False, 'message': 'Barcode already in use'}), 400
             product.barcode = data['barcode']
 
-        product.name = data.get('name', product.name)
-        product.price = data.get('price', product.price)
-        product.cost = data.get('cost', product.cost)
-        product.stock = data.get('stock', product.stock)
+        if 'name' in data:
+            product.name = data.get('name', product.name)
+        if 'price' in data:
+            try:
+                product.price = float(data.get('price'))
+            except (ValueError, TypeError):
+                return jsonify({'success': False, 'message': 'Invalid price value'}), 400
+        if 'cost' in data:
+            try:
+                product.cost = float(data.get('cost') or 0)
+            except (ValueError, TypeError):
+                return jsonify({'success': False, 'message': 'Invalid cost value'}), 400
+        if 'stock' in data:
+            try:
+                product.stock = int(data.get('stock'))
+            except (ValueError, TypeError):
+                return jsonify({'success': False, 'message': 'Invalid stock value'}), 400
+
         product.category = data.get('category', product.category)
-        product.tax_rate = data.get('tax_rate', product.tax_rate)
+        if 'tax_rate' in data:
+            try:
+                product.tax_rate = float(data.get('tax_rate') or 0)
+            except (ValueError, TypeError):
+                return jsonify({'success': False, 'message': 'Invalid tax rate value'}), 400
+
+        remove_photo = str(data.get('remove_photo', '')).lower() in ('1', 'true', 'yes', 'on')
+        if remove_photo and product.photo_filename:
+            delete_product_image(product.photo_filename)
+            product.photo_filename = None
+
+        photo_file = request.files.get('photo') if is_multipart else None
+        if photo_file and photo_file.filename:
+            try:
+                new_photo = save_product_image(photo_file)
+                delete_product_image(product.photo_filename)
+                product.photo_filename = new_photo
+            except ValueError as e:
+                return jsonify({'success': False, 'message': str(e)}), 400
 
         db.session.commit()
         return jsonify({'success': True, 'message': 'Product updated'})
 
     elif request.method == 'DELETE':
+        if product.photo_filename:
+            delete_product_image(product.photo_filename)
         db.session.delete(product)
         db.session.commit()
         return jsonify({'success': True, 'message': 'Product deleted'})
@@ -271,7 +379,8 @@ def api_search_products():
         'barcode': p.barcode,
         'name': p.name,
         'price': p.price,
-        'stock': p.stock
+        'stock': p.stock,
+        'photo_url': product_photo_url(p.photo_filename)
     } for p in products])
 
 @app.route('/api/products/barcode_labels', methods=['POST'])
