@@ -25,6 +25,14 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pos.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
+MONEY_QUANT = Decimal('0.01')
+
+def to_decimal(value):
+    return Decimal(str(value))
+
+def round_money(value):
+    return float(to_decimal(value).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP))
+
 def manager_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -400,8 +408,8 @@ def api_create_sale():
 
     try:
         # Calculate totals
-        subtotal = 0
-        tax_total = 0
+        subtotal = Decimal('0.00')
+        tax_total = Decimal('0.00')
         items = []
 
         for item in data['items']:
@@ -409,16 +417,27 @@ def api_create_sale():
             if not product:
                 return jsonify({'success': False, 'message': f'Product {item["product_id"]} not found'}), 404
 
-            item_total = item['price'] * item['quantity']
-            item_tax = item_total * (product.tax_rate / 100)
+            quantity = int(item.get('quantity', 0))
+            if quantity <= 0:
+                return jsonify({'success': False, 'message': 'Quantity must be greater than 0'}), 400
+
+            if quantity > product.stock:
+                return jsonify({'success': False, 'message': f'Insufficient stock for {product.name}. Available: {product.stock}'}), 400
+
+            price = to_decimal(item.get('price', 0))
+            if price < 0:
+                return jsonify({'success': False, 'message': 'Price cannot be negative'}), 400
+
+            item_total = price * quantity
+            item_tax = (item_total * to_decimal(product.tax_rate or 0) / Decimal('100')).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
             
             subtotal += item_total
             tax_total += item_tax
             
             items.append({
                 'product': product,
-                'price': item['price'],
-                'quantity': item['quantity'],
+                'price': round_money(price),
+                'quantity': quantity,
                 'tax': item_tax
             })
 
@@ -431,8 +450,8 @@ def api_create_sale():
         sale = Sale(
             transaction_id=str(uuid.uuid4()),
             date=sale_time,
-            total=total,
-            tax=tax_total,
+            total=round_money(total),
+            tax=round_money(tax_total),
             payment_method=data.get('payment_method', 'cash'),
             user_id=session['user_id']
         )
@@ -446,7 +465,7 @@ def api_create_sale():
                 product_id=item['product'].id,
                 quantity=item['quantity'],
                 price=item['price'],
-                tax=item['tax']
+                tax=round_money(item['tax'])
             )
             db.session.add(sale_item)
             # Update product stock
@@ -463,8 +482,8 @@ def api_create_sale():
             debt = Debt(
                 customer_id=customer_id,
                 sale_id=sale.id,
-                amount=total,
-                balance=total,
+                amount=round_money(total),
+                balance=round_money(total),
                 type='debt',
                 notes=f'Sale transaction {sale.transaction_id}'
             )
@@ -903,7 +922,7 @@ def api_customers():
             'email': c.email,
             'address': c.address,
             'created_at': c.created_at.isoformat(),
-            'total_debt': sum(d.balance for d in c.debts if d.type == 'debt')
+            'total_debt': round_money(sum(to_decimal(d.balance) for d in c.debts if d.type == 'debt'))
         } for c in customers])
     
     elif request.method == 'POST':
@@ -1056,11 +1075,15 @@ def api_debts():
         data = request.get_json()
         if not data or not all(k in data for k in ['customer_id', 'amount']):
             return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+
+        amount = to_decimal(data['amount'])
+        if amount <= 0:
+            return jsonify({'success': False, 'message': 'Amount must be greater than 0'}), 400
         
         debt = Debt(
             customer_id=data['customer_id'],
-            amount=data['amount'],
-            balance=data['amount'],
+            amount=round_money(amount),
+            balance=round_money(amount),
             type=data.get('type', 'debt'),
             notes=data.get('notes')
         )
@@ -1131,17 +1154,18 @@ def make_debt_payment(debt_id):
     if not data or 'amount' not in data:
         return jsonify({'success': False, 'message': 'Payment amount is required'}), 400
     
-    payment_amount = float(data['amount'])
+    payment_amount = to_decimal(data['amount'])
     if payment_amount <= 0:
         return jsonify({'success': False, 'message': 'Payment amount must be greater than 0'}), 400
     
-    if payment_amount > debt.balance:
+    current_balance = to_decimal(debt.balance)
+    if payment_amount > current_balance:
         return jsonify({'success': False, 'message': 'Payment amount exceeds remaining balance'}), 400
     
     # Create a payment record
     payment = Debt(
         customer_id=debt.customer_id,
-        amount=payment_amount,
+        amount=round_money(payment_amount),
         balance=0,  # Payment records have no balance
         type='payment',
         notes=data.get('notes', f'Payment towards debt #{debt.id}')
@@ -1149,7 +1173,8 @@ def make_debt_payment(debt_id):
     db.session.add(payment)
     
     # Update the original debt balance
-    debt.balance -= payment_amount
+    remaining_balance = (current_balance - payment_amount).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+    debt.balance = 0.0 if remaining_balance < MONEY_QUANT else round_money(remaining_balance)
     
     db.session.commit()
     return jsonify({'success': True, 'message': 'Payment recorded successfully'})

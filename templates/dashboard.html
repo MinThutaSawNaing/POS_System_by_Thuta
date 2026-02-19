@@ -40,7 +40,21 @@
         z-index: 1000;
         overflow-y: auto;
         overflow-x: hidden;
-        resize: horizontal;
+      }
+
+      .sidebar-drag-handle {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 10px;
+        height: 100%;
+        cursor: col-resize;
+        background: transparent;
+        z-index: 1002;
+      }
+
+      .sidebar-drag-handle:hover {
+        background: rgba(255, 255, 255, 0.12);
       }
 
       .sidebar .nav-link {
@@ -234,6 +248,7 @@
           </a>
         </li>
       </ul>
+      <div class="sidebar-drag-handle" id="sidebar-drag-handle" title="Drag to resize sidebar"></div>
     </div>
 
     <!-- Main Content -->
@@ -2002,28 +2017,45 @@
 
       function initResizableSidebar() {
         const sidebar = document.getElementById("sidebar");
+        const dragHandle = document.getElementById("sidebar-drag-handle");
         const root = document.documentElement;
-        const savedSidebarWidth = localStorage.getItem("pos_sidebar_width");
+        const minWidth = 220;
+        const maxWidth = 420;
 
-        if (savedSidebarWidth) {
-          root.style.setProperty("--sidebar-width", savedSidebarWidth + "px");
-          sidebar.style.width = savedSidebarWidth + "px";
-        }
-
-        const applyWidth = () => {
-          const width = Math.round(sidebar.getBoundingClientRect().width);
-          root.style.setProperty("--sidebar-width", `${width}px`);
-          localStorage.setItem("pos_sidebar_width", String(width));
+        const clampWidth = (width) => Math.min(maxWidth, Math.max(minWidth, width));
+        const setSidebarWidth = (width) => {
+          const safeWidth = clampWidth(Math.round(width));
+          root.style.setProperty("--sidebar-width", `${safeWidth}px`);
+          sidebar.style.width = `${safeWidth}px`;
+          localStorage.setItem("pos_sidebar_width", String(safeWidth));
         };
 
-        applyWidth();
+        const savedSidebarWidth = parseInt(localStorage.getItem("pos_sidebar_width"), 10);
+        setSidebarWidth(Number.isFinite(savedSidebarWidth) ? savedSidebarWidth : 250);
 
-        if (window.ResizeObserver) {
-          const resizeObserver = new ResizeObserver(() => {
-            applyWidth();
+        let isDragging = false;
+
+        if (dragHandle) {
+          dragHandle.addEventListener("mousedown", (event) => {
+            if (window.innerWidth <= 768) return;
+            isDragging = true;
+            event.preventDefault();
+            document.body.style.cursor = "col-resize";
+            document.body.style.userSelect = "none";
           });
-          resizeObserver.observe(sidebar);
         }
+
+        document.addEventListener("mousemove", (event) => {
+          if (!isDragging) return;
+          setSidebarWidth(event.clientX);
+        });
+
+        document.addEventListener("mouseup", () => {
+          if (!isDragging) return;
+          isDragging = false;
+          document.body.style.cursor = "";
+          document.body.style.userSelect = "";
+        });
       }
 
       // Show different sections
@@ -3240,8 +3272,8 @@
                               `;
             });
 
-            const tax = sale.tax || subtotal * 0.1; // Default to 10% if not provided
-            const total = subtotal + tax;
+            const tax = sale.tax || 0;
+            const total = sale.total || subtotal + tax;
 
             content.innerHTML = `
                               <div class="row mb-4">
@@ -3522,15 +3554,13 @@
 
             let paymentMethodsHtml = "";
             for (const [method, stats] of Object.entries(paymentMethods)) {
+              const ratio = totalSales > 0 ? (stats.total / totalSales) * 100 : 0;
               paymentMethodsHtml += `
                                   <tr>
                                       <td>${method}</td>
                                       <td>${stats.count}</td>
                                       <td>$${stats.total.toFixed(2)}</td>
-                                      <td>${(
-                                        (stats.total / totalSales) *
-                                        100
-                                      ).toFixed(1)}%</td>
+                                      <td>${ratio.toFixed(1)}%</td>
                                   </tr>
                               `;
             }
