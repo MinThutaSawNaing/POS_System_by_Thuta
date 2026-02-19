@@ -1887,21 +1887,6 @@
                 console.error("Error loading yesterday's sales:", error);
                 document.getElementById("sales-change").textContent = "N/A";
               });
-            const changeElement = document.getElementById("sales-change");
-            changeElement.textContent = Math.abs(change).toFixed(1) + "%";
-            if (change >= 0) {
-              changeElement.parentElement.innerHTML =
-                changeElement.parentElement.innerHTML.replace(
-                  "bi-arrow-up",
-                  "bi-arrow-up text-success"
-                );
-            } else {
-              changeElement.parentElement.innerHTML =
-                changeElement.parentElement.innerHTML.replace(
-                  "bi-arrow-up",
-                  "bi-arrow-down text-danger"
-                );
-            }
           });
 
         // Total products and low stock - USING CACHED PRODUCTS
