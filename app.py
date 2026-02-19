@@ -50,6 +50,15 @@ class Product(db.Model):
     category = db.Column(db.String(50))
     tax_rate = db.Column(db.Float, default=0.0)
 
+class Supplier(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False)
+    contact_person = db.Column(db.String(100))
+    phone = db.Column(db.String(20))
+    email = db.Column(db.String(120))
+    address = db.Column(db.String(250))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 class Sale(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     transaction_id = db.Column(db.String(36), unique=True)
@@ -911,6 +920,79 @@ def api_customers():
         db.session.add(customer)
         db.session.commit()
         return jsonify({'success': True, 'message': 'Customer added'}), 201
+
+# Supplier API Endpoints
+@app.route('/api/suppliers', methods=['GET', 'POST'])
+@manager_required
+def api_suppliers():
+    if request.method == 'GET':
+        suppliers = Supplier.query.order_by(Supplier.name.asc()).all()
+        return jsonify([{
+            'id': s.id,
+            'name': s.name,
+            'contact_person': s.contact_person,
+            'phone': s.phone,
+            'email': s.email,
+            'address': s.address,
+            'created_at': s.created_at.isoformat()
+        } for s in suppliers])
+
+    elif request.method == 'POST':
+        data = request.get_json()
+        if not data or not data.get('name'):
+            return jsonify({'success': False, 'message': 'Supplier name is required'}), 400
+
+        supplier = Supplier(
+            name=data['name'].strip(),
+            contact_person=data.get('contact_person'),
+            phone=data.get('phone'),
+            email=data.get('email'),
+            address=data.get('address')
+        )
+        db.session.add(supplier)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Supplier added'}), 201
+
+@app.route('/api/suppliers/<int:supplier_id>', methods=['GET', 'PUT', 'DELETE'])
+@manager_required
+def api_single_supplier(supplier_id):
+    supplier = db.session.get(Supplier, supplier_id)
+    if not supplier:
+        return jsonify({'success': False, 'message': 'Supplier not found'}), 404
+
+    if request.method == 'GET':
+        return jsonify({
+            'id': supplier.id,
+            'name': supplier.name,
+            'contact_person': supplier.contact_person,
+            'phone': supplier.phone,
+            'email': supplier.email,
+            'address': supplier.address,
+            'created_at': supplier.created_at.isoformat()
+        })
+
+    elif request.method == 'PUT':
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+
+        name = data.get('name', supplier.name)
+        if not name or not str(name).strip():
+            return jsonify({'success': False, 'message': 'Supplier name is required'}), 400
+
+        supplier.name = str(name).strip()
+        supplier.contact_person = data.get('contact_person', supplier.contact_person)
+        supplier.phone = data.get('phone', supplier.phone)
+        supplier.email = data.get('email', supplier.email)
+        supplier.address = data.get('address', supplier.address)
+
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Supplier updated'})
+
+    elif request.method == 'DELETE':
+        db.session.delete(supplier)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Supplier deleted'})
 
 @app.route('/api/customers/<int:customer_id>', methods=['GET', 'PUT', 'DELETE'])
 @manager_required

@@ -15,6 +15,8 @@
     <style>
       :root {
         --sidebar-width: 250px;
+        --sidebar-min-width: 220px;
+        --sidebar-max-width: 420px;
         --sidebar-bg: #343a40;
         --sidebar-text: rgba(255, 255, 255, 0.75);
         --sidebar-active: white;
@@ -28,12 +30,17 @@
 
       .sidebar {
         width: var(--sidebar-width);
+        min-width: var(--sidebar-min-width);
+        max-width: var(--sidebar-max-width);
         height: 100vh;
         background-color: var(--sidebar-bg);
         color: var(--sidebar-text);
         position: fixed;
         transition: all 0.3s;
         z-index: 1000;
+        overflow-y: auto;
+        overflow-x: hidden;
+        resize: horizontal;
       }
 
       .sidebar .nav-link {
@@ -59,6 +66,12 @@
         margin-left: var(--sidebar-width);
         padding: 20px;
         transition: all 0.3s;
+      }
+
+      .sidebar-resize-hint {
+        font-size: 0.75rem;
+        opacity: 0.7;
+        text-align: center;
       }
 
       .product-card {
@@ -158,6 +171,7 @@
             <strong id="username-display">{{ session.username }}</strong></span
           >
         </div>
+        <div class="sidebar-resize-hint">⇔ Drag right edge to resize</div>
       </div>
       <ul class="nav flex-column">
         <li class="nav-item">
@@ -202,6 +216,11 @@
         <li class="nav-item">
           <a class="nav-link" href="#" onclick="showSection('debts')">
             <i class="bi bi-credit-card"></i> Debts
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="#" onclick="showSection('suppliers')">
+            <i class="bi bi-truck"></i> Suppliers
           </a>
         </li>
         <li class="nav-item">
@@ -637,6 +656,47 @@
                   <!-- Debts will be loaded here -->
                   <tr>
                     <td colspan="6" class="text-center py-4">
+                      <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Suppliers Section -->
+      <div id="suppliers-section" style="display: none">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h2 class="mb-0">Supplier Management</h2>
+          <button
+            class="btn btn-primary"
+            data-bs-toggle="modal"
+            data-bs-target="#addSupplierModal"
+          >
+            <i class="bi bi-plus-circle"></i> Add Supplier
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <div class="table-responsive">
+              <table class="table table-striped table-hover">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Contact Person</th>
+                    <th>Phone</th>
+                    <th>Email</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="suppliers-table">
+                  <tr>
+                    <td colspan="5" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                       </div>
@@ -1644,6 +1704,177 @@
       </div>
     </div>
 
+    <!-- Add Supplier Modal -->
+    <div
+      class="modal fade"
+      id="addSupplierModal"
+      tabindex="-1"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Add Supplier</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="add-supplier-form">
+              <div class="mb-3">
+                <label class="form-label"
+                  >Supplier Name <span class="text-danger">*</span></label
+                >
+                <input
+                  type="text"
+                  class="form-control"
+                  id="add-supplier-name"
+                  required
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Contact Person</label>
+                <input
+                  type="text"
+                  class="form-control"
+                  id="add-supplier-contact"
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Phone</label>
+                <input
+                  type="text"
+                  class="form-control"
+                  id="add-supplier-phone"
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Email</label>
+                <input
+                  type="email"
+                  class="form-control"
+                  id="add-supplier-email"
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Address</label>
+                <textarea
+                  class="form-control"
+                  id="add-supplier-address"
+                  rows="3"
+                ></textarea>
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              onclick="saveSupplier()"
+            >
+              Save Supplier
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Supplier Modal -->
+    <div
+      class="modal fade"
+      id="editSupplierModal"
+      tabindex="-1"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Edit Supplier</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="edit-supplier-form">
+              <input type="hidden" id="edit-supplier-id" />
+              <div class="mb-3">
+                <label class="form-label"
+                  >Supplier Name <span class="text-danger">*</span></label
+                >
+                <input
+                  type="text"
+                  class="form-control"
+                  id="edit-supplier-name"
+                  required
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Contact Person</label>
+                <input
+                  type="text"
+                  class="form-control"
+                  id="edit-supplier-contact"
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Phone</label>
+                <input
+                  type="text"
+                  class="form-control"
+                  id="edit-supplier-phone"
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Email</label>
+                <input
+                  type="email"
+                  class="form-control"
+                  id="edit-supplier-email"
+                />
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Address</label>
+                <textarea
+                  class="form-control"
+                  id="edit-supplier-address"
+                  rows="3"
+                ></textarea>
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              onclick="updateSupplier()"
+            >
+              Update Supplier
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Customer Details Modal -->
     <div
       class="modal fade"
@@ -1690,6 +1921,7 @@
       let cart = [];
       let currentSection = "dashboard";
       let currentProduct = null;
+      let currentSupplier = null;
       let dashboardChart = null;
       let salesChart = null;
       let paymentChart = null;
@@ -1731,6 +1963,8 @@
 
       // Initialize the application when page loads
       document.addEventListener("DOMContentLoaded", function () {
+        initResizableSidebar();
+
         // Set today's date as default for sales filter
         const today = new Date().toISOString().split("T")[0];
         document.getElementById("sales-date-filter").value = today;
@@ -1764,6 +1998,32 @@
         const mainContent = document.getElementById("main-content");
         sidebar.classList.toggle("active");
         mainContent.classList.toggle("active");
+      }
+
+      function initResizableSidebar() {
+        const sidebar = document.getElementById("sidebar");
+        const root = document.documentElement;
+        const savedSidebarWidth = localStorage.getItem("pos_sidebar_width");
+
+        if (savedSidebarWidth) {
+          root.style.setProperty("--sidebar-width", savedSidebarWidth + "px");
+          sidebar.style.width = savedSidebarWidth + "px";
+        }
+
+        const applyWidth = () => {
+          const width = Math.round(sidebar.getBoundingClientRect().width);
+          root.style.setProperty("--sidebar-width", `${width}px`);
+          localStorage.setItem("pos_sidebar_width", String(width));
+        };
+
+        applyWidth();
+
+        if (window.ResizeObserver) {
+          const resizeObserver = new ResizeObserver(() => {
+            applyWidth();
+          });
+          resizeObserver.observe(sidebar);
+        }
       }
 
       // Show different sections
@@ -1800,6 +2060,8 @@
         } else if (sectionId === "debts") {
           loadDebts();
           loadCustomersForDebtModal();
+        } else if (sectionId === "suppliers") {
+          loadSuppliers();
         }
 
         // Scroll to top when switching sections
@@ -4372,6 +4634,183 @@
         // This function could be implemented to show detailed debt information
         // For now, we'll just show the payment modal
         showMakePaymentModal(debtId);
+      }
+
+      // Supplier management functions
+      function loadSuppliers() {
+        const suppliersTable = document.getElementById("suppliers-table");
+        suppliersTable.innerHTML = `
+          <tr>
+            <td colspan="5" class="text-center py-4">
+              <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+              </div>
+            </td>
+          </tr>
+        `;
+
+        fetch("/api/suppliers")
+          .then((response) => response.json())
+          .then((data) => {
+            suppliersTable.innerHTML = "";
+
+            if (!Array.isArray(data) || data.length === 0) {
+              suppliersTable.innerHTML = `
+                <tr>
+                  <td colspan="5" class="text-center py-4 text-muted">No suppliers found.</td>
+                </tr>
+              `;
+              return;
+            }
+
+            data.forEach((supplier) => {
+              const row = document.createElement("tr");
+              row.innerHTML = `
+                <td>${supplier.name}</td>
+                <td>${supplier.contact_person || "N/A"}</td>
+                <td>${supplier.phone || "N/A"}</td>
+                <td>${supplier.email || "N/A"}</td>
+                <td>
+                  <button class="btn btn-sm btn-primary me-1" onclick="editSupplier(${supplier.id})">
+                    <i class="bi bi-pencil"></i>
+                  </button>
+                  <button class="btn btn-sm btn-danger" onclick="deleteSupplier(${supplier.id}, '${escapeHtml(supplier.name)}')">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </td>
+              `;
+              suppliersTable.appendChild(row);
+            });
+          })
+          .catch((error) => {
+            console.error("Error loading suppliers:", error);
+            suppliersTable.innerHTML = `
+              <tr>
+                <td colspan="5" class="text-center py-4 text-danger">Failed to load suppliers.</td>
+              </tr>
+            `;
+          });
+      }
+
+      function saveSupplier() {
+        const payload = {
+          name: document.getElementById("add-supplier-name").value.trim(),
+          contact_person: document.getElementById("add-supplier-contact").value.trim() || null,
+          phone: document.getElementById("add-supplier-phone").value.trim() || null,
+          email: document.getElementById("add-supplier-email").value.trim() || null,
+          address: document.getElementById("add-supplier-address").value.trim() || null,
+        };
+
+        if (!payload.name) {
+          alert("Supplier name is required");
+          return;
+        }
+
+        fetch("/api/suppliers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              alert("Supplier added successfully!");
+              const modal = bootstrap.Modal.getInstance(document.getElementById("addSupplierModal"));
+              modal.hide();
+              document.getElementById("add-supplier-form").reset();
+              loadSuppliers();
+            } else {
+              alert("Error adding supplier: " + (data.message || "Unknown error"));
+            }
+          })
+          .catch((error) => {
+            console.error("Error saving supplier:", error);
+            alert("Error saving supplier: " + error.message);
+          });
+      }
+
+      function editSupplier(supplierId) {
+        fetch(`/api/suppliers/${supplierId}`)
+          .then((response) => response.json())
+          .then((supplier) => {
+            currentSupplier = supplier;
+            document.getElementById("edit-supplier-id").value = supplier.id;
+            document.getElementById("edit-supplier-name").value = supplier.name || "";
+            document.getElementById("edit-supplier-contact").value = supplier.contact_person || "";
+            document.getElementById("edit-supplier-phone").value = supplier.phone || "";
+            document.getElementById("edit-supplier-email").value = supplier.email || "";
+            document.getElementById("edit-supplier-address").value = supplier.address || "";
+
+            const modal = new bootstrap.Modal(document.getElementById("editSupplierModal"));
+            modal.show();
+          })
+          .catch((error) => {
+            console.error("Error loading supplier:", error);
+            alert("Failed to load supplier");
+          });
+      }
+
+      function updateSupplier() {
+        if (!currentSupplier) {
+          alert("No supplier selected");
+          return;
+        }
+
+        const supplierId = document.getElementById("edit-supplier-id").value;
+        const payload = {
+          name: document.getElementById("edit-supplier-name").value.trim(),
+          contact_person: document.getElementById("edit-supplier-contact").value.trim() || null,
+          phone: document.getElementById("edit-supplier-phone").value.trim() || null,
+          email: document.getElementById("edit-supplier-email").value.trim() || null,
+          address: document.getElementById("edit-supplier-address").value.trim() || null,
+        };
+
+        if (!payload.name) {
+          alert("Supplier name is required");
+          return;
+        }
+
+        fetch(`/api/suppliers/${supplierId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              alert("Supplier updated successfully!");
+              const modal = bootstrap.Modal.getInstance(document.getElementById("editSupplierModal"));
+              modal.hide();
+              loadSuppliers();
+            } else {
+              alert("Error updating supplier: " + (data.message || "Unknown error"));
+            }
+          })
+          .catch((error) => {
+            console.error("Error updating supplier:", error);
+            alert("Error updating supplier: " + error.message);
+          });
+      }
+
+      function deleteSupplier(supplierId, supplierName) {
+        if (!confirm(`Are you sure you want to delete "${supplierName}"?`)) {
+          return;
+        }
+
+        fetch(`/api/suppliers/${supplierId}`, { method: "DELETE" })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              alert("Supplier deleted successfully!");
+              loadSuppliers();
+            } else {
+              alert("Error deleting supplier: " + (data.message || "Unknown error"));
+            }
+          })
+          .catch((error) => {
+            console.error("Error deleting supplier:", error);
+            alert("Error deleting supplier: " + error.message);
+          });
       }
 
       // Utility functions
