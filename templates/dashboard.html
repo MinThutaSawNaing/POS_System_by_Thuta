@@ -294,6 +294,11 @@
           </a>
         </li>
         <li class="nav-item">
+          <a class="nav-link" href="#" onclick="showSection('purchases')">
+            <i class="bi bi-box-arrow-in-down"></i> Purchases
+          </a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link" href="#" onclick="showSection('users')">
             <i class="bi bi-people"></i>Users
           </a>
@@ -959,6 +964,61 @@
               </table>
             </div>
             <div id="suppliers-pagination" class="d-flex justify-content-end mt-3"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Purchases Section -->
+      <div id="purchases-section" style="display: none">
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+          <h2 class="mb-0">Purchase & Receiving</h2>
+          <button
+            class="btn btn-primary"
+            data-bs-toggle="modal"
+            data-bs-target="#addPurchaseOrderModal"
+            onclick="preparePurchaseOrderModal()"
+          >
+            <i class="bi bi-plus-circle"></i> Create Purchase Order
+          </button>
+        </div>
+
+        <div class="row mb-3">
+          <div class="col-md-5">
+            <input
+              type="text"
+              id="purchase-orders-search"
+              class="form-control"
+              placeholder="Search by PO number, supplier or status"
+            />
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <div class="table-responsive">
+              <table class="table table-striped table-hover">
+                <thead>
+                  <tr>
+                    <th>PO Number</th>
+                    <th>Supplier</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Items</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="purchase-orders-table">
+                  <tr>
+                    <td colspan="6" class="text-center py-4">
+                      <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div id="purchase-orders-pagination" class="d-flex justify-content-end mt-3"></div>
           </div>
         </div>
       </div>
@@ -2294,6 +2354,98 @@
       </div>
     </div>
 
+    <!-- Add Purchase Order Modal -->
+    <div
+      class="modal fade"
+      id="addPurchaseOrderModal"
+      tabindex="-1"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Create Purchase Order</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label class="form-label">Supplier <span class="text-danger">*</span></label>
+              <select class="form-select" id="po-supplier-id">
+                <option value="">Select supplier</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Notes</label>
+              <textarea class="form-control" id="po-notes" rows="2"></textarea>
+            </div>
+            <hr />
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="mb-0">Items</h6>
+              <button class="btn btn-sm btn-outline-primary" onclick="addPurchaseOrderItemRow()">
+                <i class="bi bi-plus"></i> Add Item
+              </button>
+            </div>
+            <div id="po-items-container"></div>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Cancel
+            </button>
+            <button type="button" class="btn btn-primary" onclick="savePurchaseOrder()">
+              Create PO
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Receive Purchase Order Modal -->
+    <div
+      class="modal fade"
+      id="receivePurchaseOrderModal"
+      tabindex="-1"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Receive Purchase Order</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <p class="mb-2">PO: <strong id="receive-po-number">-</strong></p>
+            <div id="receive-po-items-container"></div>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Cancel
+            </button>
+            <button type="button" class="btn btn-success" onclick="submitPurchaseReceiving()">
+              Confirm Receiving
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
@@ -2476,6 +2628,7 @@
         customers: 1,
         debts: 1,
         suppliers: 1,
+        purchases: 1,
       };
       const pageSize = {
         products: 10,
@@ -2485,6 +2638,7 @@
         customers: 10,
         debts: 10,
         suppliers: 10,
+        purchases: 10,
       };
       
       // ===== CACHING IMPLEMENTATION =====
@@ -2620,6 +2774,7 @@
         bindReload("promotions-search", loadPromotions, "promotions");
         bindReload("customers-search", loadCustomers, "customers");
         bindReload("debts-search", loadDebts, "debts");
+        bindReload("purchase-orders-search", loadPurchaseOrders, "purchases");
 
         ["debts-type-filter", "debts-status-filter"].forEach((id) => {
           const el = document.getElementById(id);
@@ -2735,6 +2890,8 @@
           loadCustomersForDebtModal();
         } else if (sectionId === "suppliers") {
           loadSuppliers();
+        } else if (sectionId === "purchases") {
+          loadPurchaseOrders();
         } else if (sectionId === "settings") {
           loadSettings();
         }
@@ -5669,6 +5826,254 @@
           .catch((error) => {
             console.error("Error deleting supplier:", error);
             alert("Error deleting supplier: " + error.message);
+          });
+      }
+
+      // Purchase workflow functions
+      let cachedSuppliersForPO = [];
+      let selectedReceivePO = null;
+
+      function loadPurchaseOrders() {
+        const table = document.getElementById("purchase-orders-table");
+        table.innerHTML = `
+          <tr>
+            <td colspan="6" class="text-center py-4">
+              <div class="spinner-border text-primary" role="status"></div>
+            </td>
+          </tr>
+        `;
+
+        fetch("/api/purchase_orders")
+          .then((r) => r.json())
+          .then((data) => {
+            table.innerHTML = "";
+            const query = (document.getElementById("purchase-orders-search")?.value || "")
+              .trim()
+              .toLowerCase();
+
+            const filtered = (data || []).filter((po) => {
+              if (!query) return true;
+              return (
+                String(po.po_number || "").toLowerCase().includes(query) ||
+                String(po.supplier_name || "").toLowerCase().includes(query) ||
+                String(po.status || "").toLowerCase().includes(query)
+              );
+            });
+
+            if (filtered.length === 0) {
+              table.innerHTML = '<tr><td colspan="6" class="text-center py-4 text-muted">No purchase orders found.</td></tr>';
+              renderPagination("purchases", "purchase-orders-pagination", 1, loadPurchaseOrders);
+              return;
+            }
+
+            const page = paginateArray(filtered, "purchases");
+            page.items.forEach((po) => {
+              const badgeClass = po.status === "received" ? "success" : po.status === "partial" ? "warning" : "secondary";
+              const row = document.createElement("tr");
+              row.innerHTML = `
+                <td>${po.po_number}</td>
+                <td>${po.supplier_name}</td>
+                <td><span class="badge bg-${badgeClass}">${po.status}</span></td>
+                <td>${new Date(po.created_at).toLocaleString()}</td>
+                <td>${po.received_items_count}/${po.items_count}</td>
+                <td>
+                  <button class="btn btn-sm btn-success" onclick="openReceivePurchaseOrder(${po.id})" ${po.status === "received" ? "disabled" : ""}>
+                    <i class="bi bi-box-arrow-in-down"></i> Receive
+                  </button>
+                </td>
+              `;
+              table.appendChild(row);
+            });
+
+            renderPagination("purchases", "purchase-orders-pagination", page.totalPages, loadPurchaseOrders);
+          })
+          .catch((err) => {
+            console.error("Error loading purchase orders:", err);
+            table.innerHTML = '<tr><td colspan="6" class="text-center py-4 text-danger">Failed to load purchase orders.</td></tr>';
+          });
+      }
+
+      function preparePurchaseOrderModal() {
+        document.getElementById("po-supplier-id").innerHTML = '<option value="">Select supplier</option>';
+        document.getElementById("po-notes").value = "";
+        document.getElementById("po-items-container").innerHTML = "";
+
+        fetch("/api/suppliers")
+          .then((r) => r.json())
+          .then((suppliers) => {
+            cachedSuppliersForPO = suppliers || [];
+            const select = document.getElementById("po-supplier-id");
+            cachedSuppliersForPO.forEach((s) => {
+              const opt = document.createElement("option");
+              opt.value = s.id;
+              opt.textContent = s.name;
+              select.appendChild(opt);
+            });
+          })
+          .catch((err) => console.error("Error loading suppliers for PO:", err));
+
+        addPurchaseOrderItemRow();
+      }
+
+      function addPurchaseOrderItemRow() {
+        const container = document.getElementById("po-items-container");
+        const row = document.createElement("div");
+        row.className = "row g-2 mb-2 po-item-row";
+        row.innerHTML = `
+          <div class="col-md-5">
+            <select class="form-select po-item-product"></select>
+          </div>
+          <div class="col-md-3">
+            <input type="number" min="1" class="form-control po-item-qty" placeholder="Qty" />
+          </div>
+          <div class="col-md-3">
+            <input type="number" min="0" step="0.01" class="form-control po-item-cost" placeholder="Unit Cost" />
+          </div>
+          <div class="col-md-1">
+            <button class="btn btn-outline-danger w-100" onclick="removePurchaseOrderItemRow(this)"><i class="bi bi-x"></i></button>
+          </div>
+        `;
+        container.appendChild(row);
+
+        const productSelect = row.querySelector(".po-item-product");
+        productSelect.innerHTML = '<option value="">Select product</option>';
+        loadProductsCached().then((products) => {
+          products.forEach((p) => {
+            const opt = document.createElement("option");
+            opt.value = p.id;
+            opt.textContent = `${p.name} (${formatCurrency(p.price)})`;
+            productSelect.appendChild(opt);
+          });
+        });
+      }
+
+      function removePurchaseOrderItemRow(button) {
+        const rows = document.querySelectorAll(".po-item-row");
+        if (rows.length <= 1) {
+          alert("At least one item is required.");
+          return;
+        }
+        button.closest(".po-item-row").remove();
+      }
+
+      function savePurchaseOrder() {
+        const supplierId = parseInt(document.getElementById("po-supplier-id").value || "0", 10);
+        const notes = document.getElementById("po-notes").value.trim();
+        if (!supplierId) {
+          alert("Please select supplier.");
+          return;
+        }
+
+        const itemRows = Array.from(document.querySelectorAll(".po-item-row"));
+        const items = [];
+        for (const row of itemRows) {
+          const productId = parseInt(row.querySelector(".po-item-product").value || "0", 10);
+          const orderedQty = parseInt(row.querySelector(".po-item-qty").value || "0", 10);
+          const unitCost = parseFloat(row.querySelector(".po-item-cost").value || "0");
+          if (!productId || orderedQty <= 0) {
+            alert("Each item must have product and quantity > 0");
+            return;
+          }
+          items.push({ product_id: productId, ordered_qty: orderedQty, unit_cost: Number.isFinite(unitCost) ? unitCost : 0 });
+        }
+
+        fetch("/api/purchase_orders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ supplier_id: supplierId, notes, items }),
+        })
+          .then((r) => r.json())
+          .then((data) => {
+            if (!data.success) {
+              alert(data.message || "Failed to create purchase order");
+              return;
+            }
+            alert("Purchase order created successfully");
+            const modal = bootstrap.Modal.getInstance(document.getElementById("addPurchaseOrderModal"));
+            modal.hide();
+            loadPurchaseOrders();
+          })
+          .catch((err) => {
+            console.error("Error creating PO:", err);
+            alert("Failed to create purchase order");
+          });
+      }
+
+      function openReceivePurchaseOrder(poId) {
+        fetch(`/api/purchase_orders/${poId}`)
+          .then((r) => r.json())
+          .then((po) => {
+            if (!po.id) {
+              alert(po.message || "Purchase order not found");
+              return;
+            }
+
+            selectedReceivePO = po;
+            document.getElementById("receive-po-number").textContent = po.po_number;
+            const container = document.getElementById("receive-po-items-container");
+            container.innerHTML = "";
+
+            po.items.forEach((item) => {
+              const remaining = item.ordered_qty - item.received_qty;
+              const row = document.createElement("div");
+              row.className = "row g-2 mb-2 align-items-center";
+              row.innerHTML = `
+                <div class="col-md-5"><strong>${item.product_name}</strong></div>
+                <div class="col-md-3"><small>Remaining: ${remaining}</small></div>
+                <div class="col-md-4">
+                  <input type="number" min="0" max="${remaining}" value="0" class="form-control receive-item-qty" data-po-item-id="${item.id}" />
+                </div>
+              `;
+              container.appendChild(row);
+            });
+
+            const modal = new bootstrap.Modal(document.getElementById("receivePurchaseOrderModal"));
+            modal.show();
+          })
+          .catch((err) => {
+            console.error("Error loading PO details:", err);
+            alert("Failed to load purchase order details");
+          });
+      }
+
+      function submitPurchaseReceiving() {
+        if (!selectedReceivePO) return;
+        const items = Array.from(document.querySelectorAll(".receive-item-qty"))
+          .map((input) => ({
+            purchase_order_item_id: parseInt(input.dataset.poItemId, 10),
+            received_qty: parseInt(input.value || "0", 10),
+          }))
+          .filter((x) => x.received_qty > 0);
+
+        if (items.length === 0) {
+          alert("Enter at least one receiving quantity.");
+          return;
+        }
+
+        fetch(`/api/purchase_orders/${selectedReceivePO.id}/receive`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+        })
+          .then((r) => r.json())
+          .then((data) => {
+            if (!data.success) {
+              alert(data.message || "Failed to receive items");
+              return;
+            }
+            alert("Stock received successfully");
+            const modal = bootstrap.Modal.getInstance(document.getElementById("receivePurchaseOrderModal"));
+            modal.hide();
+            selectedReceivePO = null;
+            invalidateProductsCache();
+            loadProducts();
+            loadProductsForPOS();
+            loadPurchaseOrders();
+            loadDashboardStats();
+          })
+          .catch((err) => {
+            console.error("Error receiving PO:", err);
+            alert("Failed to receive items");
           });
       }
 

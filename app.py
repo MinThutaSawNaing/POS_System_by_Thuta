@@ -109,6 +109,9 @@ def manager_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+def generate_po_number():
+    return f"PO-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
+
 # Database Models
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -145,6 +148,30 @@ class Supplier(db.Model):
     notes = db.Column(db.String(300))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class PurchaseOrder(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    po_number = db.Column(db.String(40), unique=True, nullable=False)
+    supplier_id = db.Column(db.Integer, db.ForeignKey('supplier.id'), nullable=False)
+    status = db.Column(db.String(20), default='draft')  # draft, partial, received, cancelled
+    notes = db.Column(db.String(300))
+    created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    supplier = db.relationship('Supplier', backref='purchase_orders')
+    creator = db.relationship('User', backref='created_purchase_orders')
+
+class PurchaseOrderItem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    purchase_order_id = db.Column(db.Integer, db.ForeignKey('purchase_order.id'), nullable=False)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
+    ordered_qty = db.Column(db.Integer, nullable=False)
+    received_qty = db.Column(db.Integer, default=0)
+    unit_cost = db.Column(db.Float, default=0.0)
+
+    purchase_order = db.relationship('PurchaseOrder', backref='items')
+    product = db.relationship('Product', backref='purchase_order_items')
 
 class Sale(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -1223,6 +1250,155 @@ def api_customers():
         db.session.add(customer)
         db.session.commit()
         return jsonify({'success': True, 'message': 'Customer added'}), 201
+
+# Purchase Order & Receiving API Endpoints
+@app.route('/api/purchase_orders', methods=['GET', 'POST'])
+@manager_required
+def api_purchase_orders():
+    if request.method == 'GET':
+        purchase_orders = PurchaseOrder.query.order_by(PurchaseOrder.created_at.desc()).all()
+        return jsonify([{
+            'id': po.id,
+            'po_number': po.po_number,
+            'supplier_id': po.supplier_id,
+            'supplier_name': po.supplier.name if po.supplier else 'Unknown',
+            'status': po.status,
+            'notes': po.notes,
+            'created_at': po.created_at.isoformat(),
+            'updated_at': po.updated_at.isoformat() if po.updated_at else None,
+            'items_count': len(po.items),
+            'received_items_count': sum(1 for i in po.items if i.received_qty >= i.ordered_qty)
+        } for po in purchase_orders])
+
+    data = request.get_json() or {}
+    supplier_id = data.get('supplier_id')
+    items = data.get('items') or []
+
+    if not supplier_id or not items:
+        return jsonify({'success': False, 'message': 'Supplier and at least one item are required'}), 400
+
+    supplier = db.session.get(Supplier, supplier_id)
+    if not supplier:
+        return jsonify({'success': False, 'message': 'Supplier not found'}), 404
+
+    try:
+        po = PurchaseOrder(
+            po_number=generate_po_number(),
+            supplier_id=supplier_id,
+            status='draft',
+            notes=(data.get('notes') or '').strip() or None,
+            created_by=session.get('user_id')
+        )
+        db.session.add(po)
+        db.session.flush()
+
+        for item in items:
+            product_id = item.get('product_id')
+            ordered_qty = int(item.get('ordered_qty', 0) or 0)
+            unit_cost = float(item.get('unit_cost', 0) or 0)
+
+            if ordered_qty <= 0:
+                db.session.rollback()
+                return jsonify({'success': False, 'message': 'Ordered quantity must be greater than 0'}), 400
+
+            product = db.session.get(Product, product_id)
+            if not product:
+                db.session.rollback()
+                return jsonify({'success': False, 'message': f'Product not found: {product_id}'}), 404
+
+            po_item = PurchaseOrderItem(
+                purchase_order_id=po.id,
+                product_id=product_id,
+                ordered_qty=ordered_qty,
+                received_qty=0,
+                unit_cost=unit_cost
+            )
+            db.session.add(po_item)
+
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Purchase order created', 'purchase_order_id': po.id}), 201
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error creating purchase order: {str(e)}")
+        return jsonify({'success': False, 'message': 'Failed to create purchase order'}), 500
+
+@app.route('/api/purchase_orders/<int:po_id>', methods=['GET'])
+@manager_required
+def api_single_purchase_order(po_id):
+    po = db.session.get(PurchaseOrder, po_id)
+    if not po:
+        return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
+
+    return jsonify({
+        'id': po.id,
+        'po_number': po.po_number,
+        'supplier_id': po.supplier_id,
+        'supplier_name': po.supplier.name if po.supplier else 'Unknown',
+        'status': po.status,
+        'notes': po.notes,
+        'created_at': po.created_at.isoformat(),
+        'updated_at': po.updated_at.isoformat() if po.updated_at else None,
+        'items': [{
+            'id': item.id,
+            'product_id': item.product_id,
+            'product_name': item.product.name if item.product else 'Unknown',
+            'ordered_qty': item.ordered_qty,
+            'received_qty': item.received_qty,
+            'unit_cost': item.unit_cost
+        } for item in po.items]
+    })
+
+@app.route('/api/purchase_orders/<int:po_id>/receive', methods=['POST'])
+@manager_required
+def api_receive_purchase_order(po_id):
+    po = db.session.get(PurchaseOrder, po_id)
+    if not po:
+        return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
+
+    if po.status == 'received':
+        return jsonify({'success': False, 'message': 'Purchase order already fully received'}), 400
+
+    data = request.get_json() or {}
+    received_items = data.get('items') or []
+    if not received_items:
+        return jsonify({'success': False, 'message': 'No receiving items provided'}), 400
+
+    item_map = {item.id: item for item in po.items}
+
+    try:
+        for received in received_items:
+            po_item_id = received.get('purchase_order_item_id')
+            receive_qty = int(received.get('received_qty', 0) or 0)
+
+            if receive_qty <= 0:
+                continue
+
+            po_item = item_map.get(po_item_id)
+            if not po_item:
+                db.session.rollback()
+                return jsonify({'success': False, 'message': f'Invalid PO item: {po_item_id}'}), 400
+
+            remaining = po_item.ordered_qty - po_item.received_qty
+            if receive_qty > remaining:
+                db.session.rollback()
+                return jsonify({'success': False, 'message': f'Receive qty exceeds remaining for {po_item.product.name}'}), 400
+
+            po_item.received_qty += receive_qty
+            po_item.product.stock += receive_qty
+
+            if po_item.unit_cost and po_item.unit_cost > 0:
+                po_item.product.cost = po_item.unit_cost
+
+        all_received = all(item.received_qty >= item.ordered_qty for item in po.items)
+        any_received = any(item.received_qty > 0 for item in po.items)
+        po.status = 'received' if all_received else ('partial' if any_received else 'draft')
+
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Receiving recorded', 'status': po.status})
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error receiving purchase order: {str(e)}")
+        return jsonify({'success': False, 'message': 'Failed to process receiving'}), 500
 
 # Supplier API Endpoints
 @app.route('/api/suppliers', methods=['GET', 'POST'])
