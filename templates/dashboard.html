@@ -134,8 +134,20 @@
       }
 
       #cart-items {
-        max-height: 400px;
+        max-height: 45vh;
         overflow-y: auto;
+      }
+
+      .pos-cart-sticky {
+        position: sticky;
+        top: 20px;
+      }
+
+      .pos-products-scroll {
+        max-height: calc(100vh - 260px);
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding-right: 4px;
       }
 
       .card-stat {
@@ -182,7 +194,8 @@
       .toast-container {
         position: fixed;
         top: 20px;
-        right: 20px;
+        left: 50%;
+        transform: translateX(-50%);
         z-index: 9999;
       }
 
@@ -190,6 +203,19 @@
         min-width: 300px;
         margin-bottom: 10px;
         box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+      }
+
+      #toast-container {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 9999;
+        pointer-events: none;
+      }
+
+      #toast-container .alert {
+        pointer-events: auto;
       }
     </style>
   </head>
@@ -394,16 +420,18 @@
                 <i class="bi bi-search"></i> Search
               </button>
             </div>
-            <div class="row" id="product-grid">
-              <!-- Products will be loaded here -->
-              <div class="col-12 text-center py-5">
-                <div class="spinner-border text-primary" role="status">
-                  <span class="visually-hidden">Loading...</span>
+            <div class="pos-products-scroll">
+              <div class="row" id="product-grid">
+                <!-- Products will be loaded here -->
+                <div class="col-12 text-center py-5">
+                  <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-          <div class="col-md-4">
+          <div class="col-md-4 pos-cart-sticky">
             <div class="card shadow">
               <div class="card-header bg-primary text-white">
                 <h5 class="card-title mb-0">Current Sale</h5>
@@ -436,6 +464,22 @@
                     <option value="mobile_payment">Mobile Payment</option>
                     <option value="debt">Charge to Customer</option>
                   </select>
+                </div>
+                <div class="mb-3" id="cash-payment-fields">
+                  <label class="form-label">Cash Received</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    id="cash-received"
+                    class="form-control"
+                    placeholder="0.00"
+                    oninput="updateCashRefundDisplay()"
+                  />
+                  <div class="d-flex justify-content-between mt-2">
+                    <small class="text-muted">Refund / Change:</small>
+                    <small class="fw-bold" id="refund-amount">$0.00</small>
+                  </div>
                 </div>
                 <button
                   class="btn btn-success w-100 py-2"
@@ -471,6 +515,16 @@
 
         <div class="card">
           <div class="card-body">
+            <div class="row mb-3">
+              <div class="col-md-5">
+                <input
+                  type="text"
+                  id="products-search"
+                  class="form-control"
+                  placeholder="Search by barcode, name or category"
+                />
+              </div>
+            </div>
             <div class="table-responsive">
               <table class="table table-striped table-hover">
                 <thead>
@@ -497,6 +551,7 @@
                 </tbody>
               </table>
             </div>
+            <div id="products-pagination" class="d-flex justify-content-end mt-3"></div>
           </div>
         </div>
       </div>
@@ -517,6 +572,17 @@
           </div>
         </div>
 
+        <div class="row mb-3">
+          <div class="col-md-5">
+            <input
+              type="text"
+              id="sales-search"
+              class="form-control"
+              placeholder="Search by transaction ID, payment or user"
+            />
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-body">
             <div class="table-responsive">
@@ -526,6 +592,7 @@
                     <th>Transaction ID</th>
                     <th>Date</th>
                     <th>Total</th>
+                    <th>Refund</th>
                     <th>Payment</th>
                     <th>User</th>
                     <th>Actions</th>
@@ -534,7 +601,7 @@
                 <tbody id="sales-table">
                   <!-- Sales will be loaded here -->
                   <tr>
-                    <td colspan="6" class="text-center py-4">
+                    <td colspan="7" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                       </div>
@@ -543,6 +610,7 @@
                 </tbody>
               </table>
             </div>
+            <div id="sales-pagination" class="d-flex justify-content-end mt-3"></div>
           </div>
         </div>
       </div>
@@ -558,6 +626,17 @@
           >
             <i class="bi bi-person-plus"></i> Add User
           </button>
+        </div>
+
+        <div class="row mb-3">
+          <div class="col-md-5">
+            <input
+              type="text"
+              id="users-search"
+              class="form-control"
+              placeholder="Search by username, role or ID"
+            />
+          </div>
         </div>
 
         <div class="card">
@@ -584,6 +663,7 @@
                 </tbody>
               </table>
             </div>
+            <div id="users-pagination" class="d-flex justify-content-end mt-3"></div>
           </div>
         </div>
       </div>
@@ -599,6 +679,16 @@
           >
             <i class="bi bi-plus-circle"></i> Add Promotion
           </button>
+        </div>
+        <div class="row mb-3">
+          <div class="col-md-5">
+            <input
+              type="text"
+              id="promotions-search"
+              class="form-control"
+              placeholder="Search by product or discount type"
+            />
+          </div>
         </div>
         <div class="card">
           <div class="card-body">
@@ -625,6 +715,7 @@
                 </tbody>
               </table>
             </div>
+            <div id="promotions-pagination" class="d-flex justify-content-end mt-3"></div>
           </div>
         </div>
       </div>
@@ -640,6 +731,17 @@
           >
             <i class="bi bi-person-plus"></i> Add Customer
           </button>
+        </div>
+
+        <div class="row mb-3">
+          <div class="col-md-5">
+            <input
+              type="text"
+              id="customers-search"
+              class="form-control"
+              placeholder="Search by name, phone or email"
+            />
+          </div>
         </div>
 
         <div class="card">
@@ -667,6 +769,7 @@
                 </tbody>
               </table>
             </div>
+            <div id="customers-pagination" class="d-flex justify-content-end mt-3"></div>
           </div>
         </div>
       </div>
@@ -682,6 +785,36 @@
           >
             <i class="bi bi-plus-circle"></i> Add Debt
           </button>
+        </div>
+
+        <div class="row g-3 mb-3">
+          <div class="col-md-4">
+            <input
+              type="text"
+              id="debts-search"
+              class="form-control"
+              placeholder="Search customer, phone or notes"
+            />
+          </div>
+          <div class="col-md-3">
+            <select id="debts-type-filter" class="form-select">
+              <option value="">All Types</option>
+              <option value="debt">Debt</option>
+              <option value="payment">Payment</option>
+            </select>
+          </div>
+          <div class="col-md-3">
+            <select id="debts-status-filter" class="form-select">
+              <option value="">All Status</option>
+              <option value="open">Open</option>
+              <option value="closed">Closed</option>
+            </select>
+          </div>
+          <div class="col-md-2 d-flex align-items-end">
+            <button class="btn btn-outline-secondary w-100" onclick="loadDebts()">
+              <i class="bi bi-search"></i> Apply
+            </button>
+          </div>
         </div>
 
         <div class="card">
@@ -710,21 +843,87 @@
                 </tbody>
               </table>
             </div>
+            <div id="debts-pagination" class="d-flex justify-content-end mt-3"></div>
           </div>
         </div>
       </div>
 
       <!-- Suppliers Section -->
       <div id="suppliers-section" style="display: none">
-        <div class="d-flex justify-content-between align-items-center mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
           <h2 class="mb-0">Supplier Management</h2>
-          <button
-            class="btn btn-primary"
-            data-bs-toggle="modal"
-            data-bs-target="#addSupplierModal"
-          >
-            <i class="bi bi-plus-circle"></i> Add Supplier
-          </button>
+          <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" onclick="clearSupplierFilters()">
+              <i class="bi bi-x-circle"></i> Reset Filters
+            </button>
+            <button
+              class="btn btn-primary"
+              data-bs-toggle="modal"
+              data-bs-target="#addSupplierModal"
+            >
+              <i class="bi bi-plus-circle"></i> Add Supplier
+            </button>
+          </div>
+        </div>
+
+        <div class="row g-3 mb-3">
+          <div class="col-md-5">
+            <label class="form-label">Search Supplier</label>
+            <input
+              type="text"
+              class="form-control"
+              id="supplier-search"
+              placeholder="Name, contact person, phone or email"
+            />
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Status</label>
+            <select class="form-select" id="supplier-status-filter">
+              <option value="">All</option>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </div>
+          <div class="col-md-2 d-flex align-items-end">
+            <button class="btn btn-primary w-100" onclick="loadSuppliers()">
+              <i class="bi bi-search"></i> Search
+            </button>
+          </div>
+        </div>
+
+        <div class="row mb-3">
+          <div class="col-md-3 mb-2">
+            <div class="card bg-light">
+              <div class="card-body py-2">
+                <small class="text-muted">Total Suppliers</small>
+                <h5 id="supplier-total-count" class="mb-0">0</h5>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3 mb-2">
+            <div class="card bg-light">
+              <div class="card-body py-2">
+                <small class="text-muted">Active</small>
+                <h5 id="supplier-active-count" class="mb-0 text-success">0</h5>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3 mb-2">
+            <div class="card bg-light">
+              <div class="card-body py-2">
+                <small class="text-muted">Inactive</small>
+                <h5 id="supplier-inactive-count" class="mb-0 text-danger">0</h5>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-3 mb-2">
+            <div class="card bg-light">
+              <div class="card-body py-2">
+                <small class="text-muted">Avg Lead Time</small>
+                <h5 id="supplier-avg-lead-time" class="mb-0">0 days</h5>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="card">
@@ -737,12 +936,15 @@
                     <th>Contact Person</th>
                     <th>Phone</th>
                     <th>Email</th>
+                    <th>Payment Terms</th>
+                    <th>Lead Time</th>
+                    <th>Status</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody id="suppliers-table">
                   <tr>
-                    <td colspan="5" class="text-center py-4">
+                    <td colspan="8" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                       </div>
@@ -751,6 +953,7 @@
                 </tbody>
               </table>
             </div>
+            <div id="suppliers-pagination" class="d-flex justify-content-end mt-3"></div>
           </div>
         </div>
       </div>
@@ -1845,6 +2048,42 @@
                   rows="3"
                 ></textarea>
               </div>
+              <div class="row">
+                <div class="col-md-6 mb-3">
+                  <label class="form-label">Payment Terms</label>
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="add-supplier-payment-terms"
+                    placeholder="e.g. Net 30"
+                  />
+                </div>
+                <div class="col-md-6 mb-3">
+                  <label class="form-label">Lead Time (Days)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    class="form-control"
+                    id="add-supplier-lead-time"
+                    placeholder="e.g. 7"
+                  />
+                </div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Notes</label>
+                <textarea
+                  class="form-control"
+                  id="add-supplier-notes"
+                  rows="2"
+                  placeholder="Preferred delivery time, quality notes, etc."
+                ></textarea>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="add-supplier-is-active" checked />
+                <label class="form-check-label" for="add-supplier-is-active">
+                  Active supplier
+                </label>
+              </div>
             </form>
           </div>
           <div class="modal-footer">
@@ -1931,6 +2170,40 @@
                   rows="3"
                 ></textarea>
               </div>
+              <div class="row">
+                <div class="col-md-6 mb-3">
+                  <label class="form-label">Payment Terms</label>
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="edit-supplier-payment-terms"
+                    placeholder="e.g. Net 30"
+                  />
+                </div>
+                <div class="col-md-6 mb-3">
+                  <label class="form-label">Lead Time (Days)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    class="form-control"
+                    id="edit-supplier-lead-time"
+                  />
+                </div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Notes</label>
+                <textarea
+                  class="form-control"
+                  id="edit-supplier-notes"
+                  rows="2"
+                ></textarea>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="edit-supplier-is-active" />
+                <label class="form-check-label" for="edit-supplier-is-active">
+                  Active supplier
+                </label>
+              </div>
             </form>
           </div>
           <div class="modal-footer">
@@ -2003,6 +2276,24 @@
       let dashboardChart = null;
       let salesChart = null;
       let paymentChart = null;
+      const pageState = {
+        products: 1,
+        sales: 1,
+        users: 1,
+        promotions: 1,
+        customers: 1,
+        debts: 1,
+        suppliers: 1,
+      };
+      const pageSize = {
+        products: 10,
+        sales: 10,
+        users: 10,
+        promotions: 10,
+        customers: 10,
+        debts: 10,
+        suppliers: 10,
+      };
       
       // ===== CACHING IMPLEMENTATION =====
       // Product data caching to reduce API calls
@@ -2039,6 +2330,56 @@
       }
       // ===== END CACHING IMPLEMENTATION =====
 
+      function paginateArray(data, key) {
+        const totalItems = data.length;
+        const totalPages = Math.max(1, Math.ceil(totalItems / pageSize[key]));
+        if (pageState[key] > totalPages) pageState[key] = totalPages;
+        if (pageState[key] < 1) pageState[key] = 1;
+
+        const startIndex = (pageState[key] - 1) * pageSize[key];
+        const endIndex = startIndex + pageSize[key];
+        return {
+          items: data.slice(startIndex, endIndex),
+          totalPages,
+          totalItems,
+        };
+      }
+
+      function renderPagination(key, containerId, totalPages, onChange) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        if (totalPages <= 1) {
+          container.innerHTML = "";
+          return;
+        }
+
+        const current = pageState[key];
+        container.innerHTML = `
+          <nav>
+            <ul class="pagination pagination-sm mb-0">
+              <li class="page-item ${current <= 1 ? "disabled" : ""}">
+                <a class="page-link" href="#" data-page="${current - 1}">Previous</a>
+              </li>
+              <li class="page-item disabled"><span class="page-link">${current} / ${totalPages}</span></li>
+              <li class="page-item ${current >= totalPages ? "disabled" : ""}">
+                <a class="page-link" href="#" data-page="${current + 1}">Next</a>
+              </li>
+            </ul>
+          </nav>
+        `;
+
+        container.querySelectorAll("a.page-link[data-page]").forEach((link) => {
+          link.addEventListener("click", (e) => {
+            e.preventDefault();
+            const target = parseInt(e.currentTarget.getAttribute("data-page"), 10);
+            if (!Number.isNaN(target) && target >= 1 && target <= totalPages) {
+              pageState[key] = target;
+              onChange();
+            }
+          });
+        });
+      }
+
       // Initialize the application when page loads
       document.addEventListener("DOMContentLoaded", function () {
         initResizableSidebar();
@@ -2068,6 +2409,42 @@
               searchProducts();
             }
           });
+
+        const bindReload = (id, fn, key) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.addEventListener("input", () => {
+            if (key) pageState[key] = 1;
+            fn();
+          });
+        };
+
+        bindReload("products-search", loadProducts, "products");
+        bindReload("sales-search", loadSales, "sales");
+        bindReload("users-search", loadUsers, "users");
+        bindReload("promotions-search", loadPromotions, "promotions");
+        bindReload("customers-search", loadCustomers, "customers");
+        bindReload("debts-search", loadDebts, "debts");
+
+        ["debts-type-filter", "debts-status-filter"].forEach((id) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.addEventListener("change", () => {
+            pageState.debts = 1;
+            loadDebts();
+          });
+        });
+
+        const paymentMethodSelect = document.getElementById("payment-method");
+        if (paymentMethodSelect) {
+          paymentMethodSelect.addEventListener("change", function () {
+            toggleCashPaymentFields();
+            updateCashRefundDisplay();
+          });
+        }
+
+        toggleCashPaymentFields();
+        updateCashRefundDisplay();
       });
 
       // Toggle sidebar on mobile
@@ -2358,13 +2735,27 @@
           .then((r) => r.json())
           .then((data) => {
             table.innerHTML = "";
-            if (data.length === 0) {
+            const query = (document.getElementById("promotions-search")?.value || "")
+              .trim()
+              .toLowerCase();
+            const filtered = (data || []).filter((p) => {
+              if (!query) return true;
+              return (
+                String(p.product_name || "").toLowerCase().includes(query) ||
+                String(p.discount_type || "").toLowerCase().includes(query)
+              );
+            });
+
+            if (filtered.length === 0) {
               table.innerHTML = `
                 <tr><td colspan="6" class="text-center py-4 text-muted">No promotions found.</td></tr>
               `;
+              renderPagination("promotions", "promotions-pagination", 1, loadPromotions);
               return;
             }
-            data.forEach((p) => {
+
+            const page = paginateArray(filtered, "promotions");
+            page.items.forEach((p) => {
               const startDate = new Date(p.start_date).toLocaleString();
               const endDate = new Date(p.end_date).toLocaleString();
               const badge = p.is_active
@@ -2396,9 +2787,11 @@
               `;
               table.appendChild(row);
             });
+            renderPagination("promotions", "promotions-pagination", page.totalPages, loadPromotions);
           })
           .catch((err) => {
             table.innerHTML = `<tr><td colspan="6" class="text-center py-4 text-danger">Failed to load promotions.</td></tr>`;
+            renderPagination("promotions", "promotions-pagination", 1, loadPromotions);
             console.error(err);
           });
       }
@@ -2737,6 +3130,40 @@
           "$" + (taxCents / 100).toFixed(2);
         document.getElementById("total").textContent =
           "$" + (totalCents / 100).toFixed(2);
+        updateCashRefundDisplay();
+      }
+
+      function getCurrentCartTotal() {
+        return cart.reduce((sum, item) => {
+          const itemTotal = Number(item.price) * Number(item.quantity);
+          const itemTax = (itemTotal * Number(item.tax_rate || 0)) / 100;
+          return sum + itemTotal + itemTax;
+        }, 0);
+      }
+
+      function toggleCashPaymentFields() {
+        const paymentMethod = document.getElementById("payment-method")?.value;
+        const cashSection = document.getElementById("cash-payment-fields");
+        if (!cashSection) return;
+        cashSection.style.display = paymentMethod === "cash" ? "block" : "none";
+      }
+
+      function updateCashRefundDisplay() {
+        const refundElement = document.getElementById("refund-amount");
+        const paymentMethod = document.getElementById("payment-method")?.value;
+        const cashInput = document.getElementById("cash-received");
+        if (!refundElement) return;
+
+        if (paymentMethod !== "cash") {
+          refundElement.textContent = "$0.00";
+          return;
+        }
+
+        const total = getCurrentCartTotal();
+        const cashReceived = parseFloat(cashInput?.value || "0") || 0;
+        const refund = cashReceived - total;
+        refundElement.textContent = `$${Math.max(refund, 0).toFixed(2)}`;
+        refundElement.className = `fw-bold ${refund < 0 ? "text-danger" : "text-success"}`;
       }
 
       function adjustQuantity(index, change) {
@@ -2788,6 +3215,16 @@
           payment_method: paymentMethod,
         };
 
+        if (paymentMethod === "cash") {
+          const cashReceived = parseFloat(document.getElementById("cash-received").value || "0");
+          const total = getCurrentCartTotal();
+          if (isNaN(cashReceived) || cashReceived < total) {
+            alert("Cash received must be equal to or greater than total amount");
+            return;
+          }
+          saleData.cash_received = Number(cashReceived.toFixed(2));
+        }
+
         // Include customer_id if a customer is selected
         if (customerId) {
           saleData.customer_id = parseInt(customerId);
@@ -2810,6 +3247,8 @@
               alert(message);
               cart = [];
               updateCartDisplay();
+              document.getElementById("cash-received").value = "";
+              updateCashRefundDisplay();
               loadSales();
               loadDashboardStats();
               invalidateProductsCache();
@@ -2959,17 +3398,30 @@
         loadProductsCached()
           .then((data) => {
             productsTable.innerHTML = "";
+            const query = (document.getElementById("products-search")?.value || "")
+              .trim()
+              .toLowerCase();
+            const filtered = (data || []).filter((product) => {
+              if (!query) return true;
+              return (
+                String(product.barcode || "").toLowerCase().includes(query) ||
+                String(product.name || "").toLowerCase().includes(query) ||
+                String(product.category || "").toLowerCase().includes(query)
+              );
+            });
 
-            if (data.length === 0) {
+            if (filtered.length === 0) {
               productsTable.innerHTML = `
                                   <tr>
                                       <td colspan="8" class="text-center py-4 text-muted">No products found.</td>
                                   </tr>
                               `;
+              renderPagination("products", "products-pagination", 1, loadProducts);
               return;
             }
 
-            data.forEach((product) => {
+            const page = paginateArray(filtered, "products");
+            page.items.forEach((product) => {
               const row = document.createElement("tr");
               row.innerHTML = `
                                   <td>${getProductPhotoHtml(product.photo_url, product.name, "product-thumb")}</td>
@@ -2994,6 +3446,7 @@
                               `;
               productsTable.appendChild(row);
             });
+            renderPagination("products", "products-pagination", page.totalPages, loadProducts);
           })
           .catch((error) => {
             console.error("Error loading products:", error);
@@ -3002,6 +3455,7 @@
                                   <td colspan="8" class="text-center py-4 text-danger">Failed to load products.</td>
                               </tr>
                           `;
+            renderPagination("products", "products-pagination", 1, loadProducts);
           });
       }
 
@@ -3203,7 +3657,7 @@
         const salesTable = document.getElementById("sales-table");
         salesTable.innerHTML = `
                       <tr>
-                          <td colspan="6" class="text-center py-4">
+                          <td colspan="7" class="text-center py-4">
                               <div class="spinner-border text-primary" role="status">
                                   <span class="visually-hidden">Loading...</span>
                               </div>
@@ -3211,21 +3665,42 @@
                       </tr>
                   `;
 
-        fetch("/api/reports/sales")
+        const dateFilter = document.getElementById("sales-date-filter")?.value;
+        const searchQuery = (document.getElementById("sales-search")?.value || "")
+          .trim()
+          .toLowerCase();
+
+        const params = new URLSearchParams();
+        if (dateFilter) {
+          params.set("start", dateFilter);
+          params.set("end", dateFilter);
+        }
+
+        fetch(`/api/reports/sales${params.toString() ? `?${params.toString()}` : ""}`)
           .then((response) => response.json())
           .then((data) => {
             salesTable.innerHTML = "";
+            const filtered = (data || []).filter((sale) => {
+              if (!searchQuery) return true;
+              return (
+                String(sale.transaction_id || "").toLowerCase().includes(searchQuery) ||
+                String(sale.payment_method || "").toLowerCase().includes(searchQuery) ||
+                String(sale.username || "").toLowerCase().includes(searchQuery)
+              );
+            });
 
-            if (data.length === 0) {
+            if (filtered.length === 0) {
               salesTable.innerHTML = `
                                   <tr>
-                                      <td colspan="6" class="text-center py-4 text-muted">No sales recorded.</td>
+                                      <td colspan="7" class="text-center py-4 text-muted">No sales recorded.</td>
                                   </tr>
                               `;
+              renderPagination("sales", "sales-pagination", 1, loadSales);
               return;
             }
 
-            data.forEach((sale) => {
+            const page = paginateArray(filtered, "sales");
+            page.items.forEach((sale) => {
               const row = document.createElement("tr");
               row.innerHTML = `
                                   <td>${sale.transaction_id}</td>
@@ -3233,6 +3708,7 @@
                                     sale.date
                                   ).toLocaleString()}</td>
                                   <td>$${sale.total.toFixed(2)}</td>
+                                  <td>$${(sale.refund_amount || 0).toFixed(2)}</td>
                                   <td>${sale.payment_method}</td>
                                   <td>${sale.username || "Unknown"}</td>
                                   <td>
@@ -3245,73 +3721,22 @@
                               `;
               salesTable.appendChild(row);
             });
+            renderPagination("sales", "sales-pagination", page.totalPages, loadSales);
           })
           .catch((error) => {
             console.error("Error loading sales:", error);
             salesTable.innerHTML = `
                               <tr>
-                                  <td colspan="6" class="text-center py-4 text-danger">Failed to load sales.</td>
+                                  <td colspan="7" class="text-center py-4 text-danger">Failed to load sales.</td>
                               </tr>
                           `;
+            renderPagination("sales", "sales-pagination", 1, loadSales);
           });
       }
 
       function filterSalesByDate() {
-        const date = document.getElementById("sales-date-filter").value;
-        if (!date) return;
-
-        const salesTable = document.getElementById("sales-table");
-        salesTable.innerHTML = `
-              <tr>
-                  <td colspan="6" class="text-center py-4">
-                      <div class="spinner-border text-primary" role="status">
-                          <span class="visually-hidden">Loading...</span>
-                      </div>
-                  </td>
-              </tr>
-          `;
-
-        fetch("/api/reports/sales?start=" + date + "&end=" + date)
-          .then((response) => response.json())
-          .then((data) => {
-            salesTable.innerHTML = "";
-
-            if (data.length === 0) {
-              salesTable.innerHTML = `
-                          <tr>
-                              <td colspan="6" class="text-center py-4 text-muted">No sales recorded for this date.</td>
-                          </tr>
-                      `;
-              return;
-            }
-
-            data.forEach((sale) => {
-              const row = document.createElement("tr");
-              row.innerHTML = `
-                          <td>${sale.transaction_id}</td>
-                          <td>${new Date(sale.date).toLocaleString()}</td>
-                          <td>$${sale.total.toFixed(2)}</td>
-                          <td>${sale.payment_method}</td>
-                          <td>${sale.user_id}</td>
-                          <td>
-                              <button class="btn btn-sm btn-info" onclick="viewSaleDetails('${
-                                sale.transaction_id
-                              }')">
-                                  <i class="bi bi-info-circle"></i> Details
-                              </button>
-                          </td>
-                      `;
-              salesTable.appendChild(row);
-            });
-          })
-          .catch((error) => {
-            console.error("Error filtering sales:", error);
-            salesTable.innerHTML = `
-                      <tr>
-                          <td colspan="6" class="text-center py-4 text-danger">Failed to filter sales.</td>
-                      </tr>
-                  `;
-          });
+        pageState.sales = 1;
+        loadSales();
       }
 
       function viewSaleDetails(transactionId) {
@@ -3409,6 +3834,16 @@
                                   <div class="col-md-6">
                                       <h6>Processed By</h6>
                                       <p>User ID: ${sale.username}</p>
+                                  </div>
+                              </div>
+                              <div class="row mt-2">
+                                  <div class="col-md-6">
+                                      <h6>Cash Received</h6>
+                                      <p>$${(sale.cash_received || 0).toFixed(2)}</p>
+                                  </div>
+                                  <div class="col-md-6">
+                                      <h6>Refund Given</h6>
+                                      <p>$${(sale.refund_amount || 0).toFixed(2)}</p>
                                   </div>
                               </div>
                           `;
@@ -3617,6 +4052,8 @@
           .then((data) => {
             const totalSales = data.reduce((sum, sale) => sum + sale.total, 0);
             const totalTax = data.reduce((sum, sale) => sum + sale.tax, 0);
+            const totalRefunds = data.reduce((sum, sale) => sum + (sale.refund_amount || 0), 0);
+            const refundTransactions = data.filter((sale) => (sale.refund_amount || 0) > 0).length;
             const totalTransactions = data.length;
 
             // Group by payment method
@@ -3647,7 +4084,7 @@
 
             resultsDiv.innerHTML = `
                               <div class="row mb-4">
-                                  <div class="col-md-4">
+                                  <div class="col-md-3">
                                       <div class="card bg-light">
                                           <div class="card-body text-center">
                                               <h5 class="card-title">Total Sales</h5>
@@ -3655,7 +4092,7 @@
                                           </div>
                                       </div>
                                   </div>
-                                  <div class="col-md-4">
+                                  <div class="col-md-3">
                                       <div class="card bg-light">
                                           <div class="card-body text-center">
                                               <h5 class="card-title">Total Tax</h5>
@@ -3663,7 +4100,16 @@
                                           </div>
                                       </div>
                                   </div>
-                                  <div class="col-md-4">
+                                  <div class="col-md-3">
+                                      <div class="card bg-light">
+                                          <div class="card-body text-center">
+                                              <h5 class="card-title">Refund Given</h5>
+                                              <h3>$${totalRefunds.toFixed(2)}</h3>
+                                        <small class="text-muted">${refundTransactions} refunded sales</small>
+                                          </div>
+                                      </div>
+                                  </div>
+                                  <div class="col-md-3">
                                       <div class="card bg-light">
                                           <div class="card-body text-center">
                                               <h5 class="card-title">Transactions</h5>
@@ -3698,6 +4144,7 @@
                                               <th>Transaction ID</th>
                                               <th>Date</th>
                                               <th>Total</th>
+                                              <th>Refund</th>
                                               <th>Payment</th>
                                           </tr>
                                       </thead>
@@ -3716,6 +4163,7 @@
                                                   <td>$${sale.total.toFixed(
                                                     2
                                                   )}</td>
+                                                  <td>$${(sale.refund_amount || 0).toFixed(2)}</td>
                                                   <td>${
                                                     sale.payment_method
                                                   }</td>
@@ -3765,17 +4213,30 @@
           })
           .then((data) => {
             usersTable.innerHTML = "";
+            const query = (document.getElementById("users-search")?.value || "")
+              .trim()
+              .toLowerCase();
+            const filtered = (data || []).filter((user) => {
+              if (!query) return true;
+              return (
+                String(user.id).toLowerCase().includes(query) ||
+                String(user.username || "").toLowerCase().includes(query) ||
+                String(user.role || "").toLowerCase().includes(query)
+              );
+            });
 
-            if (data.length === 0) {
+            if (filtered.length === 0) {
               usersTable.innerHTML = `
                 <tr>
                   <td colspan="4" class="text-center py-4 text-muted">No users found.</td>
                 </tr>
               `;
+              renderPagination("users", "users-pagination", 1, loadUsers);
               return;
             }
 
-            data.forEach((user) => {
+            const page = paginateArray(filtered, "users");
+            page.items.forEach((user) => {
               const row = document.createElement("tr");
               row.innerHTML = `
                 <td>${user.id}</td>
@@ -3798,6 +4259,7 @@
               `;
               usersTable.appendChild(row);
             });
+            renderPagination("users", "users-pagination", page.totalPages, loadUsers);
           })
           .catch((error) => {
             console.error("Error loading users:", error);
@@ -3806,6 +4268,7 @@
                 <td colspan="4" class="text-center py-4 text-danger">Failed to load users. ${error.message}</td>
               </tr>
             `;
+            renderPagination("users", "users-pagination", 1, loadUsers);
           });
       }
 
@@ -4125,10 +4588,6 @@
         if (!toastContainer) {
           toastContainer = document.createElement("div");
           toastContainer.id = "toast-container";
-          toastContainer.style.position = "fixed";
-          toastContainer.style.top = "20px";
-          toastContainer.style.right = "20px";
-          toastContainer.style.zIndex = "9999";
           document.body.appendChild(toastContainer);
         }
 
@@ -4197,17 +4656,30 @@
           .then((response) => response.json())
           .then((data) => {
             customersTable.innerHTML = "";
+            const query = (document.getElementById("customers-search")?.value || "")
+              .trim()
+              .toLowerCase();
+            const filtered = (data || []).filter((customer) => {
+              if (!query) return true;
+              return (
+                String(customer.name || "").toLowerCase().includes(query) ||
+                String(customer.phone || "").toLowerCase().includes(query) ||
+                String(customer.email || "").toLowerCase().includes(query)
+              );
+            });
 
-            if (data.length === 0) {
+            if (filtered.length === 0) {
               customersTable.innerHTML = `
                 <tr>
                   <td colspan="5" class="text-center py-4 text-muted">No customers found.</td>
                 </tr>
               `;
+              renderPagination("customers", "customers-pagination", 1, loadCustomers);
               return;
             }
 
-            data.forEach((customer) => {
+            const page = paginateArray(filtered, "customers");
+            page.items.forEach((customer) => {
               const row = document.createElement("tr");
               row.innerHTML = `
                 <td>${customer.name}</td>
@@ -4228,6 +4700,7 @@
               `;
               customersTable.appendChild(row);
             });
+            renderPagination("customers", "customers-pagination", page.totalPages, loadCustomers);
           })
           .catch((error) => {
             console.error("Error loading customers:", error);
@@ -4236,6 +4709,7 @@
                 <td colspan="5" class="text-center py-4 text-danger">Failed to load customers.</td>
               </tr>
             `;
+            renderPagination("customers", "customers-pagination", 1, loadCustomers);
           });
       }
 
@@ -4507,7 +4981,15 @@
           </tr>
         `;
 
-        fetch("/api/debts")
+        const queryParams = new URLSearchParams();
+        const q = (document.getElementById("debts-search")?.value || "").trim();
+        const type = (document.getElementById("debts-type-filter")?.value || "").trim();
+        const status = (document.getElementById("debts-status-filter")?.value || "").trim();
+        if (q) queryParams.set("q", q);
+        if (type) queryParams.set("type", type);
+        if (status) queryParams.set("status", status);
+
+        fetch(`/api/debts${queryParams.toString() ? `?${queryParams.toString()}` : ""}`)
           .then((response) => response.json())
           .then((data) => {
             debtsTable.innerHTML = "";
@@ -4518,10 +5000,12 @@
                   <td colspan="6" class="text-center py-4 text-muted">No debt records found.</td>
                 </tr>
               `;
+              renderPagination("debts", "debts-pagination", 1, loadDebts);
               return;
             }
 
-            data.forEach((debt) => {
+            const page = paginateArray(data, "debts");
+            page.items.forEach((debt) => {
               const row = document.createElement("tr");
               const typeBadge = debt.type === "debt" 
                 ? '<span class="badge bg-danger">Debt</span>' 
@@ -4549,6 +5033,7 @@
               `;
               debtsTable.appendChild(row);
             });
+            renderPagination("debts", "debts-pagination", page.totalPages, loadDebts);
           })
           .catch((error) => {
             console.error("Error loading debts:", error);
@@ -4557,6 +5042,7 @@
                 <td colspan="6" class="text-center py-4 text-danger">Failed to load debts.</td>
               </tr>
             `;
+            renderPagination("debts", "debts-pagination", 1, loadDebts);
           });
       }
 
@@ -4749,9 +5235,19 @@
       // Supplier management functions
       function loadSuppliers() {
         const suppliersTable = document.getElementById("suppliers-table");
+        const searchInput = document.getElementById("supplier-search");
+        const statusFilter = document.getElementById("supplier-status-filter");
+
+        const searchQuery = searchInput ? searchInput.value.trim() : "";
+        const activeFilter = statusFilter ? statusFilter.value : "";
+        const queryParams = new URLSearchParams();
+        if (searchQuery) queryParams.set("q", searchQuery);
+        if (activeFilter) queryParams.set("active", activeFilter);
+        const endpoint = `/api/suppliers${queryParams.toString() ? `?${queryParams.toString()}` : ""}`;
+
         suppliersTable.innerHTML = `
           <tr>
-            <td colspan="5" class="text-center py-4">
+            <td colspan="8" class="text-center py-4">
               <div class="spinner-border text-primary" role="status">
                 <span class="visually-hidden">Loading...</span>
               </div>
@@ -4759,27 +5255,36 @@
           </tr>
         `;
 
-        fetch("/api/suppliers")
+        fetch(endpoint)
           .then((response) => response.json())
           .then((data) => {
             suppliersTable.innerHTML = "";
+            updateSupplierSummaryCards(Array.isArray(data) ? data : []);
 
             if (!Array.isArray(data) || data.length === 0) {
               suppliersTable.innerHTML = `
                 <tr>
-                  <td colspan="5" class="text-center py-4 text-muted">No suppliers found.</td>
+                  <td colspan="8" class="text-center py-4 text-muted">No suppliers found.</td>
                 </tr>
               `;
+              renderPagination("suppliers", "suppliers-pagination", 1, loadSuppliers);
               return;
             }
 
-            data.forEach((supplier) => {
+            const page = paginateArray(data, "suppliers");
+            page.items.forEach((supplier) => {
+              const statusBadge = supplier.is_active
+                ? '<span class="badge bg-success">Active</span>'
+                : '<span class="badge bg-secondary">Inactive</span>';
               const row = document.createElement("tr");
               row.innerHTML = `
                 <td>${supplier.name}</td>
                 <td>${supplier.contact_person || "N/A"}</td>
                 <td>${supplier.phone || "N/A"}</td>
                 <td>${supplier.email || "N/A"}</td>
+                <td>${supplier.payment_terms || "N/A"}</td>
+                <td>${supplier.lead_time_days != null ? `${supplier.lead_time_days} days` : "N/A"}</td>
+                <td>${statusBadge}</td>
                 <td>
                   <button class="btn btn-sm btn-primary me-1" onclick="editSupplier(${supplier.id})">
                     <i class="bi bi-pencil"></i>
@@ -4791,28 +5296,72 @@
               `;
               suppliersTable.appendChild(row);
             });
+            renderPagination("suppliers", "suppliers-pagination", page.totalPages, loadSuppliers);
           })
           .catch((error) => {
             console.error("Error loading suppliers:", error);
             suppliersTable.innerHTML = `
               <tr>
-                <td colspan="5" class="text-center py-4 text-danger">Failed to load suppliers.</td>
+                <td colspan="8" class="text-center py-4 text-danger">Failed to load suppliers.</td>
               </tr>
             `;
+            renderPagination("suppliers", "suppliers-pagination", 1, loadSuppliers);
           });
       }
 
-      function saveSupplier() {
-        const payload = {
-          name: document.getElementById("add-supplier-name").value.trim(),
-          contact_person: document.getElementById("add-supplier-contact").value.trim() || null,
-          phone: document.getElementById("add-supplier-phone").value.trim() || null,
-          email: document.getElementById("add-supplier-email").value.trim() || null,
-          address: document.getElementById("add-supplier-address").value.trim() || null,
+      function updateSupplierSummaryCards(suppliers) {
+        const total = suppliers.length;
+        const active = suppliers.filter((s) => s.is_active).length;
+        const inactive = total - active;
+        const leadTimes = suppliers
+          .map((s) => s.lead_time_days)
+          .filter((value) => Number.isFinite(Number(value)));
+        const avgLeadTime = leadTimes.length
+          ? Math.round(leadTimes.reduce((sum, value) => sum + Number(value), 0) / leadTimes.length)
+          : 0;
+
+        document.getElementById("supplier-total-count").textContent = total;
+        document.getElementById("supplier-active-count").textContent = active;
+        document.getElementById("supplier-inactive-count").textContent = inactive;
+        document.getElementById("supplier-avg-lead-time").textContent = `${avgLeadTime} days`;
+      }
+
+      function clearSupplierFilters() {
+        const searchInput = document.getElementById("supplier-search");
+        const statusFilter = document.getElementById("supplier-status-filter");
+        if (searchInput) searchInput.value = "";
+        if (statusFilter) statusFilter.value = "";
+        pageState.suppliers = 1;
+        loadSuppliers();
+      }
+
+      function collectSupplierPayload(prefix) {
+        const leadTimeRaw = document.getElementById(`${prefix}-supplier-lead-time`).value.trim();
+        const leadTime = leadTimeRaw === "" ? null : parseInt(leadTimeRaw, 10);
+
+        return {
+          name: document.getElementById(`${prefix}-supplier-name`).value.trim(),
+          contact_person: document.getElementById(`${prefix}-supplier-contact`).value.trim() || null,
+          phone: document.getElementById(`${prefix}-supplier-phone`).value.trim() || null,
+          email: document.getElementById(`${prefix}-supplier-email`).value.trim() || null,
+          address: document.getElementById(`${prefix}-supplier-address`).value.trim() || null,
+          payment_terms: document.getElementById(`${prefix}-supplier-payment-terms`).value.trim() || null,
+          lead_time_days: Number.isNaN(leadTime) ? null : leadTime,
+          notes: document.getElementById(`${prefix}-supplier-notes`).value.trim() || null,
+          is_active: document.getElementById(`${prefix}-supplier-is-active`).checked,
         };
+      }
+
+      function saveSupplier() {
+        const payload = collectSupplierPayload("add");
 
         if (!payload.name) {
           alert("Supplier name is required");
+          return;
+        }
+
+        if (payload.lead_time_days !== null && payload.lead_time_days < 0) {
+          alert("Lead time cannot be negative");
           return;
         }
 
@@ -4850,6 +5399,10 @@
             document.getElementById("edit-supplier-phone").value = supplier.phone || "";
             document.getElementById("edit-supplier-email").value = supplier.email || "";
             document.getElementById("edit-supplier-address").value = supplier.address || "";
+            document.getElementById("edit-supplier-payment-terms").value = supplier.payment_terms || "";
+            document.getElementById("edit-supplier-lead-time").value = supplier.lead_time_days ?? "";
+            document.getElementById("edit-supplier-notes").value = supplier.notes || "";
+            document.getElementById("edit-supplier-is-active").checked = Boolean(supplier.is_active);
 
             const modal = new bootstrap.Modal(document.getElementById("editSupplierModal"));
             modal.show();
@@ -4867,16 +5420,15 @@
         }
 
         const supplierId = document.getElementById("edit-supplier-id").value;
-        const payload = {
-          name: document.getElementById("edit-supplier-name").value.trim(),
-          contact_person: document.getElementById("edit-supplier-contact").value.trim() || null,
-          phone: document.getElementById("edit-supplier-phone").value.trim() || null,
-          email: document.getElementById("edit-supplier-email").value.trim() || null,
-          address: document.getElementById("edit-supplier-address").value.trim() || null,
-        };
+        const payload = collectSupplierPayload("edit");
 
         if (!payload.name) {
           alert("Supplier name is required");
+          return;
+        }
+
+        if (payload.lead_time_days !== null && payload.lead_time_days < 0) {
+          alert("Lead time cannot be negative");
           return;
         }
 

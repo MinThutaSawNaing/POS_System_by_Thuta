@@ -101,7 +101,12 @@ class Supplier(db.Model):
     phone = db.Column(db.String(20))
     email = db.Column(db.String(120))
     address = db.Column(db.String(250))
+    payment_terms = db.Column(db.String(120))
+    lead_time_days = db.Column(db.Integer)
+    is_active = db.Column(db.Boolean, default=True)
+    notes = db.Column(db.String(300))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Sale(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -109,6 +114,8 @@ class Sale(db.Model):
     date = db.Column(db.DateTime, default=datetime.utcnow)
     total = db.Column(db.Float, nullable=False)
     tax = db.Column(db.Float, nullable=False)
+    cash_received = db.Column(db.Float)
+    refund_amount = db.Column(db.Float, default=0.0)
     payment_method = db.Column(db.String(20))
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     user = db.relationship('User', backref='sales')
@@ -165,6 +172,31 @@ with app.app_context():
     if 'photo_filename' not in product_columns:
         db.session.execute(text('ALTER TABLE product ADD COLUMN photo_filename VARCHAR(255)'))
         db.session.commit()
+
+    supplier_columns = [col['name'] for col in inspector.get_columns('supplier')]
+    supplier_migrations = [
+        ('payment_terms', 'ALTER TABLE supplier ADD COLUMN payment_terms VARCHAR(120)'),
+        ('lead_time_days', 'ALTER TABLE supplier ADD COLUMN lead_time_days INTEGER'),
+        ('is_active', 'ALTER TABLE supplier ADD COLUMN is_active BOOLEAN DEFAULT 1'),
+        ('notes', 'ALTER TABLE supplier ADD COLUMN notes VARCHAR(300)'),
+        ('updated_at', 'ALTER TABLE supplier ADD COLUMN updated_at DATETIME')
+    ]
+    for column_name, migration_sql in supplier_migrations:
+        if column_name not in supplier_columns:
+            db.session.execute(text(migration_sql))
+            if column_name == 'updated_at':
+                db.session.execute(text('UPDATE supplier SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL'))
+            db.session.commit()
+
+    sale_columns = [col['name'] for col in inspector.get_columns('sale')]
+    sale_migrations = [
+        ('cash_received', 'ALTER TABLE sale ADD COLUMN cash_received FLOAT'),
+        ('refund_amount', 'ALTER TABLE sale ADD COLUMN refund_amount FLOAT DEFAULT 0')
+    ]
+    for column_name, migration_sql in sale_migrations:
+        if column_name not in sale_columns:
+            db.session.execute(text(migration_sql))
+            db.session.commit()
 
     # Create Promotion table
     if not hasattr(Product, 'promotions'):
@@ -446,7 +478,7 @@ def generate_barcode_labels():
 
                 # Create text flowables
                 product_name = Paragraph(product.name, normal_style)
-                price = Paragraph(f"${product.price:.2f}", normal_style)
+                price = Paragraph(f"Ks {product.price:.2f}", normal_style)
 
                 # Stack vertically
                 label_table = Table(
@@ -551,6 +583,29 @@ def api_create_sale():
             })
 
         total = subtotal + tax_total
+        total_rounded = round_money(total)
+
+        payment_method = data.get('payment_method', 'cash')
+        cash_received_raw = data.get('cash_received')
+        cash_received = None
+        refund_amount = 0.0
+
+        if payment_method == 'cash':
+            if cash_received_raw in (None, ''):
+                return jsonify({'success': False, 'message': 'Cash received is required for cash payment'}), 400
+            try:
+                cash_received_decimal = to_decimal(cash_received_raw)
+            except Exception:
+                return jsonify({'success': False, 'message': 'Invalid cash received amount'}), 400
+
+            if cash_received_decimal < 0:
+                return jsonify({'success': False, 'message': 'Cash received cannot be negative'}), 400
+
+            cash_received = round_money(cash_received_decimal)
+            refund_decimal = (cash_received_decimal - to_decimal(total_rounded)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+            if refund_decimal < 0:
+                return jsonify({'success': False, 'message': 'Cash received is less than total amount'}), 400
+            refund_amount = round_money(refund_decimal)
         
         myanmar_tz = pytz.timezone('Asia/Yangon')
         sale_time = datetime.now(myanmar_tz)
@@ -559,9 +614,11 @@ def api_create_sale():
         sale = Sale(
             transaction_id=str(uuid.uuid4()),
             date=sale_time,
-            total=round_money(total),
+            total=total_rounded,
             tax=round_money(tax_total),
-            payment_method=data.get('payment_method', 'cash'),
+            cash_received=cash_received,
+            refund_amount=refund_amount,
+            payment_method=payment_method,
             user_id=session['user_id']
         )
         db.session.add(sale)
@@ -630,6 +687,8 @@ def api_single_sale(transaction_id):
         'date': sale.date.isoformat(),
         'total': sale.total,
         'tax': sale.tax,
+        'cash_received': sale.cash_received,
+        'refund_amount': sale.refund_amount or 0,
         'payment_method': sale.payment_method,
         'user_id' : sale.user_id,
         'username' : sale.user.username if sale.user else 'Unknown',
@@ -672,6 +731,9 @@ def print_receipt(transaction_id):
         ["Cashier:", cashier_name],
         ["Payment Method:", sale.payment_method.capitalize()]
     ]
+    if sale.payment_method == 'cash':
+        transaction_info.append(["Cash Received:", f"Ks {(sale.cash_received or 0):.2f}"])
+        transaction_info.append(["Refund Given:", f"Ks {(sale.refund_amount or 0):.2f}"])
     t = Table(transaction_info, colWidths=[120, 200])
     t.setStyle(TableStyle([
         ('FONT', (0, 0), (-1, -1), 'Helvetica'),
@@ -688,10 +750,10 @@ def print_receipt(transaction_id):
         subtotal_calc += item_total
         items_data.append([
             product.name,
-            f"${item.price:.2f}",
+            f"Ks {item.price:.2f}",
             str(item.quantity),
             f"{product.tax_rate:.0f}%",
-            f"${item_total:.2f}"
+            f"Ks {item_total:.2f}"
         ])
     t = Table(items_data, colWidths=[200, 60, 40, 40, 60])
     t.setStyle(TableStyle([
@@ -709,9 +771,9 @@ def print_receipt(transaction_id):
     elements.append(t)
     elements.append(Spacer(1, 12))
     totals_data = [
-        ["Subtotal:", f"${subtotal_calc:.2f}"],
-        ["Tax:", f"${sale.tax:.2f}"],
-        ["Total:", f"${sale.total:.2f}"]
+        ["Subtotal:", f"Ks {subtotal_calc:.2f}"],
+        ["Tax:", f"Ks {sale.tax:.2f}"],
+        ["Total:", f"Ks {sale.total:.2f}"]
     ]
     t = Table(totals_data, colWidths=[100, 60])
     t.setStyle(TableStyle([
@@ -757,6 +819,8 @@ def export_sales_report():
             'Date': sale.date.strftime('%Y-%m-%d %H:%M:%S'),
             'Total': sale.total,
             'Tax': sale.tax,
+            'Cash Received': sale.cash_received,
+            'Refund Given': sale.refund_amount or 0,
             'Payment Method': sale.payment_method,
             'User ID': sale.user_id
         })
@@ -811,6 +875,8 @@ def api_report_sales():
             'date': s.date.isoformat(),
             'total': s.total,
             'tax': s.tax,
+            'cash_received': s.cash_received,
+            'refund_amount': s.refund_amount or 0,
             'payment_method': s.payment_method,
             'user_id': s.user_id,
             'username': s.user.username if s.user else 'Unknown'
@@ -1031,7 +1097,7 @@ def api_customers():
             'email': c.email,
             'address': c.address,
             'created_at': c.created_at.isoformat(),
-            'total_debt': round_money(sum(to_decimal(d.balance) for d in c.debts if d.type == 'debt'))
+            'total_debt': round_money(sum(max(to_decimal(d.balance), Decimal('0.00')) for d in c.debts if d.type == 'debt'))
         } for c in customers])
     
     elif request.method == 'POST':
@@ -1054,7 +1120,23 @@ def api_customers():
 @manager_required
 def api_suppliers():
     if request.method == 'GET':
-        suppliers = Supplier.query.order_by(Supplier.name.asc()).all()
+        query = Supplier.query
+        search_query = (request.args.get('q') or '').strip()
+        active_filter = (request.args.get('active') or '').strip().lower()
+
+        if search_query:
+            like_query = f"%{search_query}%"
+            query = query.filter(
+                (Supplier.name.ilike(like_query)) |
+                (Supplier.contact_person.ilike(like_query)) |
+                (Supplier.phone.ilike(like_query)) |
+                (Supplier.email.ilike(like_query))
+            )
+
+        if active_filter in ('active', 'inactive'):
+            query = query.filter(Supplier.is_active.is_(active_filter == 'active'))
+
+        suppliers = query.order_by(Supplier.name.asc()).all()
         return jsonify([{
             'id': s.id,
             'name': s.name,
@@ -1062,7 +1144,12 @@ def api_suppliers():
             'phone': s.phone,
             'email': s.email,
             'address': s.address,
-            'created_at': s.created_at.isoformat()
+            'payment_terms': s.payment_terms,
+            'lead_time_days': s.lead_time_days,
+            'is_active': bool(s.is_active),
+            'notes': s.notes,
+            'created_at': s.created_at.isoformat(),
+            'updated_at': s.updated_at.isoformat() if s.updated_at else None
         } for s in suppliers])
 
     elif request.method == 'POST':
@@ -1070,12 +1157,39 @@ def api_suppliers():
         if not data or not data.get('name'):
             return jsonify({'success': False, 'message': 'Supplier name is required'}), 400
 
+        supplier_name = str(data['name']).strip()
+        if not supplier_name:
+            return jsonify({'success': False, 'message': 'Supplier name is required'}), 400
+
+        email = (data.get('email') or '').strip() or None
+        if email and '@' not in email:
+            return jsonify({'success': False, 'message': 'Invalid supplier email address'}), 400
+
+        lead_time_days = data.get('lead_time_days')
+        if lead_time_days in ('', None):
+            lead_time_days = None
+        else:
+            try:
+                lead_time_days = int(lead_time_days)
+                if lead_time_days < 0:
+                    return jsonify({'success': False, 'message': 'Lead time cannot be negative'}), 400
+            except (TypeError, ValueError):
+                return jsonify({'success': False, 'message': 'Lead time must be a whole number'}), 400
+
+        existing_supplier = Supplier.query.filter(Supplier.name.ilike(supplier_name)).first()
+        if existing_supplier:
+            return jsonify({'success': False, 'message': 'Supplier with this name already exists'}), 400
+
         supplier = Supplier(
-            name=data['name'].strip(),
-            contact_person=data.get('contact_person'),
-            phone=data.get('phone'),
-            email=data.get('email'),
-            address=data.get('address')
+            name=supplier_name,
+            contact_person=(data.get('contact_person') or '').strip() or None,
+            phone=(data.get('phone') or '').strip() or None,
+            email=email,
+            address=(data.get('address') or '').strip() or None,
+            payment_terms=(data.get('payment_terms') or '').strip() or None,
+            lead_time_days=lead_time_days,
+            is_active=bool(data.get('is_active', True)),
+            notes=(data.get('notes') or '').strip() or None
         )
         db.session.add(supplier)
         db.session.commit()
@@ -1096,7 +1210,12 @@ def api_single_supplier(supplier_id):
             'phone': supplier.phone,
             'email': supplier.email,
             'address': supplier.address,
-            'created_at': supplier.created_at.isoformat()
+            'payment_terms': supplier.payment_terms,
+            'lead_time_days': supplier.lead_time_days,
+            'is_active': bool(supplier.is_active),
+            'notes': supplier.notes,
+            'created_at': supplier.created_at.isoformat(),
+            'updated_at': supplier.updated_at.isoformat() if supplier.updated_at else None
         })
 
     elif request.method == 'PUT':
@@ -1108,11 +1227,40 @@ def api_single_supplier(supplier_id):
         if not name or not str(name).strip():
             return jsonify({'success': False, 'message': 'Supplier name is required'}), 400
 
-        supplier.name = str(name).strip()
-        supplier.contact_person = data.get('contact_person', supplier.contact_person)
-        supplier.phone = data.get('phone', supplier.phone)
-        supplier.email = data.get('email', supplier.email)
-        supplier.address = data.get('address', supplier.address)
+        cleaned_name = str(name).strip()
+        duplicate = Supplier.query.filter(
+            Supplier.id != supplier.id,
+            Supplier.name.ilike(cleaned_name)
+        ).first()
+        if duplicate:
+            return jsonify({'success': False, 'message': 'Supplier with this name already exists'}), 400
+
+        email = data.get('email', supplier.email)
+        email = (email or '').strip() or None
+        if email and '@' not in email:
+            return jsonify({'success': False, 'message': 'Invalid supplier email address'}), 400
+
+        lead_time_days = data.get('lead_time_days', supplier.lead_time_days)
+        if lead_time_days in ('', None):
+            lead_time_days = None
+        else:
+            try:
+                lead_time_days = int(lead_time_days)
+                if lead_time_days < 0:
+                    return jsonify({'success': False, 'message': 'Lead time cannot be negative'}), 400
+            except (TypeError, ValueError):
+                return jsonify({'success': False, 'message': 'Lead time must be a whole number'}), 400
+
+        supplier.name = cleaned_name
+        supplier.contact_person = (data.get('contact_person', supplier.contact_person) or '').strip() or None
+        supplier.phone = (data.get('phone', supplier.phone) or '').strip() or None
+        supplier.email = email
+        supplier.address = (data.get('address', supplier.address) or '').strip() or None
+        supplier.payment_terms = (data.get('payment_terms', supplier.payment_terms) or '').strip() or None
+        supplier.lead_time_days = lead_time_days
+        supplier.is_active = bool(data.get('is_active', supplier.is_active))
+        supplier.notes = (data.get('notes', supplier.notes) or '').strip() or None
+        supplier.updated_at = datetime.utcnow()
 
         db.session.commit()
         return jsonify({'success': True, 'message': 'Supplier updated'})
@@ -1167,7 +1315,28 @@ def api_single_customer(customer_id):
 @manager_required
 def api_debts():
     if request.method == 'GET':
-        debts = Debt.query.all()
+        query = Debt.query.join(Customer)
+        search_query = (request.args.get('q') or '').strip()
+        debt_type = (request.args.get('type') or '').strip().lower()
+        status = (request.args.get('status') or '').strip().lower()
+
+        if search_query:
+            like_query = f"%{search_query}%"
+            query = query.filter(
+                (Customer.name.ilike(like_query)) |
+                (Customer.phone.ilike(like_query)) |
+                (Debt.notes.ilike(like_query))
+            )
+
+        if debt_type in ('debt', 'payment'):
+            query = query.filter(Debt.type == debt_type)
+
+        if status == 'open':
+            query = query.filter(Debt.type == 'debt', Debt.balance > 0)
+        elif status == 'closed':
+            query = query.filter((Debt.type == 'payment') | ((Debt.type == 'debt') & (Debt.balance <= 0)))
+
+        debts = query.order_by(Debt.date.desc(), Debt.id.desc()).all()
         return jsonify([{
             'id': d.id,
             'customer_id': d.customer_id,
@@ -1181,24 +1350,48 @@ def api_debts():
         } for d in debts])
     
     elif request.method == 'POST':
-        data = request.get_json()
+        data = request.get_json() or {}
         if not data or not all(k in data for k in ['customer_id', 'amount']):
             return jsonify({'success': False, 'message': 'Missing required fields'}), 400
 
-        amount = to_decimal(data['amount'])
+        customer = db.session.get(Customer, data['customer_id'])
+        if not customer:
+            return jsonify({'success': False, 'message': 'Customer not found'}), 404
+
+        debt_type = (data.get('type') or 'debt').strip().lower()
+        if debt_type != 'debt':
+            return jsonify({'success': False, 'message': 'Only debt records can be created from this endpoint'}), 400
+
+        sale_id = data.get('sale_id')
+        if sale_id:
+            sale = db.session.get(Sale, sale_id)
+            if not sale:
+                return jsonify({'success': False, 'message': 'Referenced sale not found'}), 404
+
+        try:
+            amount = to_decimal(data['amount'])
+        except Exception:
+            return jsonify({'success': False, 'message': 'Invalid amount value'}), 400
+
         if amount <= 0:
             return jsonify({'success': False, 'message': 'Amount must be greater than 0'}), 400
-        
-        debt = Debt(
-            customer_id=data['customer_id'],
-            amount=round_money(amount),
-            balance=round_money(amount),
-            type=data.get('type', 'debt'),
-            notes=data.get('notes')
-        )
-        db.session.add(debt)
-        db.session.commit()
-        return jsonify({'success': True, 'message': 'Debt record added'}), 201
+
+        try:
+            debt = Debt(
+                customer_id=customer.id,
+                sale_id=sale_id,
+                amount=round_money(amount),
+                balance=round_money(amount),
+                type='debt',
+                notes=(data.get('notes') or '').strip() or None
+            )
+            db.session.add(debt)
+            db.session.commit()
+            return jsonify({'success': True, 'message': 'Debt record added'}), 201
+        except Exception as e:
+            db.session.rollback()
+            app.logger.error(f"Error creating debt: {str(e)}")
+            return jsonify({'success': False, 'message': 'Failed to create debt record'}), 500
 
 @app.route('/api/debts/<int:debt_id>', methods=['GET', 'PUT', 'DELETE'])
 @manager_required
@@ -1230,6 +1423,9 @@ def api_single_debt(debt_id):
         return jsonify({'success': True, 'message': 'Debt record updated'})
     
     elif request.method == 'DELETE':
+        if debt.type == 'debt' and debt.amount > debt.balance:
+            return jsonify({'success': False, 'message': 'Cannot delete debt record with existing payments'}), 400
+
         db.session.delete(debt)
         db.session.commit()
         return jsonify({'success': True, 'message': 'Debt record deleted'})
@@ -1241,7 +1437,7 @@ def api_customer_debts(customer_id):
     if not customer:
         return jsonify({'success': False, 'message': 'Customer not found'}), 404
     
-    debts = Debt.query.filter_by(customer_id=customer_id).all()
+    debts = Debt.query.filter_by(customer_id=customer_id).order_by(Debt.date.desc(), Debt.id.desc()).all()
     return jsonify([{
         'id': d.id,
         'sale_id': d.sale_id,
@@ -1258,35 +1454,51 @@ def make_debt_payment(debt_id):
     debt = db.session.get(Debt, debt_id)
     if not debt:
         return jsonify({'success': False, 'message': 'Debt record not found'}), 404
+
+    if debt.type != 'debt':
+        return jsonify({'success': False, 'message': 'Payments can only be applied to debt records'}), 400
+
+    current_balance = to_decimal(debt.balance)
+    if current_balance <= 0:
+        return jsonify({'success': False, 'message': 'This debt is already fully paid'}), 400
     
     data = request.get_json()
     if not data or 'amount' not in data:
         return jsonify({'success': False, 'message': 'Payment amount is required'}), 400
-    
-    payment_amount = to_decimal(data['amount'])
+
+    try:
+        payment_amount = to_decimal(data['amount'])
+    except Exception:
+        return jsonify({'success': False, 'message': 'Invalid payment amount'}), 400
+
     if payment_amount <= 0:
         return jsonify({'success': False, 'message': 'Payment amount must be greater than 0'}), 400
-    
-    current_balance = to_decimal(debt.balance)
+
     if payment_amount > current_balance:
         return jsonify({'success': False, 'message': 'Payment amount exceeds remaining balance'}), 400
-    
-    # Create a payment record
-    payment = Debt(
-        customer_id=debt.customer_id,
-        amount=round_money(payment_amount),
-        balance=0,  # Payment records have no balance
-        type='payment',
-        notes=data.get('notes', f'Payment towards debt #{debt.id}')
-    )
-    db.session.add(payment)
-    
-    # Update the original debt balance
-    remaining_balance = (current_balance - payment_amount).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-    debt.balance = 0.0 if remaining_balance < MONEY_QUANT else round_money(remaining_balance)
-    
-    db.session.commit()
-    return jsonify({'success': True, 'message': 'Payment recorded successfully'})
+
+    try:
+        # Create a payment record
+        payment = Debt(
+            customer_id=debt.customer_id,
+            sale_id=debt.sale_id,
+            amount=round_money(payment_amount),
+            balance=0,  # Payment records have no balance
+            type='payment',
+            notes=(data.get('notes') or f'Payment towards debt #{debt.id}').strip()
+        )
+        db.session.add(payment)
+        
+        # Update the original debt balance
+        remaining_balance = (current_balance - payment_amount).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+        debt.balance = 0.0 if remaining_balance < MONEY_QUANT else round_money(remaining_balance)
+
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Payment recorded successfully'})
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error recording debt payment: {str(e)}")
+        return jsonify({'success': False, 'message': 'Failed to record payment'}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8888, debug=True)
