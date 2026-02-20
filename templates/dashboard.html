@@ -1039,7 +1039,7 @@
               <select class="form-select" id="settings-currency-code">
                 <option value="USD">Dollar ($)</option>
                 <option value="MMK">Myanmar Kyat (MMK)</option>
-                <option value="THB">Thai Baht (B)</option>
+                <option value="THB">Thai Baht (Bh)</option>
               </select>
             </div>
             <button class="btn btn-primary" onclick="saveSettings()">
@@ -2305,17 +2305,31 @@
       };
 
       function currencySuffixFromCode(code) {
-        const map = { USD: "$", MMK: "MMK", THB: "B" };
+        const map = { USD: "$", MMK: "MMK", THB: "Bh" };
         return map[code] || "$";
       }
 
-      function formatCurrency(value) {
+      function formatCurrencyWithSymbol(value, symbol) {
         const amount = Number(value) || 0;
-        return `${amount.toFixed(2)}${APP_SETTINGS.currencySuffix}`;
+        const currencySymbol = symbol || "$";
+        if (/^[A-Za-z]+$/.test(currencySymbol)) {
+          return `${currencySymbol} ${amount.toFixed(2)}`;
+        }
+        return `${currencySymbol}${amount.toFixed(2)}`;
+      }
+
+      function formatCurrency(value) {
+        return formatCurrencyWithSymbol(value, APP_SETTINGS.currencySuffix);
       }
 
       function normalizeCurrencyInText(text) {
-        return text.replace(/\$\s*(-?\d+(?:\.\d+)?)/g, (_, amount) => `${amount}${APP_SETTINGS.currencySuffix}`);
+        return text
+          .replace(/\$\s*(-?\d+(?:\.\d+)?)/g, (_, amount) =>
+            formatCurrencyWithSymbol(amount, APP_SETTINGS.currencySuffix)
+          )
+          .replace(/(-?\d+(?:\.\d+)?)\$/g, (_, amount) =>
+            formatCurrencyWithSymbol(amount, APP_SETTINGS.currencySuffix)
+          );
       }
 
       function normalizeCurrencyDisplay(root = document.body) {
@@ -2341,6 +2355,36 @@
             el.textContent = APP_SETTINGS.currencySuffix;
           }
         });
+      }
+
+      function startCurrencyObserver() {
+        if (!window.MutationObserver) return;
+
+        let scheduled = false;
+        const pendingRoots = new Set();
+
+        const flush = () => {
+          scheduled = false;
+          pendingRoots.forEach((root) => normalizeCurrencyDisplay(root));
+          pendingRoots.clear();
+        };
+
+        const observer = new MutationObserver((mutations) => {
+          mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+              if (node.nodeType === Node.ELEMENT_NODE) {
+                pendingRoots.add(node);
+              }
+            });
+          });
+
+          if (!scheduled && pendingRoots.size > 0) {
+            scheduled = true;
+            requestAnimationFrame(flush);
+          }
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
       }
 
       function applySettingsUI() {
@@ -2514,6 +2558,7 @@
         initResizableSidebar();
         applySettingsUI();
         loadSettings();
+        startCurrencyObserver();
 
         // Set today's date as default for sales filter
         const today = new Date().toISOString().split("T")[0];
@@ -2716,8 +2761,7 @@
           .then((response) => response.json())
           .then((data) => {
             const todaySales = data.reduce((sum, sale) => sum + sale.total, 0);
-            document.getElementById("today-sales").textContent =
-              "$" + todaySales.toFixed(2);
+            document.getElementById("today-sales").textContent = formatCurrency(todaySales);
 
             // Calculate change from yesterday
             const yesterday = new Date();
@@ -2975,9 +3019,7 @@
               item.innerHTML = `
                                   <div class="d-flex w-100 justify-content-between">
                                       <h6 class="mb-1">${product.name}</h6>
-                                      <small>$${product.price.toFixed(
-                                        2
-                                      )}</small>
+                                      <small>${formatCurrency(product.price)}</small>
                                   </div>
                                   <div class="d-flex w-100 justify-content-between">
                                       <small class="text-muted">Stock: ${
@@ -2998,6 +3040,8 @@
                               `;
               topProductsList.appendChild(item);
             });
+
+            normalizeCurrencyDisplay(topProductsList);
           })
           .catch((error) => {
             console.error("Error loading top products:", error);
@@ -3040,7 +3084,7 @@
                   <h6 class="card-title fw-bold text-success mb-2">${
                     product.name
                   }</h6>
-                  <p class="card-text mb-1">$${product.price.toFixed(2)}</p>
+                  <p class="card-text mb-1">${formatCurrency(product.price)}</p>
                   <small class="text-muted">Stock: ${product.stock}</small>
               </div>
           </div>
@@ -3048,6 +3092,8 @@
 
               productGrid.appendChild(productCard);
             });
+
+            normalizeCurrencyDisplay(productGrid);
           })
           .catch((error) => {
             console.error("Error loading products:", error);
@@ -3090,9 +3136,7 @@
                                           <h6 class="card-title fw-bold text-success mb-2">${
                                             product.name
                                           }</h6>
-                                          <p class="card-text">$${product.price.toFixed(
-                                            2
-                                          )}</p>
+                                          <p class="card-text">${formatCurrency(product.price)}</p>
                                           <small class="text-muted">Stock: ${
                                             product.stock
                                           }</small>
@@ -3101,6 +3145,8 @@
                               `;
               productGrid.appendChild(productCard);
             });
+
+            normalizeCurrencyDisplay(productGrid);
 
             document.getElementById("product-search").value = "";
             document.getElementById("product-search").focus();
@@ -3161,7 +3207,7 @@
                   );
                 }
                 showToast(
-                  `${product.name} discounted to $${finalPrice.toFixed(2)}!`,
+                  `${product.name} discounted to ${formatCurrency(finalPrice)}!`,
                   "success"
                 );
               }
@@ -3211,9 +3257,9 @@
         if (cart.length === 0) {
           cartItems.innerHTML =
             '<p class="text-muted text-center py-3">No items added</p>';
-          document.getElementById("subtotal").textContent = "$0.00";
-          document.getElementById("tax").textContent = "$0.00";
-          document.getElementById("total").textContent = "$0.00";
+          document.getElementById("subtotal").textContent = formatCurrency(0);
+          document.getElementById("tax").textContent = formatCurrency(0);
+          document.getElementById("total").textContent = formatCurrency(0);
           return;
         }
         let subtotalCents = 0;
@@ -3236,17 +3282,13 @@
                       <h6 class="mb-0">${item.name}</h6>
       ${
         item.original_price && item.original_price > item.price
-          ? `<small class="text-danger">Was $${item.original_price.toFixed(
-              2
-            )}</small>`
+          ? `<small class="text-danger">Was ${formatCurrency(item.original_price)}</small>`
           : ""
       }
-                      <small class="text-muted">$${Number(item.price).toFixed(
-                        2
-                      )} x ${item.quantity}</small>
+                      <small class="text-muted">${formatCurrency(Number(item.price))} x ${item.quantity}</small>
                   </div>
                   <div class="text-end">
-                      <h6 class="mb-0">$${itemTotal}</h6>
+                      <h6 class="mb-0">${formatCurrency(itemTotal)}</h6>
                       <div class="btn-group btn-group-sm" role="group">
                           <button class="btn btn-outline-secondary" onclick="adjustQuantity(${index}, -1)">
                               <i class="bi bi-dash"></i>
@@ -3263,12 +3305,9 @@
           cartItems.appendChild(itemElement);
         });
         const totalCents = subtotalCents + taxCents;
-        document.getElementById("subtotal").textContent =
-          "$" + (subtotalCents / 100).toFixed(2);
-        document.getElementById("tax").textContent =
-          "$" + (taxCents / 100).toFixed(2);
-        document.getElementById("total").textContent =
-          "$" + (totalCents / 100).toFixed(2);
+        document.getElementById("subtotal").textContent = formatCurrency(subtotalCents / 100);
+        document.getElementById("tax").textContent = formatCurrency(taxCents / 100);
+        document.getElementById("total").textContent = formatCurrency(totalCents / 100);
         updateCashRefundDisplay();
       }
 
@@ -3294,14 +3333,14 @@
         if (!refundElement) return;
 
         if (paymentMethod !== "cash") {
-          refundElement.textContent = "$0.00";
+          refundElement.textContent = formatCurrency(0);
           return;
         }
 
         const total = getCurrentCartTotal();
         const cashReceived = parseFloat(cashInput?.value || "0") || 0;
         const refund = cashReceived - total;
-        refundElement.textContent = `$${Math.max(refund, 0).toFixed(2)}`;
+        refundElement.textContent = formatCurrency(Math.max(refund, 0));
         refundElement.className = `fw-bold ${refund < 0 ? "text-danger" : "text-success"}`;
       }
 

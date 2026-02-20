@@ -36,7 +36,7 @@ ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 CURRENCY_OPTIONS = {
     'USD': '$',
     'MMK': 'MMK',
-    'THB': 'B'
+    'THB': 'Bh'
 }
 
 def to_decimal(value):
@@ -67,8 +67,11 @@ def get_currency_suffix(currency_code=None):
     return CURRENCY_OPTIONS.get(code, '$')
 
 def format_currency(value, currency_code=None):
-    suffix = get_currency_suffix(currency_code)
-    return f"{float(value):.2f}{suffix}"
+    symbol = get_currency_suffix(currency_code)
+    amount = float(value or 0)
+    if symbol.isalpha():
+        return f"{symbol} {amount:.2f}"
+    return f"{symbol}{amount:.2f}"
 
 def allowed_image_file(filename):
     if not filename or '.' not in filename:
