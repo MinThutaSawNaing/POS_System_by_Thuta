@@ -1,0 +1,7 @@
+Flask
+Flask-SQLAlchemy
+Werkzeug
+reportlab
+pandas
+XlsxWriter
+pytz
