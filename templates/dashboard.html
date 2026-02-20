@@ -2312,10 +2312,7 @@
       function formatCurrencyWithSymbol(value, symbol) {
         const amount = Number(value) || 0;
         const currencySymbol = symbol || "$";
-        if (/^[A-Za-z]+$/.test(currencySymbol)) {
-          return `${currencySymbol} ${amount.toFixed(2)}`;
-        }
-        return `${currencySymbol}${amount.toFixed(2)}`;
+        return `${amount.toFixed(2)} ${currencySymbol}`;
       }
 
       function formatCurrency(value) {
@@ -2327,6 +2324,9 @@
           .replace(/\$\s*(-?\d+(?:\.\d+)?)/g, (_, amount) =>
             formatCurrencyWithSymbol(amount, APP_SETTINGS.currencySuffix)
           )
+          .replace(/\b([A-Za-z]{2,5})\s*(-?\d+(?:\.\d+)?)\b/g, (_, symbol, amount) =>
+            formatCurrencyWithSymbol(amount, symbol)
+          )
           .replace(/(-?\d+(?:\.\d+)?)\$/g, (_, amount) =>
             formatCurrencyWithSymbol(amount, APP_SETTINGS.currencySuffix)
           );
@@ -2334,6 +2334,11 @@
 
       function normalizeCurrencyDisplay(root = document.body) {
         if (!root) return;
+
+        const isCurrencyToken = (token) => {
+          const value = String(token || "").trim();
+          return value === "$" || value === "MMK" || value === "Bh";
+        };
 
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
         const nodes = [];
@@ -2351,8 +2356,22 @@
         });
 
         document.querySelectorAll(".input-group-text").forEach((el) => {
-          if (el.textContent.trim() === "$") {
+          if (isCurrencyToken(el.textContent.trim())) {
             el.textContent = APP_SETTINGS.currencySuffix;
+          }
+        });
+
+        document.querySelectorAll(".input-group").forEach((group) => {
+          const first = group.firstElementChild;
+          const second = first?.nextElementSibling;
+          if (
+            first &&
+            first.classList.contains("input-group-text") &&
+            second &&
+            (second.tagName === "INPUT" || second.tagName === "TEXTAREA") &&
+            isCurrencyToken(first.textContent.trim())
+          ) {
+            group.appendChild(first);
           }
         });
       }
