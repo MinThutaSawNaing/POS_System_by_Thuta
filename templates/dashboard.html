@@ -1596,6 +1596,69 @@
       </div>
     </div>
 
+    <!-- Return / Exchange Modal -->
+    <div class="modal fade" id="returnExchangeModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Return / Exchange - <span id="return-exchange-sale-id"></span></h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row g-3">
+              <div class="col-md-6">
+                <div class="card h-100">
+                  <div class="card-header d-flex justify-content-between align-items-center">
+                    <strong>Return Items (from original sale)</strong>
+                    <button class="btn btn-sm btn-outline-primary" onclick="addReturnItemRow()"><i class="bi bi-plus"></i> Add</button>
+                  </div>
+                  <div class="card-body" id="return-items-container"></div>
+                </div>
+              </div>
+              <div class="col-md-6">
+                <div class="card h-100">
+                  <div class="card-header d-flex justify-content-between align-items-center">
+                    <strong>Exchange Items (new products)</strong>
+                    <button class="btn btn-sm btn-outline-primary" onclick="addExchangeItemRow()"><i class="bi bi-plus"></i> Add</button>
+                  </div>
+                  <div class="card-body" id="exchange-items-container"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="row mt-3 g-3">
+              <div class="col-md-4">
+                <label class="form-label">Settlement Method</label>
+                <select class="form-select" id="return-exchange-settlement-method">
+                  <option value="cash">Cash</option>
+                  <option value="credit_card">Credit Card</option>
+                  <option value="debit_card">Debit Card</option>
+                  <option value="mobile_payment">Mobile Payment</option>
+                </select>
+              </div>
+              <div class="col-md-8">
+                <label class="form-label">Notes</label>
+                <input class="form-control" id="return-exchange-notes" placeholder="Reason, condition, etc." />
+              </div>
+            </div>
+
+            <div class="alert alert-secondary mt-3 mb-0" id="return-exchange-summary">
+              Return: <strong id="summary-return-total">$0.00</strong> |
+              Exchange: <strong id="summary-exchange-total">$0.00</strong> |
+              Net: <strong id="summary-net-total">$0.00</strong>
+              <span class="ms-2" id="summary-settlement-hint"></span>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            <button type="button" class="btn btn-warning" onclick="submitReturnExchange()">
+              <i class="bi bi-arrow-left-right"></i> Process Return / Exchange
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Add User Modal -->
     <div class="modal fade" id="addUserModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog">
@@ -2620,6 +2683,7 @@
       let dashboardChart = null;
       let salesChart = null;
       let paymentChart = null;
+      let returnExchangeSaleData = null;
       const pageState = {
         products: 1,
         sales: 1,
@@ -4066,11 +4130,18 @@
                                   <td>${sale.payment_method}</td>
                                   <td>${sale.username || "Unknown"}</td>
                                   <td>
-                                      <button class="btn btn-sm btn-info" onclick="viewSaleDetails('${
-                                        sale.transaction_id
-                                      }')">
-                                          <i class="bi bi-info-circle"></i> Details
-                                      </button>
+                                      <div class="btn-group btn-group-sm" role="group">
+                                        <button class="btn btn-info" onclick="viewSaleDetails('${
+                                          sale.transaction_id
+                                        }')">
+                                            <i class="bi bi-info-circle"></i>
+                                        </button>
+                                        <button class="btn btn-warning" onclick="openReturnExchangeModal('${
+                                          sale.transaction_id
+                                        }')">
+                                            <i class="bi bi-arrow-left-right"></i>
+                                        </button>
+                                      </div>
                                   </td>
                               `;
               salesTable.appendChild(row);
@@ -4133,6 +4204,32 @@
 
             const tax = sale.tax || 0;
             const total = sale.total || subtotal + tax;
+            const returnHistoryHtml = (sale.return_exchange_history || []).length
+              ? `
+                  <h6 class="mt-4">Return / Exchange History</h6>
+                  <div class="table-responsive">
+                    <table class="table table-sm table-bordered">
+                      <thead>
+                        <tr>
+                          <th>Workflow</th><th>Mode</th><th>Return</th><th>Exchange</th><th>Net</th><th>Date</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${(sale.return_exchange_history || []).map((r) => `
+                          <tr>
+                            <td>${r.workflow_id}</td>
+                            <td>${r.mode}</td>
+                            <td>${formatCurrency(r.return_total || 0)}</td>
+                            <td>${formatCurrency(r.exchange_total || 0)}</td>
+                            <td>${formatCurrency(r.net_total || 0)}</td>
+                            <td>${r.created_at ? new Date(r.created_at).toLocaleString() : "-"}</td>
+                          </tr>
+                        `).join("")}
+                      </tbody>
+                    </table>
+                  </div>
+                `
+              : "";
 
             content.innerHTML = `
                               <div class="row mb-4">
@@ -4200,6 +4297,7 @@
                                       <p>$${(sale.refund_amount || 0).toFixed(2)}</p>
                                   </div>
                               </div>
+                              ${returnHistoryHtml}
                           `;
           })
           .catch((error) => {
@@ -4220,6 +4318,211 @@
           document.getElementById("saleDetailsModal")
         );
         modal.hide();
+      }
+
+      function openReturnExchangeModal(transactionId) {
+        const modal = new bootstrap.Modal(document.getElementById("returnExchangeModal"));
+        document.getElementById("return-exchange-sale-id").textContent = transactionId;
+        document.getElementById("return-items-container").innerHTML = '<div class="text-muted">Loading original sale items...</div>';
+        document.getElementById("exchange-items-container").innerHTML = "";
+        document.getElementById("return-exchange-notes").value = "";
+        document.getElementById("return-exchange-settlement-method").value = "cash";
+        returnExchangeSaleData = null;
+        modal.show();
+
+        fetch(`/api/sales/${transactionId}`)
+          .then((r) => r.json())
+          .then((sale) => {
+            if (!sale || !sale.transaction_id) {
+              throw new Error(sale?.message || "Sale not found");
+            }
+            returnExchangeSaleData = sale;
+            const availableItems = (sale.items || []).filter((i) => (i.available_return_quantity || 0) > 0);
+            const container = document.getElementById("return-items-container");
+            container.innerHTML = "";
+            if (availableItems.length === 0) {
+              container.innerHTML = '<div class="alert alert-info mb-0">No returnable quantity left for this sale.</div>';
+            } else {
+              addReturnItemRow();
+            }
+            addExchangeItemRow();
+            refreshReturnExchangeSummary();
+          })
+          .catch((e) => {
+            document.getElementById("return-items-container").innerHTML = `<div class="alert alert-danger mb-0">${e.message}</div>`;
+          });
+      }
+
+      function addReturnItemRow() {
+        if (!returnExchangeSaleData) return;
+        const items = (returnExchangeSaleData.items || []).filter((i) => (i.available_return_quantity || 0) > 0);
+        if (!items.length) return;
+
+        const row = document.createElement("div");
+        row.className = "row g-2 mb-2 return-item-row";
+        row.innerHTML = `
+          <div class="col-7"><select class="form-select return-item-select"></select></div>
+          <div class="col-3"><input type="number" min="1" value="1" class="form-control return-item-qty" /></div>
+          <div class="col-2"><button class="btn btn-outline-danger w-100" onclick="this.closest('.return-item-row').remove(); refreshReturnExchangeSummary();"><i class="bi bi-x"></i></button></div>
+        `;
+        const select = row.querySelector(".return-item-select");
+        select.innerHTML = '<option value="">Select item</option>';
+        items.forEach((item) => {
+          const opt = document.createElement("option");
+          opt.value = item.sale_item_id;
+          opt.dataset.maxQty = item.available_return_quantity;
+          opt.dataset.price = item.price;
+          opt.textContent = `${item.name} | Sold: ${item.quantity} | Returnable: ${item.available_return_quantity} | ${formatCurrency(item.price)}`;
+          select.appendChild(opt);
+        });
+
+        select.addEventListener("change", () => {
+          const max = Number(select.selectedOptions[0]?.dataset.maxQty || 1);
+          const qtyInput = row.querySelector(".return-item-qty");
+          qtyInput.max = max;
+          if (Number(qtyInput.value) > max) qtyInput.value = max;
+          refreshReturnExchangeSummary();
+        });
+        row.querySelector(".return-item-qty").addEventListener("input", () => {
+          const max = Number(select.selectedOptions[0]?.dataset.maxQty || 1);
+          const input = row.querySelector(".return-item-qty");
+          if (Number(input.value) > max) input.value = max;
+          if (Number(input.value) < 1 || Number.isNaN(Number(input.value))) input.value = 1;
+          refreshReturnExchangeSummary();
+        });
+
+        document.getElementById("return-items-container").appendChild(row);
+      }
+
+      function addExchangeItemRow() {
+        const row = document.createElement("div");
+        row.className = "row g-2 mb-2 exchange-item-row";
+        row.innerHTML = `
+          <div class="col-6"><select class="form-select exchange-item-select"></select></div>
+          <div class="col-2"><input type="number" min="1" value="1" class="form-control exchange-item-qty" /></div>
+          <div class="col-3"><input type="number" min="0" step="0.01" value="0" class="form-control exchange-item-price" /></div>
+          <div class="col-1"><button class="btn btn-outline-danger w-100" onclick="this.closest('.exchange-item-row').remove(); refreshReturnExchangeSummary();"><i class="bi bi-x"></i></button></div>
+        `;
+        const select = row.querySelector(".exchange-item-select");
+        select.innerHTML = '<option value="">Select product</option>';
+        loadProductsCached().then((products) => {
+          (products || []).forEach((p) => {
+            const opt = document.createElement("option");
+            opt.value = p.id;
+            opt.dataset.price = p.price;
+            opt.dataset.stock = p.stock;
+            opt.dataset.taxRate = p.tax_rate || 0;
+            opt.textContent = `${p.name} | Stock: ${p.stock} | ${formatCurrency(p.price)}`;
+            select.appendChild(opt);
+          });
+        });
+
+        select.addEventListener("change", () => {
+          const selected = select.selectedOptions[0];
+          const priceInput = row.querySelector(".exchange-item-price");
+          if (selected?.dataset?.price) priceInput.value = Number(selected.dataset.price).toFixed(2);
+          refreshReturnExchangeSummary();
+        });
+        row.querySelector(".exchange-item-qty").addEventListener("input", refreshReturnExchangeSummary);
+        row.querySelector(".exchange-item-price").addEventListener("input", refreshReturnExchangeSummary);
+
+        document.getElementById("exchange-items-container").appendChild(row);
+      }
+
+      function collectReturnExchangePayload() {
+        const returnItems = Array.from(document.querySelectorAll(".return-item-row"))
+          .map((row) => {
+            const saleItemId = parseInt(row.querySelector(".return-item-select").value || "0", 10);
+            const quantity = parseInt(row.querySelector(".return-item-qty").value || "0", 10);
+            return saleItemId > 0 && quantity > 0 ? { sale_item_id: saleItemId, quantity } : null;
+          })
+          .filter(Boolean);
+
+        const exchangeItems = Array.from(document.querySelectorAll(".exchange-item-row"))
+          .map((row) => {
+            const productId = parseInt(row.querySelector(".exchange-item-select").value || "0", 10);
+            const quantity = parseInt(row.querySelector(".exchange-item-qty").value || "0", 10);
+            const price = parseFloat(row.querySelector(".exchange-item-price").value || "0");
+            return productId > 0 && quantity > 0 ? { product_id: productId, quantity, price } : null;
+          })
+          .filter(Boolean);
+
+        return { returnItems, exchangeItems };
+      }
+
+      function refreshReturnExchangeSummary() {
+        if (!returnExchangeSaleData) return;
+        const { returnItems, exchangeItems } = collectReturnExchangePayload();
+        const saleItemMap = new Map((returnExchangeSaleData.items || []).map((x) => [x.sale_item_id, x]));
+
+        let returnTotal = 0;
+        returnItems.forEach((r) => {
+          const item = saleItemMap.get(r.sale_item_id);
+          if (!item) return;
+          const base = Number(item.price) * Number(r.quantity);
+          const tax = base * (Number(item.tax_rate || 0) / 100);
+          returnTotal += base + tax;
+        });
+
+        let exchangeTotal = 0;
+        exchangeItems.forEach((e) => {
+          const selectedOption = Array.from(document.querySelectorAll('.exchange-item-select')).flatMap((sel) => Array.from(sel.selectedOptions)).find((opt) => Number(opt.value) === Number(e.product_id));
+          const taxRate = Number(selectedOption?.dataset?.taxRate || 0);
+          const base = Number(e.price) * Number(e.quantity);
+          const tax = base * (taxRate / 100);
+          exchangeTotal += base + tax;
+        });
+
+        const net = exchangeTotal - returnTotal;
+        document.getElementById("summary-return-total").textContent = formatCurrency(returnTotal);
+        document.getElementById("summary-exchange-total").textContent = formatCurrency(exchangeTotal);
+        document.getElementById("summary-net-total").textContent = formatCurrency(net);
+        document.getElementById("summary-settlement-hint").textContent = net > 0
+          ? `(Collect ${formatCurrency(net)})`
+          : net < 0
+          ? `(Refund ${formatCurrency(Math.abs(net))})`
+          : "(No settlement)";
+      }
+
+      function submitReturnExchange() {
+        if (!returnExchangeSaleData) return;
+        const { returnItems, exchangeItems } = collectReturnExchangePayload();
+        if (!returnItems.length) {
+          alert("Please add at least one return item.");
+          return;
+        }
+
+        const payload = {
+          original_transaction_id: returnExchangeSaleData.transaction_id,
+          return_items: returnItems,
+          exchange_items: exchangeItems,
+          settlement_method: document.getElementById("return-exchange-settlement-method").value,
+          notes: document.getElementById("return-exchange-notes").value.trim() || null,
+        };
+
+        fetch("/api/returns_exchanges", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+          .then((r) => r.json())
+          .then((data) => {
+            if (!data.success) {
+              alert(data.message || "Failed to process return/exchange");
+              return;
+            }
+            alert(`Workflow completed. ID: ${data.workflow_id}`);
+            const modal = bootstrap.Modal.getInstance(document.getElementById("returnExchangeModal"));
+            modal.hide();
+            invalidateProductsCache();
+            loadProducts();
+            loadProductsForPOS();
+            loadSales();
+            loadDashboardStats();
+          })
+          .catch((e) => {
+            alert(`Failed to process return/exchange: ${e.message}`);
+          });
       }
 
       // Reports functions

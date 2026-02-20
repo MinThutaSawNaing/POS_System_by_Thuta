@@ -6,7 +6,7 @@ from datetime import datetime
 import os
 import uuid
 import io
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, func
 from decimal import Decimal, ROUND_HALF_UP
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -112,6 +112,29 @@ def manager_required(f):
 def generate_po_number():
     return f"PO-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
 
+def calculate_sale_item_unit_tax(sale_item):
+    qty = int(sale_item.quantity or 0)
+    if qty <= 0:
+        return Decimal('0.00')
+    return (to_decimal(sale_item.tax or 0) / Decimal(qty)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+
+def get_returned_quantity_map_for_sale(sale_id):
+    rows = (
+        db.session.query(
+            ReturnExchangeItem.original_sale_item_id,
+            func.sum(ReturnExchangeItem.quantity)
+        )
+        .join(ReturnExchange, ReturnExchange.id == ReturnExchangeItem.return_exchange_id)
+        .filter(
+            ReturnExchange.original_sale_id == sale_id,
+            ReturnExchangeItem.movement == 'return',
+            ReturnExchangeItem.original_sale_item_id.isnot(None)
+        )
+        .group_by(ReturnExchangeItem.original_sale_item_id)
+        .all()
+    )
+    return {sale_item_id: int(qty or 0) for sale_item_id, qty in rows}
+
 # Database Models
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -203,6 +226,42 @@ class SaleItem(db.Model):
     quantity = db.Column(db.Integer, nullable=False)
     price = db.Column(db.Float, nullable=False)
     tax = db.Column(db.Float, nullable=False)
+
+class ReturnExchange(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    workflow_id = db.Column(db.String(36), unique=True, nullable=False)
+    mode = db.Column(db.String(20), nullable=False)  # return or exchange
+    original_sale_id = db.Column(db.Integer, db.ForeignKey('sale.id'), nullable=False)
+    adjustment_sale_id = db.Column(db.Integer, db.ForeignKey('sale.id'))
+    return_total = db.Column(db.Float, default=0.0)
+    exchange_total = db.Column(db.Float, default=0.0)
+    net_total = db.Column(db.Float, default=0.0)
+    refund_amount = db.Column(db.Float, default=0.0)
+    collected_amount = db.Column(db.Float, default=0.0)
+    settlement_method = db.Column(db.String(30))
+    notes = db.Column(db.String(300))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    original_sale = db.relationship('Sale', foreign_keys=[original_sale_id], backref='return_exchange_records')
+    adjustment_sale = db.relationship('Sale', foreign_keys=[adjustment_sale_id], backref='adjustment_for_returns')
+    user = db.relationship('User', backref='processed_return_exchanges')
+
+class ReturnExchangeItem(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    return_exchange_id = db.Column(db.Integer, db.ForeignKey('return_exchange.id'), nullable=False)
+    original_sale_item_id = db.Column(db.Integer, db.ForeignKey('sale_item.id'))
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
+    movement = db.Column(db.String(20), nullable=False)  # return or exchange
+    quantity = db.Column(db.Integer, nullable=False)
+    unit_price = db.Column(db.Float, nullable=False)
+    tax_rate = db.Column(db.Float, default=0.0)
+    line_total = db.Column(db.Float, nullable=False)
+    line_tax = db.Column(db.Float, nullable=False)
+
+    return_exchange = db.relationship('ReturnExchange', backref='items')
+    original_sale_item = db.relationship('SaleItem', backref='return_exchange_items')
+    product = db.relationship('Product', backref='return_exchange_items')
 
 # New Models for Customer Debt/Credit Feature
 class Customer(db.Model):
@@ -784,6 +843,8 @@ def api_single_sale(transaction_id):
         return jsonify({'success': False, 'message': 'Sale not found'}), 404
 
     items = SaleItem.query.filter_by(sale_id=sale.id).all()
+    returned_qty_map = get_returned_quantity_map_for_sale(sale.id)
+    return_exchange_history = ReturnExchange.query.filter_by(original_sale_id=sale.id).order_by(ReturnExchange.created_at.desc()).all()
     sale_data = {
         'transaction_id': sale.transaction_id,
         'date': sale.date.isoformat(),
@@ -794,19 +855,303 @@ def api_single_sale(transaction_id):
         'payment_method': sale.payment_method,
         'user_id' : sale.user_id,
         'username' : sale.user.username if sale.user else 'Unknown',
-        'items': []
+        'items': [],
+        'return_exchange_history': [{
+            'workflow_id': r.workflow_id,
+            'mode': r.mode,
+            'created_at': r.created_at.isoformat() if r.created_at else None,
+            'return_total': r.return_total,
+            'exchange_total': r.exchange_total,
+            'net_total': r.net_total,
+            'refund_amount': r.refund_amount,
+            'collected_amount': r.collected_amount,
+            'settlement_method': r.settlement_method
+        } for r in return_exchange_history]
     }
     for item in items:
         product = Product.query.get(item.product_id)
+        already_returned = returned_qty_map.get(item.id, 0)
+        available_to_return = max(item.quantity - already_returned, 0)
         sale_data['items'].append({
+            'sale_item_id': item.id,
             'product_id': item.product_id,
             'name': product.name,
             'price': item.price,
             'quantity': item.quantity,
             'tax': item.tax,
-            'tax_rate': product.tax_rate
+            'tax_rate': product.tax_rate,
+            'already_returned_quantity': already_returned,
+            'available_return_quantity': available_to_return
         })
     return jsonify(sale_data)
+
+@app.route('/api/returns_exchanges', methods=['GET', 'POST'])
+def api_returns_exchanges():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if request.method == 'GET':
+        query = ReturnExchange.query
+        sale_transaction_id = (request.args.get('sale_transaction_id') or '').strip()
+
+        if sale_transaction_id:
+            sale = Sale.query.filter_by(transaction_id=sale_transaction_id).first()
+            if not sale:
+                return jsonify([])
+            query = query.filter(ReturnExchange.original_sale_id == sale.id)
+
+        records = query.order_by(ReturnExchange.created_at.desc()).all()
+        return jsonify([{
+            'workflow_id': r.workflow_id,
+            'mode': r.mode,
+            'original_transaction_id': r.original_sale.transaction_id if r.original_sale else None,
+            'adjustment_transaction_id': r.adjustment_sale.transaction_id if r.adjustment_sale else None,
+            'return_total': r.return_total,
+            'exchange_total': r.exchange_total,
+            'net_total': r.net_total,
+            'refund_amount': r.refund_amount,
+            'collected_amount': r.collected_amount,
+            'settlement_method': r.settlement_method,
+            'created_at': r.created_at.isoformat() if r.created_at else None,
+            'processed_by': r.user.username if r.user else 'Unknown'
+        } for r in records])
+
+    data = request.get_json() or {}
+    original_transaction_id = (data.get('original_transaction_id') or '').strip()
+    if not original_transaction_id:
+        return jsonify({'success': False, 'message': 'Original transaction ID is required'}), 400
+
+    original_sale = Sale.query.filter_by(transaction_id=original_transaction_id).first()
+    if not original_sale:
+        return jsonify({'success': False, 'message': 'Original sale not found'}), 404
+
+    original_sale_items = SaleItem.query.filter_by(sale_id=original_sale.id).all()
+    sale_item_map = {item.id: item for item in original_sale_items}
+    returned_qty_map = get_returned_quantity_map_for_sale(original_sale.id)
+
+    return_items_payload = data.get('return_items') or []
+    exchange_items_payload = data.get('exchange_items') or []
+
+    if not return_items_payload:
+        return jsonify({'success': False, 'message': 'At least one return item is required'}), 400
+
+    return_lines = []
+    return_total = Decimal('0.00')
+    return_tax_total = Decimal('0.00')
+
+    try:
+        for row in return_items_payload:
+            sale_item_id = int(row.get('sale_item_id', 0) or 0)
+            quantity = int(row.get('quantity', 0) or 0)
+            if sale_item_id <= 0 or quantity <= 0:
+                return jsonify({'success': False, 'message': 'Invalid return item values'}), 400
+
+            sale_item = sale_item_map.get(sale_item_id)
+            if not sale_item:
+                return jsonify({'success': False, 'message': f'Return item {sale_item_id} not found in original sale'}), 400
+
+            already_returned = returned_qty_map.get(sale_item_id, 0)
+            available_qty = max(int(sale_item.quantity) - already_returned, 0)
+            if quantity > available_qty:
+                return jsonify({'success': False, 'message': f'Return qty exceeds available qty for item #{sale_item_id}. Available: {available_qty}'}), 400
+
+            product = db.session.get(Product, sale_item.product_id)
+            if not product:
+                return jsonify({'success': False, 'message': 'Product not found for return item'}), 404
+
+            unit_price = to_decimal(sale_item.price)
+            unit_tax = calculate_sale_item_unit_tax(sale_item)
+            line_total = (unit_price * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+            line_tax = (unit_tax * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+
+            return_total += line_total + line_tax
+            return_tax_total += line_tax
+            return_lines.append({
+                'sale_item': sale_item,
+                'product': product,
+                'quantity': quantity,
+                'unit_price': unit_price,
+                'tax_rate': float(product.tax_rate or 0),
+                'line_total': line_total,
+                'line_tax': line_tax
+            })
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'Invalid return item values'}), 400
+
+    exchange_lines = []
+    exchange_total = Decimal('0.00')
+    exchange_tax_total = Decimal('0.00')
+
+    try:
+        for row in exchange_items_payload:
+            product_id = int(row.get('product_id', 0) or 0)
+            quantity = int(row.get('quantity', 0) or 0)
+            if product_id <= 0 or quantity <= 0:
+                return jsonify({'success': False, 'message': 'Invalid exchange item values'}), 400
+
+            product = db.session.get(Product, product_id)
+            if not product:
+                return jsonify({'success': False, 'message': f'Exchange product {product_id} not found'}), 404
+
+            if quantity > int(product.stock or 0):
+                return jsonify({'success': False, 'message': f'Insufficient stock for exchange product {product.name}. Available: {product.stock}'}), 400
+
+            raw_price = row.get('price', product.price)
+            unit_price = to_decimal(raw_price)
+            if unit_price < 0:
+                return jsonify({'success': False, 'message': 'Exchange item price cannot be negative'}), 400
+
+            line_total = (unit_price * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+            line_tax = (line_total * to_decimal(product.tax_rate or 0) / Decimal('100')).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+
+            exchange_total += line_total + line_tax
+            exchange_tax_total += line_tax
+            exchange_lines.append({
+                'product': product,
+                'quantity': quantity,
+                'unit_price': unit_price,
+                'tax_rate': float(product.tax_rate or 0),
+                'line_total': line_total,
+                'line_tax': line_tax
+            })
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'Invalid exchange item values'}), 400
+
+    mode = 'exchange' if exchange_lines else 'return'
+    net_total = (exchange_total - return_total).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+    refund_amount = abs(net_total) if net_total < 0 else Decimal('0.00')
+    collected_amount = net_total if net_total > 0 else Decimal('0.00')
+    settlement_method = (data.get('settlement_method') or 'cash').strip().lower()
+
+    try:
+        adjustment_sale = None
+        if exchange_lines:
+            myanmar_tz = pytz.timezone('Asia/Yangon')
+            adjustment_sale = Sale(
+                transaction_id=str(uuid.uuid4()),
+                date=datetime.now(myanmar_tz),
+                total=round_money(exchange_total),
+                tax=round_money(exchange_tax_total),
+                cash_received=round_money(collected_amount) if collected_amount > 0 else None,
+                refund_amount=0.0,
+                payment_method='exchange',
+                user_id=session['user_id']
+            )
+            db.session.add(adjustment_sale)
+            db.session.flush()
+
+            for line in exchange_lines:
+                sale_item = SaleItem(
+                    sale_id=adjustment_sale.id,
+                    product_id=line['product'].id,
+                    quantity=line['quantity'],
+                    price=round_money(line['unit_price']),
+                    tax=round_money(line['line_tax'])
+                )
+                db.session.add(sale_item)
+                line['product'].stock -= line['quantity']
+
+        workflow = ReturnExchange(
+            workflow_id=str(uuid.uuid4()),
+            mode=mode,
+            original_sale_id=original_sale.id,
+            adjustment_sale_id=adjustment_sale.id if adjustment_sale else None,
+            return_total=round_money(return_total),
+            exchange_total=round_money(exchange_total),
+            net_total=round_money(net_total),
+            refund_amount=round_money(refund_amount),
+            collected_amount=round_money(collected_amount),
+            settlement_method=settlement_method,
+            notes=(data.get('notes') or '').strip() or None,
+            user_id=session['user_id']
+        )
+        db.session.add(workflow)
+        db.session.flush()
+
+        for line in return_lines:
+            line['product'].stock += line['quantity']
+            item = ReturnExchangeItem(
+                return_exchange_id=workflow.id,
+                original_sale_item_id=line['sale_item'].id,
+                product_id=line['product'].id,
+                movement='return',
+                quantity=line['quantity'],
+                unit_price=round_money(line['unit_price']),
+                tax_rate=line['tax_rate'],
+                line_total=round_money(line['line_total']),
+                line_tax=round_money(line['line_tax'])
+            )
+            db.session.add(item)
+
+        for line in exchange_lines:
+            item = ReturnExchangeItem(
+                return_exchange_id=workflow.id,
+                original_sale_item_id=None,
+                product_id=line['product'].id,
+                movement='exchange',
+                quantity=line['quantity'],
+                unit_price=round_money(line['unit_price']),
+                tax_rate=line['tax_rate'],
+                line_total=round_money(line['line_total']),
+                line_tax=round_money(line['line_tax'])
+            )
+            db.session.add(item)
+
+        db.session.commit()
+        return jsonify({
+            'success': True,
+            'message': 'Return/exchange processed successfully',
+            'workflow_id': workflow.workflow_id,
+            'mode': workflow.mode,
+            'original_transaction_id': original_transaction_id,
+            'adjustment_transaction_id': adjustment_sale.transaction_id if adjustment_sale else None,
+            'return_total': workflow.return_total,
+            'exchange_total': workflow.exchange_total,
+            'net_total': workflow.net_total,
+            'refund_amount': workflow.refund_amount,
+            'collected_amount': workflow.collected_amount
+        }), 201
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error processing return/exchange: {str(e)}")
+        return jsonify({'success': False, 'message': 'Failed to process return/exchange'}), 500
+
+@app.route('/api/returns_exchanges/<string:workflow_id>', methods=['GET'])
+def api_single_return_exchange(workflow_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    workflow = ReturnExchange.query.filter_by(workflow_id=workflow_id).first()
+    if not workflow:
+        return jsonify({'success': False, 'message': 'Return/exchange workflow not found'}), 404
+
+    return jsonify({
+        'workflow_id': workflow.workflow_id,
+        'mode': workflow.mode,
+        'original_transaction_id': workflow.original_sale.transaction_id if workflow.original_sale else None,
+        'adjustment_transaction_id': workflow.adjustment_sale.transaction_id if workflow.adjustment_sale else None,
+        'return_total': workflow.return_total,
+        'exchange_total': workflow.exchange_total,
+        'net_total': workflow.net_total,
+        'refund_amount': workflow.refund_amount,
+        'collected_amount': workflow.collected_amount,
+        'settlement_method': workflow.settlement_method,
+        'notes': workflow.notes,
+        'created_at': workflow.created_at.isoformat() if workflow.created_at else None,
+        'processed_by': workflow.user.username if workflow.user else 'Unknown',
+        'items': [{
+            'id': item.id,
+            'movement': item.movement,
+            'product_id': item.product_id,
+            'product_name': item.product.name if item.product else 'Unknown',
+            'quantity': item.quantity,
+            'unit_price': item.unit_price,
+            'tax_rate': item.tax_rate,
+            'line_total': item.line_total,
+            'line_tax': item.line_tax,
+            'original_sale_item_id': item.original_sale_item_id
+        } for item in workflow.items]
+    })
 
 # --- PDF Receipt ---
 @app.route('/api/sales/<string:transaction_id>/print', methods=['GET'])
