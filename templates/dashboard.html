@@ -2577,14 +2577,11 @@
         toggleCashPaymentFields();
         updateCashRefundDisplay();
 
-        let isNormalizingCurrency = false;
-        const currencyObserver = new MutationObserver(() => {
-          if (isNormalizingCurrency) return;
-          isNormalizingCurrency = true;
-          normalizeCurrencyDisplay();
-          isNormalizingCurrency = false;
-        });
-        currencyObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+        // NOTE:
+        // A full-page MutationObserver was causing repeated DOM scans and could
+        // make the dashboard become unresponsive on slower machines / large pages.
+        // We keep currency normalization explicit (applySettingsUI / load flows)
+        // instead of continuously reprocessing the whole document on each change.
       });
 
       // Toggle sidebar on mobile
