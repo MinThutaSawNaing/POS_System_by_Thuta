@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>POS Dashboard</title>
+    <title>{{ pos_name }} Dashboard</title>
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
       rel="stylesheet"
@@ -233,7 +233,7 @@
     <!-- Sidebar -->
     <div class="sidebar" id="sidebar">
       <div class="p-3">
-        <h4 class="text-center">POS System</h4>
+        <h4 class="text-center">{{ pos_name }}</h4>
         <hr />
         <div class="text-center mb-3">
           <span
@@ -296,6 +296,11 @@
         <li class="nav-item">
           <a class="nav-link" href="#" onclick="showSection('users')">
             <i class="bi bi-people"></i>Users
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" href="#" onclick="showSection('settings')">
+            <i class="bi bi-gear"></i>Settings
           </a>
         </li>
         <li class="nav-item mt-3">
@@ -1016,6 +1021,30 @@
                 Select date range and generate report
               </p>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings Section -->
+      <div id="settings-section" style="display: none">
+        <h2>Settings</h2>
+        <div class="card mt-3">
+          <div class="card-body">
+            <div class="mb-3">
+              <label class="form-label">POS Name</label>
+              <input type="text" class="form-control" id="settings-pos-name" readonly />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Currency Type</label>
+              <select class="form-select" id="settings-currency-code">
+                <option value="USD">Dollar ($)</option>
+                <option value="MMK">Myanmar Kyat (MMK)</option>
+                <option value="THB">Thai Baht (B)</option>
+              </select>
+            </div>
+            <button class="btn btn-primary" onclick="saveSettings()">
+              <i class="bi bi-save"></i> Save Settings
+            </button>
           </div>
         </div>
       </div>
@@ -2269,6 +2298,106 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
       // Global variables
+      const APP_SETTINGS = {
+        posName: "{{ pos_name }}",
+        currencyCode: "{{ currency_code }}",
+        currencySuffix: "{{ currency_suffix }}",
+      };
+
+      function currencySuffixFromCode(code) {
+        const map = { USD: "$", MMK: "MMK", THB: "B" };
+        return map[code] || "$";
+      }
+
+      function formatCurrency(value) {
+        const amount = Number(value) || 0;
+        return `${amount.toFixed(2)}${APP_SETTINGS.currencySuffix}`;
+      }
+
+      function normalizeCurrencyInText(text) {
+        return text.replace(/\$\s*(-?\d+(?:\.\d+)?)/g, (_, amount) => `${amount}${APP_SETTINGS.currencySuffix}`);
+      }
+
+      function normalizeCurrencyDisplay(root = document.body) {
+        if (!root) return;
+
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+        const nodes = [];
+        let node;
+        while ((node = walker.nextNode())) {
+          const parentTag = node.parentElement?.tagName;
+          if (parentTag === "SCRIPT" || parentTag === "STYLE") continue;
+          if (node.nodeValue && node.nodeValue.includes("$")) {
+            nodes.push(node);
+          }
+        }
+
+        nodes.forEach((textNode) => {
+          textNode.nodeValue = normalizeCurrencyInText(textNode.nodeValue);
+        });
+
+        document.querySelectorAll(".input-group-text").forEach((el) => {
+          if (el.textContent.trim() === "$") {
+            el.textContent = APP_SETTINGS.currencySuffix;
+          }
+        });
+      }
+
+      function applySettingsUI() {
+        document.title = `${APP_SETTINGS.posName} Dashboard`;
+        const sidebarTitle = document.querySelector(".sidebar h4");
+        if (sidebarTitle) sidebarTitle.textContent = APP_SETTINGS.posName;
+
+        const posNameInput = document.getElementById("settings-pos-name");
+        if (posNameInput) posNameInput.value = APP_SETTINGS.posName;
+
+        const currencySelect = document.getElementById("settings-currency-code");
+        if (currencySelect) currencySelect.value = APP_SETTINGS.currencyCode;
+
+        normalizeCurrencyDisplay();
+      }
+
+      function loadSettings() {
+        fetch("/api/settings")
+          .then((response) => response.json())
+          .then((data) => {
+            APP_SETTINGS.posName = data.pos_name || APP_SETTINGS.posName;
+            APP_SETTINGS.currencyCode = data.currency_code || APP_SETTINGS.currencyCode;
+            APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(APP_SETTINGS.currencyCode);
+            applySettingsUI();
+          })
+          .catch((error) => {
+            console.error("Error loading settings:", error);
+            applySettingsUI();
+          });
+      }
+
+      function saveSettings() {
+        const currencyCode = document.getElementById("settings-currency-code")?.value;
+        if (!currencyCode) return;
+
+        fetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ currency_code: currencyCode }),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (!data.success) {
+              alert(data.message || "Failed to save settings");
+              return;
+            }
+
+            APP_SETTINGS.currencyCode = data.currency_code;
+            APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(data.currency_code);
+            applySettingsUI();
+            alert("Settings updated successfully");
+          })
+          .catch((error) => {
+            console.error("Error saving settings:", error);
+            alert("Failed to save settings");
+          });
+      }
       let cart = [];
       let currentSection = "dashboard";
       let currentProduct = null;
@@ -2383,6 +2512,8 @@
       // Initialize the application when page loads
       document.addEventListener("DOMContentLoaded", function () {
         initResizableSidebar();
+        applySettingsUI();
+        loadSettings();
 
         // Set today's date as default for sales filter
         const today = new Date().toISOString().split("T")[0];
@@ -2445,6 +2576,15 @@
 
         toggleCashPaymentFields();
         updateCashRefundDisplay();
+
+        let isNormalizingCurrency = false;
+        const currencyObserver = new MutationObserver(() => {
+          if (isNormalizingCurrency) return;
+          isNormalizingCurrency = true;
+          normalizeCurrencyDisplay();
+          isNormalizingCurrency = false;
+        });
+        currencyObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
       });
 
       // Toggle sidebar on mobile
@@ -2534,6 +2674,8 @@
           loadCustomersForDebtModal();
         } else if (sectionId === "suppliers") {
           loadSuppliers();
+        } else if (sectionId === "settings") {
+          loadSettings();
         }
 
         // Scroll to top when switching sections

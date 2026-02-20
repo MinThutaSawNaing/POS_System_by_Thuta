@@ -33,12 +33,42 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 MONEY_QUANT = Decimal('0.01')
 ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+CURRENCY_OPTIONS = {
+    'USD': '$',
+    'MMK': 'MMK',
+    'THB': 'B'
+}
 
 def to_decimal(value):
     return Decimal(str(value))
 
 def round_money(value):
     return float(to_decimal(value).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP))
+
+def get_setting(key, default=None):
+    setting = AppSetting.query.filter_by(key=key).first()
+    return setting.value if setting else default
+
+def set_setting(key, value):
+    setting = AppSetting.query.filter_by(key=key).first()
+    if setting:
+        setting.value = value
+    else:
+        setting = AppSetting(key=key, value=value)
+        db.session.add(setting)
+    db.session.commit()
+
+def get_currency_code():
+    code = get_setting('currency_code', 'USD')
+    return code if code in CURRENCY_OPTIONS else 'USD'
+
+def get_currency_suffix(currency_code=None):
+    code = currency_code or get_currency_code()
+    return CURRENCY_OPTIONS.get(code, '$')
+
+def format_currency(value, currency_code=None):
+    suffix = get_currency_suffix(currency_code)
+    return f"{float(value):.2f}{suffix}"
 
 def allowed_image_file(filename):
     if not filename or '.' not in filename:
@@ -82,6 +112,11 @@ class User(db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(120), nullable=False)
     role = db.Column(db.String(20), default='cashier')
+
+class AppSetting(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    key = db.Column(db.String(100), unique=True, nullable=False)
+    value = db.Column(db.String(255), nullable=False)
 
 class Product(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -210,6 +245,10 @@ with app.app_context():
         db.session.add(admin_user)
         db.session.commit()
 
+    if not AppSetting.query.filter_by(key='currency_code').first():
+        db.session.add(AppSetting(key='currency_code', value='USD'))
+        db.session.commit()
+
 # Authentication routes
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -235,7 +274,40 @@ def logout():
 def dashboard():
     if 'user_id' not in session:
         return redirect(url_for('login'))
-    return render_template('dashboard.html')
+    return render_template(
+        'dashboard.html',
+        pos_name='Parrot POS',
+        currency_code=get_currency_code(),
+        currency_suffix=get_currency_suffix()
+    )
+
+@app.route('/api/settings', methods=['GET', 'PUT'])
+def api_settings():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if request.method == 'GET':
+        return jsonify({
+            'pos_name': 'Parrot POS',
+            'currency_code': get_currency_code(),
+            'currency_suffix': get_currency_suffix()
+        })
+
+    if session.get('role') != 'manager':
+        return jsonify({'success': False, 'message': 'Manager access required'}), 403
+
+    data = request.get_json() or {}
+    currency_code = data.get('currency_code')
+    if currency_code not in CURRENCY_OPTIONS:
+        return jsonify({'success': False, 'message': 'Invalid currency code'}), 400
+
+    set_setting('currency_code', currency_code)
+    return jsonify({
+        'success': True,
+        'message': 'Settings updated',
+        'currency_code': currency_code,
+        'currency_suffix': get_currency_suffix(currency_code)
+    })
 
 @app.route('/uploads/products/<path:filename>')
 def product_image(filename):
@@ -478,7 +550,7 @@ def generate_barcode_labels():
 
                 # Create text flowables
                 product_name = Paragraph(product.name, normal_style)
-                price = Paragraph(f"Ks {product.price:.2f}", normal_style)
+                price = Paragraph(format_currency(product.price), normal_style)
 
                 # Stack vertically
                 label_table = Table(
@@ -741,7 +813,7 @@ def print_receipt(transaction_id):
     )
     styles = getSampleStyleSheet()
     elements = []
-    elements.append(Paragraph("POS SYSTEM RECEIPT", styles['Heading4']))
+    elements.append(Paragraph("PARROT POS RECEIPT", styles['Heading4']))
     elements.append(Spacer(1, 4))
     cashier_name = sale.user.username if sale.user else 'Unknown'
     transaction_info = [
@@ -751,8 +823,8 @@ def print_receipt(transaction_id):
         ["Payment Method:", sale.payment_method.capitalize()]
     ]
     if sale.payment_method == 'cash':
-        transaction_info.append(["Cash Received:", f"Ks {(sale.cash_received or 0):.2f}"])
-        transaction_info.append(["Refund Given:", f"Ks {(sale.refund_amount or 0):.2f}"])
+        transaction_info.append(["Cash Received:", format_currency(sale.cash_received or 0)])
+        transaction_info.append(["Refund Given:", format_currency(sale.refund_amount or 0)])
     t = Table(transaction_info, colWidths=[content_width * 0.42, content_width * 0.58])
     t.setStyle(TableStyle([
         ('FONT', (0, 0), (-1, -1), 'Helvetica'),
@@ -771,10 +843,10 @@ def print_receipt(transaction_id):
         subtotal_calc += item_total
         items_data.append([
             product.name,
-            f"Ks {item.price:.2f}",
+            format_currency(item.price),
             str(item.quantity),
             f"{product.tax_rate:.0f}%",
-            f"Ks {item_total:.2f}"
+            format_currency(item_total)
         ])
     t = Table(items_data, colWidths=[
         content_width * 0.38,
@@ -803,9 +875,9 @@ def print_receipt(transaction_id):
     elements.append(t)
     elements.append(Spacer(1, 5))
     totals_data = [
-        ["Subtotal:", f"Ks {subtotal_calc:.2f}"],
-        ["Tax:", f"Ks {sale.tax:.2f}"],
-        ["Total:", f"Ks {sale.total:.2f}"]
+        ["Subtotal:", format_currency(subtotal_calc)],
+        ["Tax:", format_currency(sale.tax)],
+        ["Total:", format_currency(sale.total)]
     ]
     t = Table(totals_data, colWidths=[content_width * 0.55, content_width * 0.45])
     t.setStyle(TableStyle([
