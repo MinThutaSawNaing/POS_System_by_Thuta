@@ -38,6 +38,21 @@ CURRENCY_OPTIONS = {
     'MMK': 'MMK',
     'THB': 'Bh'
 }
+DELIVERY_STAGE_FLOW = {
+    'to_deliver': ['packaged', 'cancelled'],
+    'packaged': ['delivering', 'cancelled'],
+    'delivering': ['delivered', 'cancelled'],
+    'delivered': [],
+    'cancelled': []
+}
+DELIVERY_STAGE_LABELS = {
+    'to_deliver': 'To Deliver',
+    'packaged': 'Packaged',
+    'delivering': 'Delivering',
+    'delivered': 'Delivered',
+    'cancelled': 'Cancelled'
+}
+DELIVERY_PRIORITIES = {'low', 'normal', 'high', 'urgent'}
 
 def to_decimal(value):
     return Decimal(str(value))
@@ -111,6 +126,37 @@ def manager_required(f):
 
 def generate_po_number():
     return f"PO-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
+
+def generate_delivery_number():
+    return f"DLV-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
+
+def normalize_delivery_stage(stage):
+    value = (stage or '').strip().lower()
+    return value if value in DELIVERY_STAGE_FLOW else None
+
+def normalize_delivery_priority(priority):
+    value = (priority or 'normal').strip().lower()
+    return value if value in DELIVERY_PRIORITIES else 'normal'
+
+def parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except Exception:
+        return None
+
+def can_transition_delivery_stage(current_stage, next_stage):
+    return next_stage in DELIVERY_STAGE_FLOW.get(current_stage, [])
+
+def apply_delivery_stage_timestamp(delivery, stage):
+    now = datetime.utcnow()
+    if stage == 'packaged' and not delivery.packaged_at:
+        delivery.packaged_at = now
+    elif stage == 'delivering' and not delivery.out_for_delivery_at:
+        delivery.out_for_delivery_at = now
+    elif stage == 'delivered':
+        delivery.delivered_at = now
 
 def calculate_sale_item_unit_tax(sale_item):
     qty = int(sale_item.quantity or 0)
@@ -288,6 +334,70 @@ class Debt(db.Model):
     # Relationship with sale
     sale = db.relationship('Sale', backref='debt', lazy=True)
 
+class Delivery(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    delivery_number = db.Column(db.String(40), unique=True, nullable=False)
+    sale_id = db.Column(db.Integer, db.ForeignKey('sale.id'), nullable=False, unique=True)
+    customer_id = db.Column(db.Integer, db.ForeignKey('customer.id'))
+    stage = db.Column(db.String(20), default='to_deliver', nullable=False)
+    priority = db.Column(db.String(20), default='normal', nullable=False)
+    recipient_name = db.Column(db.String(120))
+    recipient_phone = db.Column(db.String(30))
+    delivery_address = db.Column(db.String(300))
+    township = db.Column(db.String(120))
+    instructions = db.Column(db.String(400))
+    courier_name = db.Column(db.String(120))
+    courier_phone = db.Column(db.String(30))
+    tracking_code = db.Column(db.String(120))
+    delivery_fee = db.Column(db.Float, default=0.0)
+    scheduled_at = db.Column(db.DateTime)
+    packaged_at = db.Column(db.DateTime)
+    out_for_delivery_at = db.Column(db.DateTime)
+    delivered_at = db.Column(db.DateTime)
+    cancelled_at = db.Column(db.DateTime)
+    proof_note = db.Column(db.String(300))
+    created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    sale = db.relationship('Sale', backref=db.backref('delivery', uselist=False))
+    customer = db.relationship('Customer', backref='deliveries')
+    creator = db.relationship('User', backref='created_deliveries')
+
+def serialize_delivery(delivery):
+    return {
+        'id': delivery.id,
+        'delivery_number': delivery.delivery_number,
+        'sale_id': delivery.sale_id,
+        'sale_transaction_id': delivery.sale.transaction_id if delivery.sale else None,
+        'sale_total': delivery.sale.total if delivery.sale else 0,
+        'customer_id': delivery.customer_id,
+        'customer_name': delivery.customer.name if delivery.customer else None,
+        'stage': delivery.stage,
+        'stage_label': DELIVERY_STAGE_LABELS.get(delivery.stage, delivery.stage),
+        'priority': delivery.priority,
+        'recipient_name': delivery.recipient_name,
+        'recipient_phone': delivery.recipient_phone,
+        'delivery_address': delivery.delivery_address,
+        'township': delivery.township,
+        'instructions': delivery.instructions,
+        'courier_name': delivery.courier_name,
+        'courier_phone': delivery.courier_phone,
+        'tracking_code': delivery.tracking_code,
+        'delivery_fee': delivery.delivery_fee or 0,
+        'scheduled_at': delivery.scheduled_at.isoformat() if delivery.scheduled_at else None,
+        'packaged_at': delivery.packaged_at.isoformat() if delivery.packaged_at else None,
+        'out_for_delivery_at': delivery.out_for_delivery_at.isoformat() if delivery.out_for_delivery_at else None,
+        'delivered_at': delivery.delivered_at.isoformat() if delivery.delivered_at else None,
+        'cancelled_at': delivery.cancelled_at.isoformat() if delivery.cancelled_at else None,
+        'proof_note': delivery.proof_note,
+        'created_by': delivery.created_by,
+        'created_by_name': delivery.creator.username if delivery.creator else None,
+        'created_at': delivery.created_at.isoformat() if delivery.created_at else None,
+        'updated_at': delivery.updated_at.isoformat() if delivery.updated_at else None,
+        'can_transition_to': DELIVERY_STAGE_FLOW.get(delivery.stage, [])
+    }
+
 # Create database tables and admin user
 with app.app_context():
     db.create_all()
@@ -321,6 +431,28 @@ with app.app_context():
         if column_name not in sale_columns:
             db.session.execute(text(migration_sql))
             db.session.commit()
+
+    if inspector.has_table('delivery'):
+        delivery_columns = [col['name'] for col in inspector.get_columns('delivery')]
+        delivery_migrations = [
+            ('priority', "ALTER TABLE delivery ADD COLUMN priority VARCHAR(20) DEFAULT 'normal'"),
+            ('township', 'ALTER TABLE delivery ADD COLUMN township VARCHAR(120)'),
+            ('instructions', 'ALTER TABLE delivery ADD COLUMN instructions VARCHAR(400)'),
+            ('delivery_fee', 'ALTER TABLE delivery ADD COLUMN delivery_fee FLOAT DEFAULT 0'),
+            ('scheduled_at', 'ALTER TABLE delivery ADD COLUMN scheduled_at DATETIME'),
+            ('packaged_at', 'ALTER TABLE delivery ADD COLUMN packaged_at DATETIME'),
+            ('out_for_delivery_at', 'ALTER TABLE delivery ADD COLUMN out_for_delivery_at DATETIME'),
+            ('delivered_at', 'ALTER TABLE delivery ADD COLUMN delivered_at DATETIME'),
+            ('cancelled_at', 'ALTER TABLE delivery ADD COLUMN cancelled_at DATETIME'),
+            ('proof_note', 'ALTER TABLE delivery ADD COLUMN proof_note VARCHAR(300)'),
+            ('updated_at', 'ALTER TABLE delivery ADD COLUMN updated_at DATETIME')
+        ]
+        for column_name, migration_sql in delivery_migrations:
+            if column_name not in delivery_columns:
+                db.session.execute(text(migration_sql))
+                if column_name == 'updated_at':
+                    db.session.execute(text('UPDATE delivery SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL'))
+                db.session.commit()
 
     # Create Promotion table
     if not hasattr(Product, 'promotions'):
@@ -819,12 +951,41 @@ def api_create_sale():
             # Update sale payment method to indicate debt
             sale.payment_method = 'debt'
 
+        delivery_payload = data.get('delivery') or {}
+        if delivery_payload.get('enabled'):
+            recipient_name = (delivery_payload.get('recipient_name') or '').strip()
+            recipient_phone = (delivery_payload.get('recipient_phone') or '').strip()
+            delivery_address = (delivery_payload.get('delivery_address') or '').strip()
+            if not recipient_name or not recipient_phone or not delivery_address:
+                return jsonify({'success': False, 'message': 'Recipient name, phone and address are required for delivery'}), 400
+
+            delivery = Delivery(
+                delivery_number=generate_delivery_number(),
+                sale_id=sale.id,
+                customer_id=data.get('customer_id'),
+                stage='to_deliver',
+                priority=normalize_delivery_priority(delivery_payload.get('priority')),
+                recipient_name=recipient_name,
+                recipient_phone=recipient_phone,
+                delivery_address=delivery_address,
+                township=(delivery_payload.get('township') or '').strip() or None,
+                instructions=(delivery_payload.get('instructions') or '').strip() or None,
+                courier_name=(delivery_payload.get('courier_name') or '').strip() or None,
+                courier_phone=(delivery_payload.get('courier_phone') or '').strip() or None,
+                tracking_code=(delivery_payload.get('tracking_code') or '').strip() or None,
+                delivery_fee=round_money(delivery_payload.get('delivery_fee') or 0),
+                scheduled_at=parse_iso_datetime(delivery_payload.get('scheduled_at')),
+                created_by=session.get('user_id')
+            )
+            db.session.add(delivery)
+
         db.session.commit()
 
         return jsonify({
             'success': True,
             'message': 'Sale completed',
-            'transaction_id': sale.transaction_id
+            'transaction_id': sale.transaction_id,
+            'delivery_number': sale.delivery.delivery_number if getattr(sale, 'delivery', None) else None
         }), 201
 
     except Exception as e:
@@ -855,6 +1016,7 @@ def api_single_sale(transaction_id):
         'payment_method': sale.payment_method,
         'user_id' : sale.user_id,
         'username' : sale.user.username if sale.user else 'Unknown',
+        'delivery': serialize_delivery(sale.delivery) if getattr(sale, 'delivery', None) else None,
         'items': [],
         'return_exchange_history': [{
             'workflow_id': r.workflow_id,
@@ -1151,6 +1313,138 @@ def api_single_return_exchange(workflow_id):
             'line_tax': item.line_tax,
             'original_sale_item_id': item.original_sale_item_id
         } for item in workflow.items]
+    })
+
+@app.route('/api/deliveries', methods=['GET', 'POST'])
+def api_deliveries():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if request.method == 'GET':
+        query = Delivery.query
+        stage = normalize_delivery_stage(request.args.get('stage'))
+        priority = normalize_delivery_priority(request.args.get('priority') or 'normal') if request.args.get('priority') else None
+        q = (request.args.get('q') or '').strip().lower()
+
+        if stage:
+            query = query.filter(Delivery.stage == stage)
+        if priority:
+            query = query.filter(Delivery.priority == priority)
+
+        deliveries = query.order_by(Delivery.created_at.desc()).all()
+        if q:
+            deliveries = [
+                d for d in deliveries
+                if q in (d.delivery_number or '').lower()
+                or q in (d.sale.transaction_id if d.sale else '').lower()
+                or q in (d.recipient_name or '').lower()
+                or q in (d.recipient_phone or '').lower()
+                or q in (d.delivery_address or '').lower()
+                or q in (d.tracking_code or '').lower()
+            ]
+
+        return jsonify([serialize_delivery(d) for d in deliveries])
+
+    if session.get('role') != 'manager':
+        return jsonify({'success': False, 'message': 'Manager access required'}), 403
+
+    data = request.get_json() or {}
+    sale_transaction_id = (data.get('sale_transaction_id') or '').strip()
+    if not sale_transaction_id:
+        return jsonify({'success': False, 'message': 'Sale transaction ID is required'}), 400
+
+    sale = Sale.query.filter_by(transaction_id=sale_transaction_id).first()
+    if not sale:
+        return jsonify({'success': False, 'message': 'Sale not found'}), 404
+    if getattr(sale, 'delivery', None):
+        return jsonify({'success': False, 'message': 'Delivery already exists for this sale'}), 400
+
+    recipient_name = (data.get('recipient_name') or '').strip()
+    recipient_phone = (data.get('recipient_phone') or '').strip()
+    delivery_address = (data.get('delivery_address') or '').strip()
+    if not recipient_name or not recipient_phone or not delivery_address:
+        return jsonify({'success': False, 'message': 'Recipient name, phone and address are required'}), 400
+
+    delivery = Delivery(
+        delivery_number=generate_delivery_number(),
+        sale_id=sale.id,
+        customer_id=data.get('customer_id') or None,
+        stage='to_deliver',
+        priority=normalize_delivery_priority(data.get('priority')),
+        recipient_name=recipient_name,
+        recipient_phone=recipient_phone,
+        delivery_address=delivery_address,
+        township=(data.get('township') or '').strip() or None,
+        instructions=(data.get('instructions') or '').strip() or None,
+        courier_name=(data.get('courier_name') or '').strip() or None,
+        courier_phone=(data.get('courier_phone') or '').strip() or None,
+        tracking_code=(data.get('tracking_code') or '').strip() or None,
+        delivery_fee=round_money(data.get('delivery_fee') or 0),
+        scheduled_at=parse_iso_datetime(data.get('scheduled_at')),
+        created_by=session.get('user_id')
+    )
+    db.session.add(delivery)
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'Delivery created', 'delivery': serialize_delivery(delivery)}), 201
+
+@app.route('/api/deliveries/<int:delivery_id>', methods=['GET', 'PUT'])
+def api_single_delivery(delivery_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    delivery = db.session.get(Delivery, delivery_id)
+    if not delivery:
+        return jsonify({'success': False, 'message': 'Delivery not found'}), 404
+
+    if request.method == 'GET':
+        return jsonify(serialize_delivery(delivery))
+
+    data = request.get_json() or {}
+
+    next_stage = normalize_delivery_stage(data.get('stage')) if 'stage' in data else None
+    if next_stage and next_stage != delivery.stage:
+        if not can_transition_delivery_stage(delivery.stage, next_stage):
+            return jsonify({'success': False, 'message': f'Invalid stage transition: {delivery.stage} -> {next_stage}'}), 400
+        delivery.stage = next_stage
+        apply_delivery_stage_timestamp(delivery, next_stage)
+        if next_stage == 'cancelled':
+            delivery.cancelled_at = datetime.utcnow()
+
+    if 'priority' in data:
+        delivery.priority = normalize_delivery_priority(data.get('priority'))
+
+    editable_fields = [
+        'recipient_name', 'recipient_phone', 'delivery_address', 'township', 'instructions',
+        'courier_name', 'courier_phone', 'tracking_code', 'proof_note'
+    ]
+    for field in editable_fields:
+        if field in data:
+            setattr(delivery, field, (data.get(field) or '').strip() or None)
+
+    if 'delivery_fee' in data:
+        delivery.delivery_fee = round_money(data.get('delivery_fee') or 0)
+    if 'scheduled_at' in data:
+        delivery.scheduled_at = parse_iso_datetime(data.get('scheduled_at'))
+
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'Delivery updated', 'delivery': serialize_delivery(delivery)})
+
+@app.route('/api/deliveries/stats', methods=['GET'])
+def api_delivery_stats():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    deliveries = Delivery.query.all()
+    stage_counts = {key: 0 for key in DELIVERY_STAGE_FLOW.keys()}
+    for d in deliveries:
+        if d.stage in stage_counts:
+            stage_counts[d.stage] += 1
+
+    return jsonify({
+        'total': len(deliveries),
+        'by_stage': stage_counts,
+        'high_priority_open': sum(1 for d in deliveries if d.priority in ('high', 'urgent') and d.stage not in ('delivered', 'cancelled')),
+        'ready_dispatch': stage_counts.get('packaged', 0)
     })
 
 # --- PDF Receipt ---
