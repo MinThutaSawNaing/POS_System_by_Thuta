@@ -10,7 +10,7 @@ from sqlalchemy import inspect, text
 from decimal import Decimal, ROUND_HALF_UP
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.units import mm
 from reportlab.lib import colors
 import pandas as pd
 from reportlab.graphics.barcode import createBarcodeDrawing
@@ -718,12 +718,31 @@ def print_receipt(transaction_id):
 
     items = SaleItem.query.filter_by(sale_id=sale.id).all()
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=72, leftMargin=72,
-                           topMargin=72, bottomMargin=18)
+
+    # 80mm thermal slip layout
+    page_width = 80 * mm
+    left_margin = 4 * mm
+    right_margin = 4 * mm
+    top_margin = 4 * mm
+    bottom_margin = 4 * mm
+    content_width = page_width - left_margin - right_margin
+
+    extra_info_lines = 4 + (2 if sale.payment_method == 'cash' else 0)
+    estimated_height_mm = max(120, 42 + (len(items) * 8) + (extra_info_lines * 4))
+    page_height = estimated_height_mm * mm
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=(page_width, page_height),
+        rightMargin=right_margin,
+        leftMargin=left_margin,
+        topMargin=top_margin,
+        bottomMargin=bottom_margin
+    )
     styles = getSampleStyleSheet()
     elements = []
-    elements.append(Paragraph("POS SYSTEM RECEIPT", styles['Title']))
-    elements.append(Spacer(1, 12))
+    elements.append(Paragraph("POS SYSTEM RECEIPT", styles['Heading4']))
+    elements.append(Spacer(1, 4))
     cashier_name = sale.user.username if sale.user else 'Unknown'
     transaction_info = [
         ["Transaction ID:", sale.transaction_id],
@@ -734,14 +753,16 @@ def print_receipt(transaction_id):
     if sale.payment_method == 'cash':
         transaction_info.append(["Cash Received:", f"Ks {(sale.cash_received or 0):.2f}"])
         transaction_info.append(["Refund Given:", f"Ks {(sale.refund_amount or 0):.2f}"])
-    t = Table(transaction_info, colWidths=[120, 200])
+    t = Table(transaction_info, colWidths=[content_width * 0.42, content_width * 0.58])
     t.setStyle(TableStyle([
         ('FONT', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ('LEFTPADDING', (0, 0), (-1, -1), 1),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 1),
     ]))
     elements.append(t)
-    elements.append(Spacer(1, 24))
+    elements.append(Spacer(1, 6))
     items_data = [["Item", "Price", "Qty", "Tax", "Total"]]
     subtotal_calc = Decimal('0.00')
     for item in items:
@@ -755,34 +776,47 @@ def print_receipt(transaction_id):
             f"{product.tax_rate:.0f}%",
             f"Ks {item_total:.2f}"
         ])
-    t = Table(items_data, colWidths=[200, 60, 40, 40, 60])
+    t = Table(items_data, colWidths=[
+        content_width * 0.38,
+        content_width * 0.17,
+        content_width * 0.10,
+        content_width * 0.12,
+        content_width * 0.23
+    ])
     t.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('ALIGN', (0, 1), (0, -1), 'LEFT'),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('FONTSIZE', (0, 0), (-1, 0), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 4),
         ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
         ('GRID', (0, 0), (-1, -1), 1, colors.black),
         ('FONT', (0, 1), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 1), (-1, -1), 9),
+        ('FONTSIZE', (0, 1), (-1, -1), 7),
+        ('LEFTPADDING', (0, 0), (-1, -1), 1),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 1),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
     ]))
     elements.append(t)
-    elements.append(Spacer(1, 12))
+    elements.append(Spacer(1, 5))
     totals_data = [
         ["Subtotal:", f"Ks {subtotal_calc:.2f}"],
         ["Tax:", f"Ks {sale.tax:.2f}"],
         ["Total:", f"Ks {sale.total:.2f}"]
     ]
-    t = Table(totals_data, colWidths=[100, 60])
+    t = Table(totals_data, colWidths=[content_width * 0.55, content_width * 0.45])
     t.setStyle(TableStyle([
         ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('LEFTPADDING', (0, 0), (-1, -1), 1),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 1),
     ]))
     elements.append(t)
-    elements.append(Spacer(1, 24))
+    elements.append(Spacer(1, 8))
     elements.append(Paragraph("Thank you for your business!", styles['Normal']))
     elements.append(Paragraph("Please visit us again soon!", styles['Normal']))
     doc.build(elements)
