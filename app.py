@@ -2822,12 +2822,17 @@ def make_debt_payment(debt_id):
         # Calculate new balance
         remaining_balance = (current_balance - payment_amount).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
         
+        # Get notes safely - handle None values
+        payment_notes = data.get('notes')
+        if payment_notes is not None:
+            payment_notes = str(payment_notes).strip() or None
+        
         # Create a payment record for tracking
         payment = DebtPayment(
             debt_id=debt.id,
             customer_id=debt.customer_id,
             amount=round_money(payment_amount),
-            notes=data.get('notes', '').strip() or None,
+            notes=payment_notes,
             processed_by=session.get('user_id')
         )
         db.session.add(payment)
@@ -2838,8 +2843,8 @@ def make_debt_payment(debt_id):
         
         # Track payment in communication notes
         payment_note = f"Payment of {format_currency(payment_amount)} received"
-        if data.get('notes'):
-            payment_note += f" - {data['notes'].strip()}"
+        if payment_notes:
+            payment_note += f" - {payment_notes}"
         
         existing_notes = debt.communication_notes or ''
         timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
