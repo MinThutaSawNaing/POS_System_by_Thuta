@@ -217,6 +217,24 @@ def serialize_debt(debt):
     aging_status = get_debt_aging_status(days_outstanding)
     aging_color = get_debt_aging_color(days_outstanding)
     
+    # Get payment history
+    payment_history = []
+    total_paid = 0
+    if hasattr(debt, 'payments') and debt.payments:
+        for p in debt.payments:
+            payment_history.append({
+                'id': p.id,
+                'amount': p.amount,
+                'date': p.payment_date.isoformat() if p.payment_date else None,
+                'notes': p.notes,
+                'processed_by': p.processor.username if p.processor else None
+            })
+            total_paid += p.amount
+    
+    # Calculate paid amount from balance difference if no payment records exist
+    if total_paid == 0 and debt.type == 'debt':
+        total_paid = debt.amount - debt.balance
+    
     return {
         'id': debt.id,
         'customer_id': debt.customer_id,
@@ -227,7 +245,7 @@ def serialize_debt(debt):
         'sale_transaction_id': debt.sale.transaction_id if debt.sale else None,
         'amount': debt.amount,
         'balance': debt.balance,
-        'paid_amount': debt.amount - debt.balance if debt.type == 'debt' else 0,
+        'paid_amount': total_paid,
         'type': debt.type,
         'date': debt.date.isoformat() if debt.date else None,
         'due_date': debt.due_date.isoformat() if debt.due_date else None,
@@ -242,7 +260,8 @@ def serialize_debt(debt):
         'created_by': debt.created_by,
         'created_by_name': debt.creator.username if debt.creator else None,
         'created_at': debt.created_at.isoformat() if debt.created_at else None,
-        'updated_at': debt.updated_at.isoformat() if debt.updated_at else None
+        'updated_at': debt.updated_at.isoformat() if debt.updated_at else None,
+        'payment_history': payment_history
     }
 
 def calculate_sale_item_unit_tax(sale_item):
@@ -428,6 +447,24 @@ class Debt(db.Model):
     # Relationship with sale
     sale = db.relationship('Sale', backref='debt', lazy=True)
     creator = db.relationship('User', backref='created_debts')
+    
+    # Relationship with payments
+    payments = db.relationship('DebtPayment', backref='debt', lazy=True, order_by='desc(DebtPayment.payment_date)')
+
+class DebtPayment(db.Model):
+    """Track individual payments made towards debts"""
+    id = db.Column(db.Integer, primary_key=True)
+    debt_id = db.Column(db.Integer, db.ForeignKey('debt.id'), nullable=False)
+    customer_id = db.Column(db.Integer, db.ForeignKey('customer.id'), nullable=False)
+    amount = db.Column(db.Float, nullable=False)
+    payment_date = db.Column(db.DateTime, default=datetime.utcnow)
+    notes = db.Column(db.String(500))
+    processed_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    customer = db.relationship('Customer', backref='debt_payments')
+    processor = db.relationship('User', backref='processed_debt_payments')
 
 class Delivery(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -572,6 +609,25 @@ with app.app_context():
                     # Update existing debts with proper status based on balance
                     db.session.execute(text("UPDATE debt SET status = CASE WHEN type = 'debt' AND balance > 0 THEN 'pending' WHEN type = 'debt' AND balance <= 0 THEN 'paid' ELSE 'payment' END WHERE status IS NULL OR status = 'pending'"))
                 db.session.commit()
+
+    # Create debt_payment table for tracking payments
+    if not inspector.has_table('debt_payment'):
+        db.session.execute(text('''
+            CREATE TABLE debt_payment (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                debt_id INTEGER NOT NULL,
+                customer_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                payment_date DATETIME,
+                notes VARCHAR(500),
+                processed_by INTEGER,
+                created_at DATETIME,
+                FOREIGN KEY (debt_id) REFERENCES debt (id),
+                FOREIGN KEY (customer_id) REFERENCES customer (id),
+                FOREIGN KEY (processed_by) REFERENCES user (id)
+            )
+        '''))
+        db.session.commit()
 
     # Create Promotion table
     if not hasattr(Product, 'promotions'):
@@ -2514,12 +2570,11 @@ def api_debts_summary():
     # Get customers with outstanding debts
     customers_with_debt = set(d.customer_id for d in outstanding_debts)
     
-    # Get this month's payments
+    # Get this month's payments from DebtPayment table
     now = datetime.utcnow()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    monthly_payments = Debt.query.filter(
-        Debt.type == 'payment',
-        Debt.date >= month_start
+    monthly_payments = DebtPayment.query.filter(
+        DebtPayment.payment_date >= month_start
     ).all()
     total_payments_this_month = sum(p.amount for p in monthly_payments)
     
@@ -2767,7 +2822,17 @@ def make_debt_payment(debt_id):
         # Calculate new balance
         remaining_balance = (current_balance - payment_amount).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
         
-        # Update the original debt balance (no separate payment record created)
+        # Create a payment record for tracking
+        payment = DebtPayment(
+            debt_id=debt.id,
+            customer_id=debt.customer_id,
+            amount=round_money(payment_amount),
+            notes=data.get('notes', '').strip() or None,
+            processed_by=session.get('user_id')
+        )
+        db.session.add(payment)
+        
+        # Update the original debt balance
         debt.balance = 0.0 if remaining_balance < MONEY_QUANT else round_money(remaining_balance)
         debt.status = calculate_debt_status(debt)
         
@@ -2782,19 +2847,18 @@ def make_debt_payment(debt_id):
             debt.communication_notes = f"{existing_notes}\n[{timestamp}] {payment_note}"
         else:
             debt.communication_notes = f"[{timestamp}] {payment_note}"
-        
-        # Track total paid amount in notes
-        total_paid = debt.amount - debt.balance
-        debt.notes = f"{debt.notes or ''}\nTotal paid: {format_currency(total_paid)}".strip()
 
         db.session.commit()
+        
+        # Calculate total paid from payment records
+        total_paid = sum(p.amount for p in debt.payments) if debt.payments else 0
         
         # Return payment confirmation
         return jsonify({
             'success': True, 
             'message': f'Payment of {format_currency(payment_amount)} recorded successfully',
             'remaining_balance': debt.balance,
-            'total_paid': float(debt.amount - debt.balance),
+            'total_paid': total_paid,
             'debt_status': debt.status
         })
     except Exception as e:
