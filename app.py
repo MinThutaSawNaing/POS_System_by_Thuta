@@ -2764,31 +2764,37 @@ def make_debt_payment(debt_id):
         return jsonify({'success': False, 'message': 'Payment amount exceeds remaining balance'}), 400
 
     try:
-        # Create a payment record
-        payment = Debt(
-            customer_id=debt.customer_id,
-            sale_id=debt.sale_id,
-            amount=round_money(payment_amount),
-            balance=0,  # Payment records have no balance
-            type='payment',
-            notes=(data.get('notes') or f'Payment towards debt #{debt.id}').strip(),
-            created_by=session.get('user_id')
-        )
-        db.session.add(payment)
-        
-        # Update the original debt balance
+        # Calculate new balance
         remaining_balance = (current_balance - payment_amount).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+        
+        # Update the original debt balance (no separate payment record created)
         debt.balance = 0.0 if remaining_balance < MONEY_QUANT else round_money(remaining_balance)
         debt.status = calculate_debt_status(debt)
+        
+        # Track payment in communication notes
+        payment_note = f"Payment of {format_currency(payment_amount)} received"
+        if data.get('notes'):
+            payment_note += f" - {data['notes'].strip()}"
+        
+        existing_notes = debt.communication_notes or ''
+        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
+        if existing_notes:
+            debt.communication_notes = f"{existing_notes}\n[{timestamp}] {payment_note}"
+        else:
+            debt.communication_notes = f"[{timestamp}] {payment_note}"
+        
+        # Track total paid amount in notes
+        total_paid = debt.amount - debt.balance
+        debt.notes = f"{debt.notes or ''}\nTotal paid: {format_currency(total_paid)}".strip()
 
         db.session.commit()
         
-        # Return payment confirmation with receipt info
+        # Return payment confirmation
         return jsonify({
             'success': True, 
-            'message': 'Payment recorded successfully',
-            'payment': serialize_debt(payment),
+            'message': f'Payment of {format_currency(payment_amount)} recorded successfully',
             'remaining_balance': debt.balance,
+            'total_paid': float(debt.amount - debt.balance),
             'debt_status': debt.status
         })
     except Exception as e:
