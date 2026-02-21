@@ -5960,12 +5960,13 @@
             // Load customer debts
             fetch("/api/customers/" + customerId + "/debts")
               .then((response) => response.json())
-              .then((debts) => {
+              .then((data) => {
                 let debtsHtml = "";
                 let totalDebt = 0;
+                const debts = data.debts || data;
 
                 debts.forEach((debt) => {
-                  if (debt.type === "debt") {
+                  if (debt.balance > 0) {
                     totalDebt += debt.balance;
                     debtsHtml += `
                       <tr>
@@ -6114,37 +6115,27 @@
             page.items.forEach((debt) => {
               const row = document.createElement("tr");
               
-              // Type badge
-              const typeBadge = debt.type === "debt" 
-                ? '<span class="badge bg-danger">Debt</span>' 
-                : '<span class="badge bg-success">Payment</span>';
-              
               // Status badge with color
-              let statusBadge = '';
-              if (debt.type === 'debt') {
-                const statusColors = {
-                  'pending': 'secondary',
-                  'partial': 'info',
-                  'paid': 'success',
-                  'overdue': 'danger'
-                };
-                const color = statusColors[debt.computed_status] || 'secondary';
-                statusBadge = `<span class="badge bg-${color}">${debt.computed_status.toUpperCase()}</span>`;
-              } else {
-                statusBadge = '<span class="badge bg-success">COMPLETED</span>';
-              }
+              const statusColors = {
+                'pending': 'secondary',
+                'partial': 'info',
+                'paid': 'success',
+                'overdue': 'danger'
+              };
+              const color = statusColors[debt.computed_status] || 'secondary';
+              const statusBadge = `<span class="badge bg-${color}">${debt.computed_status.toUpperCase()}</span>`;
               
               // Aging indicator
               let agingBadge = '-';
-              if (debt.type === 'debt' && debt.balance > 0) {
+              if (debt.balance > 0) {
                 const agingColors = {
                   'current': 'success',
                   'due_soon': 'warning',
                   'overdue': 'warning',
                   'critical': 'danger'
                 };
-                const color = agingColors[debt.aging_status] || 'secondary';
-                agingBadge = `<span class="badge bg-${color}">${debt.days_outstanding}d</span>`;
+                const agingColor = agingColors[debt.aging_status] || 'secondary';
+                agingBadge = `<span class="badge bg-${agingColor}">${debt.days_outstanding}d</span>`;
               }
               
               // Due date display
@@ -6158,8 +6149,8 @@
                 </td>
                 <td>${formatCurrency(debt.amount)}</td>
                 <td>
-                  ${debt.type === 'debt' ? formatCurrency(debt.balance) : '-'}
-                  ${debt.type === 'debt' && debt.paid_amount > 0 ? `<br><small class="text-success">Paid: ${formatCurrency(debt.paid_amount)}</small>` : ''}
+                  ${formatCurrency(debt.balance)}
+                  ${debt.paid_amount > 0 ? `<br><small class="text-success">Paid: ${formatCurrency(debt.paid_amount)}</small>` : ''}
                 </td>
                 <td>${agingBadge}</td>
                 <td>${statusBadge}</td>
@@ -6167,7 +6158,7 @@
                 <td>${new Date(debt.date).toLocaleDateString()}</td>
                 <td>
                   <div class="btn-group btn-group-sm">
-                    ${debt.type === "debt" && debt.balance > 0 ? `
+                    ${debt.balance > 0 ? `
                       <button class="btn btn-success" onclick="showMakePaymentModal(${debt.id})" title="Make Payment">
                         <i class="bi bi-cash"></i>
                       </button>
@@ -6175,7 +6166,7 @@
                     <button class="btn btn-info" onclick="viewDebtDetails(${debt.id})" title="View Details">
                       <i class="bi bi-eye"></i>
                     </button>
-                    ${debt.type === "debt" && debt.balance > 0 ? `
+                    ${debt.balance > 0 ? `
                       <button class="btn btn-outline-primary" onclick="showCommunicationModal(${debt.id}, '${debt.customer_name}')" title="Log Communication">
                         <i class="bi bi-chat"></i>
                       </button>
@@ -6338,12 +6329,8 @@
         fetch(`/api/debts/${debtId}`)
           .then((r) => r.json())
           .then((debt) => {
-            const typeBadge = debt.type === "debt" 
-              ? '<span class="badge bg-danger">Debt</span>' 
-              : '<span class="badge bg-success">Payment</span>';
-            
             const statusColors = {
-              'pending': 'secondary', 'partial': 'info', 'paid': 'success', 'overdue': 'danger', 'payment': 'success'
+              'pending': 'secondary', 'partial': 'info', 'paid': 'success', 'overdue': 'danger'
             };
             const statusBadge = `<span class="badge bg-${statusColors[debt.computed_status] || 'secondary'}">${debt.computed_status.toUpperCase()}</span>`;
 
@@ -6355,8 +6342,8 @@
                   <small>${debt.customer_phone || '-'}<br>${debt.customer_email || ''}</small>
                 </div>
                 <div class="col-md-6 text-end">
-                  <h6 class="text-muted">Type & Status</h6>
-                  <p>${typeBadge} ${statusBadge}</p>
+                  <h6 class="text-muted">Status</h6>
+                  <p>${statusBadge}</p>
                 </div>
               </div>
               <hr>
