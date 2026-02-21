@@ -190,32 +190,52 @@
         background: #555;
       }
 
-      /* Toast notifications */
+      /* Toast notifications - positioned bottom-right for less intrusion */
       .toast-container {
         position: fixed;
-        top: 20px;
-        left: 50%;
-        transform: translateX(-50%);
-        z-index: 9999;
-      }
-
-      .toast {
-        min-width: 300px;
-        margin-bottom: 10px;
-        box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
-      }
-
-      #toast-container {
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
+        bottom: 20px;
+        right: 20px;
         z-index: 9999;
         pointer-events: none;
       }
 
+      .toast {
+        min-width: 250px;
+        margin-bottom: 10px;
+        box-shadow: 0 0.25rem 0.5rem rgba(0, 0, 0, 0.1);
+        pointer-events: auto;
+        font-size: 0.875rem;
+        opacity: 0.95;
+      }
+
+      #toast-container {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        z-index: 9999;
+        pointer-events: none;
+        max-width: 320px;
+      }
+
       #toast-container .alert {
         pointer-events: auto;
+        font-size: 0.875rem;
+        padding: 0.5rem 0.75rem;
+        margin-bottom: 8px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+        border-radius: 6px;
+        animation: slideInRight 0.3s ease-out;
+      }
+
+      @keyframes slideInRight {
+        from {
+          transform: translateX(100%);
+          opacity: 0;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 0.95;
+        }
       }
     </style>
   </head>
@@ -3660,7 +3680,8 @@
             }
 
             updateCartDisplay();
-            showToast(`${quantity} × ${product.name} added to cart`, "info");
+            // Quick subtle toast for cart additions (1.5s duration, success type for green color)
+            showToast(`+${quantity} ${product.name}`, "success", 1500);
 
             // Refocus search
             const searchInput = document.getElementById("product-search");
@@ -3866,6 +3887,11 @@
               document.getElementById("pos-enable-delivery").checked = false;
               togglePosDeliveryFields();
               updateCashRefundDisplay();
+              // Clear date filter to ensure new sales appear in history
+              const dateFilter = document.getElementById("sales-date-filter");
+              if (dateFilter) dateFilter.value = "";
+              const searchInput = document.getElementById("sales-search");
+              if (searchInput) searchInput.value = "";
               loadSales();
               loadDashboardStats();
               invalidateProductsCache();
@@ -4318,9 +4344,12 @@
 
             const page = paginateArray(filtered, "sales");
             page.items.forEach((sale) => {
+              const deliveryBadge = sale.has_delivery 
+                ? '<span class="badge bg-info ms-1" title="Has Delivery"><i class="bi bi-truck"></i></span>' 
+                : '';
               const row = document.createElement("tr");
               row.innerHTML = `
-                                  <td>${sale.transaction_id}</td>
+                                  <td>${sale.transaction_id}${deliveryBadge}</td>
                                   <td>${new Date(
                                     sale.date
                                   ).toLocaleString()}</td>
@@ -5450,7 +5479,7 @@
       }
 
       // Add this function to show toast notifications
-      function showToast(message, type = "info") {
+      function showToast(message, type = "info", duration = 2500) {
         // Create toast element if it doesn't exist
         let toastContainer = document.getElementById("toast-container");
         if (!toastContainer) {
@@ -5461,21 +5490,21 @@
 
         const toast = document.createElement("div");
         toast.className = `alert alert-${type} alert-dismissible fade show`;
-        toast.style.minWidth = "300px";
-        toast.style.marginBottom = "10px";
+        toast.style.minWidth = "auto";
         toast.innerHTML = `
                     ${message}
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    <button type="button" class="btn-close btn-close-sm" data-bs-dismiss="alert" style="font-size: 0.65rem;"></button>
                 `;
 
         toastContainer.appendChild(toast);
 
-        // Auto remove after 3 seconds
+        // Auto remove after specified duration (default 2.5s for less intrusion)
         setTimeout(() => {
           if (toast.parentNode) {
-            toast.remove();
+            toast.style.animation = "slideInRight 0.2s ease-in reverse";
+            setTimeout(() => toast.remove(), 200);
           }
-        }, 3000);
+        }, duration);
       }
 
       function deletePromotion(promoId) {
@@ -6653,7 +6682,7 @@
               const row = document.createElement("tr");
               row.innerHTML = `
                 <td>${d.delivery_number}</td>
-                <td>${d.sale_transaction_id || "-"}</td>
+                <td>${d.sale_transaction_id || "-"}${d.sale_transaction_id ? `<button class="btn btn-sm btn-outline-info ms-1" onclick="viewSaleDetails('${d.sale_transaction_id}')" title="View Sale & Print Slip"><i class="bi bi-receipt"></i></button>` : ""}</td>
                 <td>${d.recipient_name || "-"}<br/><small class="text-muted">${d.recipient_phone || "-"}</small></td>
                 <td><span class="badge bg-${stageBadgeClass}">${d.stage_label}</span></td>
                 <td><span class="badge bg-${priorityBadgeClass}">${d.priority}</span></td>

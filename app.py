@@ -1641,7 +1641,7 @@ def api_report_sales():
         if session.get('role') == 'cashier':
             query = query.filter(Sale.user_id == session['user_id'])
 
-        # Fetch and return sales
+        # Fetch and return sales (includes sales with and without delivery)
         sales = query.order_by(Sale.date.desc()).all()
 
         return jsonify([{
@@ -1654,7 +1654,8 @@ def api_report_sales():
             'refund_amount': s.refund_amount or 0,
             'payment_method': s.payment_method,
             'user_id': s.user_id,
-            'username': s.user.username if s.user else 'Unknown'
+            'username': s.user.username if s.user else 'Unknown',
+            'has_delivery': hasattr(s, 'delivery') and s.delivery is not None
         } for s in sales])
 
     except ValueError as e:
