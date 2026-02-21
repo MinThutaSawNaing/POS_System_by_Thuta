@@ -158,6 +158,93 @@ def apply_delivery_stage_timestamp(delivery, stage):
     elif stage == 'delivered':
         delivery.delivered_at = now
 
+# Debt status and aging helpers
+DEBT_AGING_THRESHOLDS = {
+    'current': 0,      # 0-30 days
+    'due_soon': 30,    # 30-60 days
+    'overdue': 60,     # 60-90 days
+    'critical': 90     # 90+ days
+}
+
+def calculate_debt_aging_days(debt_date):
+    """Calculate how many days a debt has been outstanding"""
+    if not debt_date:
+        return 0
+    now = datetime.utcnow()
+    if debt_date.tzinfo:
+        debt_date = debt_date.replace(tzinfo=None)
+    delta = now - debt_date
+    return delta.days
+
+def get_debt_aging_status(days_outstanding):
+    """Get aging category based on days outstanding"""
+    if days_outstanding < 30:
+        return 'current'
+    elif days_outstanding < 60:
+        return 'due_soon'
+    elif days_outstanding < 90:
+        return 'overdue'
+    else:
+        return 'critical'
+
+def get_debt_aging_color(days_outstanding):
+    """Get color for aging indicator"""
+    if days_outstanding < 30:
+        return 'success'      # Green - current
+    elif days_outstanding < 60:
+        return 'warning'      # Yellow - due soon
+    elif days_outstanding < 90:
+        return 'orange'       # Orange - overdue
+    else:
+        return 'danger'       # Red - critical
+
+def calculate_debt_status(debt):
+    """Calculate debt status based on balance and due date"""
+    if debt.type == 'payment':
+        return 'payment'
+    if debt.balance <= 0:
+        return 'paid'
+    if debt.balance < debt.amount:
+        return 'partial'
+    if debt.due_date and datetime.utcnow() > debt.due_date:
+        return 'overdue'
+    return 'pending'
+
+def serialize_debt(debt):
+    """Serialize debt record with all computed fields"""
+    days_outstanding = calculate_debt_aging_days(debt.date) if debt.type == 'debt' else 0
+    computed_status = calculate_debt_status(debt)
+    aging_status = get_debt_aging_status(days_outstanding)
+    aging_color = get_debt_aging_color(days_outstanding)
+    
+    return {
+        'id': debt.id,
+        'customer_id': debt.customer_id,
+        'customer_name': debt.customer.name if debt.customer else 'Unknown',
+        'customer_phone': debt.customer.phone if debt.customer else None,
+        'customer_email': debt.customer.email if debt.customer else None,
+        'sale_id': debt.sale_id,
+        'sale_transaction_id': debt.sale.transaction_id if debt.sale else None,
+        'amount': debt.amount,
+        'balance': debt.balance,
+        'paid_amount': debt.amount - debt.balance if debt.type == 'debt' else 0,
+        'type': debt.type,
+        'date': debt.date.isoformat() if debt.date else None,
+        'due_date': debt.due_date.isoformat() if debt.due_date else None,
+        'status': debt.status or computed_status,
+        'computed_status': computed_status,
+        'days_outstanding': days_outstanding,
+        'aging_status': aging_status,
+        'aging_color': aging_color,
+        'notes': debt.notes,
+        'communication_notes': debt.communication_notes,
+        'last_contacted_at': debt.last_contacted_at.isoformat() if debt.last_contacted_at else None,
+        'created_by': debt.created_by,
+        'created_by_name': debt.creator.username if debt.creator else None,
+        'created_at': debt.created_at.isoformat() if debt.created_at else None,
+        'updated_at': debt.updated_at.isoformat() if debt.updated_at else None
+    }
+
 def calculate_sale_item_unit_tax(sale_item):
     qty = int(sale_item.quantity or 0)
     if qty <= 0:
@@ -329,10 +416,18 @@ class Debt(db.Model):
     balance = db.Column(db.Float, nullable=False)  # Remaining balance
     type = db.Column(db.String(20), default='debt')  # 'debt' or 'payment'
     date = db.Column(db.DateTime, default=datetime.utcnow)
-    notes = db.Column(db.String(200))
+    due_date = db.Column(db.DateTime, nullable=True)  # Expected payment date
+    status = db.Column(db.String(20), default='pending')  # 'pending', 'partial', 'paid', 'overdue'
+    notes = db.Column(db.String(500))
+    communication_notes = db.Column(db.Text)  # Track customer communications
+    last_contacted_at = db.Column(db.DateTime)  # Last communication date
+    created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationship with sale
     sale = db.relationship('Sale', backref='debt', lazy=True)
+    creator = db.relationship('User', backref='created_debts')
 
 class Delivery(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -452,6 +547,30 @@ with app.app_context():
                 db.session.execute(text(migration_sql))
                 if column_name == 'updated_at':
                     db.session.execute(text('UPDATE delivery SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL'))
+                db.session.commit()
+
+    # Debt table migrations for enhanced debt management
+    if inspector.has_table('debt'):
+        debt_columns = [col['name'] for col in inspector.get_columns('debt')]
+        debt_migrations = [
+            ('due_date', 'ALTER TABLE debt ADD COLUMN due_date DATETIME'),
+            ('status', "ALTER TABLE debt ADD COLUMN status VARCHAR(20) DEFAULT 'pending'"),
+            ('communication_notes', 'ALTER TABLE debt ADD COLUMN communication_notes TEXT'),
+            ('last_contacted_at', 'ALTER TABLE debt ADD COLUMN last_contacted_at DATETIME'),
+            ('created_by', 'ALTER TABLE debt ADD COLUMN created_by INTEGER'),
+            ('created_at', 'ALTER TABLE debt ADD COLUMN created_at DATETIME'),
+            ('updated_at', 'ALTER TABLE debt ADD COLUMN updated_at DATETIME')
+        ]
+        for column_name, migration_sql in debt_migrations:
+            if column_name not in debt_columns:
+                db.session.execute(text(migration_sql))
+                if column_name == 'created_at':
+                    db.session.execute(text('UPDATE debt SET created_at = date WHERE created_at IS NULL'))
+                if column_name == 'updated_at':
+                    db.session.execute(text('UPDATE debt SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL'))
+                if column_name == 'status':
+                    # Update existing debts with proper status based on balance
+                    db.session.execute(text("UPDATE debt SET status = CASE WHEN type = 'debt' AND balance > 0 THEN 'pending' WHEN type = 'debt' AND balance <= 0 THEN 'paid' ELSE 'payment' END WHERE status IS NULL OR status = 'pending'"))
                 db.session.commit()
 
     # Create Promotion table
@@ -2240,10 +2359,16 @@ def api_single_customer(customer_id):
 @manager_required
 def api_debts():
     if request.method == 'GET':
-        query = Debt.query.join(Customer)
+        query = Debt.query.join(Customer, Debt.customer_id == Customer.id)
         search_query = (request.args.get('q') or '').strip()
         debt_type = (request.args.get('type') or '').strip().lower()
         status = (request.args.get('status') or '').strip().lower()
+        aging = (request.args.get('aging') or '').strip().lower()
+        customer_id = request.args.get('customer_id')
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        min_amount = request.args.get('min_amount')
+        max_amount = request.args.get('max_amount')
 
         if search_query:
             like_query = f"%{search_query}%"
@@ -2260,19 +2385,56 @@ def api_debts():
             query = query.filter(Debt.type == 'debt', Debt.balance > 0)
         elif status == 'closed':
             query = query.filter((Debt.type == 'payment') | ((Debt.type == 'debt') & (Debt.balance <= 0)))
+        elif status == 'pending':
+            query = query.filter(Debt.type == 'debt', Debt.balance == Debt.amount)
+        elif status == 'partial':
+            query = query.filter(Debt.type == 'debt', Debt.balance > 0, Debt.balance < Debt.amount)
+        elif status == 'overdue':
+            query = query.filter(Debt.type == 'debt', Debt.balance > 0, Debt.due_date != None, Debt.due_date < datetime.utcnow())
+
+        if customer_id:
+            query = query.filter(Debt.customer_id == customer_id)
+
+        if start_date:
+            try:
+                start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                query = query.filter(Debt.date >= start_dt)
+            except ValueError:
+                pass
+
+        if end_date:
+            try:
+                end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+                query = query.filter(Debt.date <= end_dt)
+            except ValueError:
+                pass
+
+        if min_amount:
+            try:
+                query = query.filter(Debt.amount >= float(min_amount))
+            except ValueError:
+                pass
+
+        if max_amount:
+            try:
+                query = query.filter(Debt.amount <= float(max_amount))
+            except ValueError:
+                pass
 
         debts = query.order_by(Debt.date.desc(), Debt.id.desc()).all()
-        return jsonify([{
-            'id': d.id,
-            'customer_id': d.customer_id,
-            'customer_name': d.customer.name,
-            'sale_id': d.sale_id,
-            'amount': d.amount,
-            'balance': d.balance,
-            'type': d.type,
-            'date': d.date.isoformat(),
-            'notes': d.notes
-        } for d in debts])
+        
+        # Filter by aging if specified
+        if aging:
+            filtered_debts = []
+            for d in debts:
+                if d.type == 'debt':
+                    days = calculate_debt_aging_days(d.date)
+                    aging_status = get_debt_aging_status(days)
+                    if aging_status == aging:
+                        filtered_debts.append(d)
+            debts = filtered_debts
+        
+        return jsonify([serialize_debt(d) for d in debts])
     
     elif request.method == 'POST':
         data = request.get_json() or {}
@@ -2301,6 +2463,14 @@ def api_debts():
         if amount <= 0:
             return jsonify({'success': False, 'message': 'Amount must be greater than 0'}), 400
 
+        # Parse due date if provided
+        due_date = None
+        if data.get('due_date'):
+            try:
+                due_date = datetime.fromisoformat(str(data['due_date']).replace('Z', '+00:00'))
+            except ValueError:
+                pass
+
         try:
             debt = Debt(
                 customer_id=customer.id,
@@ -2308,15 +2478,192 @@ def api_debts():
                 amount=round_money(amount),
                 balance=round_money(amount),
                 type='debt',
-                notes=(data.get('notes') or '').strip() or None
+                due_date=due_date,
+                status='pending',
+                notes=(data.get('notes') or '').strip() or None,
+                created_by=session.get('user_id')
             )
             db.session.add(debt)
             db.session.commit()
-            return jsonify({'success': True, 'message': 'Debt record added'}), 201
+            return jsonify({'success': True, 'message': 'Debt record added', 'debt': serialize_debt(debt)}), 201
         except Exception as e:
             db.session.rollback()
             app.logger.error(f"Error creating debt: {str(e)}")
             return jsonify({'success': False, 'message': 'Failed to create debt record'}), 500
+
+@app.route('/api/debts/summary', methods=['GET'])
+@manager_required
+def api_debts_summary():
+    """Get debt summary statistics"""
+    # Get all outstanding debts
+    outstanding_debts = Debt.query.filter(Debt.type == 'debt', Debt.balance > 0).all()
+    
+    total_outstanding = sum(d.balance for d in outstanding_debts)
+    total_debts = len(outstanding_debts)
+    
+    # Calculate aging breakdown
+    aging_breakdown = {'current': 0, 'due_soon': 0, 'overdue': 0, 'critical': 0}
+    aging_amounts = {'current': 0, 'due_soon': 0, 'overdue': 0, 'critical': 0}
+    
+    for d in outstanding_debts:
+        days = calculate_debt_aging_days(d.date)
+        aging_status = get_debt_aging_status(days)
+        aging_breakdown[aging_status] += 1
+        aging_amounts[aging_status] += d.balance
+    
+    # Get customers with outstanding debts
+    customers_with_debt = set(d.customer_id for d in outstanding_debts)
+    
+    # Get this month's payments
+    now = datetime.utcnow()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    monthly_payments = Debt.query.filter(
+        Debt.type == 'payment',
+        Debt.date >= month_start
+    ).all()
+    total_payments_this_month = sum(p.amount for p in monthly_payments)
+    
+    # Get overdue count
+    overdue_count = sum(1 for d in outstanding_debts if d.due_date and d.due_date < now)
+    
+    return jsonify({
+        'total_outstanding': round_money(total_outstanding),
+        'total_debts': total_debts,
+        'customers_with_debt': len(customers_with_debt),
+        'aging_breakdown': aging_breakdown,
+        'aging_amounts': {k: round_money(v) for k, v in aging_amounts.items()},
+        'total_payments_this_month': round_money(total_payments_this_month),
+        'overdue_count': overdue_count
+    })
+
+@app.route('/api/debts/aging', methods=['GET'])
+@manager_required
+def api_debts_aging():
+    """Get debt aging analysis"""
+    outstanding_debts = Debt.query.filter(Debt.type == 'debt', Debt.balance > 0).all()
+    
+    aging_data = {
+        'current': [],
+        'due_soon': [],
+        'overdue': [],
+        'critical': []
+    }
+    
+    for d in outstanding_debts:
+        days = calculate_debt_aging_days(d.date)
+        aging_status = get_debt_aging_status(days)
+        debt_data = serialize_debt(d)
+        aging_data[aging_status].append(debt_data)
+    
+    return jsonify(aging_data)
+
+@app.route('/api/debts/export', methods=['GET'])
+@manager_required
+def export_debts():
+    """Export debts to Excel"""
+    query = Debt.query.join(Customer, Debt.customer_id == Customer.id)
+    
+    # Apply filters
+    debt_type = request.args.get('type')
+    status = request.args.get('status')
+    customer_id = request.args.get('customer_id')
+    
+    if debt_type:
+        query = query.filter(Debt.type == debt_type)
+    if status == 'open':
+        query = query.filter(Debt.type == 'debt', Debt.balance > 0)
+    if customer_id:
+        query = query.filter(Debt.customer_id == customer_id)
+    
+    debts = query.order_by(Debt.date.desc()).all()
+    
+    data = []
+    for d in debts:
+        days_outstanding = calculate_debt_aging_days(d.date) if d.type == 'debt' else 0
+        data.append({
+            'ID': d.id,
+            'Customer': d.customer.name if d.customer else 'Unknown',
+            'Phone': d.customer.phone if d.customer else '',
+            'Type': d.type.upper(),
+            'Amount': d.amount,
+            'Balance': d.balance,
+            'Days Outstanding': days_outstanding if d.type == 'debt' else 'N/A',
+            'Due Date': d.due_date.strftime('%Y-%m-%d') if d.due_date else '',
+            'Status': calculate_debt_status(d),
+            'Date': d.date.strftime('%Y-%m-%d %H:%M'),
+            'Notes': d.notes or ''
+        })
+    
+    df = pd.DataFrame(data)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, sheet_name='Debts', index=False)
+    output.seek(0)
+    
+    response = make_response(output.getvalue())
+    response.headers['Content-Type'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    response.headers['Content-Disposition'] = 'attachment; filename=debts_report.xlsx'
+    return response
+
+@app.route('/api/debts/bulk', methods=['POST'])
+@manager_required
+def bulk_debt_operations():
+    """Perform bulk operations on debts"""
+    data = request.get_json()
+    if not data:
+        return jsonify({'success': False, 'message': 'No data provided'}), 400
+    
+    action = data.get('action')
+    debt_ids = data.get('debt_ids', [])
+    
+    if not action or not debt_ids:
+        return jsonify({'success': False, 'message': 'Action and debt IDs are required'}), 400
+    
+    debts = Debt.query.filter(Debt.id.in_(debt_ids)).all()
+    if not debts:
+        return jsonify({'success': False, 'message': 'No debts found'}), 404
+    
+    try:
+        if action == 'mark_contacted':
+            for d in debts:
+                d.last_contacted_at = datetime.utcnow()
+                if data.get('notes'):
+                    existing_notes = d.communication_notes or ''
+                    d.communication_notes = existing_notes + '\n' + data.get('notes') if existing_notes else data.get('notes')
+            db.session.commit()
+            return jsonify({'success': True, 'message': f'{len(debts)} debts marked as contacted'})
+        
+        elif action == 'update_due_date':
+            due_date = data.get('due_date')
+            if not due_date:
+                return jsonify({'success': False, 'message': 'Due date is required'}), 400
+            try:
+                new_due_date = datetime.fromisoformat(str(due_date).replace('Z', '+00:00'))
+            except ValueError:
+                return jsonify({'success': False, 'message': 'Invalid date format'}), 400
+            
+            for d in debts:
+                d.due_date = new_due_date
+            db.session.commit()
+            return jsonify({'success': True, 'message': f'{len(debts)} debts updated'})
+        
+        elif action == 'delete':
+            deleted = 0
+            for d in debts:
+                if d.type == 'debt' and d.amount > d.balance:
+                    continue  # Skip debts with payments
+                db.session.delete(d)
+                deleted += 1
+            db.session.commit()
+            return jsonify({'success': True, 'message': f'{deleted} debts deleted'})
+        
+        else:
+            return jsonify({'success': False, 'message': 'Unknown action'}), 400
+    
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error in bulk operation: {str(e)}")
+        return jsonify({'success': False, 'message': 'Failed to perform operation'}), 500
 
 @app.route('/api/debts/<int:debt_id>', methods=['GET', 'PUT', 'DELETE'])
 @manager_required
@@ -2326,17 +2673,7 @@ def api_single_debt(debt_id):
         return jsonify({'success': False, 'message': 'Debt record not found'}), 404
     
     if request.method == 'GET':
-        return jsonify({
-            'id': debt.id,
-            'customer_id': debt.customer_id,
-            'customer_name': debt.customer.name,
-            'sale_id': debt.sale_id,
-            'amount': debt.amount,
-            'balance': debt.balance,
-            'type': debt.type,
-            'date': debt.date.isoformat(),
-            'notes': debt.notes
-        })
+        return jsonify(serialize_debt(debt))
     
     elif request.method == 'PUT':
         data = request.get_json()
@@ -2344,8 +2681,22 @@ def api_single_debt(debt_id):
             return jsonify({'success': False, 'message': 'No data provided'}), 400
         
         debt.notes = data.get('notes', debt.notes)
+        
+        if data.get('due_date'):
+            try:
+                debt.due_date = datetime.fromisoformat(str(data['due_date']).replace('Z', '+00:00'))
+            except ValueError:
+                pass
+        
+        if data.get('communication_notes'):
+            existing = debt.communication_notes or ''
+            timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
+            debt.communication_notes = f"{existing}\n[{timestamp}] {data['communication_notes']}".strip()
+            debt.last_contacted_at = datetime.utcnow()
+        
+        debt.status = calculate_debt_status(debt)
         db.session.commit()
-        return jsonify({'success': True, 'message': 'Debt record updated'})
+        return jsonify({'success': True, 'message': 'Debt record updated', 'debt': serialize_debt(debt)})
     
     elif request.method == 'DELETE':
         if debt.type == 'debt' and debt.amount > debt.balance:
@@ -2363,15 +2714,25 @@ def api_customer_debts(customer_id):
         return jsonify({'success': False, 'message': 'Customer not found'}), 404
     
     debts = Debt.query.filter_by(customer_id=customer_id).order_by(Debt.date.desc(), Debt.id.desc()).all()
-    return jsonify([{
-        'id': d.id,
-        'sale_id': d.sale_id,
-        'amount': d.amount,
-        'balance': d.balance,
-        'type': d.type,
-        'date': d.date.isoformat(),
-        'notes': d.notes
-    } for d in debts])
+    
+    # Calculate customer summary
+    total_debt = sum(d.balance for d in debts if d.type == 'debt')
+    total_paid = sum(d.amount for d in debts if d.type == 'payment')
+    
+    return jsonify({
+        'customer': {
+            'id': customer.id,
+            'name': customer.name,
+            'phone': customer.phone,
+            'email': customer.email,
+            'address': customer.address
+        },
+        'summary': {
+            'total_outstanding': round_money(total_debt),
+            'total_paid': round_money(total_paid)
+        },
+        'debts': [serialize_debt(d) for d in debts]
+    })
 
 @app.route('/api/debts/<int:debt_id>/payment', methods=['POST'])
 @manager_required
@@ -2410,20 +2771,83 @@ def make_debt_payment(debt_id):
             amount=round_money(payment_amount),
             balance=0,  # Payment records have no balance
             type='payment',
-            notes=(data.get('notes') or f'Payment towards debt #{debt.id}').strip()
+            notes=(data.get('notes') or f'Payment towards debt #{debt.id}').strip(),
+            created_by=session.get('user_id')
         )
         db.session.add(payment)
         
         # Update the original debt balance
         remaining_balance = (current_balance - payment_amount).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
         debt.balance = 0.0 if remaining_balance < MONEY_QUANT else round_money(remaining_balance)
+        debt.status = calculate_debt_status(debt)
 
         db.session.commit()
-        return jsonify({'success': True, 'message': 'Payment recorded successfully'})
+        
+        # Return payment confirmation with receipt info
+        return jsonify({
+            'success': True, 
+            'message': 'Payment recorded successfully',
+            'payment': serialize_debt(payment),
+            'remaining_balance': debt.balance,
+            'debt_status': debt.status
+        })
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Error recording debt payment: {str(e)}")
         return jsonify({'success': False, 'message': 'Failed to record payment'}), 500
+
+@app.route('/api/debts/<int:debt_id>/print', methods=['GET'])
+@manager_required
+def print_debt_receipt(debt_id):
+    """Generate PDF receipt for debt payment"""
+    debt = db.session.get(Debt, debt_id)
+    if not debt:
+        return jsonify({'success': False, 'message': 'Debt record not found'}), 404
+    
+    buffer = io.BytesIO()
+    page_width = 80 * mm
+    left_margin = 4 * mm
+    right_margin = 4 * mm
+    content_width = page_width - left_margin - right_margin
+    
+    doc = SimpleDocTemplate(buffer, pagesize=(page_width, 150*mm), 
+                           rightMargin=right_margin, leftMargin=left_margin,
+                           topMargin=4*mm, bottomMargin=4*mm)
+    styles = getSampleStyleSheet()
+    elements = []
+    
+    elements.append(Paragraph("PARROT POS", styles['Heading4']))
+    elements.append(Paragraph("DEBT RECEIPT", styles['Normal']))
+    elements.append(Spacer(1, 6))
+    
+    info = [
+        ["Date:", debt.date.strftime("%Y-%m-%d %H:%M")],
+        ["Customer:", debt.customer.name if debt.customer else "N/A"],
+        ["Type:", debt.type.upper()],
+        ["Amount:", format_currency(debt.amount)],
+    ]
+    if debt.type == 'debt':
+        info.append(["Balance:", format_currency(debt.balance)])
+    if debt.notes:
+        info.append(["Notes:", debt.notes[:50]])
+    
+    t = Table(info, colWidths=[content_width * 0.35, content_width * 0.65])
+    t.setStyle(TableStyle([
+        ('FONT', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+    ]))
+    elements.append(t)
+    elements.append(Spacer(1, 8))
+    elements.append(Paragraph("Thank you!", styles['Normal']))
+    
+    doc.build(elements)
+    buffer.seek(0)
+    
+    response = make_response(buffer.getvalue())
+    response.headers['Content-Type'] = 'application/pdf'
+    response.headers['Content-Disposition'] = f'inline; filename=debt_receipt_{debt_id}.pdf'
+    return response
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8888, debug=True)
