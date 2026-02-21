@@ -318,6 +318,16 @@ class Supplier(db.Model):
     lead_time_days = db.Column(db.Integer)
     is_active = db.Column(db.Boolean, default=True)
     notes = db.Column(db.String(300))
+    # Enhanced fields
+    category = db.Column(db.String(50))
+    tax_id = db.Column(db.String(50))
+    website = db.Column(db.String(200))
+    bank_name = db.Column(db.String(100))
+    bank_account = db.Column(db.String(50))
+    quality_rating = db.Column(db.Float, default=0.0)
+    delivery_rating = db.Column(db.Float, default=0.0)
+    total_orders = db.Column(db.Integer, default=0)
+    on_time_deliveries = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -325,14 +335,21 @@ class PurchaseOrder(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     po_number = db.Column(db.String(40), unique=True, nullable=False)
     supplier_id = db.Column(db.Integer, db.ForeignKey('supplier.id'), nullable=False)
-    status = db.Column(db.String(20), default='draft')  # draft, partial, received, cancelled
+    status = db.Column(db.String(25), default='draft')  # draft, pending, approved, partially_received, received, cancelled
+    total_amount = db.Column(db.Float, default=0.0)
+    expected_delivery_date = db.Column(db.DateTime)
     notes = db.Column(db.String(300))
     created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    approved_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    approved_at = db.Column(db.DateTime)
+    cancelled_at = db.Column(db.DateTime)
+    cancelled_reason = db.Column(db.String(300))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     supplier = db.relationship('Supplier', backref='purchase_orders')
-    creator = db.relationship('User', backref='created_purchase_orders')
+    creator = db.relationship('User', foreign_keys=[created_by], backref='created_purchase_orders')
+    approver = db.relationship('User', foreign_keys=[approved_by], backref='approved_purchase_orders')
 
 class PurchaseOrderItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -344,6 +361,33 @@ class PurchaseOrderItem(db.Model):
 
     purchase_order = db.relationship('PurchaseOrder', backref='items')
     product = db.relationship('Product', backref='purchase_order_items')
+
+class SupplierCommunication(db.Model):
+    """Track supplier communications and interactions"""
+    id = db.Column(db.Integer, primary_key=True)
+    supplier_id = db.Column(db.Integer, db.ForeignKey('supplier.id'), nullable=False)
+    communication_type = db.Column(db.String(20), nullable=False)  # call, email, meeting, other
+    subject = db.Column(db.String(200))
+    content = db.Column(db.Text)
+    created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    supplier = db.relationship('Supplier', backref='communications')
+    creator = db.relationship('User', backref='supplier_communications')
+
+class SupplierPriceAgreement(db.Model):
+    """Supplier-specific product pricing agreements"""
+    id = db.Column(db.Integer, primary_key=True)
+    supplier_id = db.Column(db.Integer, db.ForeignKey('supplier.id'), nullable=False)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
+    agreed_price = db.Column(db.Float, nullable=False)
+    valid_from = db.Column(db.DateTime, default=datetime.utcnow)
+    valid_to = db.Column(db.DateTime)
+    notes = db.Column(db.String(200))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    supplier = db.relationship('Supplier', backref='price_agreements')
+    product = db.relationship('Product', backref='supplier_prices')
 
 class Sale(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -638,6 +682,79 @@ with app.app_context():
                 app.logger.info(f"Migrated {len(old_payments)} old payment records removed")
         except Exception as e:
             app.logger.warning(f"Could not migrate old payment records: {str(e)}")
+
+    # Supplier table migrations for enhanced fields
+    if inspector.has_table('supplier'):
+        supplier_columns = [col['name'] for col in inspector.get_columns('supplier')]
+        supplier_migrations = [
+            ('category', 'ALTER TABLE supplier ADD COLUMN category VARCHAR(50)'),
+            ('tax_id', 'ALTER TABLE supplier ADD COLUMN tax_id VARCHAR(50)'),
+            ('website', 'ALTER TABLE supplier ADD COLUMN website VARCHAR(200)'),
+            ('bank_name', 'ALTER TABLE supplier ADD COLUMN bank_name VARCHAR(100)'),
+            ('bank_account', 'ALTER TABLE supplier ADD COLUMN bank_account VARCHAR(50)'),
+            ('quality_rating', 'ALTER TABLE supplier ADD COLUMN quality_rating REAL DEFAULT 0.0'),
+            ('delivery_rating', 'ALTER TABLE supplier ADD COLUMN delivery_rating REAL DEFAULT 0.0'),
+            ('total_orders', 'ALTER TABLE supplier ADD COLUMN total_orders INTEGER DEFAULT 0'),
+            ('on_time_deliveries', 'ALTER TABLE supplier ADD COLUMN on_time_deliveries INTEGER DEFAULT 0'),
+        ]
+        for column_name, migration_sql in supplier_migrations:
+            if column_name not in supplier_columns:
+                db.session.execute(text(migration_sql))
+                db.session.commit()
+
+    # PurchaseOrder table migrations for enhanced fields
+    if inspector.has_table('purchase_order'):
+        po_columns = [col['name'] for col in inspector.get_columns('purchase_order')]
+        po_migrations = [
+            ('total_amount', 'ALTER TABLE purchase_order ADD COLUMN total_amount REAL DEFAULT 0.0'),
+            ('expected_delivery_date', 'ALTER TABLE purchase_order ADD COLUMN expected_delivery_date DATETIME'),
+            ('approved_by', 'ALTER TABLE purchase_order ADD COLUMN approved_by INTEGER REFERENCES user (id)'),
+            ('approved_at', 'ALTER TABLE purchase_order ADD COLUMN approved_at DATETIME'),
+            ('cancelled_at', 'ALTER TABLE purchase_order ADD COLUMN cancelled_at DATETIME'),
+            ('cancelled_reason', 'ALTER TABLE purchase_order ADD COLUMN cancelled_reason VARCHAR(300)'),
+        ]
+        for column_name, migration_sql in po_migrations:
+            if column_name not in po_columns:
+                db.session.execute(text(migration_sql))
+                db.session.commit()
+        
+        # Update status column length if needed (for longer status values)
+        # SQLite doesn't support ALTER COLUMN, but the data will still work
+
+    # Create supplier_communication table
+    if not inspector.has_table('supplier_communication'):
+        db.session.execute(text('''
+            CREATE TABLE supplier_communication (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id INTEGER NOT NULL,
+                communication_type VARCHAR(20) NOT NULL,
+                subject VARCHAR(200),
+                content TEXT,
+                created_by INTEGER,
+                created_at DATETIME,
+                FOREIGN KEY (supplier_id) REFERENCES supplier (id),
+                FOREIGN KEY (created_by) REFERENCES user (id)
+            )
+        '''))
+        db.session.commit()
+
+    # Create supplier_price_agreement table
+    if not inspector.has_table('supplier_price_agreement'):
+        db.session.execute(text('''
+            CREATE TABLE supplier_price_agreement (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                agreed_price REAL NOT NULL,
+                valid_from DATETIME,
+                valid_to DATETIME,
+                notes VARCHAR(200),
+                created_at DATETIME,
+                FOREIGN KEY (supplier_id) REFERENCES supplier (id),
+                FOREIGN KEY (product_id) REFERENCES product (id)
+            )
+        '''))
+        db.session.commit()
 
     # Create Promotion table
     if not hasattr(Product, 'promotions'):
@@ -2081,23 +2198,71 @@ def api_customers():
 @manager_required
 def api_purchase_orders():
     if request.method == 'GET':
-        purchase_orders = PurchaseOrder.query.order_by(PurchaseOrder.created_at.desc()).all()
+        # Get filter parameters
+        search_query = (request.args.get('q') or '').strip()
+        status_filter = (request.args.get('status') or '').strip()
+        supplier_filter = (request.args.get('supplier_id') or '').strip()
+        start_date = (request.args.get('start_date') or '').strip()
+        end_date = (request.args.get('end_date') or '').strip()
+        
+        query = PurchaseOrder.query
+        
+        # Apply filters
+        if search_query:
+            like_query = f"%{search_query}%"
+            query = query.filter(
+                (PurchaseOrder.po_number.ilike(like_query)) |
+                (Supplier.name.ilike(like_query))
+            ).join(Supplier)
+        
+        if status_filter:
+            query = query.filter(PurchaseOrder.status == status_filter)
+        
+        if supplier_filter:
+            try:
+                query = query.filter(PurchaseOrder.supplier_id == int(supplier_filter))
+            except ValueError:
+                pass
+        
+        if start_date:
+            try:
+                start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                query = query.filter(PurchaseOrder.created_at >= start_dt)
+            except ValueError:
+                pass
+        
+        if end_date:
+            try:
+                end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+                query = query.filter(PurchaseOrder.created_at < end_dt)
+            except ValueError:
+                pass
+        
+        purchase_orders = query.order_by(PurchaseOrder.created_at.desc()).all()
         return jsonify([{
             'id': po.id,
             'po_number': po.po_number,
             'supplier_id': po.supplier_id,
             'supplier_name': po.supplier.name if po.supplier else 'Unknown',
             'status': po.status,
+            'total_amount': po.total_amount,
+            'expected_delivery_date': po.expected_delivery_date.isoformat() if po.expected_delivery_date else None,
             'notes': po.notes,
+            'created_by': po.creator.username if po.creator else None,
+            'approved_by': po.approver.username if po.approver else None,
+            'approved_at': po.approved_at.isoformat() if po.approved_at else None,
             'created_at': po.created_at.isoformat(),
             'updated_at': po.updated_at.isoformat() if po.updated_at else None,
             'items_count': len(po.items),
-            'received_items_count': sum(1 for i in po.items if i.received_qty >= i.ordered_qty)
+            'received_items_count': sum(1 for i in po.items if i.received_qty >= i.ordered_qty),
+            'total_ordered': sum(i.ordered_qty for i in po.items),
+            'total_received': sum(i.received_qty for i in po.items)
         } for po in purchase_orders])
 
     data = request.get_json() or {}
     supplier_id = data.get('supplier_id')
     items = data.get('items') or []
+    expected_delivery_date = data.get('expected_delivery_date')
 
     if not supplier_id or not items:
         return jsonify({'success': False, 'message': 'Supplier and at least one item are required'}), 400
@@ -2107,16 +2272,29 @@ def api_purchase_orders():
         return jsonify({'success': False, 'message': 'Supplier not found'}), 404
 
     try:
+        # Parse expected delivery date
+        exp_delivery_dt = None
+        if expected_delivery_date:
+            try:
+                exp_delivery_dt = datetime.fromisoformat(expected_delivery_date.replace('Z', '+00:00'))
+            except ValueError:
+                try:
+                    exp_delivery_dt = datetime.strptime(expected_delivery_date, '%Y-%m-%d')
+                except ValueError:
+                    pass
+        
         po = PurchaseOrder(
             po_number=generate_po_number(),
             supplier_id=supplier_id,
             status='draft',
             notes=(data.get('notes') or '').strip() or None,
+            expected_delivery_date=exp_delivery_dt,
             created_by=session.get('user_id')
         )
         db.session.add(po)
         db.session.flush()
 
+        total_amount = 0.0
         for item in items:
             product_id = item.get('product_id')
             ordered_qty = int(item.get('ordered_qty', 0) or 0)
@@ -2139,39 +2317,172 @@ def api_purchase_orders():
                 unit_cost=unit_cost
             )
             db.session.add(po_item)
+            total_amount += ordered_qty * unit_cost
 
+        po.total_amount = total_amount
         db.session.commit()
-        return jsonify({'success': True, 'message': 'Purchase order created', 'purchase_order_id': po.id}), 201
+        return jsonify({'success': True, 'message': 'Purchase order created', 'purchase_order_id': po.id, 'po_number': po.po_number}), 201
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Error creating purchase order: {str(e)}")
         return jsonify({'success': False, 'message': 'Failed to create purchase order'}), 500
 
-@app.route('/api/purchase_orders/<int:po_id>', methods=['GET'])
+@app.route('/api/purchase_orders/summary', methods=['GET'])
+@manager_required
+def api_purchase_orders_summary():
+    """Get purchase order summary statistics"""
+    now = datetime.utcnow()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    total_pos = PurchaseOrder.query.count()
+    pending_approval = PurchaseOrder.query.filter(PurchaseOrder.status == 'pending').count()
+    approved = PurchaseOrder.query.filter(PurchaseOrder.status == 'approved').count()
+    partially_received = PurchaseOrder.query.filter(PurchaseOrder.status == 'partially_received').count()
+    received = PurchaseOrder.query.filter(PurchaseOrder.status == 'received').count()
+    cancelled = PurchaseOrder.query.filter(PurchaseOrder.status == 'cancelled').count()
+    
+    # This month's totals
+    monthly_received = PurchaseOrder.query.filter(
+        PurchaseOrder.status == 'received',
+        PurchaseOrder.updated_at >= month_start
+    ).count()
+    
+    monthly_amount = db.session.query(db.func.sum(PurchaseOrder.total_amount)).filter(
+        PurchaseOrder.created_at >= month_start,
+        PurchaseOrder.status != 'cancelled'
+    ).scalar() or 0
+    
+    return jsonify({
+        'total': total_pos,
+        'draft': PurchaseOrder.query.filter(PurchaseOrder.status == 'draft').count(),
+        'pending_approval': pending_approval,
+        'approved': approved,
+        'partially_received': partially_received,
+        'received': received,
+        'cancelled': cancelled,
+        'monthly_received': monthly_received,
+        'monthly_amount': round(monthly_amount, 2)
+    })
+
+@app.route('/api/purchase_orders/<int:po_id>', methods=['GET', 'PUT'])
 @manager_required
 def api_single_purchase_order(po_id):
     po = db.session.get(PurchaseOrder, po_id)
     if not po:
         return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
 
-    return jsonify({
-        'id': po.id,
-        'po_number': po.po_number,
-        'supplier_id': po.supplier_id,
-        'supplier_name': po.supplier.name if po.supplier else 'Unknown',
-        'status': po.status,
-        'notes': po.notes,
-        'created_at': po.created_at.isoformat(),
-        'updated_at': po.updated_at.isoformat() if po.updated_at else None,
-        'items': [{
-            'id': item.id,
-            'product_id': item.product_id,
-            'product_name': item.product.name if item.product else 'Unknown',
-            'ordered_qty': item.ordered_qty,
-            'received_qty': item.received_qty,
-            'unit_cost': item.unit_cost
-        } for item in po.items]
-    })
+    if request.method == 'GET':
+        return jsonify({
+            'id': po.id,
+            'po_number': po.po_number,
+            'supplier_id': po.supplier_id,
+            'supplier_name': po.supplier.name if po.supplier else 'Unknown',
+            'supplier_phone': po.supplier.phone if po.supplier else None,
+            'supplier_email': po.supplier.email if po.supplier else None,
+            'supplier_address': po.supplier.address if po.supplier else None,
+            'status': po.status,
+            'total_amount': po.total_amount,
+            'expected_delivery_date': po.expected_delivery_date.isoformat() if po.expected_delivery_date else None,
+            'notes': po.notes,
+            'created_by': po.creator.username if po.creator else None,
+            'approved_by': po.approver.username if po.approver else None,
+            'approved_at': po.approved_at.isoformat() if po.approved_at else None,
+            'cancelled_at': po.cancelled_at.isoformat() if po.cancelled_at else None,
+            'cancelled_reason': po.cancelled_reason,
+            'created_at': po.created_at.isoformat(),
+            'updated_at': po.updated_at.isoformat() if po.updated_at else None,
+            'items': [{
+                'id': item.id,
+                'product_id': item.product_id,
+                'product_name': item.product.name if item.product else 'Unknown',
+                'product_sku': item.product.barcode if item.product else None,
+                'ordered_qty': item.ordered_qty,
+                'received_qty': item.received_qty,
+                'remaining_qty': item.ordered_qty - item.received_qty,
+                'unit_cost': item.unit_cost,
+                'line_total': item.ordered_qty * item.unit_cost
+            } for item in po.items]
+        })
+    
+    elif request.method == 'PUT':
+        # Update PO (only draft status)
+        if po.status != 'draft':
+            return jsonify({'success': False, 'message': 'Only draft purchase orders can be edited'}), 400
+        
+        data = request.get_json() or {}
+        
+        if 'notes' in data:
+            po.notes = (data['notes'] or '').strip() or None
+        
+        if 'expected_delivery_date' in data:
+            if data['expected_delivery_date']:
+                try:
+                    po.expected_delivery_date = datetime.fromisoformat(data['expected_delivery_date'].replace('Z', '+00:00'))
+                except ValueError:
+                    try:
+                        po.expected_delivery_date = datetime.strptime(data['expected_delivery_date'], '%Y-%m-%d')
+                    except ValueError:
+                        pass
+            else:
+                po.expected_delivery_date = None
+        
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Purchase order updated'})
+
+@app.route('/api/purchase_orders/<int:po_id>/approve', methods=['POST'])
+@manager_required
+def api_approve_purchase_order(po_id):
+    """Approve a purchase order"""
+    po = db.session.get(PurchaseOrder, po_id)
+    if not po:
+        return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
+    
+    if po.status not in ('draft', 'pending'):
+        return jsonify({'success': False, 'message': 'Only draft or pending purchase orders can be approved'}), 400
+    
+    po.status = 'approved'
+    po.approved_by = session.get('user_id')
+    po.approved_at = datetime.utcnow()
+    db.session.commit()
+    
+    return jsonify({'success': True, 'message': 'Purchase order approved'})
+
+@app.route('/api/purchase_orders/<int:po_id>/submit', methods=['POST'])
+@manager_required
+def api_submit_purchase_order(po_id):
+    """Submit a draft purchase order for approval"""
+    po = db.session.get(PurchaseOrder, po_id)
+    if not po:
+        return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
+    
+    if po.status != 'draft':
+        return jsonify({'success': False, 'message': 'Only draft purchase orders can be submitted'}), 400
+    
+    po.status = 'pending'
+    db.session.commit()
+    
+    return jsonify({'success': True, 'message': 'Purchase order submitted for approval'})
+
+@app.route('/api/purchase_orders/<int:po_id>/cancel', methods=['POST'])
+@manager_required
+def api_cancel_purchase_order(po_id):
+    """Cancel a purchase order"""
+    po = db.session.get(PurchaseOrder, po_id)
+    if not po:
+        return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
+    
+    if po.status in ('received', 'cancelled'):
+        return jsonify({'success': False, 'message': 'Received or already cancelled orders cannot be cancelled'}), 400
+    
+    data = request.get_json() or {}
+    reason = (data.get('reason') or '').strip() or None
+    
+    po.status = 'cancelled'
+    po.cancelled_at = datetime.utcnow()
+    po.cancelled_reason = reason
+    db.session.commit()
+    
+    return jsonify({'success': True, 'message': 'Purchase order cancelled'})
 
 @app.route('/api/purchase_orders/<int:po_id>/receive', methods=['POST'])
 @manager_required
@@ -2180,8 +2491,8 @@ def api_receive_purchase_order(po_id):
     if not po:
         return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
 
-    if po.status == 'received':
-        return jsonify({'success': False, 'message': 'Purchase order already fully received'}), 400
+    if po.status in ('received', 'cancelled'):
+        return jsonify({'success': False, 'message': f'Cannot receive items for {po.status} purchase order'}), 400
 
     data = request.get_json() or {}
     received_items = data.get('items') or []
@@ -2216,7 +2527,15 @@ def api_receive_purchase_order(po_id):
 
         all_received = all(item.received_qty >= item.ordered_qty for item in po.items)
         any_received = any(item.received_qty > 0 for item in po.items)
-        po.status = 'received' if all_received else ('partial' if any_received else 'draft')
+        
+        if all_received:
+            po.status = 'received'
+        elif any_received:
+            po.status = 'partially_received'
+        
+        # Update supplier stats
+        if po.supplier:
+            po.supplier.total_orders = (po.supplier.total_orders or 0) + 1
 
         db.session.commit()
         return jsonify({'success': True, 'message': 'Receiving recorded', 'status': po.status})
@@ -2224,6 +2543,112 @@ def api_receive_purchase_order(po_id):
         db.session.rollback()
         app.logger.error(f"Error receiving purchase order: {str(e)}")
         return jsonify({'success': False, 'message': 'Failed to process receiving'}), 500
+
+@app.route('/api/purchase_orders/<int:po_id>/print', methods=['GET'])
+@manager_required
+def api_print_purchase_order(po_id):
+    """Generate PDF for purchase order (internal use invoice)"""
+    po = db.session.get(PurchaseOrder, po_id)
+    if not po:
+        return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
+    
+    buffer = io.BytesIO()
+    page_width = 210 * mm
+    page_height = 297 * mm
+    
+    doc = SimpleDocTemplate(buffer, pagesize=(page_width, page_height),
+                           rightMargin=20*mm, leftMargin=20*mm,
+                           topMargin=20*mm, bottomMargin=20*mm)
+    styles = getSampleStyleSheet()
+    elements = []
+    
+    # Title
+    elements.append(Paragraph("PURCHASE ORDER", styles['Heading1']))
+    elements.append(Spacer(1, 10))
+    
+    # PO Info
+    info_data = [
+        ['PO Number:', po.po_number],
+        ['Date:', po.created_at.strftime('%Y-%m-%d')],
+        ['Status:', po.status.upper()],
+    ]
+    if po.expected_delivery_date:
+        info_data.append(['Expected Delivery:', po.expected_delivery_date.strftime('%Y-%m-%d')])
+    
+    info_table = Table(info_data, colWidths=[80, 200])
+    info_table.setStyle(TableStyle([
+        ('FONT', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+    ]))
+    elements.append(info_table)
+    elements.append(Spacer(1, 15))
+    
+    # Supplier Info
+    elements.append(Paragraph("Supplier Information", styles['Heading2']))
+    supplier_info = [
+        ['Name:', po.supplier.name if po.supplier else 'N/A'],
+        ['Contact:', po.supplier.contact_person if po.supplier and po.supplier.contact_person else '-'],
+        ['Phone:', po.supplier.phone if po.supplier and po.supplier.phone else '-'],
+        ['Email:', po.supplier.email if po.supplier and po.supplier.email else '-'],
+    ]
+    supplier_table = Table(supplier_info, colWidths=[80, 200])
+    supplier_table.setStyle(TableStyle([
+        ('FONT', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+    ]))
+    elements.append(supplier_table)
+    elements.append(Spacer(1, 15))
+    
+    # Items Table
+    elements.append(Paragraph("Items", styles['Heading2']))
+    items_header = ['Product', 'Qty', 'Unit Cost', 'Total']
+    items_data = [items_header]
+    
+    for item in po.items:
+        line_total = item.ordered_qty * item.unit_cost
+        items_data.append([
+            item.product.name if item.product else 'Unknown',
+            str(item.ordered_qty),
+            format_currency(item.unit_cost),
+            format_currency(line_total)
+        ])
+    
+    # Add total row
+    items_data.append(['', '', 'TOTAL:', format_currency(po.total_amount)])
+    
+    items_table = Table(items_data, colWidths=[200, 50, 80, 80])
+    items_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('FONT', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONT', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('GRID', (0, 0), (-1, -2), 1, colors.black),
+    ]))
+    elements.append(items_table)
+    
+    # Notes
+    if po.notes:
+        elements.append(Spacer(1, 15))
+        elements.append(Paragraph("Notes", styles['Heading2']))
+        elements.append(Paragraph(po.notes, styles['Normal']))
+    
+    # Footer
+    elements.append(Spacer(1, 30))
+    elements.append(Paragraph("This is an internal document for record keeping purposes.", styles['Normal']))
+    
+    doc.build(elements)
+    buffer.seek(0)
+    
+    response = make_response(buffer.getvalue())
+    response.headers['Content-Type'] = 'application/pdf'
+    response.headers['Content-Disposition'] = f'inline; filename=PO_{po.po_number}.pdf'
+    return response
 
 # Supplier API Endpoints
 @app.route('/api/suppliers', methods=['GET', 'POST'])
@@ -2233,6 +2658,7 @@ def api_suppliers():
         query = Supplier.query
         search_query = (request.args.get('q') or '').strip()
         active_filter = (request.args.get('active') or '').strip().lower()
+        category_filter = (request.args.get('category') or '').strip()
 
         if search_query:
             like_query = f"%{search_query}%"
@@ -2245,6 +2671,9 @@ def api_suppliers():
 
         if active_filter in ('active', 'inactive'):
             query = query.filter(Supplier.is_active.is_(active_filter == 'active'))
+        
+        if category_filter:
+            query = query.filter(Supplier.category == category_filter)
 
         suppliers = query.order_by(Supplier.name.asc()).all()
         return jsonify([{
@@ -2258,6 +2687,16 @@ def api_suppliers():
             'lead_time_days': s.lead_time_days,
             'is_active': bool(s.is_active),
             'notes': s.notes,
+            'category': s.category,
+            'tax_id': s.tax_id,
+            'website': s.website,
+            'bank_name': s.bank_name,
+            'bank_account': s.bank_account,
+            'quality_rating': s.quality_rating,
+            'delivery_rating': s.delivery_rating,
+            'total_orders': s.total_orders,
+            'on_time_deliveries': s.on_time_deliveries,
+            'performance_score': round((s.quality_rating or 0 + s.delivery_rating or 0) / 2, 1) if s.quality_rating or s.delivery_rating else 0,
             'created_at': s.created_at.isoformat(),
             'updated_at': s.updated_at.isoformat() if s.updated_at else None
         } for s in suppliers])
@@ -2299,11 +2738,18 @@ def api_suppliers():
             payment_terms=(data.get('payment_terms') or '').strip() or None,
             lead_time_days=lead_time_days,
             is_active=bool(data.get('is_active', True)),
-            notes=(data.get('notes') or '').strip() or None
+            notes=(data.get('notes') or '').strip() or None,
+            category=(data.get('category') or '').strip() or None,
+            tax_id=(data.get('tax_id') or '').strip() or None,
+            website=(data.get('website') or '').strip() or None,
+            bank_name=(data.get('bank_name') or '').strip() or None,
+            bank_account=(data.get('bank_account') or '').strip() or None,
+            quality_rating=float(data.get('quality_rating', 0) or 0),
+            delivery_rating=float(data.get('delivery_rating', 0) or 0)
         )
         db.session.add(supplier)
         db.session.commit()
-        return jsonify({'success': True, 'message': 'Supplier added'}), 201
+        return jsonify({'success': True, 'message': 'Supplier added', 'supplier_id': supplier.id}), 201
 
 @app.route('/api/suppliers/<int:supplier_id>', methods=['GET', 'PUT', 'DELETE'])
 @manager_required
@@ -2313,6 +2759,11 @@ def api_single_supplier(supplier_id):
         return jsonify({'success': False, 'message': 'Supplier not found'}), 404
 
     if request.method == 'GET':
+        # Calculate performance metrics
+        total_orders = supplier.total_orders or 0
+        on_time = supplier.on_time_deliveries or 0
+        on_time_rate = round((on_time / total_orders) * 100, 1) if total_orders > 0 else 0
+        
         return jsonify({
             'id': supplier.id,
             'name': supplier.name,
@@ -2324,6 +2775,16 @@ def api_single_supplier(supplier_id):
             'lead_time_days': supplier.lead_time_days,
             'is_active': bool(supplier.is_active),
             'notes': supplier.notes,
+            'category': supplier.category,
+            'tax_id': supplier.tax_id,
+            'website': supplier.website,
+            'bank_name': supplier.bank_name,
+            'bank_account': supplier.bank_account,
+            'quality_rating': supplier.quality_rating,
+            'delivery_rating': supplier.delivery_rating,
+            'total_orders': total_orders,
+            'on_time_deliveries': on_time,
+            'on_time_rate': on_time_rate,
             'created_at': supplier.created_at.isoformat(),
             'updated_at': supplier.updated_at.isoformat() if supplier.updated_at else None
         })
@@ -2370,6 +2831,15 @@ def api_single_supplier(supplier_id):
         supplier.lead_time_days = lead_time_days
         supplier.is_active = bool(data.get('is_active', supplier.is_active))
         supplier.notes = (data.get('notes', supplier.notes) or '').strip() or None
+        supplier.category = (data.get('category', supplier.category) or '').strip() or None
+        supplier.tax_id = (data.get('tax_id', supplier.tax_id) or '').strip() or None
+        supplier.website = (data.get('website', supplier.website) or '').strip() or None
+        supplier.bank_name = (data.get('bank_name', supplier.bank_name) or '').strip() or None
+        supplier.bank_account = (data.get('bank_account', supplier.bank_account) or '').strip() or None
+        if 'quality_rating' in data:
+            supplier.quality_rating = float(data['quality_rating'] or 0)
+        if 'delivery_rating' in data:
+            supplier.delivery_rating = float(data['delivery_rating'] or 0)
         supplier.updated_at = datetime.utcnow()
 
         db.session.commit()
@@ -2379,6 +2849,153 @@ def api_single_supplier(supplier_id):
         db.session.delete(supplier)
         db.session.commit()
         return jsonify({'success': True, 'message': 'Supplier deleted'})
+
+@app.route('/api/suppliers/<int:supplier_id>/orders', methods=['GET'])
+@manager_required
+def api_supplier_orders(supplier_id):
+    """Get all purchase orders for a supplier"""
+    supplier = db.session.get(Supplier, supplier_id)
+    if not supplier:
+        return jsonify({'success': False, 'message': 'Supplier not found'}), 404
+    
+    orders = PurchaseOrder.query.filter_by(supplier_id=supplier_id).order_by(PurchaseOrder.created_at.desc()).all()
+    return jsonify([{
+        'id': po.id,
+        'po_number': po.po_number,
+        'status': po.status,
+        'total_amount': po.total_amount,
+        'created_at': po.created_at.isoformat(),
+        'items_count': len(po.items)
+    } for po in orders])
+
+@app.route('/api/suppliers/<int:supplier_id>/communications', methods=['GET', 'POST'])
+@manager_required
+def api_supplier_communications(supplier_id):
+    """Get or add supplier communications"""
+    supplier = db.session.get(Supplier, supplier_id)
+    if not supplier:
+        return jsonify({'success': False, 'message': 'Supplier not found'}), 404
+    
+    if request.method == 'GET':
+        communications = SupplierCommunication.query.filter_by(supplier_id=supplier_id).order_by(SupplierCommunication.created_at.desc()).all()
+        return jsonify([{
+            'id': c.id,
+            'communication_type': c.communication_type,
+            'subject': c.subject,
+            'content': c.content,
+            'created_by': c.creator.username if c.creator else None,
+            'created_at': c.created_at.isoformat()
+        } for c in communications])
+    
+    elif request.method == 'POST':
+        data = request.get_json() or {}
+        comm_type = (data.get('communication_type') or '').strip()
+        subject = (data.get('subject') or '').strip()
+        content = (data.get('content') or '').strip()
+        
+        if not comm_type or comm_type not in ('call', 'email', 'meeting', 'other'):
+            return jsonify({'success': False, 'message': 'Valid communication type required (call, email, meeting, other)'}), 400
+        
+        comm = SupplierCommunication(
+            supplier_id=supplier_id,
+            communication_type=comm_type,
+            subject=subject or None,
+            content=content or None,
+            created_by=session.get('user_id')
+        )
+        db.session.add(comm)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Communication logged'})
+
+@app.route('/api/suppliers/<int:supplier_id>/ratings', methods=['POST'])
+@manager_required
+def api_supplier_ratings(supplier_id):
+    """Update supplier ratings"""
+    supplier = db.session.get(Supplier, supplier_id)
+    if not supplier:
+        return jsonify({'success': False, 'message': 'Supplier not found'}), 404
+    
+    data = request.get_json() or {}
+    
+    if 'quality_rating' in data:
+        try:
+            quality = float(data['quality_rating'])
+            if 0 <= quality <= 5:
+                supplier.quality_rating = quality
+            else:
+                return jsonify({'success': False, 'message': 'Quality rating must be between 0 and 5'}), 400
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': 'Invalid quality rating'}), 400
+    
+    if 'delivery_rating' in data:
+        try:
+            delivery = float(data['delivery_rating'])
+            if 0 <= delivery <= 5:
+                supplier.delivery_rating = delivery
+            else:
+                return jsonify({'success': False, 'message': 'Delivery rating must be between 0 and 5'}), 400
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': 'Invalid delivery rating'}), 400
+    
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'Ratings updated'})
+
+@app.route('/api/suppliers/<int:supplier_id>/products', methods=['GET', 'POST'])
+@manager_required
+def api_supplier_products(supplier_id):
+    """Get or add supplier-specific product pricing"""
+    supplier = db.session.get(Supplier, supplier_id)
+    if not supplier:
+        return jsonify({'success': False, 'message': 'Supplier not found'}), 404
+    
+    if request.method == 'GET':
+        agreements = SupplierPriceAgreement.query.filter_by(supplier_id=supplier_id).all()
+        return jsonify([{
+            'id': a.id,
+            'product_id': a.product_id,
+            'product_name': a.product.name if a.product else 'Unknown',
+            'agreed_price': a.agreed_price,
+            'valid_from': a.valid_from.isoformat() if a.valid_from else None,
+            'valid_to': a.valid_to.isoformat() if a.valid_to else None,
+            'notes': a.notes
+        } for a in agreements])
+    
+    elif request.method == 'POST':
+        data = request.get_json() or {}
+        product_id = data.get('product_id')
+        agreed_price = data.get('agreed_price')
+        
+        if not product_id or agreed_price is None:
+            return jsonify({'success': False, 'message': 'Product and agreed price are required'}), 400
+        
+        product = db.session.get(Product, product_id)
+        if not product:
+            return jsonify({'success': False, 'message': 'Product not found'}), 404
+        
+        valid_from = None
+        valid_to = None
+        if data.get('valid_from'):
+            try:
+                valid_from = datetime.fromisoformat(data['valid_from'].replace('Z', '+00:00'))
+            except ValueError:
+                pass
+        if data.get('valid_to'):
+            try:
+                valid_to = datetime.fromisoformat(data['valid_to'].replace('Z', '+00:00'))
+            except ValueError:
+                pass
+        
+        agreement = SupplierPriceAgreement(
+            supplier_id=supplier_id,
+            product_id=product_id,
+            agreed_price=float(agreed_price),
+            valid_from=valid_from,
+            valid_to=valid_to,
+            notes=(data.get('notes') or '').strip() or None
+        )
+        db.session.add(agreement)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Price agreement added'})
 
 @app.route('/api/customers/<int:customer_id>', methods=['GET', 'PUT', 'DELETE'])
 @manager_required

@@ -1012,33 +1012,52 @@
           </div>
         </div>
 
-        <div class="row g-3 mb-3">
-          <div class="col-md-5">
-            <label class="form-label">Search Supplier</label>
-            <input
-              type="text"
-              class="form-control"
-              id="supplier-search"
-              placeholder="Name, contact person, phone or email"
-            />
-          </div>
-          <div class="col-md-3">
-            <label class="form-label">Status</label>
-            <select class="form-select" id="supplier-status-filter">
-              <option value="">All</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
-          </div>
-          <div class="col-md-2 d-flex align-items-end">
-            <button class="btn btn-primary w-100" onclick="loadSuppliers()">
-              <i class="bi bi-search"></i> Search
-            </button>
+        <!-- Filters -->
+        <div class="card mb-3">
+          <div class="card-body py-2">
+            <div class="row g-2 align-items-end">
+              <div class="col-md-3">
+                <label class="form-label small">Search Supplier</label>
+                <input
+                  type="text"
+                  class="form-control form-control-sm"
+                  id="supplier-search"
+                  placeholder="Name, contact, phone or email"
+                />
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small">Status</label>
+                <select class="form-select form-select-sm" id="supplier-status-filter">
+                  <option value="">All</option>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small">Category</label>
+                <select class="form-select form-select-sm" id="supplier-category-filter">
+                  <option value="">All Categories</option>
+                  <option value="Electronics">Electronics</option>
+                  <option value="Food & Beverage">Food & Beverage</option>
+                  <option value="Office Supplies">Office Supplies</option>
+                  <option value="Raw Materials">Raw Materials</option>
+                  <option value="Packaging">Packaging</option>
+                  <option value="Services">Services</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div class="col-md-1">
+                <button class="btn btn-sm btn-primary w-100" onclick="loadSuppliers()">
+                  <i class="bi bi-search"></i>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
+        <!-- Summary Cards -->
         <div class="row mb-3">
-          <div class="col-md-3 mb-2">
+          <div class="col-md-2 mb-2">
             <div class="card bg-light">
               <div class="card-body py-2">
                 <small class="text-muted">Total Suppliers</small>
@@ -1046,7 +1065,7 @@
               </div>
             </div>
           </div>
-          <div class="col-md-3 mb-2">
+          <div class="col-md-2 mb-2">
             <div class="card bg-light">
               <div class="card-body py-2">
                 <small class="text-muted">Active</small>
@@ -1054,7 +1073,7 @@
               </div>
             </div>
           </div>
-          <div class="col-md-3 mb-2">
+          <div class="col-md-2 mb-2">
             <div class="card bg-light">
               <div class="card-body py-2">
                 <small class="text-muted">Inactive</small>
@@ -1062,11 +1081,27 @@
               </div>
             </div>
           </div>
-          <div class="col-md-3 mb-2">
+          <div class="col-md-2 mb-2">
             <div class="card bg-light">
               <div class="card-body py-2">
                 <small class="text-muted">Avg Lead Time</small>
                 <h5 id="supplier-avg-lead-time" class="mb-0">0 days</h5>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-2 mb-2">
+            <div class="card bg-light">
+              <div class="card-body py-2">
+                <small class="text-muted">Avg Quality Rating</small>
+                <h5 id="supplier-avg-quality" class="mb-0">0.0</h5>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-2 mb-2">
+            <div class="card bg-light">
+              <div class="card-body py-2">
+                <small class="text-muted">Avg Delivery Rating</small>
+                <h5 id="supplier-avg-delivery" class="mb-0">0.0</h5>
               </div>
             </div>
           </div>
@@ -1079,10 +1114,10 @@
                 <thead>
                   <tr>
                     <th>Name</th>
+                    <th>Category</th>
                     <th>Contact Person</th>
                     <th>Phone</th>
-                    <th>Email</th>
-                    <th>Payment Terms</th>
+                    <th>Performance</th>
                     <th>Lead Time</th>
                     <th>Status</th>
                     <th>Actions</th>
@@ -1118,14 +1153,103 @@
           </button>
         </div>
 
+        <!-- Summary Cards -->
         <div class="row mb-3">
-          <div class="col-md-5">
-            <input
-              type="text"
-              id="purchase-orders-search"
-              class="form-control"
-              placeholder="Search by PO number, supplier or status"
-            />
+          <div class="col-md-2 mb-2">
+            <div class="card bg-light">
+              <div class="card-body py-2">
+                <small class="text-muted">Total POs</small>
+                <h5 id="po-total" class="mb-0">0</h5>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-2 mb-2">
+            <div class="card bg-light">
+              <div class="card-body py-2">
+                <small class="text-muted">Pending Approval</small>
+                <h5 id="po-pending" class="mb-0 text-warning">0</h5>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-2 mb-2">
+            <div class="card bg-light">
+              <div class="card-body py-2">
+                <small class="text-muted">Approved</small>
+                <h5 id="po-approved" class="mb-0 text-info">0</h5>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-2 mb-2">
+            <div class="card bg-light">
+              <div class="card-body py-2">
+                <small class="text-muted">Partially Received</small>
+                <h5 id="po-partial" class="mb-0 text-primary">0</h5>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-2 mb-2">
+            <div class="card bg-light">
+              <div class="card-body py-2">
+                <small class="text-muted">Received This Month</small>
+                <h5 id="po-monthly-received" class="mb-0 text-success">0</h5>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-2 mb-2">
+            <div class="card bg-light">
+              <div class="card-body py-2">
+                <small class="text-muted">Monthly Amount</small>
+                <h5 id="po-monthly-amount" class="mb-0">0</h5>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="card mb-3">
+          <div class="card-body py-2">
+            <div class="row g-2 align-items-end">
+              <div class="col-md-3">
+                <label class="form-label small">Search</label>
+                <input
+                  type="text"
+                  id="purchase-orders-search"
+                  class="form-control form-control-sm"
+                  placeholder="PO number, supplier..."
+                />
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small">Status</label>
+                <select id="purchase-orders-status-filter" class="form-select form-select-sm">
+                  <option value="">All Status</option>
+                  <option value="draft">Draft</option>
+                  <option value="pending">Pending Approval</option>
+                  <option value="approved">Approved</option>
+                  <option value="partially_received">Partially Received</option>
+                  <option value="received">Received</option>
+                  <option value="cancelled">Cancelled</option>
+                </select>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small">Supplier</label>
+                <select id="purchase-orders-supplier-filter" class="form-select form-select-sm">
+                  <option value="">All Suppliers</option>
+                </select>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small">From Date</label>
+                <input type="date" id="purchase-orders-start-date" class="form-control form-control-sm" />
+              </div>
+              <div class="col-md-2">
+                <label class="form-label small">To Date</label>
+                <input type="date" id="purchase-orders-end-date" class="form-control form-control-sm" />
+              </div>
+              <div class="col-md-1">
+                <button class="btn btn-sm btn-outline-secondary w-100" onclick="clearPurchaseOrderFilters()">
+                  <i class="bi bi-x-circle"></i>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1137,7 +1261,9 @@
                   <tr>
                     <th>PO Number</th>
                     <th>Supplier</th>
+                    <th>Total Amount</th>
                     <th>Status</th>
+                    <th>Expected Delivery</th>
                     <th>Created</th>
                     <th>Items</th>
                     <th>Actions</th>
@@ -1145,7 +1271,7 @@
                 </thead>
                 <tbody id="purchase-orders-table">
                   <tr>
-                    <td colspan="6" class="text-center py-4">
+                    <td colspan="8" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                       </div>
@@ -2563,6 +2689,30 @@
               </div>
               <div class="row">
                 <div class="col-md-6 mb-3">
+                  <label class="form-label">Category</label>
+                  <select class="form-select" id="add-supplier-category">
+                    <option value="">Select Category</option>
+                    <option value="Electronics">Electronics</option>
+                    <option value="Food & Beverage">Food & Beverage</option>
+                    <option value="Office Supplies">Office Supplies</option>
+                    <option value="Raw Materials">Raw Materials</option>
+                    <option value="Packaging">Packaging</option>
+                    <option value="Services">Services</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+                <div class="col-md-6 mb-3">
+                  <label class="form-label">Tax ID</label>
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="add-supplier-tax-id"
+                    placeholder="Tax identification number"
+                  />
+                </div>
+              </div>
+              <div class="row">
+                <div class="col-md-6 mb-3">
                   <label class="form-label">Payment Terms</label>
                   <input
                     type="text"
@@ -2581,6 +2731,35 @@
                     placeholder="e.g. 7"
                   />
                 </div>
+              </div>
+              <div class="row">
+                <div class="col-md-6 mb-3">
+                  <label class="form-label">Website</label>
+                  <input
+                    type="url"
+                    class="form-control"
+                    id="add-supplier-website"
+                    placeholder="https://example.com"
+                  />
+                </div>
+                <div class="col-md-6 mb-3">
+                  <label class="form-label">Bank Name</label>
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="add-supplier-bank-name"
+                    placeholder="Bank name for payments"
+                  />
+                </div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Bank Account</label>
+                <input
+                  type="text"
+                  class="form-control"
+                  id="add-supplier-bank-account"
+                  placeholder="Bank account number"
+                />
               </div>
               <div class="mb-3">
                 <label class="form-label">Notes</label>
@@ -2685,6 +2864,30 @@
               </div>
               <div class="row">
                 <div class="col-md-6 mb-3">
+                  <label class="form-label">Category</label>
+                  <select class="form-select" id="edit-supplier-category">
+                    <option value="">Select Category</option>
+                    <option value="Electronics">Electronics</option>
+                    <option value="Food & Beverage">Food & Beverage</option>
+                    <option value="Office Supplies">Office Supplies</option>
+                    <option value="Raw Materials">Raw Materials</option>
+                    <option value="Packaging">Packaging</option>
+                    <option value="Services">Services</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+                <div class="col-md-6 mb-3">
+                  <label class="form-label">Tax ID</label>
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="edit-supplier-tax-id"
+                    placeholder="Tax identification number"
+                  />
+                </div>
+              </div>
+              <div class="row">
+                <div class="col-md-6 mb-3">
                   <label class="form-label">Payment Terms</label>
                   <input
                     type="text"
@@ -2702,6 +2905,35 @@
                     id="edit-supplier-lead-time"
                   />
                 </div>
+              </div>
+              <div class="row">
+                <div class="col-md-6 mb-3">
+                  <label class="form-label">Website</label>
+                  <input
+                    type="url"
+                    class="form-control"
+                    id="edit-supplier-website"
+                    placeholder="https://example.com"
+                  />
+                </div>
+                <div class="col-md-6 mb-3">
+                  <label class="form-label">Bank Name</label>
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="edit-supplier-bank-name"
+                    placeholder="Bank name for payments"
+                  />
+                </div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Bank Account</label>
+                <input
+                  type="text"
+                  class="form-control"
+                  id="edit-supplier-bank-account"
+                  placeholder="Bank account number"
+                />
               </div>
               <div class="mb-3">
                 <label class="form-label">Notes</label>
@@ -2797,11 +3029,17 @@
             ></button>
           </div>
           <div class="modal-body">
-            <div class="mb-3">
-              <label class="form-label">Supplier <span class="text-danger">*</span></label>
-              <select class="form-select" id="po-supplier-id">
-                <option value="">Select supplier</option>
-              </select>
+            <div class="row mb-3">
+              <div class="col-md-6">
+                <label class="form-label">Supplier <span class="text-danger">*</span></label>
+                <select class="form-select" id="po-supplier-id">
+                  <option value="">Select supplier</option>
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Expected Delivery Date</label>
+                <input type="date" class="form-control" id="po-expected-delivery" />
+              </div>
             </div>
             <div class="mb-3">
               <label class="form-label">Notes</label>
@@ -2865,6 +3103,105 @@
             <button type="button" class="btn btn-success" onclick="submitPurchaseReceiving()">
               Confirm Receiving
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Purchase Order Details Modal -->
+    <div class="modal fade" id="purchaseOrderDetailsModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Purchase Order Details</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body" id="po-details-content">
+            <div class="text-center py-4"><div class="spinner-border text-primary"></div></div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            <button type="button" class="btn btn-outline-primary" id="po-print-btn" onclick="printPurchaseOrder()">
+              <i class="bi bi-printer"></i> Print PO
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Cancel Purchase Order Modal -->
+    <div class="modal fade" id="cancelPurchaseOrderModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Cancel Purchase Order</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p>Are you sure you want to cancel this purchase order?</p>
+            <p class="fw-bold" id="cancel-po-number-display"></p>
+            <div class="mb-3">
+              <label class="form-label">Cancellation Reason</label>
+              <textarea class="form-control" id="cancel-po-reason" rows="2" placeholder="Optional reason for cancellation"></textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-danger" onclick="confirmCancelPurchaseOrder()">Confirm Cancellation</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Supplier Details Modal -->
+    <div class="modal fade" id="supplierDetailsModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Supplier Details</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body" id="supplier-details-content">
+            <div class="text-center py-4"><div class="spinner-border text-primary"></div></div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Supplier Communication Modal -->
+    <div class="modal fade" id="supplierCommunicationModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Log Communication</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="comm-supplier-id">
+            <div class="mb-3">
+              <label class="form-label">Type <span class="text-danger">*</span></label>
+              <select class="form-select" id="comm-type">
+                <option value="call">Phone Call</option>
+                <option value="email">Email</option>
+                <option value="meeting">Meeting</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Subject</label>
+              <input type="text" class="form-control" id="comm-subject" placeholder="Brief subject">
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Content</label>
+              <textarea class="form-control" id="comm-content" rows="3" placeholder="Communication details"></textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" onclick="saveSupplierCommunication()">Save</button>
           </div>
         </div>
       </div>
@@ -3204,6 +3541,36 @@
         bindReload("purchase-orders-search", loadPurchaseOrders, "purchases");
         bindReload("deliveries-search", loadDeliveries, "deliveries");
 
+        // Purchase order filter event listeners
+        ["purchase-orders-status-filter", "purchase-orders-supplier-filter"].forEach((id) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.addEventListener("change", () => {
+            pageState.purchases = 1;
+            loadPurchaseOrders();
+          });
+        });
+
+        // Purchase order date filters
+        ["purchase-orders-start-date", "purchase-orders-end-date"].forEach((id) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.addEventListener("change", () => {
+            pageState.purchases = 1;
+            loadPurchaseOrders();
+          });
+        });
+
+        // Supplier filter event listeners
+        ["supplier-status-filter", "supplier-category-filter"].forEach((id) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.addEventListener("change", () => {
+            pageState.suppliers = 1;
+            loadSuppliers();
+          });
+        });
+
         ["debts-status-filter", "debts-aging-filter", "debts-customer-filter"].forEach((id) => {
           const el = document.getElementById(id);
           if (!el) return;
@@ -3338,6 +3705,7 @@
         } else if (sectionId === "suppliers") {
           loadSuppliers();
         } else if (sectionId === "purchases") {
+          loadPOSupplierFilter();
           loadPurchaseOrders();
         } else if (sectionId === "deliveries") {
           loadDeliveryStats();
@@ -6679,12 +7047,16 @@
         const suppliersTable = document.getElementById("suppliers-table");
         const searchInput = document.getElementById("supplier-search");
         const statusFilter = document.getElementById("supplier-status-filter");
+        const categoryFilter = document.getElementById("supplier-category-filter");
 
         const searchQuery = searchInput ? searchInput.value.trim() : "";
         const activeFilter = statusFilter ? statusFilter.value : "";
+        const categoryQuery = categoryFilter ? categoryFilter.value : "";
+        
         const queryParams = new URLSearchParams();
         if (searchQuery) queryParams.set("q", searchQuery);
         if (activeFilter) queryParams.set("active", activeFilter);
+        if (categoryQuery) queryParams.set("category", categoryQuery);
         const endpoint = `/api/suppliers${queryParams.toString() ? `?${queryParams.toString()}` : ""}`;
 
         suppliersTable.innerHTML = `
@@ -6718,22 +7090,39 @@
               const statusBadge = supplier.is_active
                 ? '<span class="badge bg-success">Active</span>'
                 : '<span class="badge bg-secondary">Inactive</span>';
+              
+              // Performance rating stars
+              const qualityRating = supplier.quality_rating || 0;
+              const deliveryRating = supplier.delivery_rating || 0;
+              const avgRating = (qualityRating + deliveryRating) / 2;
+              const stars = '★'.repeat(Math.round(avgRating)) + '☆'.repeat(5 - Math.round(avgRating));
+              
               const row = document.createElement("tr");
               row.innerHTML = `
-                <td>${supplier.name}</td>
-                <td>${supplier.contact_person || "N/A"}</td>
-                <td>${supplier.phone || "N/A"}</td>
-                <td>${supplier.email || "N/A"}</td>
-                <td>${supplier.payment_terms || "N/A"}</td>
-                <td>${supplier.lead_time_days != null ? `${supplier.lead_time_days} days` : "N/A"}</td>
+                <td><strong>${supplier.name}</strong></td>
+                <td>${supplier.category || '-'}</td>
+                <td>${supplier.contact_person || "-"}</td>
+                <td>${supplier.phone || "-"}</td>
+                <td>
+                  <span class="text-warning" title="Quality: ${qualityRating}/5, Delivery: ${deliveryRating}/5">${stars}</span>
+                </td>
+                <td>${supplier.lead_time_days != null ? `${supplier.lead_time_days} days` : "-"}</td>
                 <td>${statusBadge}</td>
                 <td>
-                  <button class="btn btn-sm btn-primary me-1" onclick="editSupplier(${supplier.id})">
-                    <i class="bi bi-pencil"></i>
-                  </button>
-                  <button class="btn btn-sm btn-danger" onclick="deleteSupplier(${supplier.id}, '${escapeHtml(supplier.name)}')">
-                    <i class="bi bi-trash"></i>
-                  </button>
+                  <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-info" onclick="viewSupplierDetails(${supplier.id})" title="View Details">
+                      <i class="bi bi-eye"></i>
+                    </button>
+                    <button class="btn btn-outline-primary" onclick="editSupplier(${supplier.id})" title="Edit">
+                      <i class="bi bi-pencil"></i>
+                    </button>
+                    <button class="btn btn-outline-secondary" onclick="showSupplierCommunicationModal(${supplier.id})" title="Log Communication">
+                      <i class="bi bi-chat"></i>
+                    </button>
+                    <button class="btn btn-outline-danger" onclick="deleteSupplier(${supplier.id}, '${escapeHtml(supplier.name)}')" title="Delete">
+                      <i class="bi bi-trash"></i>
+                    </button>
+                  </div>
                 </td>
               `;
               suppliersTable.appendChild(row);
@@ -6761,18 +7150,190 @@
         const avgLeadTime = leadTimes.length
           ? Math.round(leadTimes.reduce((sum, value) => sum + Number(value), 0) / leadTimes.length)
           : 0;
+        
+        // Calculate average ratings
+        const qualityRatings = suppliers.filter(s => s.quality_rating > 0).map(s => s.quality_rating);
+        const deliveryRatings = suppliers.filter(s => s.delivery_rating > 0).map(s => s.delivery_rating);
+        const avgQuality = qualityRatings.length ? (qualityRatings.reduce((a, b) => a + b, 0) / qualityRatings.length).toFixed(1) : '0.0';
+        const avgDelivery = deliveryRatings.length ? (deliveryRatings.reduce((a, b) => a + b, 0) / deliveryRatings.length).toFixed(1) : '0.0';
 
         document.getElementById("supplier-total-count").textContent = total;
         document.getElementById("supplier-active-count").textContent = active;
         document.getElementById("supplier-inactive-count").textContent = inactive;
         document.getElementById("supplier-avg-lead-time").textContent = `${avgLeadTime} days`;
+        document.getElementById("supplier-avg-quality").textContent = avgQuality;
+        document.getElementById("supplier-avg-delivery").textContent = avgDelivery;
+      }
+
+      function viewSupplierDetails(supplierId) {
+        const modal = new bootstrap.Modal(document.getElementById("supplierDetailsModal"));
+        const content = document.getElementById("supplier-details-content");
+        content.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div></div>';
+        modal.show();
+
+        Promise.all([
+          fetch(`/api/suppliers/${supplierId}`).then(r => r.json()),
+          fetch(`/api/suppliers/${supplierId}/orders`).then(r => r.json()),
+          fetch(`/api/suppliers/${supplierId}/communications`).then(r => r.json())
+        ]).then(([supplier, orders, communications]) => {
+          const statusBadge = supplier.is_active ? '<span class="badge bg-success">Active</span>' : '<span class="badge bg-secondary">Inactive</span>';
+          const qualityRating = supplier.quality_rating || 0;
+          const deliveryRating = supplier.delivery_rating || 0;
+          const avgRating = (qualityRating + deliveryRating) / 2;
+          const stars = '★'.repeat(Math.round(avgRating)) + '☆'.repeat(5 - Math.round(avgRating));
+
+          content.innerHTML = `
+            <div class="row mb-3">
+              <div class="col-md-6">
+                <h6 class="text-muted">Supplier Name</h6>
+                <p class="fs-5">${supplier.name}</p>
+              </div>
+              <div class="col-md-6 text-end">
+                <h6 class="text-muted">Status</h6>
+                ${statusBadge}
+              </div>
+            </div>
+            <div class="row mb-3">
+              <div class="col-md-4">
+                <h6 class="text-muted">Category</h6>
+                <p>${supplier.category || '-'}</p>
+              </div>
+              <div class="col-md-4">
+                <h6 class="text-muted">Lead Time</h6>
+                <p>${supplier.lead_time_days ? supplier.lead_time_days + ' days' : '-'}</p>
+              </div>
+              <div class="col-md-4">
+                <h6 class="text-muted">Payment Terms</h6>
+                <p>${supplier.payment_terms || '-'}</p>
+              </div>
+            </div>
+            <div class="row mb-3">
+              <div class="col-md-4">
+                <h6 class="text-muted">Contact Person</h6>
+                <p>${supplier.contact_person || '-'}</p>
+              </div>
+              <div class="col-md-4">
+                <h6 class="text-muted">Phone</h6>
+                <p>${supplier.phone || '-'}</p>
+              </div>
+              <div class="col-md-4">
+                <h6 class="text-muted">Email</h6>
+                <p>${supplier.email || '-'}</p>
+              </div>
+            </div>
+            <div class="row mb-3">
+              <div class="col-md-6">
+                <h6 class="text-muted">Performance Rating</h6>
+                <p><span class="text-warning fs-5">${stars}</span> <small class="text-muted">(${avgRating.toFixed(1)}/5 avg)</small></p>
+                <small>Quality: ${qualityRating}/5 | Delivery: ${deliveryRating}/5</small>
+              </div>
+              <div class="col-md-3">
+                <h6 class="text-muted">Total Orders</h6>
+                <p>${supplier.total_orders || 0}</p>
+              </div>
+              <div class="col-md-3">
+                <h6 class="text-muted">On-Time Rate</h6>
+                <p>${supplier.on_time_rate || 0}%</p>
+              </div>
+            </div>
+            ${supplier.bank_name || supplier.bank_account ? `
+              <div class="row mb-3">
+                <div class="col-md-6">
+                  <h6 class="text-muted">Bank Name</h6>
+                  <p>${supplier.bank_name || '-'}</p>
+                </div>
+                <div class="col-md-6">
+                  <h6 class="text-muted">Bank Account</h6>
+                  <p>${supplier.bank_account || '-'}</p>
+                </div>
+              </div>
+            ` : ''}
+            ${supplier.notes ? `
+              <div class="mb-3">
+                <h6 class="text-muted">Notes</h6>
+                <p>${supplier.notes}</p>
+              </div>
+            ` : ''}
+            <hr>
+            <h6>Recent Orders</h6>
+            ${orders && orders.length > 0 ? `
+              <table class="table table-sm table-bordered">
+                <thead class="table-light">
+                  <tr><th>PO Number</th><th>Status</th><th>Amount</th><th>Date</th></tr>
+                </thead>
+                <tbody>
+                  ${orders.slice(0, 5).map(o => `
+                    <tr>
+                      <td>${o.po_number}</td>
+                      <td><span class="badge bg-secondary">${o.status}</span></td>
+                      <td>${formatCurrency(o.total_amount)}</td>
+                      <td>${new Date(o.created_at).toLocaleDateString()}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            ` : '<p class="text-muted">No orders yet</p>'}
+            <hr>
+            <h6>Communication History</h6>
+            ${communications && communications.length > 0 ? `
+              <div style="max-height: 200px; overflow-y: auto;">
+                ${communications.map(c => `
+                  <div class="border-bottom py-2">
+                    <div class="d-flex justify-content-between">
+                      <span class="badge bg-info">${c.communication_type}</span>
+                      <small class="text-muted">${new Date(c.created_at).toLocaleString()}</small>
+                    </div>
+                    ${c.subject ? `<strong>${c.subject}</strong>` : ''}
+                    <p class="mb-0 small">${c.content || ''}</p>
+                  </div>
+                `).join('')}
+              </div>
+            ` : '<p class="text-muted">No communications logged</p>'}
+          `;
+        }).catch(() => {
+          content.innerHTML = '<div class="alert alert-danger">Failed to load supplier details</div>';
+        });
+      }
+
+      function showSupplierCommunicationModal(supplierId) {
+        document.getElementById("comm-supplier-id").value = supplierId;
+        document.getElementById("comm-type").value = 'call';
+        document.getElementById("comm-subject").value = '';
+        document.getElementById("comm-content").value = '';
+        new bootstrap.Modal(document.getElementById("supplierCommunicationModal")).show();
+      }
+
+      function saveSupplierCommunication() {
+        const supplierId = document.getElementById("comm-supplier-id").value;
+        const payload = {
+          communication_type: document.getElementById("comm-type").value,
+          subject: document.getElementById("comm-subject").value.trim(),
+          content: document.getElementById("comm-content").value.trim()
+        };
+
+        fetch(`/api/suppliers/${supplierId}/communications`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        })
+          .then(r => r.json())
+          .then(data => {
+            if (data.success) {
+              bootstrap.Modal.getInstance(document.getElementById("supplierCommunicationModal")).hide();
+              showToast('Communication logged', 'success');
+            } else {
+              alert(data.message || 'Failed to save');
+            }
+          });
       }
 
       function clearSupplierFilters() {
         const searchInput = document.getElementById("supplier-search");
         const statusFilter = document.getElementById("supplier-status-filter");
+        const categoryFilter = document.getElementById("supplier-category-filter");
         if (searchInput) searchInput.value = "";
         if (statusFilter) statusFilter.value = "";
+        if (categoryFilter) categoryFilter.value = "";
         pageState.suppliers = 1;
         loadSuppliers();
       }
@@ -6787,6 +7348,11 @@
           phone: document.getElementById(`${prefix}-supplier-phone`).value.trim() || null,
           email: document.getElementById(`${prefix}-supplier-email`).value.trim() || null,
           address: document.getElementById(`${prefix}-supplier-address`).value.trim() || null,
+          category: document.getElementById(`${prefix}-supplier-category`).value.trim() || null,
+          tax_id: document.getElementById(`${prefix}-supplier-tax-id`).value.trim() || null,
+          website: document.getElementById(`${prefix}-supplier-website`).value.trim() || null,
+          bank_name: document.getElementById(`${prefix}-supplier-bank-name`).value.trim() || null,
+          bank_account: document.getElementById(`${prefix}-supplier-bank-account`).value.trim() || null,
           payment_terms: document.getElementById(`${prefix}-supplier-payment-terms`).value.trim() || null,
           lead_time_days: Number.isNaN(leadTime) ? null : leadTime,
           notes: document.getElementById(`${prefix}-supplier-notes`).value.trim() || null,
@@ -6841,6 +7407,11 @@
             document.getElementById("edit-supplier-phone").value = supplier.phone || "";
             document.getElementById("edit-supplier-email").value = supplier.email || "";
             document.getElementById("edit-supplier-address").value = supplier.address || "";
+            document.getElementById("edit-supplier-category").value = supplier.category || "";
+            document.getElementById("edit-supplier-tax-id").value = supplier.tax_id || "";
+            document.getElementById("edit-supplier-website").value = supplier.website || "";
+            document.getElementById("edit-supplier-bank-name").value = supplier.bank_name || "";
+            document.getElementById("edit-supplier-bank-account").value = supplier.bank_account || "";
             document.getElementById("edit-supplier-payment-terms").value = supplier.payment_terms || "";
             document.getElementById("edit-supplier-lead-time").value = supplier.lead_time_days ?? "";
             document.getElementById("edit-supplier-notes").value = supplier.notes || "";
@@ -6921,53 +7492,126 @@
       let cachedSuppliersForPO = [];
       let selectedReceivePO = null;
 
+      function loadPOSupplierFilter() {
+        const select = document.getElementById("purchase-orders-supplier-filter");
+        if (!select) return;
+        select.innerHTML = '<option value="">All Suppliers</option>';
+        fetch("/api/suppliers")
+          .then((r) => r.json())
+          .then((suppliers) => {
+            (suppliers || []).forEach((s) => {
+              const opt = document.createElement("option");
+              opt.value = s.id;
+              opt.textContent = s.name;
+              select.appendChild(opt);
+            });
+          })
+          .catch((err) => console.error("Error loading suppliers filter:", err));
+      }
+
       function loadPurchaseOrders() {
         const table = document.getElementById("purchase-orders-table");
         table.innerHTML = `
           <tr>
-            <td colspan="6" class="text-center py-4">
+            <td colspan="8" class="text-center py-4">
               <div class="spinner-border text-primary" role="status"></div>
             </td>
           </tr>
         `;
 
-        fetch("/api/purchase_orders")
+        // Build query params
+        const params = new URLSearchParams();
+        const search = (document.getElementById("purchase-orders-search")?.value || "").trim();
+        const status = (document.getElementById("purchase-orders-status-filter")?.value || "").trim();
+        const supplierId = (document.getElementById("purchase-orders-supplier-filter")?.value || "").trim();
+        const startDate = (document.getElementById("purchase-orders-start-date")?.value || "").trim();
+        const endDate = (document.getElementById("purchase-orders-end-date")?.value || "").trim();
+
+        if (search) params.set("q", search);
+        if (status) params.set("status", status);
+        if (supplierId) params.set("supplier_id", supplierId);
+        if (startDate) params.set("start_date", startDate);
+        if (endDate) params.set("end_date", endDate);
+
+        // Load summary
+        fetch("/api/purchase_orders/summary")
+          .then((r) => r.json())
+          .then((summary) => {
+            document.getElementById("po-total").textContent = summary.total || 0;
+            document.getElementById("po-pending").textContent = summary.pending_approval || 0;
+            document.getElementById("po-approved").textContent = summary.approved || 0;
+            document.getElementById("po-partial").textContent = summary.partially_received || 0;
+            document.getElementById("po-monthly-received").textContent = summary.monthly_received || 0;
+            document.getElementById("po-monthly-amount").textContent = formatCurrency(summary.monthly_amount || 0);
+          })
+          .catch(() => {});
+
+        fetch(`/api/purchase_orders${params.toString() ? "?" + params.toString() : ""}`)
           .then((r) => r.json())
           .then((data) => {
             table.innerHTML = "";
-            const query = (document.getElementById("purchase-orders-search")?.value || "")
-              .trim()
-              .toLowerCase();
 
-            const filtered = (data || []).filter((po) => {
-              if (!query) return true;
-              return (
-                String(po.po_number || "").toLowerCase().includes(query) ||
-                String(po.supplier_name || "").toLowerCase().includes(query) ||
-                String(po.status || "").toLowerCase().includes(query)
-              );
-            });
-
-            if (filtered.length === 0) {
-              table.innerHTML = '<tr><td colspan="6" class="text-center py-4 text-muted">No purchase orders found.</td></tr>';
+            if (!data || data.length === 0) {
+              table.innerHTML = '<tr><td colspan="8" class="text-center py-4 text-muted">No purchase orders found.</td></tr>';
               renderPagination("purchases", "purchase-orders-pagination", 1, loadPurchaseOrders);
               return;
             }
 
-            const page = paginateArray(filtered, "purchases");
+            const page = paginateArray(data, "purchases");
             page.items.forEach((po) => {
-              const badgeClass = po.status === "received" ? "success" : po.status === "partial" ? "warning" : "secondary";
+              // Status badge
+              const statusColors = {
+                'draft': 'secondary',
+                'pending': 'warning',
+                'approved': 'info',
+                'partially_received': 'primary',
+                'received': 'success',
+                'cancelled': 'danger'
+              };
+              const badgeClass = statusColors[po.status] || 'secondary';
+              const statusLabel = po.status.replace('_', ' ').toUpperCase();
+              
+              // Expected delivery
+              const expDelivery = po.expected_delivery_date ? new Date(po.expected_delivery_date).toLocaleDateString() : '-';
+              
               const row = document.createElement("tr");
               row.innerHTML = `
-                <td>${po.po_number}</td>
+                <td><strong>${po.po_number}</strong></td>
                 <td>${po.supplier_name}</td>
-                <td><span class="badge bg-${badgeClass}">${po.status}</span></td>
-                <td>${new Date(po.created_at).toLocaleString()}</td>
+                <td>${formatCurrency(po.total_amount || 0)}</td>
+                <td><span class="badge bg-${badgeClass}">${statusLabel}</span></td>
+                <td>${expDelivery}</td>
+                <td>${new Date(po.created_at).toLocaleDateString()}</td>
                 <td>${po.received_items_count}/${po.items_count}</td>
                 <td>
-                  <button class="btn btn-sm btn-success" onclick="openReceivePurchaseOrder(${po.id})" ${po.status === "received" ? "disabled" : ""}>
-                    <i class="bi bi-box-arrow-in-down"></i> Receive
-                  </button>
+                  <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-info" onclick="viewPurchaseOrderDetails(${po.id})" title="View Details">
+                      <i class="bi bi-eye"></i>
+                    </button>
+                    ${po.status === 'draft' ? `
+                      <button class="btn btn-outline-warning" onclick="submitPurchaseOrderForApproval(${po.id})" title="Submit for Approval">
+                        <i class="bi bi-send"></i>
+                      </button>
+                    ` : ''}
+                    ${po.status === 'pending' || po.status === 'draft' ? `
+                      <button class="btn btn-outline-success" onclick="approvePurchaseOrder(${po.id})" title="Approve">
+                        <i class="bi bi-check-lg"></i>
+                      </button>
+                    ` : ''}
+                    ${(po.status === 'approved' || po.status === 'partially_received') ? `
+                      <button class="btn btn-success" onclick="openReceivePurchaseOrder(${po.id})" title="Receive Items">
+                        <i class="bi bi-box-arrow-in-down"></i>
+                      </button>
+                    ` : ''}
+                    ${po.status !== 'received' && po.status !== 'cancelled' ? `
+                      <button class="btn btn-outline-danger" onclick="showCancelPOModal(${po.id}, '${po.po_number}')" title="Cancel">
+                        <i class="bi bi-x-lg"></i>
+                      </button>
+                    ` : ''}
+                    <button class="btn btn-outline-primary" onclick="printPurchaseOrderDirect(${po.id})" title="Print">
+                      <i class="bi bi-printer"></i>
+                    </button>
+                  </div>
                 </td>
               `;
               table.appendChild(row);
@@ -6977,13 +7621,196 @@
           })
           .catch((err) => {
             console.error("Error loading purchase orders:", err);
-            table.innerHTML = '<tr><td colspan="6" class="text-center py-4 text-danger">Failed to load purchase orders.</td></tr>';
+            table.innerHTML = '<tr><td colspan="8" class="text-center py-4 text-danger">Failed to load purchase orders.</td></tr>';
           });
+      }
+
+      function clearPurchaseOrderFilters() {
+        document.getElementById("purchase-orders-search").value = "";
+        document.getElementById("purchase-orders-status-filter").value = "";
+        document.getElementById("purchase-orders-supplier-filter").value = "";
+        document.getElementById("purchase-orders-start-date").value = "";
+        document.getElementById("purchase-orders-end-date").value = "";
+        loadPurchaseOrders();
+      }
+
+      function viewPurchaseOrderDetails(poId) {
+        const modal = new bootstrap.Modal(document.getElementById("purchaseOrderDetailsModal"));
+        const content = document.getElementById("po-details-content");
+        content.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div></div>';
+        modal.show();
+        currentPOId = poId;
+
+        fetch(`/api/purchase_orders/${poId}`)
+          .then((r) => r.json())
+          .then((po) => {
+            const statusColors = {
+              'draft': 'secondary', 'pending': 'warning', 'approved': 'info',
+              'partially_received': 'primary', 'received': 'success', 'cancelled': 'danger'
+            };
+            const badgeClass = statusColors[po.status] || 'secondary';
+
+            content.innerHTML = `
+              <div class="row mb-3">
+                <div class="col-md-6">
+                  <h6 class="text-muted">PO Number</h6>
+                  <p class="fs-5">${po.po_number}</p>
+                </div>
+                <div class="col-md-6 text-end">
+                  <h6 class="text-muted">Status</h6>
+                  <span class="badge bg-${badgeClass} fs-6">${po.status.replace('_', ' ').toUpperCase()}</span>
+                </div>
+              </div>
+              <div class="row mb-3">
+                <div class="col-md-6">
+                  <h6 class="text-muted">Supplier</h6>
+                  <p><strong>${po.supplier_name}</strong><br>
+                  <small>${po.supplier_phone || ''} ${po.supplier_email ? '<br>' + po.supplier_email : ''}</small></p>
+                </div>
+                <div class="col-md-6">
+                  <h6 class="text-muted">Total Amount</h6>
+                  <p class="fs-4 text-primary">${formatCurrency(po.total_amount)}</p>
+                </div>
+              </div>
+              <div class="row mb-3">
+                <div class="col-md-4">
+                  <h6 class="text-muted">Created</h6>
+                  <p>${new Date(po.created_at).toLocaleString()}</p>
+                </div>
+                <div class="col-md-4">
+                  <h6 class="text-muted">Created By</h6>
+                  <p>${po.created_by || '-'}</p>
+                </div>
+                <div class="col-md-4">
+                  <h6 class="text-muted">Expected Delivery</h6>
+                  <p>${po.expected_delivery_date ? new Date(po.expected_delivery_date).toLocaleDateString() : '-'}</p>
+                </div>
+              </div>
+              ${po.approved_by ? `
+                <div class="row mb-3">
+                  <div class="col-md-6">
+                    <h6 class="text-muted">Approved By</h6>
+                    <p>${po.approved_by}</p>
+                  </div>
+                  <div class="col-md-6">
+                    <h6 class="text-muted">Approved At</h6>
+                    <p>${new Date(po.approved_at).toLocaleString()}</p>
+                  </div>
+                </div>
+              ` : ''}
+              ${po.cancelled_reason ? `
+                <div class="alert alert-warning">
+                  <strong>Cancelled:</strong> ${po.cancelled_reason}
+                </div>
+              ` : ''}
+              ${po.notes ? `
+                <div class="mb-3">
+                  <h6 class="text-muted">Notes</h6>
+                  <p>${po.notes}</p>
+                </div>
+              ` : ''}
+              <hr>
+              <h6>Line Items</h6>
+              <table class="table table-sm table-bordered">
+                <thead class="table-light">
+                  <tr>
+                    <th>Product</th>
+                    <th class="text-center">Ordered</th>
+                    <th class="text-center">Received</th>
+                    <th class="text-end">Unit Cost</th>
+                    <th class="text-end">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${po.items.map(item => `
+                    <tr>
+                      <td>${item.product_name}</td>
+                      <td class="text-center">${item.ordered_qty}</td>
+                      <td class="text-center ${item.received_qty >= item.ordered_qty ? 'text-success' : (item.received_qty > 0 ? 'text-warning' : '')}">${item.received_qty}</td>
+                      <td class="text-end">${formatCurrency(item.unit_cost)}</td>
+                      <td class="text-end">${formatCurrency(item.line_total)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            `;
+          })
+          .catch(() => {
+            content.innerHTML = '<div class="alert alert-danger">Failed to load purchase order details</div>';
+          });
+      }
+
+      let currentPOId = null;
+      let cancelPOId = null;
+
+      function submitPurchaseOrderForApproval(poId) {
+        if (!confirm('Submit this purchase order for approval?')) return;
+        fetch(`/api/purchase_orders/${poId}/submit`, { method: 'POST' })
+          .then((r) => r.json())
+          .then((data) => {
+            if (data.success) {
+              showToast('Purchase order submitted for approval', 'success');
+              loadPurchaseOrders();
+            } else {
+              alert(data.message || 'Failed to submit');
+            }
+          });
+      }
+
+      function approvePurchaseOrder(poId) {
+        if (!confirm('Approve this purchase order?')) return;
+        fetch(`/api/purchase_orders/${poId}/approve`, { method: 'POST' })
+          .then((r) => r.json())
+          .then((data) => {
+            if (data.success) {
+              showToast('Purchase order approved', 'success');
+              loadPurchaseOrders();
+            } else {
+              alert(data.message || 'Failed to approve');
+            }
+          });
+      }
+
+      function showCancelPOModal(poId, poNumber) {
+        cancelPOId = poId;
+        document.getElementById("cancel-po-number-display").textContent = poNumber;
+        document.getElementById("cancel-po-reason").value = "";
+        new bootstrap.Modal(document.getElementById("cancelPurchaseOrderModal")).show();
+      }
+
+      function confirmCancelPurchaseOrder() {
+        const reason = document.getElementById("cancel-po-reason").value.trim();
+        fetch(`/api/purchase_orders/${cancelPOId}/cancel`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason })
+        })
+          .then((r) => r.json())
+          .then((data) => {
+            if (data.success) {
+              bootstrap.Modal.getInstance(document.getElementById("cancelPurchaseOrderModal")).hide();
+              showToast('Purchase order cancelled', 'success');
+              loadPurchaseOrders();
+            } else {
+              alert(data.message || 'Failed to cancel');
+            }
+          });
+      }
+
+      function printPurchaseOrder() {
+        if (currentPOId) {
+          window.open(`/api/purchase_orders/${currentPOId}/print`, '_blank');
+        }
+      }
+
+      function printPurchaseOrderDirect(poId) {
+        window.open(`/api/purchase_orders/${poId}/print`, '_blank');
       }
 
       function preparePurchaseOrderModal() {
         document.getElementById("po-supplier-id").innerHTML = '<option value="">Select supplier</option>';
         document.getElementById("po-notes").value = "";
+        document.getElementById("po-expected-delivery").value = "";
         document.getElementById("po-items-container").innerHTML = "";
 
         fetch("/api/suppliers")
@@ -7047,6 +7874,7 @@
       function savePurchaseOrder() {
         const supplierId = parseInt(document.getElementById("po-supplier-id").value || "0", 10);
         const notes = document.getElementById("po-notes").value.trim();
+        const expectedDelivery = document.getElementById("po-expected-delivery").value;
         if (!supplierId) {
           alert("Please select supplier.");
           return;
@@ -7065,10 +7893,13 @@
           items.push({ product_id: productId, ordered_qty: orderedQty, unit_cost: Number.isFinite(unitCost) ? unitCost : 0 });
         }
 
+        const payload = { supplier_id: supplierId, notes, items };
+        if (expectedDelivery) payload.expected_delivery_date = expectedDelivery;
+
         fetch("/api/purchase_orders", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ supplier_id: supplierId, notes, items }),
+          body: JSON.stringify(payload),
         })
           .then((r) => r.json())
           .then((data) => {
