@@ -915,14 +915,6 @@
                 <input type="text" id="debts-search" class="form-control form-control-sm" placeholder="Customer, phone, notes" />
               </div>
               <div class="col-md-2">
-                <label class="form-label small">Type</label>
-                <select id="debts-type-filter" class="form-select form-select-sm">
-                  <option value="">All Types</option>
-                  <option value="debt">Debt</option>
-                  <option value="payment">Payment</option>
-                </select>
-              </div>
-              <div class="col-md-2">
                 <label class="form-label small">Status</label>
                 <select id="debts-status-filter" class="form-select form-select-sm">
                   <option value="">All Status</option>
@@ -3212,7 +3204,7 @@
         bindReload("purchase-orders-search", loadPurchaseOrders, "purchases");
         bindReload("deliveries-search", loadDeliveries, "deliveries");
 
-        ["debts-type-filter", "debts-status-filter"].forEach((id) => {
+        ["debts-status-filter"].forEach((id) => {
           const el = document.getElementById(id);
           if (!el) return;
           el.addEventListener("change", () => {
@@ -6081,7 +6073,6 @@
 
         const queryParams = new URLSearchParams();
         const q = (document.getElementById("debts-search")?.value || "").trim();
-        const type = (document.getElementById("debts-type-filter")?.value || "").trim();
         const status = (document.getElementById("debts-status-filter")?.value || "").trim();
         const aging = (document.getElementById("debts-aging-filter")?.value || "").trim();
         const customer = (document.getElementById("debts-customer-filter")?.value || "").trim();
@@ -6089,7 +6080,6 @@
         const endDate = (document.getElementById("debts-end-date")?.value || "").trim();
 
         if (q) queryParams.set("q", q);
-        if (type) queryParams.set("type", type);
         if (status) queryParams.set("status", status);
         if (aging) queryParams.set("aging", aging);
         if (customer) queryParams.set("customer_id", customer);
@@ -6194,7 +6184,6 @@
 
       function clearDebtFilters() {
         document.getElementById("debts-search").value = "";
-        document.getElementById("debts-type-filter").value = "";
         document.getElementById("debts-status-filter").value = "";
         document.getElementById("debts-aging-filter").value = "";
         document.getElementById("debts-start-date").value = "";
@@ -6308,12 +6297,10 @@
       }
 
       function exportDebts() {
-        const type = document.getElementById("debts-type-filter")?.value || "";
         const status = document.getElementById("debts-status-filter")?.value || "";
         const customer = document.getElementById("debts-customer-filter")?.value || "";
         
         const params = new URLSearchParams();
-        if (type) params.set("type", type);
         if (status) params.set("status", status);
         if (customer) params.set("customer_id", customer);
         
