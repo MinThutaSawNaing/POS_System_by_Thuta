@@ -3204,7 +3204,17 @@
         bindReload("purchase-orders-search", loadPurchaseOrders, "purchases");
         bindReload("deliveries-search", loadDeliveries, "deliveries");
 
-        ["debts-status-filter"].forEach((id) => {
+        ["debts-status-filter", "debts-aging-filter", "debts-customer-filter"].forEach((id) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.addEventListener("change", () => {
+            pageState.debts = 1;
+            loadDebts();
+          });
+        });
+
+        // Date filter change listeners
+        ["debts-start-date", "debts-end-date"].forEach((id) => {
           const el = document.getElementById(id);
           if (!el) return;
           el.addEventListener("change", () => {
