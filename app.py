@@ -2696,7 +2696,7 @@ def api_suppliers():
             'delivery_rating': s.delivery_rating,
             'total_orders': s.total_orders,
             'on_time_deliveries': s.on_time_deliveries,
-            'performance_score': round((s.quality_rating or 0 + s.delivery_rating or 0) / 2, 1) if s.quality_rating or s.delivery_rating else 0,
+            'performance_score': round(((s.quality_rating or 0) + (s.delivery_rating or 0)) / 2, 1) if s.quality_rating or s.delivery_rating else 0,
             'created_at': s.created_at.isoformat(),
             'updated_at': s.updated_at.isoformat() if s.updated_at else None
         } for s in suppliers])

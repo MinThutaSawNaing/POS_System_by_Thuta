@@ -7491,6 +7491,8 @@
       // Purchase workflow functions
       let cachedSuppliersForPO = [];
       let selectedReceivePO = null;
+      let currentPOId = null;
+      let cancelPOId = null;
 
       function loadPOSupplierFilter() {
         const select = document.getElementById("purchase-orders-supplier-filter");
@@ -7739,9 +7741,6 @@
             content.innerHTML = '<div class="alert alert-danger">Failed to load purchase order details</div>';
           });
       }
-
-      let currentPOId = null;
-      let cancelPOId = null;
 
       function submitPurchaseOrderForApproval(poId) {
         if (!confirm('Submit this purchase order for approval?')) return;
