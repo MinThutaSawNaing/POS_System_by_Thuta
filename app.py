@@ -389,6 +389,37 @@ class SupplierPriceAgreement(db.Model):
     supplier = db.relationship('Supplier', backref='price_agreements')
     product = db.relationship('Product', backref='supplier_prices')
 
+# Warehouse Management Models
+class WarehouseInventory(db.Model):
+    """Tracks products received from purchase orders, stored in warehouse before restocking to main inventory"""
+    id = db.Column(db.Integer, primary_key=True)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
+    quantity = db.Column(db.Integer, default=0)
+    location = db.Column(db.String(50))  # e.g., "Shelf A1", "Bin B2"
+    batch_number = db.Column(db.String(50))  # Track by PO number
+    received_date = db.Column(db.DateTime, default=datetime.utcnow)
+    expiry_date = db.Column(db.DateTime)  # Optional for perishables
+    unit_cost = db.Column(db.Float)  # Cost at time of receiving
+    notes = db.Column(db.String(200))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    product = db.relationship('Product', backref='warehouse_items')
+
+class WarehouseTransfer(db.Model):
+    """Records transfers from warehouse to main product stock"""
+    id = db.Column(db.Integer, primary_key=True)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
+    quantity = db.Column(db.Integer, nullable=False)
+    from_warehouse = db.Column(db.Boolean, default=True)  # True = warehouse to stock
+    batch_number = db.Column(db.String(50))  # Reference to warehouse batch
+    performed_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    notes = db.Column(db.String(200))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    product = db.relationship('Product', backref='transfers')
+    performer = db.relationship('User', backref='warehouse_transfers')
+
 class Sale(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     transaction_id = db.Column(db.String(36), unique=True)
@@ -752,6 +783,44 @@ with app.app_context():
                 created_at DATETIME,
                 FOREIGN KEY (supplier_id) REFERENCES supplier (id),
                 FOREIGN KEY (product_id) REFERENCES product (id)
+            )
+        '''))
+        db.session.commit()
+
+    # Create warehouse_inventory table
+    if not inspector.has_table('warehouse_inventory'):
+        db.session.execute(text('''
+            CREATE TABLE warehouse_inventory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER NOT NULL,
+                quantity INTEGER DEFAULT 0,
+                location VARCHAR(50),
+                batch_number VARCHAR(50),
+                received_date DATETIME,
+                expiry_date DATETIME,
+                unit_cost REAL,
+                notes VARCHAR(200),
+                created_at DATETIME,
+                updated_at DATETIME,
+                FOREIGN KEY (product_id) REFERENCES product (id)
+            )
+        '''))
+        db.session.commit()
+
+    # Create warehouse_transfer table
+    if not inspector.has_table('warehouse_transfer'):
+        db.session.execute(text('''
+            CREATE TABLE warehouse_transfer (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER NOT NULL,
+                quantity INTEGER NOT NULL,
+                from_warehouse INTEGER DEFAULT 1,
+                batch_number VARCHAR(50),
+                performed_by INTEGER,
+                notes VARCHAR(200),
+                created_at DATETIME,
+                FOREIGN KEY (product_id) REFERENCES product (id),
+                FOREIGN KEY (performed_by) REFERENCES user (id)
             )
         '''))
         db.session.commit()
@@ -2520,7 +2589,16 @@ def api_receive_purchase_order(po_id):
                 return jsonify({'success': False, 'message': f'Receive qty exceeds remaining for {po_item.product.name}'}), 400
 
             po_item.received_qty += receive_qty
-            po_item.product.stock += receive_qty
+            
+            # Add to warehouse inventory instead of directly to product stock
+            warehouse_item = WarehouseInventory(
+                product_id=po_item.product_id,
+                quantity=receive_qty,
+                batch_number=po.po_number,  # Use PO number as batch reference
+                received_date=datetime.utcnow(),
+                unit_cost=po_item.unit_cost
+            )
+            db.session.add(warehouse_item)
 
             if po_item.unit_cost and po_item.unit_cost > 0:
                 po_item.product.cost = po_item.unit_cost
@@ -2996,6 +3074,177 @@ def api_supplier_products(supplier_id):
         db.session.add(agreement)
         db.session.commit()
         return jsonify({'success': True, 'message': 'Price agreement added'})
+
+# ==================== Warehouse Management APIs ====================
+
+@app.route('/api/warehouse', methods=['GET'])
+@manager_required
+def api_warehouse_inventory():
+    """Get all warehouse inventory with optional filters"""
+    search_query = (request.args.get('q') or '').strip()
+    low_stock = request.args.get('low_stock', '').strip().lower() == 'true'
+    
+    query = WarehouseInventory.query.filter(WarehouseInventory.quantity > 0)
+    
+    if search_query:
+        like_query = f"%{search_query}%"
+        query = query.join(Product).filter(
+            (Product.name.ilike(like_query)) |
+            (Product.barcode.ilike(like_query))
+        )
+    
+    inventory = query.order_by(WarehouseInventory.updated_at.desc()).all()
+    
+    result = []
+    for item in inventory:
+        total_warehouse_qty = sum(w.quantity for w in item.product.warehouse_items) if item.product.warehouse_items else 0
+        result.append({
+            'id': item.id,
+            'product_id': item.product_id,
+            'product_name': item.product.name if item.product else 'Unknown',
+            'barcode': item.product.barcode if item.product else None,
+            'quantity': item.quantity,
+            'total_warehouse_qty': total_warehouse_qty,
+            'main_stock': item.product.stock if item.product else 0,
+            'location': item.location,
+            'batch_number': item.batch_number,
+            'unit_cost': item.unit_cost,
+            'total_value': item.quantity * (item.unit_cost or 0),
+            'received_date': item.received_date.isoformat() if item.received_date else None,
+            'expiry_date': item.expiry_date.isoformat() if item.expiry_date else None,
+            'notes': item.notes,
+            'created_at': item.created_at.isoformat(),
+            'updated_at': item.updated_at.isoformat() if item.updated_at else None
+        })
+    
+    if low_stock:
+        result = [r for r in result if r['quantity'] <= 5]
+    
+    return jsonify(result)
+
+@app.route('/api/warehouse/summary', methods=['GET'])
+@manager_required
+def api_warehouse_summary():
+    """Get warehouse summary statistics"""
+    inventory = WarehouseInventory.query.filter(WarehouseInventory.quantity > 0).all()
+    
+    total_skus = len(set(item.product_id for item in inventory))
+    total_units = sum(item.quantity for item in inventory)
+    total_value = sum(item.quantity * (item.unit_cost or 0) for item in inventory)
+    
+    # Get recent transfers count (last 7 days)
+    week_ago = datetime.utcnow() - timedelta(days=7)
+    recent_transfers = WarehouseTransfer.query.filter(WarehouseTransfer.created_at >= week_ago).count()
+    
+    # Low stock items (quantity <= 5)
+    low_stock_count = sum(1 for item in inventory if item.quantity <= 5)
+    
+    return jsonify({
+        'total_skus': total_skus,
+        'total_units': total_units,
+        'total_value': round_money(total_value),
+        'recent_transfers': recent_transfers,
+        'low_stock_count': low_stock_count
+    })
+
+@app.route('/api/warehouse/transfer', methods=['POST'])
+@manager_required
+def api_warehouse_transfer():
+    """Transfer products from warehouse to main stock"""
+    data = request.get_json() or {}
+    
+    product_id = data.get('product_id')
+    quantity = int(data.get('quantity', 0) or 0)
+    batch_number = data.get('batch_number')
+    notes = (data.get('notes') or '').strip() or None
+    
+    if not product_id or quantity <= 0:
+        return jsonify({'success': False, 'message': 'Product and valid quantity are required'}), 400
+    
+    product = db.session.get(Product, product_id)
+    if not product:
+        return jsonify({'success': False, 'message': 'Product not found'}), 404
+    
+    # Get warehouse inventory for this product
+    warehouse_query = WarehouseInventory.query.filter_by(product_id=product_id)
+    if batch_number:
+        warehouse_query = warehouse_query.filter_by(batch_number=batch_number)
+    
+    warehouse_items = warehouse_query.filter(WarehouseInventory.quantity > 0).all()
+    
+    if not warehouse_items:
+        return jsonify({'success': False, 'message': 'No warehouse inventory found for this product'}), 400
+    
+    total_available = sum(item.quantity for item in warehouse_items)
+    if quantity > total_available:
+        return jsonify({'success': False, 'message': f'Insufficient warehouse stock. Available: {total_available}'}), 400
+    
+    try:
+        remaining_to_transfer = quantity
+        
+        # Transfer from warehouse batches (FIFO - oldest first)
+        for item in sorted(warehouse_items, key=lambda x: x.received_date or datetime.min):
+            if remaining_to_transfer <= 0:
+                break
+            
+            transfer_from_this = min(remaining_to_transfer, item.quantity)
+            item.quantity -= transfer_from_this
+            item.updated_at = datetime.utcnow()
+            remaining_to_transfer -= transfer_from_this
+        
+        # Update main product stock
+        product.stock += quantity
+        
+        # Record the transfer
+        transfer = WarehouseTransfer(
+            product_id=product_id,
+            quantity=quantity,
+            from_warehouse=True,
+            batch_number=batch_number,
+            performed_by=session.get('user_id'),
+            notes=notes
+        )
+        db.session.add(transfer)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Transferred {quantity} units to main stock',
+            'new_main_stock': product.stock
+        })
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error transferring from warehouse: {str(e)}")
+        return jsonify({'success': False, 'message': 'Failed to process transfer'}), 500
+
+@app.route('/api/warehouse/transfers', methods=['GET'])
+@manager_required
+def api_warehouse_transfers():
+    """Get transfer history"""
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 50))
+    
+    transfers = WarehouseTransfer.query.order_by(WarehouseTransfer.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
+    total = WarehouseTransfer.query.count()
+    
+    return jsonify({
+        'items': [{
+            'id': t.id,
+            'product_id': t.product_id,
+            'product_name': t.product.name if t.product else 'Unknown',
+            'barcode': t.product.barcode if t.product else None,
+            'quantity': t.quantity,
+            'from_warehouse': t.from_warehouse,
+            'batch_number': t.batch_number,
+            'performed_by': t.performer.username if t.performer else None,
+            'notes': t.notes,
+            'created_at': t.created_at.isoformat()
+        } for t in transfers],
+        'total': total,
+        'page': page,
+        'per_page': per_page,
+        'total_pages': (total + per_page - 1) // per_page
+    })
 
 @app.route('/api/customers/<int:customer_id>', methods=['GET', 'PUT', 'DELETE'])
 @manager_required
