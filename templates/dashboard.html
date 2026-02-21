@@ -564,6 +564,9 @@
         >
           <h2 class="mb-0">Product Management</h2>
           <div class="d-flex gap-2">
+            <button class="btn btn-outline-primary" onclick="showSection('warehouse')">
+              <i class="bi bi-house-door"></i> Manage Stock (Warehouse)
+            </button>
             <button
               class="btn btn-primary"
               data-bs-toggle="modal"
@@ -1702,17 +1705,6 @@
               </div>
               <div class="row">
                 <div class="col-md-6 mb-3">
-                  <label class="form-label"
-                    >Stock <span class="text-danger">*</span></label
-                  >
-                  <input
-                    type="number"
-                    class="form-control"
-                    id="add-stock"
-                    required
-                  />
-                </div>
-                <div class="col-md-6 mb-3">
                   <label class="form-label">Tax Rate (%)</label>
                   <input
                     type="number"
@@ -1722,7 +1714,20 @@
                     value="0.0"
                   />
                 </div>
+                <div class="col-md-6 mb-3">
+                  <label class="form-label">Initial Stock</label>
+                  <input
+                    type="number"
+                    class="form-control"
+                    id="add-stock"
+                    value="0"
+                    readonly
+                    disabled
+                  />
+                  <small class="text-muted">Managed via Warehouse</small>
+                </div>
               </div>
+              <input type="hidden" id="add-stock-hidden" value="0" />
               <div class="mb-3">
                 <label class="form-label">Category</label>
                 <input
@@ -1836,15 +1841,15 @@
               </div>
               <div class="row">
                 <div class="col-md-6 mb-3">
-                  <label class="form-label"
-                    >Stock <span class="text-danger">*</span></label
-                  >
+                  <label class="form-label">Current Stock</label>
                   <input
                     type="number"
                     class="form-control"
                     id="edit-stock"
-                    required
+                    readonly
+                    disabled
                   />
+                  <small class="text-muted">Managed via Warehouse</small>
                 </div>
                 <div class="col-md-6 mb-3">
                   <label class="form-label">Tax Rate (%)</label>
@@ -4863,13 +4868,13 @@
         const name = document.getElementById("add-product-name").value.trim();
         const price = parseFloat(document.getElementById("add-price").value);
         const cost = parseFloat(document.getElementById("add-cost").value) || 0;
-        const stock = parseInt(document.getElementById("add-stock").value);
+        const stock = 0; // Stock is managed through warehouse
         const category = document.getElementById("add-category").value.trim();
         const taxRate =
           parseFloat(document.getElementById("add-tax-rate").value) || 0;
         const photoFile = document.getElementById("add-photo").files[0];
 
-        if (!name || isNaN(price) || isNaN(stock)) {
+        if (!name || isNaN(price)) {
           alert("Please fill in all required fields with valid values");
           return;
         }
@@ -4966,14 +4971,14 @@
         const price = parseFloat(document.getElementById("edit-price").value);
         const cost =
           parseFloat(document.getElementById("edit-cost").value) || 0;
-        const stock = parseInt(document.getElementById("edit-stock").value);
+        const stock = currentProduct.stock; // Stock is managed through warehouse - keep current value
         const category = document.getElementById("edit-category").value.trim();
         const taxRate =
           parseFloat(document.getElementById("edit-tax-rate").value) || 0;
         const photoFile = document.getElementById("edit-photo").files[0];
         const removePhoto = document.getElementById("edit-remove-photo").checked;
 
-        if (!name || isNaN(price) || isNaN(stock)) {
+        if (!name || isNaN(price)) {
           alert("Please fill in all required fields with valid values");
           return;
         }
