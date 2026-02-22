@@ -36,7 +36,7 @@ ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 CURRENCY_OPTIONS = {
     'USD': '$',
     'MMK': 'MMK',
-    'THB': 'Bh'
+    'THB': 'THB'
 }
 DELIVERY_STAGE_FLOW = {
     'to_deliver': ['packaged', 'cancelled'],
@@ -84,9 +84,7 @@ def get_currency_suffix(currency_code=None):
 def format_currency(value, currency_code=None):
     symbol = get_currency_suffix(currency_code)
     amount = float(value or 0)
-    if symbol.isalpha():
-        return f"{symbol} {amount:.2f}"
-    return f"{symbol}{amount:.2f}"
+    return f"{amount:.2f} {symbol}"
 
 def allowed_image_file(filename):
     if not filename or '.' not in filename:
@@ -702,15 +700,17 @@ with app.app_context():
 
     # Migrate old payment records to DebtPayment table and clean up
     if inspector.has_table('debt') and inspector.has_table('debt_payment'):
-        # Check if there are old payment records (type='payment') to migrate
+        # Check if there are old payment records (legacy schema had debt.type='payment')
+        # Only run this migration when the legacy column actually exists.
         try:
-            old_payments = db.session.execute(text("SELECT id, customer_id, amount, date, notes FROM debt WHERE type = 'payment'")).fetchall()
-            if old_payments:
-                # These old payment records don't have a debt_id, so we'll skip them
-                # Just delete them as they are no longer needed
-                db.session.execute(text("DELETE FROM debt WHERE type = 'payment'"))
-                db.session.commit()
-                app.logger.info(f"Migrated {len(old_payments)} old payment records removed")
+            debt_columns = [col['name'] for col in inspector.get_columns('debt')]
+            if 'type' in debt_columns:
+                old_payments = db.session.execute(text("SELECT id, customer_id, amount, date, notes FROM debt WHERE type = 'payment'"))
+                old_payments = old_payments.fetchall()
+                if old_payments:
+                    db.session.execute(text("DELETE FROM debt WHERE type = 'payment'"))
+                    db.session.commit()
+                    app.logger.info(f"Migrated {len(old_payments)} old payment records removed")
         except Exception as e:
             app.logger.warning(f"Could not migrate old payment records: {str(e)}")
 
@@ -1089,7 +1089,10 @@ def generate_barcode_labels():
         return jsonify({'success': False, 'message': 'Missing product IDs'}), 400
 
     try:
-        products = Product.query.filter(Product.id.in_(data['product_ids'])).all()
+        product_ids = data.get('product_ids') or []
+        quantities = data.get('quantities') or {}
+
+        products = Product.query.filter(Product.id.in_(product_ids)).all()
         if not products:
             return jsonify({'success': False, 'message': 'No products found'}), 404
 
@@ -1119,9 +1122,14 @@ def generate_barcode_labels():
 
         label_list = []
 
-        # ✅ Add products multiple times based on stock qty
+        # Add products based on explicitly requested label quantities
         for product in products:
-            qty = product.stock if hasattr(product, "stock") and product.stock else 1
+            raw_qty = quantities.get(str(product.id), 1)
+            try:
+                qty = int(raw_qty)
+            except (TypeError, ValueError):
+                qty = 1
+            qty = max(1, qty)
             for _ in range(qty):
                 label_list.append(product)
 
@@ -1314,7 +1322,6 @@ def api_create_sale():
                 sale_id=sale.id,
                 amount=round_money(total),
                 balance=round_money(total),
-                type='debt',
                 notes=f'Sale transaction {sale.transaction_id}'
             )
             db.session.add(debt)
@@ -2067,6 +2074,39 @@ def api_dashboard_sales_data():
         current_date += timedelta(days=1)
 
     return jsonify(result)
+
+@app.route('/api/dashboard/top_products', methods=['GET'])
+def api_dashboard_top_products():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    rows = (
+        db.session.query(
+            Product.id,
+            Product.name,
+            Product.price,
+            Product.stock,
+            func.sum(SaleItem.quantity).label('units_sold'),
+            func.sum(SaleItem.price * SaleItem.quantity).label('sales_amount')
+        )
+        .join(SaleItem, SaleItem.product_id == Product.id)
+        .group_by(Product.id)
+        .order_by(func.sum(SaleItem.quantity).desc())
+        .limit(5)
+        .all()
+    )
+
+    return jsonify([
+        {
+            'id': row.id,
+            'name': row.name,
+            'price': row.price,
+            'stock': row.stock,
+            'units_sold': int(row.units_sold or 0),
+            'sales_amount': round_money(row.sales_amount or 0)
+        }
+        for row in rows
+    ])
 
 # User API Endpoints
 @app.route('/api/users', methods=['GET'])
@@ -3406,7 +3446,6 @@ def api_debts():
                 sale_id=sale_id,
                 amount=round_money(amount),
                 balance=round_money(amount),
-                type='debt',
                 due_date=due_date,
                 status='pending',
                 notes=(data.get('notes') or '').strip() or None,

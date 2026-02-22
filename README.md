@@ -18,8 +18,8 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
   - Currency switching between:
     - Dollar (`$`)
     - Myanmar Kyat (`MMK`)
-    - Thai Baht (`B`)
-  - Currency display format uses **suffix style** (e.g., `100$`, `100MMK`, `100B`)
+   - Thai Baht (`THB`)
+- Currency display format uses **suffix style** (e.g., `100$`, `100MMK`, `100THB`)
 
 - **Inventory & Product Management**
   - Product CRUD

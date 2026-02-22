@@ -1557,7 +1557,7 @@
               <select class="form-select" id="settings-currency-code">
                 <option value="USD">Dollar ($)</option>
                 <option value="MMK">Myanmar Kyat (MMK)</option>
-                <option value="THB">Thai Baht (Bh)</option>
+                <option value="THB">Thai Baht (THB)</option>
               </select>
             </div>
             <button class="btn btn-primary" onclick="saveSettings()">
@@ -2036,13 +2036,14 @@
                     <th>Barcode</th>
                     <th>Name</th>
                     <th>Price</th>
+                    <th>Labels</th>
                     <th>Stock</th>
                   </tr>
                 </thead>
                 <tbody id="barcode-products-table">
                   <!-- Products will be loaded here -->
                   <tr>
-                    <td colspan="5" class="text-center py-4">
+                    <td colspan="6" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                       </div>
@@ -3421,7 +3422,7 @@
       };
 
       function currencySuffixFromCode(code) {
-        const map = { USD: "$", MMK: "MMK", THB: "Bh" };
+        const map = { USD: "$", MMK: "MMK", THB: "THB" };
         return map[code] || "$";
       }
 
@@ -3453,7 +3454,7 @@
 
         const isCurrencyToken = (token) => {
           const value = String(token || "").trim();
-          return value === "$" || value === "MMK" || value === "Bh";
+          return value === "$" || value === "MMK" || value === "THB";
         };
 
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
@@ -4204,13 +4205,9 @@
       }
 
       function loadTopProducts() {
-        // USING CACHED PRODUCTS
-        loadProductsCached()
-          .then((products) => {
-            // Sort by stock (for demo - in real app, sort by sales)
-            const topProducts = [...products]
-              .sort((a, b) => b.stock - a.stock)
-              .slice(0, 5);
+        fetch("/api/dashboard/top_products")
+          .then((response) => response.json())
+          .then((topProducts) => {
             const topProductsList =
               document.getElementById("top-products-list");
             topProductsList.innerHTML = "";
@@ -4221,23 +4218,13 @@
               item.innerHTML = `
                                   <div class="d-flex w-100 justify-content-between">
                                       <h6 class="mb-1">${product.name}</h6>
-                                      <small>${formatCurrency(product.price)}</small>
+                                      <small>${formatCurrency(product.sales_amount || 0)}</small>
                                   </div>
                                   <div class="d-flex w-100 justify-content-between">
-                                      <small class="text-muted">Stock: ${
-                                        product.stock
+                                      <small class="text-muted">Units Sold: ${
+                                        product.units_sold || 0
                                       }</small>
-                                      <small class="${
-                                        product.stock < 5
-                                          ? "text-danger"
-                                          : "text-success"
-                                      }">
-                                          ${
-                                            product.stock < 5
-                                              ? "Low Stock"
-                                              : "In Stock"
-                                          }
-                                      </small>
+                                      <small class="text-muted">Stock: ${product.stock}</small>
                                   </div>
                               `;
               topProductsList.appendChild(item);
@@ -4679,7 +4666,7 @@
         const table = document.getElementById("barcode-products-table");
         table.innerHTML = `
               <tr>
-                  <td colspan="5" class="text-center py-4">
+                  <td colspan="6" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status">
                           <span class="visually-hidden">Loading...</span>
                       </div>
@@ -4695,7 +4682,7 @@
             if (data.length === 0) {
               table.innerHTML = `
                           <tr>
-                              <td colspan="5" class="text-center py-4 text-muted">No products found.</td>
+                              <td colspan="6" class="text-center py-4 text-muted">No products found.</td>
                           </tr>
                       `;
               return;
@@ -4709,7 +4696,10 @@
                           }"></td>
                           <td>${product.barcode || "N/A"}</td>
                           <td>${product.name}</td>
-                          <td>$${product.price.toFixed(2)}</td>
+                          <td>${formatCurrency(product.price)}</td>
+                          <td>
+                            <input type="number" class="form-control form-control-sm barcode-qty" data-id="${product.id}" min="1" step="1" value="1" />
+                          </td>
                           <td>${product.stock}</td>
                       `;
               table.appendChild(row);
@@ -4719,7 +4709,7 @@
             console.error("Error loading products:", error);
             table.innerHTML = `
                       <tr>
-                          <td colspan="5" class="text-center py-4 text-danger">Failed to load products.</td>
+                          <td colspan="6" class="text-center py-4 text-danger">Failed to load products.</td>
                       </tr>
                   `;
           });
@@ -4736,10 +4726,16 @@
 
       function generateBarcodeLabels() {
         const selectedProducts = [];
+        const quantities = {};
         document
           .querySelectorAll(".product-checkbox:checked")
           .forEach((checkbox) => {
-            selectedProducts.push(parseInt(checkbox.getAttribute("data-id")));
+            const productId = parseInt(checkbox.getAttribute("data-id"));
+            selectedProducts.push(productId);
+
+            const qtyInput = document.querySelector(`.barcode-qty[data-id="${productId}"]`);
+            const requestedQty = parseInt(qtyInput?.value || "1", 10);
+            quantities[productId] = Number.isFinite(requestedQty) && requestedQty > 0 ? requestedQty : 1;
           });
 
         if (selectedProducts.length === 0) {
@@ -4754,6 +4750,7 @@
           },
           body: JSON.stringify({
             product_ids: selectedProducts,
+            quantities: quantities,
           }),
         })
           .then((response) => {
@@ -5698,7 +5695,7 @@
 
         const resultsDiv = document.getElementById("report-results");
         resultsDiv.innerHTML = `
-                      <div class="text-center py-4">
+                  <td colspan="6" class="text-center py-4">
                           <div class="spinner-border text-primary" role="status">
                               <span class="visually-hidden">Loading...</span>
                           </div>
@@ -5885,7 +5882,7 @@
 
             if (filtered.length === 0) {
               usersTable.innerHTML = `
-                <tr>
+                              <td colspan="6" class="text-center py-4 text-muted">No products found.</td>
                   <td colspan="4" class="text-center py-4 text-muted">No users found.</td>
                 </tr>
               `;
@@ -7242,12 +7239,6 @@
           return;
         }
         viewCustomerDetails(parseInt(customerId));
-      }
-
-      function viewDebtDetails(debtId) {
-        // This function could be implemented to show detailed debt information
-        // For now, we'll just show the payment modal
-        showMakePaymentModal(debtId);
       }
 
       // Supplier management functions
