@@ -55,6 +55,8 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
 
 ```text
 POS_System_by_Thuta/
+├── Dockerfile
+├── .dockerignore
 ├── app.py
 ├── requirements.txt
 ├── templates/
@@ -106,6 +108,46 @@ Application URL:
 
 ```text
 http://127.0.0.1:8888
+```
+
+---
+
+## 🐳 Run with Docker
+
+### 1) Build the image
+
+```bash
+docker build -t parrot-pos .
+```
+
+### 2) Run the container
+
+```bash
+docker run --name parrot-pos \
+  -p 8888:8888 \
+  -v "${PWD}/instance:/app/instance" \
+  -v "${PWD}/uploads:/app/uploads" \
+  parrot-pos
+```
+
+> Windows CMD example:
+
+```cmd
+docker run --name parrot-pos -p 8888:8888 -v "%cd%\instance:/app/instance" -v "%cd%\uploads:/app/uploads" parrot-pos
+```
+
+Using volume mounts keeps your SQLite database and uploaded product images persistent between container restarts.
+
+Application URL:
+
+```text
+http://127.0.0.1:8888
+```
+
+### 3) Stop and remove
+
+```bash
+docker stop parrot-pos && docker rm parrot-pos
 ```
 
 ---
