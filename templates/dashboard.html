@@ -3646,6 +3646,26 @@
       }
       // ===== END CACHING IMPLEMENTATION =====
 
+      function parsePagedResponse(payload) {
+        if (Array.isArray(payload)) {
+          return {
+            items: payload,
+            total: payload.length,
+            total_pages: 1,
+            page: 1,
+            per_page: payload.length || 1,
+          };
+        }
+
+        return {
+          items: payload?.items || [],
+          total: payload?.total || 0,
+          total_pages: payload?.total_pages || 1,
+          page: payload?.page || 1,
+          per_page: payload?.per_page || pageSize.products,
+        };
+      }
+
       function paginateArray(data, key) {
         const totalItems = data.length;
         const totalPages = Math.max(1, Math.ceil(totalItems / pageSize[key]));
@@ -4795,23 +4815,25 @@
                       </tr>
                   `;
 
-        // USING CACHED PRODUCTS
-        loadProductsCached()
-          .then((data) => {
-            productsTable.innerHTML = "";
-            const query = (document.getElementById("products-search")?.value || "")
-              .trim()
-              .toLowerCase();
-            const filtered = (data || []).filter((product) => {
-              if (!query) return true;
-              return (
-                String(product.barcode || "").toLowerCase().includes(query) ||
-                String(product.name || "").toLowerCase().includes(query) ||
-                String(product.category || "").toLowerCase().includes(query)
-              );
-            });
+        const query = (document.getElementById("products-search")?.value || "")
+          .trim();
+        const params = new URLSearchParams();
+        params.set("page", String(pageState.products));
+        params.set("per_page", String(pageSize.products));
+        if (query) params.set("q", query);
 
-            if (filtered.length === 0) {
+        fetch(`/api/products?${params.toString()}`)
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+          })
+          .then((payload) => {
+            const data = parsePagedResponse(payload);
+            productsTable.innerHTML = "";
+
+            if (!data.items || data.items.length === 0) {
               productsTable.innerHTML = `
                                   <tr>
                                       <td colspan="8" class="text-center py-4 text-muted">No products found.</td>
@@ -4821,8 +4843,7 @@
               return;
             }
 
-            const page = paginateArray(filtered, "products");
-            page.items.forEach((product) => {
+            data.items.forEach((product) => {
               const row = document.createElement("tr");
               row.innerHTML = `
                                   <td>${getProductPhotoHtml(product.photo_url, product.name, "product-thumb")}</td>
@@ -4847,7 +4868,13 @@
                               `;
               productsTable.appendChild(row);
             });
-            renderPagination("products", "products-pagination", page.totalPages, loadProducts);
+
+            renderPagination(
+              "products",
+              "products-pagination",
+              data.total_pages || 1,
+              loadProducts
+            );
           })
           .catch((error) => {
             console.error("Error loading products:", error);
@@ -5068,29 +5095,29 @@
 
         const dateFilter = document.getElementById("sales-date-filter")?.value;
         const searchQuery = (document.getElementById("sales-search")?.value || "")
-          .trim()
-          .toLowerCase();
+          .trim();
 
         const params = new URLSearchParams();
         if (dateFilter) {
           params.set("start", dateFilter);
           params.set("end", dateFilter);
         }
+        if (searchQuery) params.set("q", searchQuery);
+        params.set("page", String(pageState.sales));
+        params.set("per_page", String(pageSize.sales));
 
         fetch(`/api/reports/sales${params.toString() ? `?${params.toString()}` : ""}`)
-          .then((response) => response.json())
-          .then((data) => {
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+          })
+          .then((payload) => {
+            const data = parsePagedResponse(payload);
             salesTable.innerHTML = "";
-            const filtered = (data || []).filter((sale) => {
-              if (!searchQuery) return true;
-              return (
-                String(sale.transaction_id || "").toLowerCase().includes(searchQuery) ||
-                String(sale.payment_method || "").toLowerCase().includes(searchQuery) ||
-                String(sale.username || "").toLowerCase().includes(searchQuery)
-              );
-            });
 
-            if (filtered.length === 0) {
+            if (!data.items || data.items.length === 0) {
               salesTable.innerHTML = `
                                   <tr>
                                       <td colspan="7" class="text-center py-4 text-muted">No sales recorded.</td>
@@ -5100,8 +5127,7 @@
               return;
             }
 
-            const page = paginateArray(filtered, "sales");
-            page.items.forEach((sale) => {
+            data.items.forEach((sale) => {
               const deliveryBadge = sale.has_delivery 
                 ? '<span class="badge bg-info ms-1" title="Has Delivery"><i class="bi bi-truck"></i></span>' 
                 : '';
@@ -5132,7 +5158,12 @@
                               `;
               salesTable.appendChild(row);
             });
-            renderPagination("sales", "sales-pagination", page.totalPages, loadSales);
+            renderPagination(
+              "sales",
+              "sales-pagination",
+              data.total_pages || 1,
+              loadSales
+            );
           })
           .catch((error) => {
             console.error("Error loading sales:", error);
@@ -5859,30 +5890,27 @@
           </tr>
         `;
 
-        fetch("/api/users")
+        const query = (document.getElementById("users-search")?.value || "")
+          .trim();
+        const params = new URLSearchParams();
+        params.set("page", String(pageState.users));
+        params.set("per_page", String(pageSize.users));
+        if (query) params.set("q", query);
+
+        fetch(`/api/users?${params.toString()}`)
           .then((response) => {
             if (!response.ok) {
               throw new Error(`HTTP error! status: ${response.status}`);
             }
             return response.json();
           })
-          .then((data) => {
+          .then((payload) => {
+            const data = parsePagedResponse(payload);
             usersTable.innerHTML = "";
-            const query = (document.getElementById("users-search")?.value || "")
-              .trim()
-              .toLowerCase();
-            const filtered = (data || []).filter((user) => {
-              if (!query) return true;
-              return (
-                String(user.id).toLowerCase().includes(query) ||
-                String(user.username || "").toLowerCase().includes(query) ||
-                String(user.role || "").toLowerCase().includes(query)
-              );
-            });
 
-            if (filtered.length === 0) {
+            if (!data.items || data.items.length === 0) {
               usersTable.innerHTML = `
-                              <td colspan="6" class="text-center py-4 text-muted">No products found.</td>
+                <tr>
                   <td colspan="4" class="text-center py-4 text-muted">No users found.</td>
                 </tr>
               `;
@@ -5890,8 +5918,7 @@
               return;
             }
 
-            const page = paginateArray(filtered, "users");
-            page.items.forEach((user) => {
+            data.items.forEach((user) => {
               const row = document.createElement("tr");
               row.innerHTML = `
                 <td>${user.id}</td>
@@ -5914,7 +5941,12 @@
               `;
               usersTable.appendChild(row);
             });
-            renderPagination("users", "users-pagination", page.totalPages, loadUsers);
+            renderPagination(
+              "users",
+              "users-pagination",
+              data.total_pages || 1,
+              loadUsers
+            );
           })
           .catch((error) => {
             console.error("Error loading users:", error);

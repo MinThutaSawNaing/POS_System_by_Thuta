@@ -196,6 +196,23 @@ def delete_product_image(filename):
 def product_photo_url(filename):
     return url_for('product_image', filename=filename) if filename else None
 
+def serialize_product(product):
+    return {
+        'id': product.id,
+        'barcode': product.barcode,
+        'name': product.name,
+        'price': product.price,
+        'cost': product.cost,
+        'stock': product.stock,
+        'category': product.category,
+        'tax_rate': product.tax_rate,
+        'reorder_point': product.reorder_point,
+        'reorder_quantity': product.reorder_quantity,
+        'reorder_enabled': bool(product.reorder_enabled),
+        'photo_filename': product.photo_filename,
+        'photo_url': product_photo_url(product.photo_filename)
+    }
+
 def manager_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -940,6 +957,28 @@ with app.app_context():
         db.session.add(AppSetting(key='currency_code', value='USD'))
         db.session.commit()
 
+    # Performance indexes (safe for repeated startup)
+    performance_indexes = [
+        'CREATE INDEX IF NOT EXISTS idx_product_name ON product(name)',
+        'CREATE INDEX IF NOT EXISTS idx_product_category ON product(category)',
+        'CREATE INDEX IF NOT EXISTS idx_sale_date ON sale(date)',
+        'CREATE INDEX IF NOT EXISTS idx_sale_user_date ON sale(user_id, date)',
+        'CREATE INDEX IF NOT EXISTS idx_sale_item_sale_id ON sale_item(sale_id)',
+        'CREATE INDEX IF NOT EXISTS idx_sale_item_product_id ON sale_item(product_id)',
+        'CREATE INDEX IF NOT EXISTS idx_debt_customer_balance ON debt(customer_id, balance)',
+        'CREATE INDEX IF NOT EXISTS idx_debt_status_date ON debt(status, date)',
+        'CREATE INDEX IF NOT EXISTS idx_purchase_order_status_created ON purchase_order(status, created_at)',
+        'CREATE INDEX IF NOT EXISTS idx_delivery_stage_priority ON delivery(stage, priority)',
+        'CREATE INDEX IF NOT EXISTS idx_delivery_created_at ON delivery(created_at)',
+        'CREATE INDEX IF NOT EXISTS idx_warehouse_product_qty ON warehouse_inventory(product_id, quantity)'
+    ]
+    for index_sql in performance_indexes:
+        try:
+            db.session.execute(text(index_sql))
+        except Exception as e:
+            app.logger.warning(f'Failed to create index: {e}')
+    db.session.commit()
+
 # Authentication routes
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -1092,22 +1131,34 @@ def api_products():
         return jsonify({'error': 'Unauthorized'}), 401
 
     if request.method == 'GET':
-        products = Product.query.all()
-        return jsonify([{
-            'id': p.id,
-            'barcode': p.barcode,
-            'name': p.name,
-            'price': p.price,
-            'cost': p.cost,
-            'stock': p.stock,
-            'category': p.category,
-            'tax_rate': p.tax_rate,
-            'reorder_point': p.reorder_point,
-            'reorder_quantity': p.reorder_quantity,
-            'reorder_enabled': bool(p.reorder_enabled),
-            'photo_filename': p.photo_filename,
-            'photo_url': product_photo_url(p.photo_filename)
-        } for p in products])
+        q = (request.args.get('q') or '').strip()
+        page = request.args.get('page', type=int)
+        per_page = request.args.get('per_page', type=int)
+
+        query = Product.query
+        if q:
+            like_q = f'%{q}%'
+            query = query.filter(
+                (Product.name.ilike(like_q)) |
+                (Product.barcode.ilike(like_q)) |
+                (Product.category.ilike(like_q))
+            )
+
+        query = query.order_by(Product.id.desc())
+
+        if page and per_page:
+            safe_per_page = max(1, min(per_page, 100))
+            pagination = query.paginate(page=page, per_page=safe_per_page, error_out=False)
+            return jsonify({
+                'items': [serialize_product(p) for p in pagination.items],
+                'page': pagination.page,
+                'per_page': safe_per_page,
+                'total': pagination.total,
+                'total_pages': pagination.pages
+            })
+
+        products = query.all()
+        return jsonify([serialize_product(p) for p in products])
 
     elif request.method == 'POST':
         is_multipart = request.content_type and 'multipart/form-data' in request.content_type.lower()
@@ -2207,6 +2258,9 @@ def api_report_sales():
 
     query = Sale.query
     myanmar_tz = pytz.timezone('Asia/Yangon')
+    q = (request.args.get('q') or '').strip()
+    page = request.args.get('page', type=int)
+    per_page = request.args.get('per_page', type=int)
 
     try:
         # Apply date filters if provided
@@ -2224,22 +2278,44 @@ def api_report_sales():
         if session.get('role') == 'cashier':
             query = query.filter(Sale.user_id == session['user_id'])
 
-        # Fetch and return sales (includes sales with and without delivery)
-        sales = query.order_by(Sale.date.desc()).all()
+        if q:
+            like_q = f'%{q}%'
+            query = query.outerjoin(User, User.id == Sale.user_id).filter(
+                (Sale.transaction_id.ilike(like_q)) |
+                (Sale.payment_method.ilike(like_q)) |
+                (User.username.ilike(like_q))
+            )
 
-        return jsonify([{
-            'id': s.id,
-            'transaction_id': s.transaction_id,
-            'date': s.date.isoformat(),
-            'total': s.total,
-            'tax': s.tax,
-            'cash_received': s.cash_received,
-            'refund_amount': s.refund_amount or 0,
-            'payment_method': s.payment_method,
-            'user_id': s.user_id,
-            'username': s.user.username if s.user else 'Unknown',
-            'has_delivery': hasattr(s, 'delivery') and s.delivery is not None
-        } for s in sales])
+        query = query.order_by(Sale.date.desc())
+
+        def serialize_sale_row(s):
+            return {
+                'id': s.id,
+                'transaction_id': s.transaction_id,
+                'date': s.date.isoformat(),
+                'total': s.total,
+                'tax': s.tax,
+                'cash_received': s.cash_received,
+                'refund_amount': s.refund_amount or 0,
+                'payment_method': s.payment_method,
+                'user_id': s.user_id,
+                'username': s.user.username if s.user else 'Unknown',
+                'has_delivery': hasattr(s, 'delivery') and s.delivery is not None
+            }
+
+        if page and per_page:
+            safe_per_page = max(1, min(per_page, 100))
+            pagination = query.paginate(page=page, per_page=safe_per_page, error_out=False)
+            return jsonify({
+                'items': [serialize_sale_row(s) for s in pagination.items],
+                'page': pagination.page,
+                'per_page': safe_per_page,
+                'total': pagination.total,
+                'total_pages': pagination.pages
+            })
+
+        sales = query.all()
+        return jsonify([serialize_sale_row(s) for s in sales])
 
     except ValueError as e:
         app.logger.error(f"Date parsing error: {str(e)}")
@@ -2317,12 +2393,40 @@ def api_dashboard_top_products():
 @app.route('/api/users', methods=['GET'])
 @manager_required
 def api_users():
-    users = User.query.all()
-    return jsonify([{
-        'id': u.id,
-        'username': u.username,
-        'role': u.role
-    } for u in users])
+    q = (request.args.get('q') or '').strip()
+    page = request.args.get('page', type=int)
+    per_page = request.args.get('per_page', type=int)
+
+    query = User.query
+    if q:
+        like_q = f'%{q}%'
+        query = query.filter(
+            (User.username.ilike(like_q)) |
+            (User.role.ilike(like_q))
+        )
+
+    query = query.order_by(User.id.asc())
+
+    def serialize_user_row(u):
+        return {
+            'id': u.id,
+            'username': u.username,
+            'role': u.role
+        }
+
+    if page and per_page:
+        safe_per_page = max(1, min(per_page, 100))
+        pagination = query.paginate(page=page, per_page=safe_per_page, error_out=False)
+        return jsonify({
+            'items': [serialize_user_row(u) for u in pagination.items],
+            'page': pagination.page,
+            'per_page': safe_per_page,
+            'total': pagination.total,
+            'total_pages': pagination.pages
+        })
+
+    users = query.all()
+    return jsonify([serialize_user_row(u) for u in users])
 
 @app.route('/api/users', methods=['POST'])
 @manager_required
