@@ -7,237 +7,423 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --surface: #ffffff;
+            --border: #dbe2ef;
+            --success: #16a34a;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
         body {
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            height: 100vh;
-            display: flex;
-            align-items: center;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-        
-        .login-container {
-            max-width: 400px;
-            width: 100%;
-            padding: 30px;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
-            margin: 0 auto;
-            transition: transform 0.3s ease;
-        }
-        
-        .login-container:hover {
-            transform: translateY(-5px);
-        }
-        
-        .logo {
-            text-align: center;
-            margin-bottom: 20px;
-            font-size: 28px;
-            font-weight: bold;
-            color: #0d6efd;
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Inter", "Segoe UI", Roboto, Arial, sans-serif;
+            background:
+                radial-gradient(circle at 15% 20%, rgba(37, 99, 235, 0.22), transparent 35%),
+                radial-gradient(circle at 85% 85%, rgba(56, 189, 248, 0.18), transparent 40%),
+                linear-gradient(135deg, #0b1220 0%, #111827 100%);
+            color: var(--text-main);
             display: flex;
             align-items: center;
             justify-content: center;
+            padding: 2rem 1rem;
         }
-        
-        .logo i {
-            margin-right: 10px;
-            font-size: 32px;
+
+        .auth-shell {
+            width: min(1080px, 100%);
+            background: rgba(255, 255, 255, 0.92);
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            backdrop-filter: blur(10px);
+            border-radius: 24px;
+            overflow: hidden;
+            box-shadow: 0 24px 70px rgba(15, 23, 42, 0.35);
+            display: grid;
+            grid-template-columns: 1.1fr 1fr;
         }
-        
-        .form-control {
-            border-radius: 8px;
-            padding: 12px;
-            border: 1px solid #e0e0e0;
-            transition: all 0.3s;
+
+        .brand-pane {
+            position: relative;
+            padding: 3rem;
+            background:
+                linear-gradient(160deg, rgba(37, 99, 235, 0.95), rgba(30, 64, 175, 0.92));
+            color: #f8fafc;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
         }
-        
-        .form-control:focus {
-            border-color: #0d6efd;
-            box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
+
+        .brand-pane::before {
+            content: "";
+            position: absolute;
+            width: 240px;
+            height: 240px;
+            right: -60px;
+            top: -70px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.08);
         }
-        
-        .btn-primary {
-            background: linear-gradient(45deg, #0d6efd, #0056b3);
+
+        .brand-pane::after {
+            content: "";
+            position: absolute;
+            width: 200px;
+            height: 200px;
+            left: -90px;
+            bottom: -90px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .brand-content,
+        .brand-meta {
+            position: relative;
+            z-index: 1;
+        }
+
+        .brand-logo {
+            display: inline-flex;
+            align-items: center;
+            gap: .7rem;
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 1.6rem;
+        }
+
+        .brand-logo i {
+            width: 42px;
+            height: 42px;
+            display: grid;
+            place-items: center;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.18);
+        }
+
+        .brand-title {
+            font-size: clamp(1.8rem, 2.7vw, 2.6rem);
+            line-height: 1.22;
+            margin-bottom: 1rem;
+            letter-spacing: -0.02em;
+            font-weight: 700;
+        }
+
+        .brand-subtitle {
+            font-size: 1rem;
+            opacity: 0.92;
+            max-width: 32ch;
+            margin-bottom: 0;
+        }
+
+        .security-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .75rem;
+        }
+
+        .security-badge {
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            border-radius: 999px;
+            padding: .4rem .75rem;
+            font-size: .82rem;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .form-pane {
+            background: var(--surface);
+            padding: 2.8rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .form-header h1 {
+            font-size: 1.8rem;
+            margin: 0;
+            font-weight: 700;
+            color: var(--text-main);
+        }
+
+        .form-header p {
+            color: var(--text-muted);
+            margin: .45rem 0 1.75rem;
+        }
+
+        .alert {
+            border-radius: 12px;
+            margin-bottom: 1rem;
             border: none;
-            border-radius: 8px;
-            padding: 12px;
+            font-size: .95rem;
+        }
+
+        .form-label {
+            font-size: .9rem;
             font-weight: 600;
-            transition: all 0.3s;
+            color: #334155;
+            margin-bottom: .45rem;
         }
-        
-        .btn-primary:hover {
-            background: linear-gradient(45deg, #0056b3, #0d6efd);
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(13, 110, 253, 0.3);
+
+        .input-group {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            transition: border-color .2s ease, box-shadow .2s ease;
+            background: #fff;
         }
-        
+
+        .input-group:focus-within {
+            border-color: rgba(37, 99, 235, .55);
+            box-shadow: 0 0 0 .25rem rgba(37, 99, 235, .14);
+        }
+
+        .input-group-text {
+            background: #f8fafc;
+            border: none;
+            color: #64748b;
+            min-width: 44px;
+            justify-content: center;
+        }
+
+        .form-control {
+            border: none;
+            border-radius: 0;
+            padding: .74rem .9rem;
+            font-size: .95rem;
+        }
+
+        .form-control:focus {
+            box-shadow: none;
+        }
+
         .captcha-container {
             display: flex;
             align-items: center;
-            margin-bottom: 20px;
-            background-color: #f8f9fa;
-            padding: 10px;
-            border-radius: 8px;
+            gap: .65rem;
+            margin-bottom: .65rem;
         }
-        
+
         .captcha-display {
-            flex-grow: 1;
-            height: 50px;
-            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-            border-radius: 6px;
+            flex: 1;
+            min-height: 52px;
+            background: linear-gradient(160deg, #eff6ff, #f8fafc);
+            border: 1px dashed #bfdbfe;
+            border-radius: 12px;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 24px;
-            font-weight: bold;
+            font-size: 1.4rem;
+            font-weight: 700;
             letter-spacing: 5px;
-            color: #0d6efd;
+            color: var(--primary-dark);
+            user-select: none;
             position: relative;
             overflow: hidden;
-            user-select: none;
         }
-        
+
         .captcha-display::before {
             content: "";
             position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
+            inset: 0;
             background: repeating-linear-gradient(
-                45deg,
+                135deg,
                 transparent,
-                transparent 10px,
-                rgba(255, 255, 255, 0.1) 10px,
-                rgba(255, 255, 255, 0.1) 20px
+                transparent 12px,
+                rgba(37, 99, 235, .05) 12px,
+                rgba(37, 99, 235, .05) 24px
             );
         }
-        
+
         .captcha-refresh {
-            background: #f8f9fa;
-            border: none;
-            color: #0d6efd;
-            padding: 10px;
-            border-radius: 6px;
-            margin-left: 10px;
+            border: 1px solid var(--border);
+            background: #fff;
+            color: var(--primary-dark);
+            border-radius: 10px;
+            width: 45px;
+            height: 45px;
+            display: grid;
+            place-items: center;
+            transition: transform .25s ease, background-color .2s ease;
             cursor: pointer;
-            transition: all 0.3s;
         }
-        
+
         .captcha-refresh:hover {
-            background: #e9ecef;
+            background: #eff6ff;
             transform: rotate(180deg);
         }
-        
-        .alert {
-            border-radius: 8px;
-            padding: 12px;
-            margin-bottom: 20px;
+
+        .helper-text {
+            color: var(--text-muted);
+            font-size: .8rem;
+            margin-bottom: 1rem;
         }
-        
-        .form-label {
+
+        .form-check-label {
+            font-size: .88rem;
+            color: #475569;
+        }
+
+        .btn-login {
+            border: none;
+            border-radius: 12px;
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: #fff;
             font-weight: 600;
-            color: #495057;
-            margin-bottom: 8px;
+            padding: .84rem 1rem;
+            transition: transform .2s ease, box-shadow .25s ease;
         }
-        
-        .input-group-text {
-            background-color: #f8f9fa;
-            border: 1px solid #e0e0e0;
-            border-radius: 0 8px 8px 0;
+
+        .btn-login:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 10px 22px rgba(37, 99, 235, 0.34);
         }
-        
+
+        .meta-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: .35rem 0 1.2rem;
+        }
+
+        .support-link {
+            font-size: .85rem;
+            color: var(--primary-dark);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
         .footer-text {
+            margin-top: 1.35rem;
             text-align: center;
-            margin-top: 20px;
-            color: #6c757d;
-            font-size: 14px;
+            color: #94a3b8;
+            font-size: .8rem;
+        }
+
+        @media (max-width: 900px) {
+            .auth-shell {
+                grid-template-columns: 1fr;
+            }
+
+            .brand-pane {
+                padding: 2rem;
+            }
+
+            .form-pane {
+                padding: 2rem 1.4rem;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="login-container">
-            <div class="logo">
-                <i class="fas fa-cash-register"></i>
-                POS System
+    <main class="auth-shell">
+        <section class="brand-pane">
+            <div class="brand-content">
+                <div class="brand-logo">
+                    <i class="fas fa-cash-register"></i>
+                    <span>POS System</span>
+                </div>
+                <h2 class="brand-title">Secure retail operations from one smart workspace.</h2>
+                <p class="brand-subtitle">
+                    Manage sales, stock, and cashier workflows with fast and reliable performance built for daily business operations.
+                </p>
             </div>
-            <h2 class="text-center mb-4">Login</h2>
+            <div class="brand-meta security-badges">
+                <span class="security-badge"><i class="fa-solid fa-shield-halved me-1"></i>Protected Access</span>
+                <span class="security-badge"><i class="fa-solid fa-bolt me-1"></i>Real-time Updates</span>
+                <span class="security-badge"><i class="fa-solid fa-lock me-1"></i>Session Security</span>
+            </div>
+        </section>
+
+        <section class="form-pane">
+            <div class="form-header">
+                <h1>Welcome back</h1>
+                <p>Sign in to continue to your POS dashboard.</p>
+            </div>
+
             {% if error %}
                 <div class="alert alert-danger">{{ error }}</div>
             {% endif %}
-            <form method="POST" id="loginForm">
+
+            <form method="POST" id="loginForm" novalidate>
                 <div class="mb-3">
                     <label for="username" class="form-label">Username</label>
                     <div class="input-group">
                         <span class="input-group-text"><i class="fas fa-user"></i></span>
-                        <input type="text" class="form-control" id="username" name="username" required autofocus>
+                        <input type="text" class="form-control" id="username" name="username" autocomplete="username" required autofocus>
                     </div>
                 </div>
+
                 <div class="mb-3">
                     <label for="password" class="form-label">Password</label>
                     <div class="input-group">
                         <span class="input-group-text"><i class="fas fa-lock"></i></span>
-                        <input type="password" class="form-control" id="password" name="password" required>
+                        <input type="password" class="form-control" id="password" name="password" autocomplete="current-password" required>
                     </div>
                 </div>
-                <div class="mb-3">
-                    <label for="captchaInput" class="form-label">Security Code</label>
+
+                <div class="mb-2">
+                    <label for="captchaInput" class="form-label">Security verification</label>
                     <div class="captcha-container">
                         <div class="captcha-display" id="captchaDisplay"></div>
-                        <button type="button" class="captcha-refresh" id="refreshCaptcha">
-                            <i class="fas fa-sync-alt"></i>
+                        <button type="button" class="captcha-refresh" id="refreshCaptcha" aria-label="Refresh security code">
+                            <i class="fas fa-rotate-right"></i>
                         </button>
                     </div>
                     <input type="text" class="form-control" id="captchaInput" name="captchaInput" placeholder="Enter the 4-digit code" required>
                     <input type="hidden" id="captchaCode" name="captchaCode">
+                    <p class="helper-text mb-0">This extra check helps protect against automated login attempts.</p>
                 </div>
-                <button type="submit" class="btn btn-primary w-100">Login</button>
+
+                <div class="meta-row">
+                    <div class="form-check m-0">
+                        <input class="form-check-input" type="checkbox" id="rememberSession">
+                        <label class="form-check-label" for="rememberSession">Remember this device</label>
+                    </div>
+                    <a class="support-link" href="#">Need help?</a>
+                </div>
+
+                <button type="submit" class="btn-login w-100">Sign in securely</button>
             </form>
+
             <div class="footer-text">
-                &copy; 2023 POS System. All rights reserved.
+                &copy; 2026 POS System. Enterprise Edition.
             </div>
-        </div>
-    </div>
+        </section>
+    </main>
 
     <script>
-        // Generate a random 4-digit captcha
         function generateCaptcha() {
             const captcha = Math.floor(1000 + Math.random() * 9000).toString();
             document.getElementById('captchaDisplay').textContent = captcha;
             document.getElementById('captchaCode').value = captcha;
-            
-            // Add some visual distortion to the captcha
+
             const captchaDisplay = document.getElementById('captchaDisplay');
-            captchaDisplay.style.transform = `rotate(${Math.random() * 4 - 2}deg)`;
-            captchaDisplay.style.letterSpacing = `${5 + Math.random() * 3}px`;
-            
-            // Randomly change some characters' color
+            captchaDisplay.style.transform = `rotate(${Math.random() * 3 - 1.5}deg)`;
+            captchaDisplay.style.letterSpacing = `${4 + Math.random() * 3}px`;
+
             const characters = captchaDisplay.textContent.split('');
             captchaDisplay.innerHTML = characters.map(char => {
-                const color = Math.random() > 0.5 ? '#0d6efd' : '#0056b3';
-                return `<span style="color: ${color}; display: inline-block; transform: rotate(${Math.random() * 10 - 5}deg)">${char}</span>`;
+                const color = Math.random() > 0.5 ? '#1d4ed8' : '#2563eb';
+                return `<span style="color: ${color}; display: inline-block; transform: rotate(${Math.random() * 12 - 6}deg)">${char}</span>`;
             }).join('');
         }
-        
-        // Initialize captcha on page load
+
         document.addEventListener('DOMContentLoaded', function() {
             generateCaptcha();
-            
-            // Refresh captcha when button is clicked
+
             document.getElementById('refreshCaptcha').addEventListener('click', generateCaptcha);
-            
-            // Validate captcha before form submission
+
             document.getElementById('loginForm').addEventListener('submit', function(e) {
                 const captchaInput = document.getElementById('captchaInput').value;
                 const captchaCode = document.getElementById('captchaCode').value;
-                
+
                 if (captchaInput !== captchaCode) {
                     e.preventDefault();
-                    
-                    // Create error message if it doesn't exist
+
                     let errorDiv = document.getElementById('captchaError');
                     if (!errorDiv) {
                         errorDiv = document.createElement('div');
@@ -245,10 +431,10 @@
                         errorDiv.className = 'alert alert-danger';
                         document.getElementById('loginForm').prepend(errorDiv);
                     }
-                    
+
                     errorDiv.textContent = 'Invalid security code. Please try again.';
-                    generateCaptcha(); // Generate new captcha
-                    document.getElementById('captchaInput').value = ''; // Clear input
+                    generateCaptcha();
+                    document.getElementById('captchaInput').value = '';
                 }
             });
         });
