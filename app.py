@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, make_response, send_from_directory
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, make_response, send_from_directory, send_file
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -85,6 +85,88 @@ def format_currency(value, currency_code=None):
     symbol = get_currency_suffix(currency_code)
     amount = float(value or 0)
     return f"{amount:.2f} {symbol}"
+
+def to_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+
+    normalized = str(value).strip().lower()
+    if normalized in {'1', 'true', 'yes', 'y', 'on'}:
+        return True
+    if normalized in {'0', 'false', 'no', 'n', 'off', ''}:
+        return False
+    return default
+
+def build_inventory_alert_payload():
+    low_stock_items = []
+    out_of_stock_count = 0
+
+    products = Product.query.order_by(Product.name.asc()).all()
+    for product in products:
+        current_stock = int(product.stock or 0)
+        reorder_point = max(int(product.reorder_point or 0), 0)
+        reorder_quantity = max(int(product.reorder_quantity or 0), 0)
+        reorder_enabled = bool(product.reorder_enabled)
+
+        if current_stock <= 0:
+            out_of_stock_count += 1
+
+        if not reorder_enabled or current_stock > reorder_point:
+            continue
+
+        suggested_qty = reorder_quantity
+        if suggested_qty <= 0:
+            suggested_qty = max(reorder_point - current_stock, 1)
+
+        low_stock_items.append({
+            'product_id': product.id,
+            'name': product.name,
+            'barcode': product.barcode,
+            'category': product.category,
+            'current_stock': current_stock,
+            'reorder_point': reorder_point,
+            'reorder_quantity': reorder_quantity,
+            'suggested_qty': suggested_qty
+        })
+
+    return {
+        'summary': {
+            'total_products': len(products),
+            'low_stock_count': len(low_stock_items),
+            'out_of_stock_count': out_of_stock_count
+        },
+        'low_stock_items': low_stock_items,
+        'suggested_purchase_order': {
+            'items': [{
+                'product_id': item['product_id'],
+                'suggested_qty': item['suggested_qty']
+            } for item in low_stock_items]
+        }
+    }
+
+def resolve_database_file_path():
+    uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
+    sqlite_prefix = 'sqlite:///'
+
+    if not uri.startswith(sqlite_prefix):
+        return None
+
+    raw_path = uri[len(sqlite_prefix):]
+    if not raw_path or raw_path == ':memory:':
+        return None
+
+    # For relative SQLite paths (e.g. sqlite:///pos.db), Flask stores the file under app.instance_path.
+    candidate_path = raw_path if os.path.isabs(raw_path) else os.path.join(app.instance_path, raw_path)
+    if os.path.exists(candidate_path):
+        return candidate_path
+
+    # Fallback for projects that keep the SQLite file under the app root.
+    fallback_path = os.path.join(app.root_path, raw_path)
+    return fallback_path if os.path.exists(fallback_path) else None
 
 def allowed_image_file(filename):
     if not filename or '.' not in filename:
@@ -304,6 +386,9 @@ class Product(db.Model):
     category = db.Column(db.String(50))
     tax_rate = db.Column(db.Float, default=0.0)
     photo_filename = db.Column(db.String(255))
+    reorder_point = db.Column(db.Integer, default=10)
+    reorder_quantity = db.Column(db.Integer, default=50)
+    reorder_enabled = db.Column(db.Boolean, default=True)
 
 class Supplier(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -607,6 +692,20 @@ with app.app_context():
     if 'photo_filename' not in product_columns:
         db.session.execute(text('ALTER TABLE product ADD COLUMN photo_filename VARCHAR(255)'))
         db.session.commit()
+    product_migrations = [
+        ('reorder_point', 'ALTER TABLE product ADD COLUMN reorder_point INTEGER DEFAULT 10'),
+        ('reorder_quantity', 'ALTER TABLE product ADD COLUMN reorder_quantity INTEGER DEFAULT 50'),
+        ('reorder_enabled', 'ALTER TABLE product ADD COLUMN reorder_enabled BOOLEAN DEFAULT 1')
+    ]
+    for column_name, migration_sql in product_migrations:
+        if column_name not in product_columns:
+            db.session.execute(text(migration_sql))
+            db.session.commit()
+
+    db.session.execute(text('UPDATE product SET reorder_point = 10 WHERE reorder_point IS NULL'))
+    db.session.execute(text('UPDATE product SET reorder_quantity = 50 WHERE reorder_quantity IS NULL'))
+    db.session.execute(text('UPDATE product SET reorder_enabled = 1 WHERE reorder_enabled IS NULL'))
+    db.session.commit()
 
     supplier_columns = [col['name'] for col in inspector.get_columns('supplier')]
     supplier_migrations = [
@@ -901,6 +1000,87 @@ def api_settings():
         'currency_suffix': get_currency_suffix(currency_code)
     })
 
+@app.route('/api/settings/database_backup', methods=['GET'])
+@manager_required
+def api_settings_database_backup():
+    db_file_path = resolve_database_file_path()
+    if not db_file_path:
+        return jsonify({'success': False, 'message': 'Database file not found'}), 404
+
+    with open(db_file_path, 'rb') as f:
+        db_bytes = f.read()
+
+    backup_filename = f"pos_backup_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.db"
+    return send_file(
+        io.BytesIO(db_bytes),
+        mimetype='application/octet-stream',
+        as_attachment=True,
+        download_name=backup_filename
+    )
+
+@app.route('/api/inventory/alerts', methods=['GET'])
+@manager_required
+def api_inventory_alerts():
+    return jsonify(build_inventory_alert_payload())
+
+@app.route('/api/inventory/suggested_purchase_order', methods=['POST'])
+@manager_required
+def api_inventory_suggested_purchase_order():
+    data = request.get_json() or {}
+    supplier_id = data.get('supplier_id')
+    if not supplier_id:
+        return jsonify({'success': False, 'message': 'Supplier is required'}), 400
+
+    supplier = db.session.get(Supplier, supplier_id)
+    if not supplier:
+        return jsonify({'success': False, 'message': 'Supplier not found'}), 404
+
+    payload = build_inventory_alert_payload()
+    suggested_items = payload.get('suggested_purchase_order', {}).get('items', [])
+    if not suggested_items:
+        return jsonify({'success': False, 'message': 'No low-stock items to generate purchase order'}), 400
+
+    try:
+        po = PurchaseOrder(
+            po_number=generate_po_number(),
+            supplier_id=supplier.id,
+            status='draft',
+            notes=(data.get('notes') or '').strip() or 'System generated from inventory alerts',
+            created_by=session.get('user_id')
+        )
+        db.session.add(po)
+        db.session.flush()
+
+        total_amount = 0.0
+        for item in suggested_items:
+            product = db.session.get(Product, item['product_id'])
+            if not product:
+                continue
+            ordered_qty = max(int(item.get('suggested_qty') or 0), 1)
+            unit_cost = float(product.cost or 0)
+            db.session.add(PurchaseOrderItem(
+                purchase_order_id=po.id,
+                product_id=product.id,
+                ordered_qty=ordered_qty,
+                received_qty=0,
+                unit_cost=unit_cost
+            ))
+            total_amount += ordered_qty * unit_cost
+
+        po.total_amount = total_amount
+        db.session.commit()
+        return jsonify({
+            'success': True,
+            'message': 'Suggested purchase order created',
+            'purchase_order_id': po.id,
+            'po_number': po.po_number,
+            'items_count': len(suggested_items)
+        }), 201
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error creating suggested purchase order: {str(e)}")
+        return jsonify({'success': False, 'message': 'Failed to create suggested purchase order'}), 500
+
 @app.route('/uploads/products/<path:filename>')
 def product_image(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
@@ -922,6 +1102,9 @@ def api_products():
             'stock': p.stock,
             'category': p.category,
             'tax_rate': p.tax_rate,
+            'reorder_point': p.reorder_point,
+            'reorder_quantity': p.reorder_quantity,
+            'reorder_enabled': bool(p.reorder_enabled),
             'photo_filename': p.photo_filename,
             'photo_url': product_photo_url(p.photo_filename)
         } for p in products])
@@ -942,8 +1125,12 @@ def api_products():
             stock = int(stock)
             cost = float(data.get('cost', 0) or 0)
             tax_rate = float(data.get('tax_rate', 0) or 0)
+            reorder_point = max(int(data.get('reorder_point', 10) or 0), 0)
+            reorder_quantity = max(int(data.get('reorder_quantity', 50) or 0), 0)
         except (ValueError, TypeError):
             return jsonify({'success': False, 'message': 'Invalid numeric values'}), 400
+
+        reorder_enabled = to_bool(data.get('reorder_enabled'), True)
 
         photo_filename = None
         photo_file = request.files.get('photo') if is_multipart else None
@@ -961,6 +1148,9 @@ def api_products():
             stock=stock,
             category=data.get('category'),
             tax_rate=tax_rate,
+            reorder_point=reorder_point,
+            reorder_quantity=reorder_quantity,
+            reorder_enabled=reorder_enabled,
             photo_filename=photo_filename
         )
         db.session.add(product)
@@ -987,6 +1177,9 @@ def api_single_product(product_id):
             'stock': product.stock,
             'category': product.category,
             'tax_rate': product.tax_rate,
+            'reorder_point': product.reorder_point,
+            'reorder_quantity': product.reorder_quantity,
+            'reorder_enabled': bool(product.reorder_enabled),
             'photo_filename': product.photo_filename,
             'photo_url': product_photo_url(product.photo_filename),
             'promotions': [{
@@ -1035,6 +1228,18 @@ def api_single_product(product_id):
                 product.tax_rate = float(data.get('tax_rate') or 0)
             except (ValueError, TypeError):
                 return jsonify({'success': False, 'message': 'Invalid tax rate value'}), 400
+        if 'reorder_point' in data:
+            try:
+                product.reorder_point = max(int(data.get('reorder_point') or 0), 0)
+            except (ValueError, TypeError):
+                return jsonify({'success': False, 'message': 'Invalid reorder point value'}), 400
+        if 'reorder_quantity' in data:
+            try:
+                product.reorder_quantity = max(int(data.get('reorder_quantity') or 0), 0)
+            except (ValueError, TypeError):
+                return jsonify({'success': False, 'message': 'Invalid reorder quantity value'}), 400
+        if 'reorder_enabled' in data:
+            product.reorder_enabled = to_bool(data.get('reorder_enabled'), True)
 
         remove_photo = str(data.get('remove_photo', '')).lower() in ('1', 'true', 'yes', 'on')
         if remove_photo and product.photo_filename:
