@@ -246,6 +246,38 @@
           opacity: 0.95;
         }
       }
+
+      .searchable-select-wrapper {
+        position: relative;
+      }
+
+      .searchable-select-list {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        z-index: 1050;
+        max-height: 240px;
+        overflow-y: auto;
+        background: #fff;
+        border: 1px solid #dee2e6;
+        border-top: 0;
+        border-radius: 0 0 0.375rem 0.375rem;
+        box-shadow: 0 8px 16px rgba(0, 0, 0, 0.08);
+        display: none;
+      }
+
+      .searchable-select-list .list-group-item {
+        border: 0;
+        border-bottom: 1px solid #f1f1f1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .searchable-select-list .list-group-item:last-child {
+        border-bottom: 0;
+      }
     </style>
   </head>
 
@@ -443,7 +475,7 @@
                 <div class="row">
                   <div class="col-md-8">
                     <label class="form-label">Customer (Optional)</label>
-                    <select class="form-select" id="pos-customer-select">
+                    <select class="form-select searchable-select" id="pos-customer-select" data-search-placeholder="Search customer...">
                       <option value="">Walk-in Customer</option>
                     </select>
                   </div>
@@ -964,7 +996,7 @@
               </div>
               <div class="col-md-1">
                 <label class="form-label small">Customer</label>
-                <select id="debts-customer-filter" class="form-select form-select-sm">
+                <select id="debts-customer-filter" class="form-select form-select-sm searchable-select" data-search-placeholder="Filter customer...">
                   <option value="">All</option>
                 </select>
               </div>
@@ -1943,8 +1975,9 @@
                   >Product <span class="text-danger">*</span></label
                 >
                 <select
-                  class="form-select"
+                  class="form-select searchable-select"
                   id="promotion-product-id"
+                  data-search-placeholder="Search product..."
                   required
                 ></select>
               </div>
@@ -2526,7 +2559,7 @@
                 <label class="form-label"
                   >Customer <span class="text-danger">*</span></label
                 >
-                <select class="form-select" id="debt-customer-id" required>
+                <select class="form-select searchable-select" id="debt-customer-id" data-search-placeholder="Search customer..." required>
                   <option value="">Select a customer</option>
                 </select>
               </div>
@@ -3728,6 +3761,169 @@
         });
       }
 
+      let searchableSelectDocHandlerAttached = false;
+
+      function makeSelectSearchable(select) {
+        if (!select || select.dataset.searchableInit === "1") return;
+        select.dataset.searchableInit = "1";
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "searchable-select-wrapper";
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "form-control searchable-select-input";
+        input.autocomplete = "off";
+        const placeholder =
+          select.dataset.searchPlaceholder || input.placeholder || "Search...";
+        input.placeholder = placeholder;
+        input.dataset.userPlaceholder = placeholder;
+        if (select.classList.contains("form-select-sm")) {
+          input.classList.add("form-control-sm");
+        }
+        if (select.classList.contains("form-select-lg")) {
+          input.classList.add("form-control-lg");
+        }
+
+        const list = document.createElement("div");
+        list.className = "searchable-select-list list-group";
+
+        wrapper.appendChild(input);
+        wrapper.appendChild(list);
+
+        const parent = select.parentNode;
+        parent.insertBefore(wrapper, select);
+        wrapper.appendChild(select);
+        select.classList.add("d-none");
+        select.setAttribute("aria-hidden", "true");
+
+        const syncFromSelect = () => {
+          const selected = select.selectedOptions[0];
+          if (selected && selected.value === "") {
+            input.value = "";
+            if (!input.dataset.userPlaceholder && selected.textContent) {
+              input.placeholder = selected.textContent;
+            }
+            return;
+          }
+          input.value = selected ? selected.textContent : "";
+        };
+
+        const hideList = () => {
+          list.style.display = "none";
+        };
+
+        const showList = () => {
+          list.style.display = "block";
+        };
+
+        const buildList = (filter) => {
+          const query = (filter || "").toLowerCase().trim();
+          const options = Array.from(select.options || []);
+          const matches = query
+            ? options.filter((opt) =>
+                String(opt.textContent || "").toLowerCase().includes(query)
+              )
+            : options;
+          list.innerHTML = "";
+
+          if (!matches.length) {
+            const empty = document.createElement("div");
+            empty.className = "list-group-item text-muted";
+            empty.textContent = "No matches";
+            list.appendChild(empty);
+            return;
+          }
+
+          const maxItems = 50;
+          matches.slice(0, maxItems).forEach((opt) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "list-group-item list-group-item-action";
+            button.textContent = opt.textContent;
+            button.addEventListener("mousedown", (e) => {
+              e.preventDefault();
+              select.value = opt.value;
+              select.dispatchEvent(new Event("change"));
+              syncFromSelect();
+              hideList();
+            });
+            list.appendChild(button);
+          });
+
+          if (matches.length > maxItems) {
+            const more = document.createElement("div");
+            more.className = "list-group-item text-muted";
+            more.textContent = `Showing first ${maxItems} results`;
+            list.appendChild(more);
+          }
+        };
+
+        input.addEventListener("input", () => {
+          buildList(input.value);
+          showList();
+          if (input.value.trim() === "") {
+            select.value = "";
+            select.dispatchEvent(new Event("change"));
+          }
+        });
+
+        input.addEventListener("focus", () => {
+          buildList(input.value);
+          showList();
+        });
+
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") {
+            hideList();
+            input.blur();
+          }
+        });
+
+        input.addEventListener("blur", () => {
+          const inputValue = input.value.trim();
+          if (!inputValue) return;
+          const exactMatch = Array.from(select.options || []).some(
+            (opt) => String(opt.textContent || "") === inputValue
+          );
+          if (!exactMatch) {
+            syncFromSelect();
+          }
+        });
+
+        select.addEventListener("change", syncFromSelect);
+
+        const observer = new MutationObserver(() => {
+          if (document.activeElement !== input) {
+            syncFromSelect();
+          }
+        });
+        observer.observe(select, { childList: true });
+
+        if (!searchableSelectDocHandlerAttached) {
+          document.addEventListener("click", (e) => {
+            document
+              .querySelectorAll(".searchable-select-wrapper")
+              .forEach((wrap) => {
+                if (!wrap.contains(e.target)) {
+                  const listEl = wrap.querySelector(".searchable-select-list");
+                  if (listEl) listEl.style.display = "none";
+                }
+              });
+          });
+          searchableSelectDocHandlerAttached = true;
+        }
+
+        syncFromSelect();
+      }
+
+      function initSearchableSelects(root) {
+        const scope = root || document;
+        scope.querySelectorAll("select.searchable-select").forEach((select) => {
+          makeSelectSearchable(select);
+        });
+      }
+
       // Initialize the application when page loads
       document.addEventListener("DOMContentLoaded", function () {
         initResizableSidebar();
@@ -3778,6 +3974,8 @@
         bindReload("debts-search", loadDebts, "debts");
         bindReload("purchase-orders-search", loadPurchaseOrders, "purchases");
         bindReload("deliveries-search", loadDeliveries, "deliveries");
+
+        initSearchableSelects();
 
         // Purchase order filter event listeners
         ["purchase-orders-status-filter", "purchase-orders-supplier-filter"].forEach((id) => {
@@ -5402,7 +5600,7 @@
         const row = document.createElement("div");
         row.className = "row g-2 mb-2 return-item-row";
         row.innerHTML = `
-          <div class="col-7"><select class="form-select return-item-select"></select></div>
+          <div class="col-7"><select class="form-select searchable-select return-item-select" data-search-placeholder="Search item..."></select></div>
           <div class="col-3"><input type="number" min="1" value="1" class="form-control return-item-qty" /></div>
           <div class="col-2"><button class="btn btn-outline-danger w-100" onclick="this.closest('.return-item-row').remove(); refreshReturnExchangeSummary();"><i class="bi bi-x"></i></button></div>
         `;
@@ -5433,13 +5631,14 @@
         });
 
         document.getElementById("return-items-container").appendChild(row);
+        makeSelectSearchable(select);
       }
 
       function addExchangeItemRow() {
         const row = document.createElement("div");
         row.className = "row g-2 mb-2 exchange-item-row";
         row.innerHTML = `
-          <div class="col-6"><select class="form-select exchange-item-select"></select></div>
+          <div class="col-6"><select class="form-select searchable-select exchange-item-select" data-search-placeholder="Search product..."></select></div>
           <div class="col-2"><input type="number" min="1" value="1" class="form-control exchange-item-qty" /></div>
           <div class="col-3"><input type="number" min="0" step="0.01" value="0" class="form-control exchange-item-price" /></div>
           <div class="col-1"><button class="btn btn-outline-danger w-100" onclick="this.closest('.exchange-item-row').remove(); refreshReturnExchangeSummary();"><i class="bi bi-x"></i></button></div>
@@ -5468,6 +5667,7 @@
         row.querySelector(".exchange-item-price").addEventListener("input", refreshReturnExchangeSummary);
 
         document.getElementById("exchange-items-container").appendChild(row);
+        makeSelectSearchable(select);
       }
 
       function collectReturnExchangePayload() {
@@ -8078,7 +8278,7 @@
         row.className = "row g-2 mb-2 po-item-row";
         row.innerHTML = `
           <div class="col-md-5">
-            <select class="form-select po-item-product"></select>
+            <select class="form-select searchable-select po-item-product" data-search-placeholder="Search product..."></select>
           </div>
           <div class="col-md-3">
             <input type="number" min="1" class="form-control po-item-qty" placeholder="Qty" />
@@ -8102,6 +8302,7 @@
             productSelect.appendChild(opt);
           });
         });
+        makeSelectSearchable(productSelect);
       }
 
       function removePurchaseOrderItemRow(button) {
