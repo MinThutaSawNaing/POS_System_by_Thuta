@@ -3801,9 +3801,6 @@
           const selected = select.selectedOptions[0];
           if (selected && selected.value === "") {
             input.value = "";
-            if (!input.dataset.userPlaceholder && selected.textContent) {
-              input.placeholder = selected.textContent;
-            }
             return;
           }
           input.value = selected ? selected.textContent : "";
@@ -4419,6 +4416,10 @@
             .then((products) => {
               const select = document.getElementById("promotion-product-id");
               select.innerHTML = "";
+              const placeholderOption = document.createElement("option");
+              placeholderOption.value = "";
+              placeholderOption.textContent = "Select a product";
+              select.appendChild(placeholderOption);
               products.forEach((p) => {
                 const opt = document.createElement("option");
                 opt.value = p.id;
