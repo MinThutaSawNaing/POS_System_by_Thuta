@@ -96,13 +96,22 @@
             margin-bottom: 1.6rem;
         }
 
-        .brand-logo i {
+        .brand-logo i,
+        .brand-logo img {
             width: 42px;
             height: 42px;
-            display: grid;
-            place-items: center;
             border-radius: 12px;
             background: rgba(255, 255, 255, 0.18);
+        }
+
+        .brand-logo i {
+            display: grid;
+            place-items: center;
+        }
+
+        .brand-logo img {
+            object-fit: contain;
+            padding: 4px;
         }
 
         .brand-title {
@@ -323,7 +332,7 @@
         <section class="brand-pane">
             <div class="brand-content">
                 <div class="brand-logo">
-                    <i class="fas fa-cash-register"></i>
+                    <img src="/public/photos/logo.png" alt="POS Logo">
                     <span>POS System</span>
                 </div>
                 <h2 class="brand-title">Secure retail operations from one smart workspace.</h2>
