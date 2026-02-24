@@ -1124,6 +1124,10 @@ def api_inventory_suggested_purchase_order():
 def product_image(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
+@app.route('/public/<path:filename>')
+def public_file(filename):
+    return send_from_directory(os.path.join(app.root_path, 'public'), filename)
+
 # Product API Endpoints
 @app.route('/api/products', methods=['GET', 'POST'])
 def api_products():
