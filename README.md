@@ -39,6 +39,8 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
   - Debt & payment tracking
   - Supplier management
   - User roles (`manager`, `cashier`)
+- **Windows Setup Script**
+  - `SetupTheSoftware.bat` creates a virtual environment and installs dependencies
 
 ---
 
@@ -108,6 +110,22 @@ Application URL:
 
 ```text
 http://127.0.0.1:8888
+```
+
+---
+
+## ðŸªŸ Windows Automated Setup
+
+For new Windows machines, you can run the setup script to create the virtual environment and install dependencies:
+
+```bat
+SetupTheSoftware.bat
+```
+
+After it completes, run:
+
+```bat
+.\.venv\Scripts\python.exe app.py
 ```
 
 ---
