@@ -8,6 +8,8 @@ set "VENV_DIR=%CD%\.venv"
 set "PYTHON_EXE=%VENV_DIR%\Scripts\python.exe"
 set "PIP_EXE=%VENV_DIR%\Scripts\pip.exe"
 set "SHORTCUT_PATH=%USERPROFILE%\Desktop\Parrot POS.lnk"
+set "LOGO_PNG=%CD%\public\photos\logo.png"
+set "LOGO_ICO=%CD%\public\photos\logo.ico"
 
 :MENU
 cls
@@ -99,6 +101,8 @@ powershell -NoProfile -Command ^
   "$s.TargetPath='%PYTHON_EXE%';" ^
   "$s.Arguments='%APP_FILE%';" ^
   "$s.WorkingDirectory='%CD%';" ^
+  "$icon = if (Test-Path '%LOGO_ICO%') { '%LOGO_ICO%' } else { $null };" ^
+  "if ($icon) { $s.IconLocation = $icon };" ^
   "$s.Save()"
 echo Setup Complete!
 pause
