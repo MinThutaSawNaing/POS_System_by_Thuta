@@ -43,6 +43,24 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo Creating desktop shortcut...
+set "SHORTCUT_PATH=%USERPROFILE%\Desktop\Parrot POS.lnk"
+set "TARGET=%CD%\.venv\Scripts\python.exe"
+set "ARGS=%CD%\app.py"
+set "WORKDIR=%CD%"
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('%SHORTCUT_PATH%');" ^
+  "$s.TargetPath='%TARGET%';" ^
+  "$s.Arguments='%ARGS%';" ^
+  "$s.WorkingDirectory='%WORKDIR%';" ^
+  "$s.WindowStyle=1;" ^
+  "$s.Description='Parrot POS Launcher';" ^
+  "$s.Save()"
+if errorlevel 1 (
+  echo WARNING: Failed to create desktop shortcut.
+  echo.
+)
+
 echo.
 echo Setup complete.
 echo To run the app:
