@@ -2119,19 +2119,28 @@ def print_receipt(transaction_id):
         bottomMargin=bottom_margin
     )
     styles = getSampleStyleSheet()
+    wrap_style = styles['Normal'].clone('receipt_wrap')
+    wrap_style.fontName = 'Helvetica'
+    wrap_style.fontSize = 7
+    wrap_style.leading = 9
+    wrap_style.wordWrap = 'CJK'
+
+    def wrap_cell(value):
+        return Paragraph(str(value), wrap_style)
+
     elements = []
     elements.append(Paragraph("PARROT POS RECEIPT", styles['Heading4']))
     elements.append(Spacer(1, 4))
     cashier_name = sale.user.username if sale.user else 'Unknown'
     transaction_info = [
-        ["Transaction ID:", sale.transaction_id],
-        ["Date:", sale.date.strftime("%Y-%m-%d %H:%M:%S")],
-        ["Cashier:", cashier_name],
-        ["Payment Method:", sale.payment_method.capitalize()]
+        [wrap_cell("Transaction ID:"), wrap_cell(sale.transaction_id)],
+        [wrap_cell("Date:"), wrap_cell(sale.date.strftime("%Y-%m-%d %H:%M:%S"))],
+        [wrap_cell("Cashier:"), wrap_cell(cashier_name)],
+        [wrap_cell("Payment Method:"), wrap_cell(sale.payment_method.capitalize())]
     ]
     if sale.payment_method == 'cash':
-        transaction_info.append(["Cash Received:", format_currency(sale.cash_received or 0)])
-        transaction_info.append(["Refund Given:", format_currency(sale.refund_amount or 0)])
+        transaction_info.append([wrap_cell("Cash Received:"), wrap_cell(format_currency(sale.cash_received or 0))])
+        transaction_info.append([wrap_cell("Refund Given:"), wrap_cell(format_currency(sale.refund_amount or 0))])
     t = Table(transaction_info, colWidths=[content_width * 0.42, content_width * 0.58])
     t.setStyle(TableStyle([
         ('FONT', (0, 0), (-1, -1), 'Helvetica'),
@@ -2149,11 +2158,11 @@ def print_receipt(transaction_id):
         item_total = Decimal(str(item.price)) * Decimal(str(item.quantity))
         subtotal_calc += item_total
         items_data.append([
-            product.name,
-            format_currency(item.price),
-            str(item.quantity),
-            f"{product.tax_rate:.0f}%",
-            format_currency(item_total)
+            wrap_cell(product.name),
+            wrap_cell(format_currency(item.price)),
+            wrap_cell(str(item.quantity)),
+            wrap_cell(f"{product.tax_rate:.0f}%"),
+            wrap_cell(format_currency(item_total))
         ])
     t = Table(items_data, colWidths=[
         content_width * 0.38,
@@ -2167,6 +2176,8 @@ def print_receipt(transaction_id):
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('ALIGN', (0, 1), (0, -1), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('WORDWRAP', (0, 0), (-1, -1), 'CJK'),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, 0), 8),
         ('BOTTOMPADDING', (0, 0), (-1, 0), 4),
@@ -2182,9 +2193,9 @@ def print_receipt(transaction_id):
     elements.append(t)
     elements.append(Spacer(1, 5))
     totals_data = [
-        ["Subtotal:", format_currency(subtotal_calc)],
-        ["Tax:", format_currency(sale.tax)],
-        ["Total:", format_currency(sale.total)]
+        [wrap_cell("Subtotal:"), wrap_cell(format_currency(subtotal_calc))],
+        [wrap_cell("Tax:"), wrap_cell(format_currency(sale.tax))],
+        [wrap_cell("Total:"), wrap_cell(format_currency(sale.total))]
     ]
     t = Table(totals_data, colWidths=[content_width * 0.55, content_width * 0.45])
     t.setStyle(TableStyle([
