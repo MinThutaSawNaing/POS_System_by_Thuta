@@ -183,21 +183,7 @@
         color: white;
     }
 
-    .dionysus-status-dot {
-        position: absolute;
-        bottom: -2px;
-        right: -2px;
-        width: 14px;
-        height: 14px;
-        background: #10b981;
-        border-radius: 50%;
-        border: 2px solid white;
-        z-index: 3;
-    }
 
-    .dionysus-status-dot.offline {
-        background: #ef4444;
-    }
 
     .dionysus-header-text h4 {
         margin: 0;
@@ -660,11 +646,11 @@
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
                     </svg>
-                    <div class="dionysus-status-dot" id="dionysusStatusDot"></div>
+
                 </div>
                 <div class="dionysus-header-text">
                     <h4>Loli AI</h4>
-                    <span id="dionysusStatusText">Online • Ready to help</span>
+<span>AI Assistant</span>
                 </div>
             </div>
             <div class="dionysus-header-actions">
@@ -776,7 +762,6 @@ let dionysusProcessing = false;
 
 document.addEventListener('DOMContentLoaded', function() {
     dionysusSetupTextarea();
-    dionysusCheckStatus();
 });
 
 function dionysusToggleChat() {
@@ -916,25 +901,7 @@ function dionysusHideError() {
     document.getElementById('dionysusError').classList.remove('active');
 }
 
-function dionysusCheckStatus() {
-    fetch('/api/agent/status')
-        .then(response => response.json())
-        .then(data => {
-            const dot = document.getElementById('dionysusStatusDot');
-            const text = document.getElementById('dionysusStatusText');
-            if (data.success && data.status.api_key_configured) {
-                dot.classList.remove('offline');
-                text.textContent = 'Online • Ready to help';
-            } else {
-                dot.classList.add('offline');
-                text.textContent = 'Offline • API key required';
-            }
-        })
-        .catch(() => {
-            document.getElementById('dionysusStatusDot').classList.add('offline');
-            document.getElementById('dionysusStatusText').textContent = 'Offline • Connection error';
-        });
-}
+
 
 function dionysusClearChat() {
     fetch('/api/agent/clear', { method: 'POST' })
