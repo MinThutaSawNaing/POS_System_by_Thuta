@@ -46,9 +46,18 @@ class AIAgent:
         # If no API key from env, try to get from database via callback
         if not self.api_key and db_get_setting:
             try:
-                self.api_key = db_get_setting('ai_api_key', '')
-            except:
-                pass
+                db_key = db_get_setting('ai_api_key', '')
+                if db_key:
+                    self.api_key = db_key
+                    print(f"[AI Agent] Loaded API key from database")
+            except Exception as e:
+                print(f"[AI Agent] Error loading API key from database: {e}")
+        if self.api_key:
+            # Mask and print first/last few chars for debugging
+            masked = f"{self.api_key[:8]}...{self.api_key[-4:]}" if len(self.api_key) > 12 else "configured"
+            print(f"[AI Agent] API key is configured: {masked}")
+        else:
+            print(f"[AI Agent] WARNING: No API key configured")
         self.model = model
         self.base_url = APIFREE_BASE_URL
         self.conversation_history: List[Message] = []

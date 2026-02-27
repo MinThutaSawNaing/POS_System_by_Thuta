@@ -1063,6 +1063,11 @@ def api_settings():
             set_setting('ai_api_key', '')
             # Also update environment variable for current session
             os.environ.pop('APIFREE_API_KEY', None)
+            # Reset AI agent to pick up the change
+            from agent_orchestrator import reset_orchestrator
+            from ai_agent import reset_agent
+            reset_orchestrator()
+            reset_agent()
             return jsonify({
                 'success': True,
                 'message': 'API key cleared',
@@ -1077,6 +1082,11 @@ def api_settings():
             set_setting('ai_api_key', ai_api_key)
             # Update environment variable for current session
             os.environ['APIFREE_API_KEY'] = ai_api_key
+            # Reset AI agent to pick up the new key
+            from agent_orchestrator import reset_orchestrator
+            from ai_agent import reset_agent
+            reset_orchestrator()
+            reset_agent()
             return jsonify({
                 'success': True,
                 'message': 'API key saved',

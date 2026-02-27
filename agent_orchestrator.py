@@ -118,10 +118,11 @@ class AgentOrchestrator:
             response = self.agent.chat(message=command)
             
             if response.error:
+                print(f"[AI Agent Error] {response.error}")
                 return {
                     "success": False,
                     "error": response.error,
-                    "message": "I encountered an error processing your request. Please try again."
+                    "message": f"I encountered an error: {response.error}"
                 }
                 
             # Execute any tool calls
