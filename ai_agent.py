@@ -157,6 +157,7 @@ class AIAgent:
         if self.tools:
             payload["tools"] = self.tools
             payload["tool_choice"] = "auto"
+            print(f"[AI Agent API] Sending {len(self.tools)} tools with request")
             
         try:
             response = requests.post(
@@ -181,9 +182,14 @@ class AIAgent:
             content = message_data.get("content", "")
             finish_reason = choice.get("finish_reason", "")
             
+            # Debug: log the response structure
+            print(f"[AI Agent API] Finish reason: {finish_reason}")
+            print(f"[AI Agent API] Message keys: {list(message_data.keys())}")
+            
             # Parse tool calls
             tool_calls = []
             raw_tool_calls = message_data.get("tool_calls", [])
+            print(f"[AI Agent API] Raw tool calls count: {len(raw_tool_calls)}")
             
             for tc in raw_tool_calls:
                 if tc.get("type") == "function":

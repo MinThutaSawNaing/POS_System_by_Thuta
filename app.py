@@ -4243,7 +4243,7 @@ AI_MODELS = {
 
 def get_ai_orchestrator():
     """Get or create AI orchestrator with database settings access"""
-    return get_orchestrator(db, AI_MODELS, get_setting)
+    return get_orchestrator(db, AI_MODELS, get_setting, app)
 
 
 @app.route('/api/agent/chat', methods=['POST'])

@@ -1,610 +1,959 @@
-<!-- AI Agent Widget for POS Dashboard -->
+<!-- Dionysus AI Chat Widget - Self-contained styles -->
 <!-- Include this file in dashboard.html -->
 
 <style>
-/* AI Agent Widget Styles */
-.ai-agent-widget {
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    z-index: 9999;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-}
+    /* ============================================
+       Dionysus AI Chat - Isolated Styles
+       Using scoped class names to avoid conflicts
+       ============================================ */
 
-.ai-agent-button {
-    width: 60px;
-    height: 60px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    border: none;
-    box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.3s ease;
-    position: relative;
-}
-
-.ai-agent-button:hover {
-    transform: scale(1.1);
-    box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
-}
-
-.ai-agent-button i {
-    font-size: 28px;
-    color: white;
-}
-
-.ai-agent-button .notification-badge {
-    position: absolute;
-    top: -2px;
-    right: -2px;
-    width: 18px;
-    height: 18px;
-    background: #ff4757;
-    border-radius: 50%;
-    border: 2px solid white;
-    display: none;
-}
-
-.ai-agent-chat {
-    position: absolute;
-    bottom: 75px;
-    right: 0;
-    width: 380px;
-    height: 500px;
-    background: white;
-    border-radius: 16px;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
-    display: none;
-    flex-direction: column;
-    overflow: hidden;
-    border: 1px solid #e0e0e0;
-}
-
-.ai-agent-chat.active {
-    display: flex;
-}
-
-.ai-agent-header {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    padding: 16px 20px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.ai-agent-header h5 {
-    margin: 0;
-    font-size: 16px;
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.ai-agent-header .status-indicator {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #2ecc71;
-    animation: pulse 2s infinite;
-}
-
-.ai-agent-header .status-indicator.offline {
-    background: #e74c3c;
-    animation: none;
-}
-
-@keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
-}
-
-.ai-agent-header .header-actions {
-    display: flex;
-    gap: 8px;
-}
-
-.ai-agent-header button {
-    background: rgba(255, 255, 255, 0.2);
-    border: none;
-    color: white;
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.2s;
-}
-
-.ai-agent-header button:hover {
-    background: rgba(255, 255, 255, 0.3);
-}
-
-.ai-agent-messages {
-    flex: 1;
-    overflow-y: auto;
-    padding: 16px;
-    background: #f8f9fa;
-}
-
-.ai-agent-messages .message {
-    margin-bottom: 12px;
-    max-width: 85%;
-    animation: fadeIn 0.3s ease;
-}
-
-@keyframes fadeIn {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
-.ai-agent-messages .message.user {
-    margin-left: auto;
-}
-
-.ai-agent-messages .message-content {
-    padding: 12px 16px;
-    border-radius: 16px;
-    font-size: 14px;
-    line-height: 1.5;
-}
-
-.ai-agent-messages .message.user .message-content {
-    background: #667eea;
-    color: white;
-    border-bottom-right-radius: 4px;
-}
-
-.ai-agent-messages .message.assistant .message-content {
-    background: white;
-    color: #333;
-    border-bottom-left-radius: 4px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-}
-
-.ai-agent-messages .message-time {
-    font-size: 11px;
-    color: #999;
-    margin-top: 4px;
-    text-align: right;
-}
-
-.ai-agent-messages .message.assistant .message-time {
-    text-align: left;
-}
-
-.ai-agent-messages .typing-indicator {
-    display: none;
-    padding: 12px 16px;
-    background: white;
-    border-radius: 16px;
-    border-bottom-left-radius: 4px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-    width: fit-content;
-}
-
-.ai-agent-messages .typing-indicator.active {
-    display: flex;
-    gap: 4px;
-    align-items: center;
-}
-
-.ai-agent-messages .typing-indicator span {
-    width: 8px;
-    height: 8px;
-    background: #999;
-    border-radius: 50%;
-    animation: typing 1.4s infinite;
-}
-
-.ai-agent-messages .typing-indicator span:nth-child(2) {
-    animation-delay: 0.2s;
-}
-
-.ai-agent-messages .typing-indicator span:nth-child(3) {
-    animation-delay: 0.4s;
-}
-
-@keyframes typing {
-    0%, 60%, 100% { transform: translateY(0); }
-    30% { transform: translateY(-10px); }
-}
-
-.ai-agent-input-area {
-    padding: 12px 16px;
-    background: white;
-    border-top: 1px solid #e0e0e0;
-    display: flex;
-    gap: 8px;
-    align-items: flex-end;
-}
-
-.ai-agent-input-area textarea {
-    flex: 1;
-    border: 1px solid #ddd;
-    border-radius: 20px;
-    padding: 10px 16px;
-    font-size: 14px;
-    resize: none;
-    outline: none;
-    min-height: 40px;
-    max-height: 100px;
-    font-family: inherit;
-}
-
-.ai-agent-input-area textarea:focus {
-    border-color: #667eea;
-}
-
-.ai-agent-input-area button {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    background: #667eea;
-    border: none;
-    color: white;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.2s;
-}
-
-.ai-agent-input-area button:hover {
-    background: #5a6fd6;
-}
-
-.ai-agent-input-area button:disabled {
-    background: #ccc;
-    cursor: not-allowed;
-}
-
-.ai-agent-suggestions {
-    padding: 8px 16px;
-    background: white;
-    border-top: 1px solid #e0e0e0;
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.ai-agent-suggestions button {
-    padding: 6px 12px;
-    border: 1px solid #ddd;
-    border-radius: 16px;
-    background: white;
-    font-size: 12px;
-    cursor: pointer;
-    transition: all 0.2s;
-    white-space: nowrap;
-}
-
-.ai-agent-suggestions button:hover {
-    background: #f0f0f0;
-    border-color: #667eea;
-}
-
-.ai-agent-error {
-    background: #fee;
-    color: #c33;
-    padding: 12px 16px;
-    margin: 8px 16px;
-    border-radius: 8px;
-    font-size: 13px;
-    display: none;
-}
-
-.ai-agent-error.active {
-    display: block;
-}
-
-/* Quick actions menu */
-.ai-agent-quick-actions {
-    padding: 8px 16px;
-    background: #f8f9fa;
-    border-top: 1px solid #e0e0e0;
-    display: flex;
-    gap: 8px;
-    overflow-x: auto;
-}
-
-.ai-agent-quick-actions button {
-    padding: 6px 12px;
-    border: none;
-    border-radius: 12px;
-    background: white;
-    font-size: 12px;
-    cursor: pointer;
-    white-space: nowrap;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
-}
-
-.ai-agent-quick-actions button:hover {
-    background: #667eea;
-    color: white;
-}
-
-/* Welcome message */
-.ai-agent-welcome {
-    text-align: center;
-    padding: 20px;
-    color: #666;
-}
-
-.ai-agent-welcome i {
-    font-size: 48px;
-    color: #667eea;
-    margin-bottom: 12px;
-}
-
-.ai-agent-welcome h6 {
-    margin: 0 0 8px 0;
-    color: #333;
-}
-
-.ai-agent-welcome p {
-    margin: 0;
-    font-size: 13px;
-}
-
-/* Responsive */
-@media (max-width: 480px) {
-    .ai-agent-chat {
-        width: calc(100vw - 40px);
-        height: calc(100vh - 100px);
-        right: -10px;
+    .dionysus-chat-widget {
+        --dc-purple-50: #faf5ff;
+        --dc-purple-100: #f3e8ff;
+        --dc-purple-200: #e9d5ff;
+        --dc-purple-300: #d8b4fe;
+        --dc-purple-400: #c084fc;
+        --dc-purple-500: #a855f7;
+        --dc-purple-600: #9333ea;
+        --dc-purple-700: #7e22ce;
+        --dc-purple-800: #6b21a8;
+        --dc-purple-900: #581c87;
+        --dc-indigo-500: #6366f1;
+        --dc-indigo-600: #4f46e5;
     }
-}
+
+    .dionysus-chat-widget {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 9999;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    /* Floating Action Button */
+    .dionysus-fab {
+        width: 60px;
+        height: 60px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, var(--dc-purple-600) 0%, var(--dc-indigo-600) 100%);
+        border: none;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 10px 40px -10px rgba(147, 51, 234, 0.5);
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        position: relative;
+        color: white;
+    }
+
+    .dionysus-fab:hover {
+        transform: scale(1.05);
+        box-shadow: 0 15px 50px -10px rgba(147, 51, 234, 0.6);
+    }
+
+    .dionysus-fab:active {
+        transform: scale(0.95);
+    }
+
+    .dionysus-fab .pulse-ring {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        border: 2px solid var(--dc-purple-400);
+        animation: dcPulse 2s ease-out infinite;
+        pointer-events: none;
+    }
+
+    @keyframes dcPulse {
+        0% { transform: scale(1); opacity: 0.5; }
+        100% { transform: scale(1.3); opacity: 0; }
+    }
+
+    .dionysus-fab .notification-badge {
+        position: absolute;
+        top: -4px;
+        right: -4px;
+        width: 20px;
+        height: 20px;
+        background: #ef4444;
+        border-radius: 50%;
+        border: 3px solid white;
+        display: none;
+        font-size: 11px;
+        font-weight: bold;
+        align-items: center;
+        justify-content: center;
+        color: white;
+    }
+
+    /* Chat Window */
+    .dionysus-chat-window {
+        position: fixed;
+        bottom: 90px;
+        right: 24px;
+        width: 400px;
+        height: calc(100vh - 120px);
+        max-height: 650px;
+        background: rgba(255, 255, 255, 0.98);
+        border-radius: 24px;
+        box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.25);
+        display: none;
+        flex-direction: column;
+        overflow: hidden;
+        border: 1px solid rgba(147, 51, 234, 0.15);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        z-index: 10000;
+    }
+
+    .dionysus-chat-window.active {
+        display: flex;
+        animation: dcChatAppear 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    @keyframes dcChatAppear {
+        from { opacity: 0; transform: scale(0.95) translateY(10px); }
+        to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+
+    /* Header */
+    .dionysus-header {
+        background: linear-gradient(135deg, var(--dc-purple-600) 0%, var(--dc-indigo-600) 100%);
+        padding: 18px 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .dionysus-header::before {
+        content: '';
+        position: absolute;
+        top: -50%;
+        right: -30%;
+        width: 200px;
+        height: 200px;
+        background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+        pointer-events: none;
+    }
+
+    .dionysus-header-info {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        z-index: 1;
+    }
+
+    .dionysus-avatar {
+        position: relative;
+        width: 46px;
+        height: 46px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.2);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        overflow: hidden;
+    }
+
+    .dionysus-avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .dionysus-avatar svg {
+        width: 24px;
+        height: 24px;
+        color: white;
+    }
+
+    .dionysus-status-dot {
+        position: absolute;
+        bottom: 0;
+        right: 0;
+        width: 12px;
+        height: 12px;
+        background: #10b981;
+        border-radius: 50%;
+        border: 2px solid white;
+    }
+
+    .dionysus-status-dot.offline {
+        background: #ef4444;
+    }
+
+    .dionysus-header-text h4 {
+        margin: 0;
+        color: white;
+        font-size: 16px;
+        font-weight: 600;
+    }
+
+    .dionysus-header-text span {
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 12px;
+    }
+
+    .dionysus-header-actions {
+        display: flex;
+        gap: 6px;
+        z-index: 1;
+    }
+
+    .dionysus-header-actions button {
+        width: 36px;
+        height: 36px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.15);
+        border: none;
+        color: white;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.2s;
+    }
+
+    .dionysus-header-actions button:hover {
+        background: rgba(255, 255, 255, 0.25);
+    }
+
+    .dionysus-header-actions button svg {
+        width: 18px;
+        height: 18px;
+    }
+
+    /* Error Banner */
+    .dionysus-error {
+        margin: 12px 16px;
+        padding: 12px 16px;
+        background: #fef2f2;
+        border: 1px solid #fecaca;
+        border-radius: 12px;
+        color: #dc2626;
+        font-size: 13px;
+        display: none;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .dionysus-error.active {
+        display: flex;
+    }
+
+    .dionysus-error svg {
+        width: 16px;
+        height: 16px;
+        flex-shrink: 0;
+    }
+
+    /* Messages */
+    .dionysus-messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 20px;
+        background: linear-gradient(180deg, rgba(147, 51, 234, 0.02) 0%, transparent 100px);
+    }
+
+    .dionysus-messages::-webkit-scrollbar {
+        width: 6px;
+    }
+
+    .dionysus-messages::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    .dionysus-messages::-webkit-scrollbar-thumb {
+        background: var(--dc-purple-300);
+        border-radius: 3px;
+    }
+
+    .dionysus-messages::-webkit-scrollbar-thumb:hover {
+        background: var(--dc-purple-400);
+    }
+
+    /* Welcome Screen */
+    .dionysus-welcome {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        text-align: center;
+        padding: 20px;
+    }
+
+    .dionysus-welcome-icon {
+        width: 80px;
+        height: 80px;
+        border-radius: 20px;
+        background: linear-gradient(135deg, var(--dc-purple-500) 0%, var(--dc-indigo-600) 100%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 16px;
+        box-shadow: 0 10px 30px -10px rgba(147, 51, 234, 0.4);
+        overflow: hidden;
+    }
+
+    .dionysus-welcome-icon img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .dionysus-welcome-icon svg {
+        width: 40px;
+        height: 40px;
+        color: white;
+    }
+
+    .dionysus-welcome h5 {
+        margin: 0 0 6px 0;
+        font-size: 18px;
+        font-weight: 600;
+        color: #1f2937;
+    }
+
+    .dionysus-welcome p {
+        margin: 0 0 20px 0;
+        font-size: 14px;
+        color: #6b7280;
+        max-width: 260px;
+    }
+
+    .dionysus-welcome-buttons {
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .dionysus-welcome-buttons button {
+        width: 100%;
+        padding: 12px 16px;
+        background: #f9fafb;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        font-size: 13px;
+        color: #374151;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        transition: all 0.2s;
+        text-align: left;
+    }
+
+    .dionysus-welcome-buttons button:hover {
+        background: #faf5ff;
+        border-color: var(--dc-purple-300);
+        color: var(--dc-purple-700);
+    }
+
+    .dionysus-welcome-buttons button svg {
+        width: 16px;
+        height: 16px;
+        color: var(--dc-purple-500);
+    }
+
+    /* Message Bubbles */
+    .dionysus-message {
+        margin-bottom: 16px;
+        animation: dcMessageAppear 0.3s ease;
+    }
+
+    @keyframes dcMessageAppear {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    .dionysus-message.user {
+        display: flex;
+        justify-content: flex-end;
+    }
+
+    .dionysus-message.assistant {
+        display: flex;
+        justify-content: flex-start;
+    }
+
+    .dionysus-message-wrapper {
+        display: flex;
+        gap: 10px;
+        max-width: 85%;
+    }
+
+    .dionysus-message.user .dionysus-message-wrapper {
+        flex-direction: row-reverse;
+    }
+
+    .dionysus-message-avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        overflow: hidden;
+    }
+
+    .dionysus-message-avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .dionysus-message.assistant .dionysus-message-avatar {
+        background: linear-gradient(135deg, var(--dc-purple-500) 0%, var(--dc-indigo-600) 100%);
+    }
+
+    .dionysus-message.user .dionysus-message-avatar {
+        background: #1f2937;
+    }
+
+    .dionysus-message-avatar svg {
+        width: 16px;
+        height: 16px;
+        color: white;
+    }
+
+    .dionysus-message-content {
+        padding: 12px 16px;
+        border-radius: 18px;
+        font-size: 14px;
+        line-height: 1.5;
+    }
+
+    .dionysus-message.user .dionysus-message-content {
+        background: linear-gradient(135deg, var(--dc-purple-600) 0%, var(--dc-indigo-600) 100%);
+        color: white;
+        border-bottom-right-radius: 4px;
+    }
+
+    .dionysus-message.assistant .dionysus-message-content {
+        background: #f3f4f6;
+        color: #1f2937;
+        border-bottom-left-radius: 4px;
+    }
+
+    .dionysus-message-time {
+        font-size: 11px;
+        color: #9ca3af;
+        margin-top: 4px;
+    }
+
+    .dionysus-message.user .dionysus-message-time {
+        text-align: right;
+    }
+
+    /* Typing Indicator */
+    .dionysus-typing {
+        display: none;
+        padding: 0 20px 16px;
+    }
+
+    .dionysus-typing.active {
+        display: block;
+    }
+
+    .dionysus-typing-content {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 16px;
+        background: #f3f4f6;
+        border-radius: 18px;
+        border-bottom-left-radius: 4px;
+        width: fit-content;
+    }
+
+    .dionysus-typing-dots {
+        display: flex;
+        gap: 4px;
+    }
+
+    .dionysus-typing-dots span {
+        width: 8px;
+        height: 8px;
+        background: var(--dc-purple-400);
+        border-radius: 50%;
+        animation: dcTyping 1.4s ease-in-out infinite;
+    }
+
+    .dionysus-typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .dionysus-typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes dcTyping {
+        0%, 60%, 100% { transform: translateY(0); }
+        30% { transform: translateY(-8px); }
+    }
+
+    .dionysus-typing-text {
+        font-size: 12px;
+        color: #6b7280;
+    }
+
+    /* Quick Actions */
+    .dionysus-quick-actions {
+        padding: 12px 16px;
+        background: #f9fafb;
+        border-top: 1px solid #f3f4f6;
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+    }
+
+    .dionysus-quick-actions::-webkit-scrollbar {
+        display: none;
+    }
+
+    .dionysus-quick-actions button {
+        padding: 8px 14px;
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 500;
+        color: #4b5563;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: all 0.2s;
+    }
+
+    .dionysus-quick-actions button:hover {
+        background: #faf5ff;
+        border-color: var(--dc-purple-300);
+        color: var(--dc-purple-700);
+    }
+
+    /* Input Area */
+    .dionysus-input-area {
+        padding: 16px;
+        background: white;
+        border-top: 1px solid #f3f4f6;
+        display: flex;
+        gap: 10px;
+        align-items: flex-end;
+    }
+
+    .dionysus-input-wrapper {
+        flex: 1;
+        position: relative;
+    }
+
+    .dionysus-input-wrapper textarea {
+        width: 100%;
+        padding: 12px 16px;
+        background: #f3f4f6;
+        border: 2px solid transparent;
+        border-radius: 20px;
+        font-size: 14px;
+        resize: none;
+        outline: none;
+        min-height: 46px;
+        max-height: 120px;
+        font-family: inherit;
+        color: #1f2937;
+        transition: all 0.2s;
+    }
+
+    .dionysus-input-wrapper textarea:focus {
+        background: white;
+        border-color: var(--dc-purple-400);
+        box-shadow: 0 0 0 3px rgba(147, 51, 234, 0.1);
+    }
+
+    .dionysus-input-wrapper textarea::placeholder {
+        color: #9ca3af;
+    }
+
+    .dionysus-send-btn {
+        width: 46px;
+        height: 46px;
+        border-radius: 14px;
+        background: linear-gradient(135deg, var(--dc-purple-600) 0%, var(--dc-indigo-600) 100%);
+        border: none;
+        color: white;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s;
+        box-shadow: 0 4px 15px rgba(147, 51, 234, 0.3);
+        flex-shrink: 0;
+    }
+
+    .dionysus-send-btn:hover {
+        transform: scale(1.05);
+        box-shadow: 0 6px 20px rgba(147, 51, 234, 0.4);
+    }
+
+    .dionysus-send-btn:disabled {
+        background: #d1d5db;
+        cursor: not-allowed;
+        box-shadow: none;
+        transform: none;
+    }
+
+    .dionysus-send-btn svg {
+        width: 20px;
+        height: 20px;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+        .dionysus-chat-widget {
+            bottom: 16px;
+            right: 16px;
+        }
+
+        .dionysus-chat-window {
+            width: calc(100vw - 32px);
+            height: calc(100vh - 110px);
+            max-height: none;
+            right: 16px;
+            bottom: 80px;
+            border-radius: 20px;
+        }
+
+        .dionysus-fab {
+            width: 54px;
+            height: 54px;
+        }
+    }
+
+    @media (max-height: 700px) {
+        .dionysus-chat-window {
+            height: calc(100vh - 100px);
+            max-height: none;
+        }
+    }
 </style>
 
-<div class="ai-agent-widget">
-    <div class="ai-agent-chat" id="aiAgentChat">
-        <div class="ai-agent-header">
-            <h5>
-                <i class="bi bi-robot"></i>
-                AI Assistant
-                <span class="status-indicator" id="aiStatusIndicator"></span>
-            </h5>
-            <div class="header-actions">
-                <button onclick="clearChat()" title="Clear chat">
-                    <i class="bi bi-trash3"></i>
+<div class="dionysus-chat-widget">
+    <!-- Chat Window -->
+    <div class="dionysus-chat-window" id="dionysusChatWindow">
+        <!-- Header -->
+        <div class="dionysus-header">
+            <div class="dionysus-header-info">
+                <div class="dionysus-avatar">
+                    <img src="/public/photos/loli-logo.png" alt="Loli AI" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+                    </svg>
+                    <div class="dionysus-status-dot" id="dionysusStatusDot"></div>
+                </div>
+                <div class="dionysus-header-text">
+                    <h4>Loli AI</h4>
+                    <span id="dionysusStatusText">Online • Ready to help</span>
+                </div>
+            </div>
+            <div class="dionysus-header-actions">
+                <button onclick="dionysusClearChat()" title="Clear chat">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                    </svg>
                 </button>
-                <button onclick="toggleChat()" title="Close">
-                    <i class="bi bi-x-lg"></i>
+                <button onclick="dionysusToggleChat()" title="Close">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
                 </button>
             </div>
         </div>
-        
-        <div class="ai-agent-error" id="aiErrorMessage"></div>
-        
-        <div class="ai-agent-messages" id="aiMessages">
-            <div class="ai-agent-welcome">
-                <i class="bi bi-robot"></i>
-                <h6>Inventory & Procurement AI</h6>
-                <p>I can help you manage inventory, create purchase orders, check stock levels, and more. Just ask me!</p>
+
+        <!-- Error Banner -->
+        <div class="dionysus-error" id="dionysusError">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <span id="dionysusErrorText"></span>
+        </div>
+
+        <!-- Messages -->
+        <div class="dionysus-messages" id="dionysusMessages">
+            <div class="dionysus-welcome" id="dionysusWelcome">
+                <div class="dionysus-welcome-icon">
+                    <img src="/public/photos/loli-logo.png" alt="Loli AI" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+                    </svg>
+                </div>
+                <h5>Loli - Inventory & Procurement AI</h5>
+                <p>I can help you manage inventory, create purchase orders, check stock levels, and more.</p>
+                <div class="dionysus-welcome-buttons">
+                    <button onclick="dionysusQuickCommand('Check low stock items')">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path>
+                        </svg>
+                        Check low stock items
+                    </button>
+                    <button onclick="dionysusQuickCommand('Show pending purchase orders')">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                        </svg>
+                        Show pending purchase orders
+                    </button>
+                    <button onclick="dionysusQuickCommand('Get warehouse inventory')">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path>
+                        </svg>
+                        Get warehouse inventory
+                    </button>
+                </div>
             </div>
         </div>
-        
-        <div class="typing-indicator" id="aiTypingIndicator">
-            <span></span>
-            <span></span>
-            <span></span>
+
+        <!-- Typing Indicator -->
+        <div class="dionysus-typing" id="dionysusTyping">
+            <div class="dionysus-typing-content">
+                <div class="dionysus-typing-dots">
+                    <span></span><span></span><span></span>
+                </div>
+                <span class="dionysus-typing-text">AI is thinking...</span>
+            </div>
         </div>
-        
-        <div class="ai-agent-quick-actions">
-            <button onclick="sendQuickCommand('Check low stock items')">
-                <i class="bi bi-box-seam"></i> Low Stock
-            </button>
-            <button onclick="sendQuickCommand('Show pending purchase orders')">
-                <i class="bi bi-receipt"></i> Pending POs
-            </button>
-            <button onclick="sendQuickCommand('Get warehouse inventory')">
-                <i class="bi bi-building"></i> Warehouse
-            </button>
-            <button onclick="sendQuickCommand('Suggest reorder quantities')">
-                <i class="bi bi-graph-up"></i> Reorder
-            </button>
+
+        <!-- Quick Actions -->
+        <div class="dionysus-quick-actions">
+            <button onclick="dionysusQuickCommand('Low stock')">📦 Low Stock</button>
+            <button onclick="dionysusQuickCommand('Pending POs')">📋 Pending POs</button>
+            <button onclick="dionysusQuickCommand('Warehouse')">🏭 Warehouse</button>
+            <button onclick="dionysusQuickCommand('Suppliers')">🏢 Suppliers</button>
         </div>
-        
-        <div class="ai-agent-input-area">
-            <textarea 
-                id="aiInput" 
-                placeholder="Type your command... (e.g., 'Check low stock items')"
-                rows="1"
-                onkeydown="handleInputKeydown(event)"
-            ></textarea>
-            <button onclick="sendMessage()" id="aiSendButton">
-                <i class="bi bi-send-fill"></i>
+
+        <!-- Input Area -->
+        <div class="dionysus-input-area">
+            <div class="dionysus-input-wrapper">
+                <textarea 
+                    id="dionysusInput" 
+                    placeholder="Type your command..."
+                    rows="1"
+                    onkeydown="dionysusHandleKeydown(event)"
+                ></textarea>
+            </div>
+            <button class="dionysus-send-btn" onclick="dionysusSendMessage()" id="dionysusSendBtn">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+                </svg>
             </button>
         </div>
     </div>
-    
-    <button class="ai-agent-button" onclick="toggleChat()" id="aiAgentButton">
-        <i class="bi bi-robot"></i>
-        <span class="notification-badge" id="aiNotificationBadge"></span>
+
+    <!-- FAB Button -->
+    <button class="dionysus-fab" onclick="dionysusToggleChat()">
+        <span class="pulse-ring"></span>
+        <svg id="dionysusFabIcon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path>
+        </svg>
+        <span class="notification-badge" id="dionysusNotification"></span>
     </button>
 </div>
 
 <script>
-let chatOpen = false;
-let isProcessing = false;
+let dionysusChatOpen = false;
+let dionysusProcessing = false;
 
-// Check AI status on load
 document.addEventListener('DOMContentLoaded', function() {
-    checkAIStatus();
-    autoResizeTextarea();
+    dionysusSetupTextarea();
+    dionysusCheckStatus();
 });
 
-function toggleChat() {
-    chatOpen = !chatOpen;
-    const chat = document.getElementById('aiAgentChat');
-    chat.classList.toggle('active', chatOpen);
+function dionysusToggleChat() {
+    dionysusChatOpen = !dionysusChatOpen;
+    const chatWindow = document.getElementById('dionysusChatWindow');
+    const fabIcon = document.getElementById('dionysusFabIcon');
     
-    if (chatOpen) {
-        document.getElementById('aiInput').focus();
-        hideNotification();
+    if (dionysusChatOpen) {
+        chatWindow.classList.add('active');
+        fabIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>';
+        document.getElementById('dionysusInput').focus();
+        dionysusScrollBottom();
+    } else {
+        chatWindow.classList.remove('active');
+        fabIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path>';
     }
 }
 
-function showNotification() {
-    if (!chatOpen) {
-        document.getElementById('aiNotificationBadge').style.display = 'block';
-    }
-}
-
-function hideNotification() {
-    document.getElementById('aiNotificationBadge').style.display = 'none';
-}
-
-function checkAIStatus() {
-    fetch('/api/agent/status')
-        .then(response => response.json())
-        .then(data => {
-            const indicator = document.getElementById('aiStatusIndicator');
-            if (data.success && data.status.api_key_configured) {
-                indicator.classList.remove('offline');
-            } else {
-                indicator.classList.add('offline');
-            }
-        })
-        .catch(() => {
-            document.getElementById('aiStatusIndicator').classList.add('offline');
-        });
-}
-
-function handleInputKeydown(event) {
-    if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
-    }
-}
-
-function autoResizeTextarea() {
-    const textarea = document.getElementById('aiInput');
+function dionysusSetupTextarea() {
+    const textarea = document.getElementById('dionysusInput');
     textarea.addEventListener('input', function() {
         this.style.height = 'auto';
-        this.style.height = Math.min(this.scrollHeight, 100) + 'px';
+        this.style.height = Math.min(this.scrollHeight, 120) + 'px';
     });
 }
 
-function sendQuickCommand(command) {
-    document.getElementById('aiInput').value = command;
-    sendMessage();
+function dionysusHandleKeydown(event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        dionysusSendMessage();
+    }
 }
 
-function sendMessage() {
-    const input = document.getElementById('aiInput');
+function dionysusQuickCommand(command) {
+    document.getElementById('dionysusInput').value = command;
+    dionysusSendMessage();
+}
+
+function dionysusSendMessage() {
+    const input = document.getElementById('dionysusInput');
     const command = input.value.trim();
     
-    if (!command || isProcessing) return;
+    if (!command || dionysusProcessing) return;
     
-    // Add user message
-    addMessage('user', command);
+    dionysusAddMessage('user', command);
     input.value = '';
     input.style.height = 'auto';
     
-    // Show typing indicator
-    showTypingIndicator();
-    isProcessing = true;
-    document.getElementById('aiSendButton').disabled = true;
-    hideError();
+    dionysusShowTyping();
+    dionysusProcessing = true;
+    document.getElementById('dionysusSendBtn').disabled = true;
+    dionysusHideError();
     
-    // Send to API
     fetch('/api/agent/chat', {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command: command })
     })
     .then(response => response.json())
     .then(data => {
-        hideTypingIndicator();
-        isProcessing = false;
-        document.getElementById('aiSendButton').disabled = false;
+        dionysusHideTyping();
+        dionysusProcessing = false;
+        document.getElementById('dionysusSendBtn').disabled = false;
         
         if (data.success) {
-            addMessage('assistant', data.message);
+            dionysusAddMessage('assistant', data.message);
         } else {
-            showError(data.message || data.error || 'An error occurred');
-            addMessage('assistant', 'Sorry, I encountered an error processing your request. Please try again.');
+            dionysusShowError(data.message || data.error || 'An error occurred');
+            dionysusAddMessage('assistant', data.message || 'Sorry, I encountered an error. Please try again.');
         }
     })
     .catch(error => {
-        hideTypingIndicator();
-        isProcessing = false;
-        document.getElementById('aiSendButton').disabled = false;
-        showError('Failed to connect to AI service');
-        addMessage('assistant', 'Sorry, I\'m having trouble connecting. Please check your network and try again.');
+        dionysusHideTyping();
+        dionysusProcessing = false;
+        document.getElementById('dionysusSendBtn').disabled = false;
+        dionysusShowError('Failed to connect to AI service');
+        dionysusAddMessage('assistant', 'Sorry, I\'m having trouble connecting. Please check your network.');
     });
 }
 
-function addMessage(role, content) {
-    const messagesContainer = document.getElementById('aiMessages');
-    
-    // Remove welcome message if present
-    const welcome = messagesContainer.querySelector('.ai-agent-welcome');
-    if (welcome) {
-        welcome.remove();
-    }
-    
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${role}`;
+function dionysusAddMessage(role, content) {
+    const container = document.getElementById('dionysusMessages');
+    const welcome = document.getElementById('dionysusWelcome');
+    if (welcome) welcome.remove();
     
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    
-    // Convert newlines to <br> for display
     const formattedContent = content.replace(/\n/g, '<br>');
     
-    messageDiv.innerHTML = `
-        <div class="message-content">${formattedContent}</div>
-        <div class="message-time">${time}</div>
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `dionysus-message ${role}`;
+    
+    const avatarContent = role === 'user' 
+        ? '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>'
+        : '<img src="/public/photos/loli-logo.png" alt="Loli" onerror="this.style.display=\'none\'; this.parentElement.innerHTML=\'<svg fill=none stroke=currentColor viewBox=0 0 24 24><path stroke-linecap=round stroke-linejoin=round stroke-width=2 d=M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z></path></svg>\';">';
+    
+    msgDiv.innerHTML = `
+        <div class="dionysus-message-wrapper">
+            <div class="dionysus-message-avatar">
+                ${avatarContent}
+            </div>
+            <div>
+                <div class="dionysus-message-content">${formattedContent}</div>
+                <div class="dionysus-message-time">${time}</div>
+            </div>
+        </div>
     `;
     
-    messagesContainer.appendChild(messageDiv);
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    container.appendChild(msgDiv);
+    dionysusScrollBottom();
 }
 
-function showTypingIndicator() {
-    document.getElementById('aiTypingIndicator').classList.add('active');
-    const messagesContainer = document.getElementById('aiMessages');
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+function dionysusScrollBottom() {
+    const container = document.getElementById('dionysusMessages');
+    container.scrollTop = container.scrollHeight;
 }
 
-function hideTypingIndicator() {
-    document.getElementById('aiTypingIndicator').classList.remove('active');
+function dionysusShowTyping() {
+    document.getElementById('dionysusTyping').classList.add('active');
+    dionysusScrollBottom();
 }
 
-function showError(message) {
-    const errorDiv = document.getElementById('aiErrorMessage');
-    errorDiv.textContent = message;
-    errorDiv.classList.add('active');
-    setTimeout(hideError, 5000);
+function dionysusHideTyping() {
+    document.getElementById('dionysusTyping').classList.remove('active');
 }
 
-function hideError() {
-    document.getElementById('aiErrorMessage').classList.remove('active');
+function dionysusShowError(message) {
+    document.getElementById('dionysusErrorText').textContent = message;
+    document.getElementById('dionysusError').classList.add('active');
+    setTimeout(dionysusHideError, 5000);
 }
 
-function clearChat() {
-    fetch('/api/agent/clear', {
-        method: 'POST'
-    })
-    .then(() => {
-        const messagesContainer = document.getElementById('aiMessages');
-        messagesContainer.innerHTML = `
-            <div class="ai-agent-welcome">
-                <i class="bi bi-robot"></i>
-                <h6>Inventory & Procurement AI</h6>
-                <p>I can help you manage inventory, create purchase orders, check stock levels, and more. Just ask me!</p>
-            </div>
-        `;
-    });
+function dionysusHideError() {
+    document.getElementById('dionysusError').classList.remove('active');
+}
+
+function dionysusCheckStatus() {
+    fetch('/api/agent/status')
+        .then(response => response.json())
+        .then(data => {
+            const dot = document.getElementById('dionysusStatusDot');
+            const text = document.getElementById('dionysusStatusText');
+            if (data.success && data.status.api_key_configured) {
+                dot.classList.remove('offline');
+                text.textContent = 'Online • Ready to help';
+            } else {
+                dot.classList.add('offline');
+                text.textContent = 'Offline • API key required';
+            }
+        })
+        .catch(() => {
+            document.getElementById('dionysusStatusDot').classList.add('offline');
+            document.getElementById('dionysusStatusText').textContent = 'Offline • Connection error';
+        });
+}
+
+function dionysusClearChat() {
+    fetch('/api/agent/clear', { method: 'POST' })
+        .then(() => {
+            const container = document.getElementById('dionysusMessages');
+            container.innerHTML = `
+                <div class="dionysus-welcome" id="dionysusWelcome">
+                    <div class="dionysus-welcome-icon">
+                        <img src="/public/photos/loli-logo.png" alt="Loli AI" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+                        </svg>
+                    </div>
+                    <h5>Loli - Inventory & Procurement AI</h5>
+                    <p>I can help you manage inventory, create purchase orders, check stock levels, and more.</p>
+                    <div class="dionysus-welcome-buttons">
+                        <button onclick="dionysusQuickCommand('Check low stock items')">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path>
+                            </svg>
+                            Check low stock items
+                        </button>
+                        <button onclick="dionysusQuickCommand('Show pending purchase orders')">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                            Show pending purchase orders
+                        </button>
+                        <button onclick="dionysusQuickCommand('Get warehouse inventory')">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path>
+                            </svg>
+                            Get warehouse inventory
+                        </button>
+                    </div>
+                </div>
+            `;
+        });
 }
 </script>
