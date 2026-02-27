@@ -21,6 +21,9 @@ import pytz
 from functools import wraps
 from reportlab.graphics.barcode import createBarcodeDrawing
 
+# Import AI Agent modules
+from agent_orchestrator import get_orchestrator
+
 app = Flask(__name__)
 app.secret_key = 'your_super_secret_key_here'  # Change this in production!
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pos.db'
@@ -1017,27 +1020,62 @@ def api_settings():
         return jsonify({'error': 'Unauthorized'}), 401
 
     if request.method == 'GET':
+        # Check if AI API key is configured (don't return the actual key)
+        ai_api_key = get_setting('ai_api_key', '')
         return jsonify({
             'pos_name': 'Parrot POS',
             'currency_code': get_currency_code(),
-            'currency_suffix': get_currency_suffix()
+            'currency_suffix': get_currency_suffix(),
+            'ai_api_key_configured': bool(ai_api_key and len(ai_api_key) > 10)
         })
 
     if session.get('role') != 'manager':
         return jsonify({'success': False, 'message': 'Manager access required'}), 403
 
     data = request.get_json() or {}
+    
+    # Handle currency code update
     currency_code = data.get('currency_code')
-    if currency_code not in CURRENCY_OPTIONS:
-        return jsonify({'success': False, 'message': 'Invalid currency code'}), 400
-
-    set_setting('currency_code', currency_code)
-    return jsonify({
-        'success': True,
-        'message': 'Settings updated',
-        'currency_code': currency_code,
-        'currency_suffix': get_currency_suffix(currency_code)
-    })
+    if currency_code is not None:
+        if currency_code not in CURRENCY_OPTIONS:
+            return jsonify({'success': False, 'message': 'Invalid currency code'}), 400
+        set_setting('currency_code', currency_code)
+        return jsonify({
+            'success': True,
+            'message': 'Settings updated',
+            'currency_code': currency_code,
+            'currency_suffix': get_currency_suffix(currency_code)
+        })
+    
+    # Handle AI API key update
+    ai_api_key = data.get('ai_api_key')
+    if ai_api_key is not None:
+        if ai_api_key == "":
+            # Clear the API key
+            set_setting('ai_api_key', '')
+            # Also update environment variable for current session
+            os.environ.pop('APIFREE_API_KEY', None)
+            return jsonify({
+                'success': True,
+                'message': 'API key cleared',
+                'ai_api_key_configured': False
+            })
+        else:
+            # Validate API key format (basic check)
+            if len(ai_api_key) < 10:
+                return jsonify({'success': False, 'message': 'Invalid API key format'}), 400
+            
+            # Save the API key
+            set_setting('ai_api_key', ai_api_key)
+            # Update environment variable for current session
+            os.environ['APIFREE_API_KEY'] = ai_api_key
+            return jsonify({
+                'success': True,
+                'message': 'API key saved',
+                'ai_api_key_configured': True
+            })
+    
+    return jsonify({'success': False, 'message': 'No valid settings provided'}), 400
 
 @app.route('/api/settings/database_backup', methods=['GET'])
 @manager_required
@@ -4156,6 +4194,130 @@ def print_debt_receipt(debt_id):
     response.headers['Content-Type'] = 'application/pdf'
     response.headers['Content-Disposition'] = f'inline; filename=debt_receipt_{debt_id}.pdf'
     return response
+
+# ============================================
+# AI Agent API Endpoints
+# ============================================
+
+# Model registry for AI tools
+AI_MODELS = {
+    'User': User,
+    'AppSetting': AppSetting,
+    'Product': Product,
+    'Supplier': Supplier,
+    'PurchaseOrder': PurchaseOrder,
+    'PurchaseOrderItem': PurchaseOrderItem,
+    'SupplierCommunication': SupplierCommunication,
+    'SupplierPriceAgreement': SupplierPriceAgreement,
+    'WarehouseInventory': WarehouseInventory,
+    'WarehouseTransfer': WarehouseTransfer,
+    'Sale': Sale,
+    'SaleItem': SaleItem,
+    'Promotion': Promotion,
+    'Customer': Customer,
+    'Debt': Debt,
+    'DebtPayment': DebtPayment,
+    'Delivery': Delivery,
+    'ReturnExchange': ReturnExchange,
+    'ReturnExchangeItem': ReturnExchangeItem
+}
+
+
+def get_ai_orchestrator():
+    """Get or create AI orchestrator with database settings access"""
+    return get_orchestrator(db, AI_MODELS, get_setting)
+
+
+@app.route('/api/agent/chat', methods=['POST'])
+@login_required
+def agent_chat():
+    """
+    Process a chat command through the AI Agent
+    Expects JSON: {"command": "your command here"}
+    """
+    try:
+        data = request.get_json()
+        if not data or 'command' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'Missing required field: command'
+            }), 400
+
+        command = data['command'].strip()
+        if not command:
+            return jsonify({
+                'success': False,
+                'error': 'Command cannot be empty'
+            }), 400
+
+        # Process the command through the agent
+        orchestrator = get_ai_orchestrator()
+        result = orchestrator.process_command(command, session.get('user_id'))
+
+        return jsonify(result)
+
+    except Exception as e:
+        app.logger.error(f"AI Agent error: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'message': 'An error occurred while processing your request.'
+        }), 500
+
+
+@app.route('/api/agent/status', methods=['GET'])
+@manager_required
+def agent_status():
+    """Get the current status of the AI Agent"""
+    try:
+        orchestrator = get_ai_orchestrator()
+        status = orchestrator.get_status()
+        return jsonify({
+            'success': True,
+            'status': status
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/agent/history', methods=['GET'])
+@manager_required
+def agent_history():
+    """Get the conversation history (truncated for display)"""
+    try:
+        orchestrator = get_ai_orchestrator()
+        history = orchestrator.get_conversation_history()
+        return jsonify({
+            'success': True,
+            'history': history
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/agent/clear', methods=['POST'])
+@manager_required
+def agent_clear():
+    """Clear the conversation history"""
+    try:
+        orchestrator = get_ai_orchestrator()
+        orchestrator.clear_conversation()
+        return jsonify({
+            'success': True,
+            'message': 'Conversation history cleared'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8888, debug=True)

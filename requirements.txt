@@ -5,3 +5,4 @@ reportlab
 pandas
 XlsxWriter
 pytz
+requests

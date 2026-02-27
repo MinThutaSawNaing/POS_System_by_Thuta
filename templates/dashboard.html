@@ -1610,6 +1610,45 @@
             </button>
           </div>
         </div>
+
+        <!-- AI Agent Settings -->
+        <div class="card mt-4">
+          <div class="card-header bg-primary text-white">
+            <h5 class="mb-0"><i class="bi bi-robot"></i> AI Agent Settings</h5>
+          </div>
+          <div class="card-body">
+            <div class="mb-3">
+              <label class="form-label">APIFree.ai API Key</label>
+              <div class="input-group">
+                <input 
+                  type="password" 
+                  class="form-control" 
+                  id="settings-ai-api-key" 
+                  placeholder="Enter your APIFree.ai API key"
+                />
+                <button class="btn btn-outline-secondary" type="button" onclick="toggleApiKeyVisibility()">
+                  <i class="bi bi-eye" id="api-key-toggle-icon"></i>
+                </button>
+              </div>
+              <div class="form-text">
+                Get your API key from <a href="https://apifree.ai" target="_blank">apifree.ai</a>. 
+                The key is stored securely in the database.
+              </div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">AI Agent Status</label>
+              <div id="ai-agent-status-display">
+                <span class="badge bg-secondary">Checking...</span>
+              </div>
+            </div>
+            <button class="btn btn-primary" onclick="saveAISettings()">
+              <i class="bi bi-save"></i> Save API Key
+            </button>
+            <button class="btn btn-outline-danger ms-2" onclick="clearAISettings()">
+              <i class="bi bi-trash"></i> Clear Key
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -3591,10 +3630,107 @@
             APP_SETTINGS.currencyCode = data.currency_code || APP_SETTINGS.currencyCode;
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(APP_SETTINGS.currencyCode);
             applySettingsUI();
+            loadAISettings();
           })
           .catch((error) => {
             console.error("Error loading settings:", error);
             applySettingsUI();
+          });
+      }
+
+      // AI Agent Settings Functions
+      function loadAISettings() {
+        fetch("/api/settings")
+          .then((response) => response.json())
+          .then((data) => {
+            // Load API key (masked or placeholder)
+            const apiKeyInput = document.getElementById("settings-ai-api-key");
+            if (data.ai_api_key_configured) {
+              apiKeyInput.placeholder = "API key is configured (hidden for security)";
+            } else {
+              apiKeyInput.placeholder = "Enter your APIFree.ai API key";
+            }
+            updateAIStatusDisplay(data.ai_api_key_configured);
+          })
+          .catch((error) => {
+            console.error("Error loading AI settings:", error);
+          });
+      }
+
+      function updateAIStatusDisplay(isConfigured) {
+        const statusDiv = document.getElementById("ai-agent-status-display");
+        if (isConfigured) {
+          statusDiv.innerHTML = '<span class="badge bg-success"><i class="bi bi-check-circle"></i> Ready</span>';
+        } else {
+          statusDiv.innerHTML = '<span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle"></i> API Key Required</span>';
+        }
+      }
+
+      function toggleApiKeyVisibility() {
+        const input = document.getElementById("settings-ai-api-key");
+        const icon = document.getElementById("api-key-toggle-icon");
+        if (input.type === "password") {
+          input.type = "text";
+          icon.classList.replace("bi-eye", "bi-eye-slash");
+        } else {
+          input.type = "password";
+          icon.classList.replace("bi-eye-slash", "bi-eye");
+        }
+      }
+
+      function saveAISettings() {
+        const apiKey = document.getElementById("settings-ai-api-key").value.trim();
+        if (!apiKey) {
+          alert("Please enter an API key");
+          return;
+        }
+
+        fetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ai_api_key: apiKey }),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (!data.success) {
+              alert(data.message || "Failed to save API key");
+              return;
+            }
+            document.getElementById("settings-ai-api-key").value = "";
+            document.getElementById("settings-ai-api-key").placeholder = "API key is configured (hidden for security)";
+            updateAIStatusDisplay(true);
+            alert("API key saved successfully");
+          })
+          .catch((error) => {
+            console.error("Error saving AI settings:", error);
+            alert("Failed to save API key");
+          });
+      }
+
+      function clearAISettings() {
+        if (!confirm("Are you sure you want to clear the API key?")) {
+          return;
+        }
+
+        fetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ai_api_key: "" }),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (!data.success) {
+              alert(data.message || "Failed to clear API key");
+              return;
+            }
+            document.getElementById("settings-ai-api-key").value = "";
+            document.getElementById("settings-ai-api-key").placeholder = "Enter your APIFree.ai API key";
+            updateAIStatusDisplay(false);
+            alert("API key cleared successfully");
+          })
+          .catch((error) => {
+            console.error("Error clearing AI settings:", error);
+            alert("Failed to clear API key");
           });
       }
 
@@ -8851,5 +8987,8 @@
           .replace(/'/g, "&#039;");
       }
     </script>
+
+    <!-- AI Agent Widget -->
+    {% include 'ai_agent_widget.html' %}
   </body>
 </html>
