@@ -5,11 +5,67 @@ Manages the AI agent, tool registration, and conversation flow
 
 import json
 import os
-from typing import Dict, List, Any, Optional
+import re
+from typing import Dict, List, Any, Optional, Set
 from datetime import datetime
 
 from ai_agent import AIAgent, get_agent, ChatResponse
 from ai_tools import create_tools_instance, get_all_tools
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+class TaskType(Enum):
+    """Types of tasks the AI can plan"""
+    SINGLE = "single"           # Single tool execution
+    SEQUENTIAL = "sequential"   # Multiple tools in sequence
+    CONDITIONAL = "conditional" # Tools with if/then logic
+    PARALLEL = "parallel"       # Multiple independent tools
+
+
+@dataclass
+class TaskStep:
+    """A single step in a multi-step task"""
+    tool_name: str
+    description: str
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    depends_on: Optional[str] = None  # Key of previous step this depends on
+    condition: Optional[str] = None   # Condition for conditional execution
+    save_result_as: Optional[str] = None  # Key to save result for later steps
+
+
+@dataclass
+class TaskPlan:
+    """A complete task plan with multiple steps"""
+    task_type: TaskType
+    description: str
+    steps: List[TaskStep]
+    original_query: str
+
+
+# Tool categorization for smart filtering
+TOOL_CATEGORIES = {
+    "inventory": {
+        "tools": ["get_inventory_status", "get_low_stock_items", "get_product_details", "suggest_reorder_quantities"],
+        "keywords": ["stock", "inventory", "product", "item", "reorder", "quantity", "available", "how many"]
+    },
+    "supplier": {
+        "tools": ["get_supplier_list", "get_supplier_details", "get_supplier_price_for_product"],
+        "keywords": ["supplier", "vendor", "supply", "contact", "price agreement"]
+    },
+    "purchase_order": {
+        "tools": ["get_purchase_orders", "create_purchase_order", "approve_purchase_order", "cancel_purchase_order"],
+        "keywords": ["purchase order", "po", "order", "approve", "cancel", "create order", "buy", "procurement"]
+    },
+    "warehouse": {
+        "tools": ["get_warehouse_inventory", "create_warehouse_transfer"],
+        "keywords": ["warehouse", "transfer", "unstocked", "receive", "location", "batch"]
+    },
+    "sales": {
+        "tools": ["get_sales_trends"],
+        "keywords": ["sales", "trend", "best seller", "top selling", "revenue", "sold", "performance"]
+    }
+}
 
 
 # System prompt for the AI Agent
@@ -91,6 +147,12 @@ class AgentOrchestrator:
         self.ai_tools = create_tools_instance(db, models)
         self.get_setting_func = get_setting_func
         self.agent = get_agent(db_get_setting=get_setting_func)
+        self.session_context = {
+            "last_query": None,
+            "last_results": None,
+            "last_tool_used": None,
+            "conversation_turns": 0
+        }
         self._setup_agent()
         
     def _setup_agent(self):
@@ -101,6 +163,10 @@ class AgentOrchestrator:
         self.agent.set_system_prompt(system_prompt)
         
         # Register all tools
+        self._register_all_tools()
+    
+    def _register_all_tools(self):
+        """Register all available tools"""
         tools = get_all_tools()
         for tool_name, tool_schema in tools.items():
             tool_func = getattr(self.ai_tools, tool_name, None)
@@ -111,6 +177,47 @@ class AgentOrchestrator:
                     parameters=tool_schema["parameters"],
                     function=tool_func
                 )
+    
+    def _detect_relevant_categories(self, command: str) -> Set[str]:
+        """Detect which tool categories are relevant to the user's command"""
+        command_lower = command.lower()
+        relevant_categories = set()
+        
+        for category, config in TOOL_CATEGORIES.items():
+            for keyword in config["keywords"]:
+                if keyword in command_lower:
+                    relevant_categories.add(category)
+                    break
+        
+        return relevant_categories
+    
+    def _get_tools_for_categories(self, categories: Set[str]) -> List[str]:
+        """Get list of tools for the given categories"""
+        if not categories:
+            # If no categories detected, return all tools for complex queries
+            return []
+        
+        tools = []
+        for category in categories:
+            tools.extend(TOOL_CATEGORIES[category]["tools"])
+        return tools
+    
+    def _filter_tools_for_query(self, command: str) -> List[Dict]:
+        """Filter tools based on the user's query to reduce API load"""
+        categories = self._detect_relevant_categories(command)
+        
+        if not categories:
+            # Complex query - use all tools
+            print(f"[AI Agent] Complex query detected, using all {len(self.agent.tools)} tools")
+            return self.agent.tools
+        
+        relevant_tools = self._get_tools_for_categories(categories)
+        
+        # Filter agent's tools
+        filtered = [t for t in self.agent.tools if t["function"]["name"] in relevant_tools]
+        
+        print(f"[AI Agent] Filtered to {len(filtered)} relevant tools for categories: {categories}")
+        return filtered
                 
     def process_command(self, command: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -126,8 +233,24 @@ class AgentOrchestrator:
         try:
             print(f"[AI Agent] Processing command: {command[:50]}...")
             
+            # Update session context
+            self.session_context["conversation_turns"] += 1
+            
+            # Check for multi-step task plans first
+            task_plan = self._parse_task_plan(command)
+            if task_plan:
+                print(f"[AI Agent] Multi-step task plan detected: {task_plan.description}")
+                plan_result = self._execute_task_plan(task_plan)
+                self.session_context["last_query"] = command
+                self._log_interaction(user_id, command, plan_result["message"], 
+                                    ["task_plan"] if plan_result["success"] else ["task_plan_failed"])
+                return plan_result
+            
+            # Get filtered tools for this query
+            filtered_tools = self._filter_tools_for_query(command)
+            
             # First chat completion to get tool calls
-            response = self.agent.chat(message=command)
+            response = self.agent.chat(message=command, tools_override=filtered_tools)
             
             print(f"[AI Agent] Response received. Content length: {len(response.content)}, Tool calls: {len(response.tool_calls)}")
             
@@ -147,6 +270,12 @@ class AgentOrchestrator:
                 tool_results = self._execute_tools_with_context(response.tool_calls)
                 print(f"[AI Agent] Tool execution complete. Results: {len(tool_results)}")
                 
+                # Update session context with results
+                if tool_results:
+                    first_result = tool_results[0]
+                    self.session_context["last_tool_used"] = first_result.get("function_name")
+                    self.session_context["last_results"] = first_result.get("result")
+                
                 # Check for errors in tool execution
                 errors = [r for r in tool_results if r.get("error")]
                 if errors:
@@ -157,23 +286,25 @@ class AgentOrchestrator:
                         "message": f"I encountered errors while processing your request:\n{error_messages}"
                     }
                     
-                # If tools were executed, get final response from AI
+                # If tools were executed, format results directly without second API call
                 if tool_results:
-                    # Create a summary of tool results for the AI
-                    tool_summary = self._format_tool_results(tool_results)
-                    follow_up = self.agent.chat(
-                        message=f"Based on the tool results:\n{tool_summary}\n\nPlease provide a clear, concise summary of what was accomplished for the user."
-                    )
-                    final_message = follow_up.content if not follow_up.error else response.content
+                    final_message = self._format_tool_results_for_user(tool_results, command)
                 else:
                     final_message = response.content
             else:
                 # No tool calls made - try fallback intent detection
                 print(f"[AI Agent] No tool calls made, trying fallback intent detection...")
+                
+                # Also try fallback if the AI response is empty or refused
                 fallback_result = self._fallback_intent_detection(command)
                 if fallback_result:
                     final_message = fallback_result
                     tool_results = ["fallback_executed"]
+                    # Update session context for fallback results
+                    if isinstance(fallback_result, dict):
+                        self.session_context["last_results"] = fallback_result
+                elif not response.content or response.content.strip() == "":
+                    final_message = "I'm here to help with your inventory and procurement tasks. You can ask me to check stock levels, create purchase orders, review suppliers, analyze sales trends, and more!"
                 else:
                     final_message = response.content
                     
@@ -190,10 +321,28 @@ class AgentOrchestrator:
         except Exception as e:
             import traceback
             traceback.print_exc()
+            
+            # Convert technical errors to user-friendly messages
+            error_message = str(e).lower()
+            user_message = "I'm sorry, something went wrong. Please try again."
+            
+            if "database" in error_message or "sql" in error_message:
+                user_message = "I'm having trouble accessing the database right now. Please check your connection and try again."
+            elif "timeout" in error_message:
+                user_message = "The request took too long. Please try again with a simpler query."
+            elif "rate limit" in error_message or "429" in error_message:
+                user_message = "I'm receiving too many requests right now. Please wait a moment and try again."
+            elif "api key" in error_message or "authentication" in error_message:
+                user_message = "There's an issue with the AI service configuration. Please check your API key in settings."
+            elif "connection" in error_message:
+                user_message = "I can't connect to the AI service. Please check your internet connection."
+            elif "not found" in error_message:
+                user_message = "I couldn't find what you're looking for. Please check your request and try again."
+            
             return {
                 "success": False,
                 "error": str(e),
-                "message": f"An unexpected error occurred: {str(e)}"
+                "message": user_message
             }
             
     def _execute_tools_with_context(self, tool_calls: List) -> List[Dict]:
@@ -290,6 +439,191 @@ class AgentOrchestrator:
                 summary_parts.append(f"{func_name}: {json.dumps(result_data, default=str)[:200]}")
                 
         return "\n".join(summary_parts)
+    
+    def _format_tool_results_for_user(self, tool_results: List[Dict], original_command: str) -> str:
+        """Format tool results directly for user display without second API call"""
+        lines = []
+        
+        for result in tool_results:
+            func_name = result.get("function_name", "")
+            result_data = result.get("result", {})
+            error = result.get("error")
+            
+            if error:
+                lines.append(f"❌ Error in {func_name}: {error}")
+                continue
+            
+            # Format based on tool type
+            if func_name == "get_inventory_status":
+                total = result_data.get('total_products', 0)
+                inventory = result_data.get('inventory', [])
+                lines.append(f"📦 **Inventory Status** ({total} products)")
+                
+                # Count by status
+                out_of_stock = [p for p in inventory if p['status'] == 'out_of_stock']
+                low_stock = [p for p in inventory if p['status'] == 'low_stock']
+                ok_count = total - len(out_of_stock) - len(low_stock)
+                
+                lines.append(f"✅ OK: {ok_count} | ⚠️ Low Stock: {len(low_stock)} | ❌ Out of Stock: {len(out_of_stock)}")
+                
+                if out_of_stock:
+                    lines.append("\n**Out of Stock Items:**")
+                    for p in out_of_stock[:5]:
+                        lines.append(f"  • {p['name']}")
+                    if len(out_of_stock) > 5:
+                        lines.append(f"  ... and {len(out_of_stock) - 5} more")
+                        
+            elif func_name == "get_low_stock_items":
+                items = result_data.get('items', [])
+                summary = result_data.get('summary', {})
+                
+                if not items:
+                    lines.append("✅ **Good news!** No low stock items found. All products are well stocked.")
+                else:
+                    lines.append(f"⚠️ **Low Stock Alert** ({summary.get('low_stock_count', 0)} items, {summary.get('out_of_stock_count', 0)} out of stock)")
+                    lines.append("")
+                    for item in items[:10]:
+                        status = "🔴 OUT OF STOCK" if item['current_stock'] <= 0 else f"🟡 Stock: {item['current_stock']}"
+                        lines.append(f"• **{item['name']}** - {status}")
+                        lines.append(f"  Reorder point: {item['reorder_point']} | Suggested qty: {item['suggested_reorder_qty']}")
+                    if len(items) > 10:
+                        lines.append(f"\n... and {len(items) - 10} more items")
+                        
+            elif func_name == "get_supplier_list":
+                suppliers = result_data.get('suppliers', [])
+                total = result_data.get('total_suppliers', 0)
+                
+                if not suppliers:
+                    lines.append("📋 No suppliers found.")
+                else:
+                    lines.append(f"🏢 **Suppliers** ({total} total)")
+                    lines.append("")
+                    for s in suppliers[:10]:
+                        rating = f"⭐ {s['quality_rating']:.1f}/5" if s['quality_rating'] > 0 else "No rating"
+                        phone = s['phone'] or 'No phone'
+                        lines.append(f"• **{s['name']}** - {phone} | {rating}")
+                    if len(suppliers) > 10:
+                        lines.append(f"\n... and {len(suppliers) - 10} more suppliers")
+                        
+            elif func_name == "get_purchase_orders":
+                orders = result_data.get('orders', [])
+                total = result_data.get('total_orders', 0)
+                
+                if not orders:
+                    lines.append("📋 No purchase orders found.")
+                else:
+                    lines.append(f"📋 **Purchase Orders** ({total} total)")
+                    lines.append("")
+                    for po in orders[:10]:
+                        status_emoji = {"draft": "📝", "pending": "⏳", "approved": "✅", "received": "📦", "cancelled": "❌"}.get(po['status'], "📋")
+                        lines.append(f"{status_emoji} **{po['po_number']}** - {po['supplier_name']}")
+                        lines.append(f"   Status: {po['status'].title()} | Total: ${po['total_amount']:.2f}")
+                    if len(orders) > 10:
+                        lines.append(f"\n... and {len(orders) - 10} more orders")
+                        
+            elif func_name == "create_purchase_order":
+                if result_data.get("success"):
+                    lines.append(f"✅ **Purchase Order Created Successfully!**")
+                    lines.append(f"📋 PO Number: {result_data.get('po_number')}")
+                    lines.append(f"🏢 Supplier: {result_data.get('supplier_name')}")
+                    lines.append(f"💰 Total Amount: ${result_data.get('total_amount', 0):.2f}")
+                    lines.append(f"📦 Items: {result_data.get('items_count', 0)}")
+                    lines.append(f"📊 Status: {result_data.get('status', 'draft').title()}")
+                else:
+                    lines.append(f"❌ **Failed to Create Purchase Order**")
+                    lines.append(f"Error: {result_data.get('error', 'Unknown error')}")
+                    
+            elif func_name == "approve_purchase_order":
+                if result_data.get("success"):
+                    lines.append(f"✅ **Purchase Order Approved!**")
+                    lines.append(f"📋 {result_data.get('po_number')} has been approved.")
+                else:
+                    lines.append(f"❌ **Approval Failed**: {result_data.get('error', 'Unknown error')}")
+                    
+            elif func_name == "cancel_purchase_order":
+                if result_data.get("success"):
+                    lines.append(f"❌ **Purchase Order Cancelled**")
+                    lines.append(f"📋 {result_data.get('po_number')} has been cancelled.")
+                    if result_data.get('reason'):
+                        lines.append(f"📝 Reason: {result_data['reason']}")
+                else:
+                    lines.append(f"❌ **Cancellation Failed**: {result_data.get('error', 'Unknown error')}")
+                    
+            elif func_name == "get_warehouse_inventory":
+                items = result_data.get('warehouse_items', [])
+                total = result_data.get('total_items', 0)
+                
+                if not items:
+                    lines.append("🏭 Warehouse inventory is empty.")
+                else:
+                    lines.append(f"🏭 **Warehouse Inventory** ({total} items)")
+                    lines.append("")
+                    for item in items[:10]:
+                        lines.append(f"• **{item['product_name']}** - Qty: {item['quantity']}")
+                        if item['location']:
+                            lines.append(f"  Location: {item['location']}")
+                    if len(items) > 10:
+                        lines.append(f"\n... and {len(items) - 10} more items")
+                        
+            elif func_name == "create_warehouse_transfer":
+                if result_data.get("success"):
+                    lines.append(f"✅ **Warehouse Transfer Complete!**")
+                    lines.append(f"📦 Product: {result_data.get('product_name')}")
+                    lines.append(f"📊 Quantity Transferred: {result_data.get('quantity_transferred')}")
+                    lines.append(f"📈 New Stock Level: {result_data.get('new_stock_level')}")
+                else:
+                    lines.append(f"❌ **Transfer Failed**: {result_data.get('error', 'Unknown error')}")
+                    
+            elif func_name == "get_sales_trends":
+                products = result_data.get('top_selling_products', [])
+                period = result_data.get('period_days', 30)
+                total = result_data.get('total_products_sold', 0)
+                
+                if not products:
+                    lines.append(f"📊 No sales data found for the last {period} days.")
+                else:
+                    lines.append(f"📊 **Sales Trends** (Last {period} days)")
+                    lines.append(f"Total products sold: {total}")
+                    lines.append("")
+                    lines.append("**Top Selling Products:**")
+                    for i, p in enumerate(products[:10], 1):
+                        lines.append(f"{i}. **{p['product_name']}** - {p['total_quantity']} units (${p['total_revenue']:.2f})")
+                        
+            elif func_name == "get_product_details":
+                if result_data.get("error"):
+                    lines.append(f"❌ **Error**: {result_data['error']}")
+                else:
+                    lines.append(f"📦 **{result_data.get('name')}**")
+                    lines.append(f"Barcode: {result_data.get('barcode', 'N/A')}")
+                    lines.append(f"Category: {result_data.get('category', 'N/A')}")
+                    lines.append(f"Price: ${result_data.get('price', 0):.2f}")
+                    lines.append(f"Cost: ${result_data.get('cost', 0):.2f}")
+                    lines.append(f"Stock: {result_data.get('stock', 0)} units")
+                    if result_data.get('reorder_enabled'):
+                        lines.append(f"Reorder Point: {result_data.get('reorder_point', 0)}")
+                        
+            elif func_name == "suggest_reorder_quantities":
+                suggestions = result_data.get('suggestions', [])
+                total_cost = result_data.get('total_estimated_cost', 0)
+                
+                if not suggestions:
+                    lines.append("✅ No reorder suggestions needed. All inventory levels are adequate.")
+                else:
+                    lines.append(f"📋 **Reorder Suggestions**")
+                    lines.append(f"💰 Total Estimated Cost: ${total_cost:.2f}")
+                    lines.append("")
+                    for s in suggestions[:10]:
+                        lines.append(f"• **{s['name']}** - Order {s['suggested_reorder_qty']} units")
+                        lines.append(f"  Current: {s['current_stock']} | Daily sales: {s['daily_sales_velocity']} | Cost: ${s['estimated_cost']:.2f}")
+                    if len(suggestions) > 10:
+                        lines.append(f"\n... and {len(suggestions) - 10} more suggestions")
+                        
+            else:
+                # Generic formatting for unknown tools
+                lines.append(f"**{func_name}**")
+                lines.append(json.dumps(result_data, indent=2, default=str)[:500])
+        
+        return "\n".join(lines)
         
     def _fallback_intent_detection(self, command: str) -> Optional[str]:
         """
@@ -375,7 +709,7 @@ class AgentOrchestrator:
                 else:
                     result = self.ai_tools.suggest_reorder_quantities()
                 return self._format_reorder_suggestion_result(result)
-                
+            
             # No matching intent found
             return None
             
@@ -548,6 +882,242 @@ class AgentOrchestrator:
     def clear_conversation(self):
         """Clear the conversation history"""
         self.agent.clear_history()
+        
+    def _parse_task_plan(self, command: str) -> Optional[TaskPlan]:
+        """
+        Parse a complex user command into a multi-step task plan.
+        This enables agentic behavior for complex workflows.
+        """
+        command_lower = command.lower()
+        
+        # Pattern: "Check low stock and create purchase orders for them"
+        if any(kw in command_lower for kw in ['check low stock and create', 'find low stock and order', 'reorder low stock']):
+            return TaskPlan(
+                task_type=TaskType.SEQUENTIAL,
+                description="Check low stock items and create purchase orders",
+                original_query=command,
+                steps=[
+                    TaskStep(
+                        tool_name="get_low_stock_items",
+                        description="Get all low stock items",
+                        save_result_as="low_stock_items"
+                    ),
+                    TaskStep(
+                        tool_name="suggest_reorder_quantities",
+                        description="Get reorder suggestions for low stock items",
+                        depends_on="low_stock_items",
+                        save_result_as="reorder_suggestions"
+                    )
+                ]
+            )
+        
+        # Pattern: "Check inventory and suggest what to reorder"
+        if any(kw in command_lower for kw in ['check inventory and suggest', 'inventory and reorder suggestions']):
+            return TaskPlan(
+                task_type=TaskType.SEQUENTIAL,
+                description="Check inventory status and suggest reorders",
+                original_query=command,
+                steps=[
+                    TaskStep(
+                        tool_name="get_inventory_status",
+                        description="Get current inventory status",
+                        save_result_as="inventory"
+                    ),
+                    TaskStep(
+                        tool_name="suggest_reorder_quantities",
+                        description="Get reorder suggestions",
+                        depends_on="inventory",
+                        save_result_as="suggestions"
+                    )
+                ]
+            )
+        
+        # Pattern: "Show me sales trends and low stock items"
+        if any(kw in command_lower for kw in ['sales trends and low stock', 'best sellers and inventory']):
+            return TaskPlan(
+                task_type=TaskType.PARALLEL,
+                description="Get sales trends and low stock items simultaneously",
+                original_query=command,
+                steps=[
+                    TaskStep(
+                        tool_name="get_sales_trends",
+                        description="Get sales trend analysis",
+                        save_result_as="sales_trends"
+                    ),
+                    TaskStep(
+                        tool_name="get_low_stock_items",
+                        description="Get low stock items",
+                        save_result_as="low_stock"
+                    )
+                ]
+            )
+        
+        # Pattern: "If any items are low stock, create a purchase order"
+        if any(kw in command_lower for kw in ['if low stock create', 'if items low create po', 'automatically order']):
+            return TaskPlan(
+                task_type=TaskType.CONDITIONAL,
+                description="Conditionally create purchase orders if stock is low",
+                original_query=command,
+                steps=[
+                    TaskStep(
+                        tool_name="get_low_stock_items",
+                        description="Check for low stock items",
+                        save_result_as="low_stock_check",
+                        condition="check_has_items"
+                    )
+                ]
+            )
+        
+        return None
+    
+    def _execute_task_plan(self, plan: TaskPlan) -> Dict[str, Any]:
+        """
+        Execute a multi-step task plan.
+        Returns aggregated results from all steps.
+        """
+        print(f"[AI Agent] Executing task plan: {plan.description}")
+        
+        results = {}
+        step_results = []
+        errors = []
+        
+        try:
+            if plan.task_type == TaskType.PARALLEL:
+                # Execute all steps independently
+                for step in plan.steps:
+                    try:
+                        result = self._execute_single_step(step, results)
+                        if step.save_result_as:
+                            results[step.save_result_as] = result
+                        step_results.append({
+                            "step": step.description,
+                            "result": result,
+                            "error": None
+                        })
+                    except Exception as e:
+                        errors.append(f"{step.description}: {str(e)}")
+                        step_results.append({
+                            "step": step.description,
+                            "result": None,
+                            "error": str(e)
+                        })
+                        
+            elif plan.task_type == TaskType.SEQUENTIAL:
+                # Execute steps in order with dependencies
+                for step in plan.steps:
+                    # Check dependencies
+                    if step.depends_on and step.depends_on not in results:
+                        errors.append(f"Dependency '{step.depends_on}' not met for step: {step.description}")
+                        continue
+                    
+                    try:
+                        result = self._execute_single_step(step, results)
+                        if step.save_result_as:
+                            results[step.save_result_as] = result
+                        step_results.append({
+                            "step": step.description,
+                            "result": result,
+                            "error": None
+                        })
+                    except Exception as e:
+                        errors.append(f"{step.description}: {str(e)}")
+                        step_results.append({
+                            "step": step.description,
+                            "result": None,
+                            "error": str(e)
+                        })
+                        # Stop sequential execution on error
+                        break
+                        
+            elif plan.task_type == TaskType.CONDITIONAL:
+                # Execute with condition checking
+                for step in plan.steps:
+                    try:
+                        result = self._execute_single_step(step, results)
+                        
+                        # Check condition
+                        if step.condition == "check_has_items":
+                            items = result.get("items", [])
+                            if not items:
+                                return {
+                                    "success": True,
+                                    "message": "No low stock items found. No action needed.",
+                                    "results": results,
+                                    "step_results": step_results
+                                }
+                        
+                        if step.save_result_as:
+                            results[step.save_result_as] = result
+                        step_results.append({
+                            "step": step.description,
+                            "result": result,
+                            "error": None
+                        })
+                    except Exception as e:
+                        errors.append(f"{step.description}: {str(e)}")
+                        
+        except Exception as e:
+            errors.append(f"Task execution failed: {str(e)}")
+        
+        # Format final response
+        if errors:
+            return {
+                "success": False,
+                "error": "; ".join(errors),
+                "message": f"I encountered some issues:\n" + "\n".join([f"• {e}" for e in errors]),
+                "results": results,
+                "step_results": step_results
+            }
+        
+        # Generate summary message
+        summary = self._format_task_plan_results(plan, results, step_results)
+        
+        return {
+            "success": True,
+            "message": summary,
+            "results": results,
+            "step_results": step_results
+        }
+    
+    def _execute_single_step(self, step: TaskStep, context: Dict[str, Any]) -> Any:
+        """Execute a single task step"""
+        tool_func = getattr(self.ai_tools, step.tool_name, None)
+        if not tool_func:
+            raise ValueError(f"Tool '{step.tool_name}' not found")
+        
+        # Prepare parameters (can reference previous results)
+        params = step.parameters.copy()
+        
+        # Execute with Flask context if available
+        if self.app:
+            with self.app.app_context():
+                return tool_func(**params)
+        else:
+            return tool_func(**params)
+    
+    def _format_task_plan_results(self, plan: TaskPlan, results: Dict, step_results: List) -> str:
+        """Format the results of a task plan execution"""
+        lines = [f"✓ Completed: {plan.description}\n"]
+        
+        for step_result in step_results:
+            if step_result["error"]:
+                lines.append(f"✗ {step_result['step']}: Failed - {step_result['error']}")
+            else:
+                result = step_result["result"]
+                if isinstance(result, dict):
+                    if "summary" in result:
+                        summary = result["summary"]
+                        lines.append(f"✓ {step_result['step']}: Found {summary.get('low_stock_count', 0)} items")
+                    elif "total_products" in result:
+                        lines.append(f"✓ {step_result['step']}: {result['total_products']} products")
+                    elif "total_orders" in result:
+                        lines.append(f"✓ {step_result['step']}: {result['total_orders']} orders")
+                    else:
+                        lines.append(f"✓ {step_result['step']}: Completed")
+                else:
+                    lines.append(f"✓ {step_result['step']}: Completed")
+        
+        return "\n".join(lines)
         
     def get_status(self) -> Dict[str, Any]:
         """Get the current status of the agent"""

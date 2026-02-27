@@ -117,7 +117,9 @@ class AIAgent:
         return payload
         
     def chat(self, message: Optional[str] = None, temperature: float = 0.7, 
-             max_tokens: int = 2048, stream: bool = False) -> ChatResponse:
+             max_tokens: int = 2048, stream: bool = False, 
+             tools_override: Optional[List[Dict]] = None,
+             retry_count: int = 0, max_retries: int = 3) -> ChatResponse:
         """
         Send a chat completion request to APIFree.ai
         
@@ -126,6 +128,9 @@ class AIAgent:
             temperature: Controls randomness (0-2)
             max_tokens: Maximum tokens to generate
             stream: Whether to stream the response
+            tools_override: Optional list of tools to use instead of all registered tools
+            retry_count: Current retry attempt (for internal use)
+            max_retries: Maximum number of retries on failure
             
         Returns:
             ChatResponse object containing the AI's response
@@ -153,11 +158,12 @@ class AIAgent:
             "top_p": 1
         }
         
-        # Add tools if registered
-        if self.tools:
-            payload["tools"] = self.tools
+        # Add tools if registered (use override if provided)
+        tools_to_send = tools_override if tools_override is not None else self.tools
+        if tools_to_send:
+            payload["tools"] = tools_to_send
             payload["tool_choice"] = "auto"
-            print(f"[AI Agent API] Sending {len(self.tools)} tools with request")
+            print(f"[AI Agent API] Sending {len(tools_to_send)} tools with request")
             
         try:
             response = requests.post(
@@ -216,11 +222,38 @@ class AIAgent:
             )
             
         except requests.exceptions.Timeout:
+            if retry_count < max_retries:
+                import time
+                wait_time = (2 ** retry_count) + 1  # Exponential backoff: 1, 3, 7 seconds
+                print(f"[AI Agent API] Timeout, retrying in {wait_time}s... (attempt {retry_count + 1}/{max_retries})")
+                time.sleep(wait_time)
+                return self.chat(message=None, temperature=temperature, max_tokens=max_tokens, 
+                               stream=stream, tools_override=tools_override, 
+                               retry_count=retry_count + 1, max_retries=max_retries)
             return ChatResponse(content="", error="Request timed out. Please try again.")
         except requests.exceptions.ConnectionError:
+            if retry_count < max_retries:
+                import time
+                wait_time = (2 ** retry_count) + 1
+                print(f"[AI Agent API] Connection error, retrying in {wait_time}s... (attempt {retry_count + 1}/{max_retries})")
+                time.sleep(wait_time)
+                return self.chat(message=None, temperature=temperature, max_tokens=max_tokens,
+                               stream=stream, tools_override=tools_override,
+                               retry_count=retry_count + 1, max_retries=max_retries)
             return ChatResponse(content="", error="Connection error. Please check your internet connection.")
         except requests.exceptions.HTTPError as e:
-            return ChatResponse(content="", error=f"HTTP Error: {e.response.status_code} - {e.response.text}")
+            error_text = e.response.text if hasattr(e.response, 'text') else str(e)
+            # Check for rate limit errors
+            if e.response.status_code == 429:
+                if retry_count < max_retries:
+                    import time
+                    wait_time = (2 ** retry_count) * 2 + 1  # Longer backoff for rate limits: 3, 7, 15 seconds
+                    print(f"[AI Agent API] Rate limited, retrying in {wait_time}s... (attempt {retry_count + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    return self.chat(message=None, temperature=temperature, max_tokens=max_tokens,
+                                   stream=stream, tools_override=tools_override,
+                                   retry_count=retry_count + 1, max_retries=max_retries)
+            return ChatResponse(content="", error=f"HTTP Error {e.response.status_code}: {error_text}")
         except Exception as e:
             return ChatResponse(content="", error=f"Unexpected error: {str(e)}")
             
