@@ -216,6 +216,14 @@ def serialize_product(product):
         'photo_url': product_photo_url(product.photo_filename)
     }
 
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
 def manager_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
