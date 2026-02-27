@@ -156,12 +156,25 @@
         align-items: center;
         justify-content: center;
         border: 2px solid rgba(255, 255, 255, 0.3);
+        overflow: hidden;
+    }
+
+    .dionysus-avatar::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        z-index: 2;
+        pointer-events: none;
     }
 
     .dionysus-avatar img {
         width: 100%;
         height: 100%;
         object-fit: cover;
+        position: relative;
+        z-index: 1;
     }
 
     .dionysus-avatar svg {
@@ -179,7 +192,7 @@
         background: #10b981;
         border-radius: 50%;
         border: 2px solid white;
-        z-index: 2;
+        z-index: 3;
     }
 
     .dionysus-status-dot.offline {
@@ -749,8 +762,8 @@
     <!-- FAB Button -->
     <button class="dionysus-fab" onclick="dionysusToggleChat()">
         <span class="pulse-ring"></span>
-        <img id="dionysusFabIcon" src="/public/photos/loli-logo.png" alt="Loli AI" style="width: 32px; height: 32px; object-fit: cover; border-radius: 50%;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
+        <img id="dionysusFabIcon" src="/public/photos/loli-logo.png" alt="Loli AI" style="width: 52px; height: 52px; object-fit: cover; border-radius: 50%;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none; width: 28px; height: 28px;">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path>
         </svg>
         <span class="notification-badge" id="dionysusNotification"></span>
