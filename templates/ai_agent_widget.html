@@ -156,7 +156,6 @@
         align-items: center;
         justify-content: center;
         border: 2px solid rgba(255, 255, 255, 0.3);
-        overflow: hidden;
     }
 
     .dionysus-avatar img {
@@ -173,13 +172,14 @@
 
     .dionysus-status-dot {
         position: absolute;
-        bottom: 0;
-        right: 0;
-        width: 12px;
-        height: 12px;
+        bottom: -2px;
+        right: -2px;
+        width: 14px;
+        height: 14px;
         background: #10b981;
         border-radius: 50%;
         border: 2px solid white;
+        z-index: 2;
     }
 
     .dionysus-status-dot.offline {
@@ -749,7 +749,8 @@
     <!-- FAB Button -->
     <button class="dionysus-fab" onclick="dionysusToggleChat()">
         <span class="pulse-ring"></span>
-        <svg id="dionysusFabIcon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <img id="dionysusFabIcon" src="/public/photos/loli-logo.png" alt="Loli AI" style="width: 32px; height: 32px; object-fit: cover; border-radius: 50%;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display: none;">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path>
         </svg>
         <span class="notification-badge" id="dionysusNotification"></span>
@@ -769,15 +770,19 @@ function dionysusToggleChat() {
     dionysusChatOpen = !dionysusChatOpen;
     const chatWindow = document.getElementById('dionysusChatWindow');
     const fabIcon = document.getElementById('dionysusFabIcon');
+    const fabSvg = fabIcon.nextElementSibling;
     
     if (dionysusChatOpen) {
         chatWindow.classList.add('active');
-        fabIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>';
+        fabIcon.style.display = 'none';
+        fabSvg.style.display = 'block';
+        fabSvg.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>';
         document.getElementById('dionysusInput').focus();
         dionysusScrollBottom();
     } else {
         chatWindow.classList.remove('active');
-        fabIcon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"></path>';
+        fabIcon.style.display = 'block';
+        fabSvg.style.display = 'none';
     }
 }
 
