@@ -183,18 +183,6 @@
         opacity: 1;
       }
 
-      /* Mobile Toggle Button */
-      .mobile-toggle-btn {
-        width: 44px;
-        height: 44px;
-        padding: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 8px;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-      }
-
       /* Touch-friendly button styles */
       .btn {
         min-height: 44px;
@@ -434,10 +422,6 @@
           display: none !important;
         }
 
-        .mobile-toggle-btn {
-          display: none;
-        }
-
         /* Product cards - 4 columns on desktop */
         .product-grid-col {
           width: 25%;
@@ -454,7 +438,6 @@
       /* Print styles */
       @media print {
         .sidebar,
-        .mobile-toggle-btn,
         .sidebar-overlay {
           display: none !important;
         }
@@ -568,17 +551,6 @@
   <body>
     <!-- Sidebar Overlay for Mobile -->
     <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
-
-    <!-- Sidebar Toggle Button (Mobile) - Hidden when swipe is enabled -->
-    <button
-      class="btn btn-primary mobile-toggle-btn position-fixed d-md-none"
-      style="z-index: 1100; top: 10px; left: 10px"
-      onclick="toggleSidebar()"
-      aria-label="Toggle navigation menu"
-      id="mobile-toggle-btn"
-    >
-      <i class="bi bi-list fs-5"></i>
-    </button>
 
     <!-- Sidebar -->
     <div class="sidebar" id="sidebar">
@@ -4515,12 +4487,6 @@
         
         if (!isTouchDevice || !isMobileViewport) {
           return; // Not a touch device or not mobile viewport - don't enable swipe
-        }
-
-        // Hide the toggle button on touch devices (swipe replaces it)
-        const toggleBtn = document.getElementById("mobile-toggle-btn");
-        if (toggleBtn) {
-          toggleBtn.style.display = "none";
         }
 
         const sidebar = document.getElementById("sidebar");
