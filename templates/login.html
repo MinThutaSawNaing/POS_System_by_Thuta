@@ -200,14 +200,28 @@
         }
 
         .form-control {
-            border: none;
-            border-radius: 0;
+            border: 1px solid var(--border);
+            border-radius: 12px;
             padding: .74rem .9rem;
             font-size: .95rem;
+            min-height: 44px;
         }
 
         .form-control:focus {
-            box-shadow: none;
+            border-color: rgba(37, 99, 235, .55);
+            box-shadow: 0 0 0 .25rem rgba(37, 99, 235, .14);
+        }
+
+        /* CAPTCHA input specific styling */
+        #captchaInput {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: #fff;
+        }
+
+        #captchaInput:focus {
+            border-color: rgba(37, 99, 235, .55);
+            box-shadow: 0 0 0 .25rem rgba(37, 99, 235, .14);
         }
 
         .captcha-container {
@@ -313,17 +327,133 @@
             font-size: .8rem;
         }
 
+        /* Mobile Responsive Styles */
         @media (max-width: 900px) {
             .auth-shell {
                 grid-template-columns: 1fr;
+                margin: 0.5rem;
+                width: calc(100% - 1rem);
+                min-height: calc(100vh - 1rem);
             }
 
             .brand-pane {
-                padding: 2rem;
+                padding: 1.5rem;
+                min-height: auto;
+            }
+
+            .brand-title {
+                font-size: 1.5rem;
+            }
+
+            .brand-subtitle {
+                font-size: 0.9rem;
+            }
+
+            .security-badges {
+                justify-content: center;
+                margin-top: 1rem;
             }
 
             .form-pane {
-                padding: 2rem 1.4rem;
+                padding: 1.5rem 1rem;
+            }
+
+            .form-header h1 {
+                font-size: 1.4rem;
+            }
+
+            .form-header p {
+                font-size: 0.9rem;
+            }
+
+            .captcha-display {
+                min-height: 48px;
+                font-size: 1.2rem;
+            }
+
+            .btn-login {
+                padding: 0.9rem 1rem;
+                font-size: 1rem;
+                min-height: 48px;
+            }
+        }
+
+        /* Small mobile devices */
+        @media (max-width: 480px) {
+            body {
+                padding: 0;
+            }
+
+            .auth-shell {
+                border-radius: 0;
+                margin: 0;
+                width: 100%;
+                min-height: 100vh;
+            }
+
+            .brand-pane {
+                padding: 1.25rem;
+            }
+
+            .brand-logo {
+                font-size: 1rem;
+            }
+
+            .brand-logo img {
+                width: 36px;
+                height: 36px;
+            }
+
+            .brand-title {
+                font-size: 1.25rem;
+            }
+
+            .form-pane {
+                padding: 1.25rem 1rem;
+            }
+
+            .form-control {
+                padding: 0.85rem 0.9rem;
+                font-size: 16px; /* Prevent zoom on iOS */
+            }
+
+            .captcha-container {
+                gap: 0.5rem;
+            }
+
+            .captcha-display {
+                min-height: 44px;
+                font-size: 1.1rem;
+                letter-spacing: 3px;
+            }
+
+            .captcha-refresh {
+                width: 44px;
+                height: 44px;
+            }
+
+            .meta-row {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.75rem;
+            }
+
+            .support-link {
+                align-self: flex-end;
+            }
+        }
+
+        /* Touch device optimizations */
+        @media (pointer: coarse) {
+            .form-control,
+            .btn-login,
+            .captcha-refresh {
+                min-height: 48px;
+            }
+
+            .form-check-input {
+                width: 20px;
+                height: 20px;
             }
         }
     </style>
