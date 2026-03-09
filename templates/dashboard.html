@@ -13,6 +13,10 @@
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css"
     />
+    <!-- Myanmar Font Support -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Padauk:wght@400;700&display=swap" rel="stylesheet">
     <style>
       :root {
         --sidebar-width: 250px;
@@ -28,6 +32,28 @@
       body {
         overflow-x: hidden;
       }
+
+      /* Myanmar Font Styling */
+      body.lang-my {
+        font-family: 'Padauk', sans-serif;
+      }
+
+      body.lang-my .sidebar,
+      body.lang-my .main-content,
+      body.lang-my .card,
+      body.lang-my .btn,
+      body.lang-my .form-control,
+      body.lang-my .form-select,
+      body.lang-my .nav-link,
+      body.lang-my h1,
+      body.lang-my h2,
+      body.lang-my h3,
+      body.lang-my h4,
+      body.lang-my h5,
+      body.lang-my h6 {
+        font-family: 'Padauk', sans-serif;
+      }
+
 
       .sidebar {
         width: var(--sidebar-width);
@@ -851,10 +877,11 @@
                   </div>
                 </div>
                 <button
+                  id="complete-sale-btn"
                   class="btn btn-success w-100 py-2"
                   onclick="completeSale()"
                 >
-                  <i class="bi bi-check-circle"></i> Complete Sale
+                  <i class="bi bi-check-circle" id="complete-sale-icon"></i> <span id="complete-sale-text">Complete Sale</span>
                 </button>
               </div>
             </div>
@@ -1861,6 +1888,13 @@
                 <option value="USD">Dollar ($)</option>
                 <option value="MMK">Myanmar Kyat (MMK)</option>
                 <option value="THB">Thai Baht (THB)</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Language / ဘာသာစကား</label>
+              <select class="form-select" id="settings-language" onchange="changeLanguage(this.value)">
+                <option value="en">English</option>
+                <option value="my">မြန်မာ (Myanmar)</option>
               </select>
             </div>
             <button class="btn btn-primary w-100 w-sm-auto" onclick="saveSettings()">
@@ -4478,6 +4512,9 @@
 
         // Initialize global barcode scanner listener
         initGlobalBarcodeScanner();
+
+        // Initialize language
+        initLanguage();
       });
 
       // Swipe gesture handling for sidebar on touch devices
@@ -4760,6 +4797,362 @@
           setTimeout(() => toast.remove(), 300);
         }, 3000);
       }
+
+      // ============================================
+      // Language Translation System
+      // ============================================
+      const translations = {
+        en: {
+          // Navigation
+          dashboard: "Dashboard",
+          pos: "POS",
+          products: "Products",
+          sales: "Sales",
+          reports: "Reports",
+          promotions: "Promotions",
+          customers: "Customers",
+          debts: "Debts",
+          suppliers: "Suppliers",
+          purchases: "Purchases",
+          warehouse: "Warehouse",
+          deliveries: "Deliveries",
+          users: "Users",
+          settings: "Settings",
+          logout: "Logout",
+          
+          // Dashboard
+          todaysSales: "Today's Sales",
+          totalProducts: "Total Products",
+          recentTransactions: "Recent Transactions",
+          fromYesterday: "from yesterday",
+          lowStockItems: "low stock items",
+          last24Hours: "Last 24 hours",
+          salesOverview: "Sales Overview",
+          topProducts: "Top Products",
+          
+          // POS
+          pointOfSale: "Point of Sale",
+          clearCart: "Clear Cart",
+          customerOptional: "Customer (Optional)",
+          walkInCustomer: "Walk-in Customer",
+          viewDetails: "View Details",
+          scanBarcodeOrSearch: "Scan barcode or search products...",
+          search: "Search",
+          currentSale: "Current Sale",
+          noItemsAdded: "No items added",
+          subtotal: "Subtotal:",
+          tax: "Tax:",
+          total: "Total:",
+          paymentMethod: "Payment Method",
+          cash: "Cash",
+          creditCard: "Credit Card",
+          debitCard: "Debit Card",
+          mobilePayment: "Mobile Payment",
+          chargeToCustomer: "Charge to Customer",
+          enableDelivery: "Enable Delivery",
+          recipientName: "Recipient Name",
+          recipientPhone: "Recipient Phone",
+          deliveryAddress: "Delivery Address",
+          fee: "Fee",
+          cashReceived: "Cash Received",
+          refundChange: "Refund / Change:",
+          completeSale: "Complete Sale",
+          processing: "Processing...",
+          pleaseWait: "Please wait...",
+          
+          // Products
+          productManagement: "Product Management",
+          manageStockWarehouse: "Manage Stock",
+          addProduct: "Add Product",
+          printBarcodeLabels: "Print Labels",
+          searchBarcodeNameCategory: "Search by barcode, name or category",
+          photo: "Photo",
+          barcode: "Barcode",
+          name: "Name",
+          price: "Price",
+          stock: "Stock",
+          category: "Category",
+          taxRate: "Tax Rate",
+          actions: "Actions",
+          
+          // Sales
+          salesHistory: "Sales History",
+          transactionId: "Transaction ID",
+          date: "Date",
+          refund: "Refund",
+          payment: "Payment",
+          user: "User",
+          filter: "Filter",
+          
+          // Settings
+          posName: "POS Name",
+          currencyType: "Currency Type",
+          language: "Language",
+          saveSettings: "Save Settings",
+          aiAgentSettings: "AI Agent Settings",
+          apiKey: "API Key",
+          saveApiKey: "Save API Key",
+          clearKey: "Clear Key",
+          
+          // Common
+          add: "Add",
+          edit: "Edit",
+          delete: "Delete",
+          cancel: "Cancel",
+          save: "Save",
+          update: "Update",
+          create: "Create",
+          searchPlaceholder: "Search...",
+          loading: "Loading...",
+          noResults: "No results found",
+          success: "Success",
+          error: "Error",
+          warning: "Warning",
+          confirm: "Confirm",
+          yes: "Yes",
+          no: "No",
+          
+          // Messages
+          productNotFound: "Product not found for barcode",
+          addedToCart: "Added to cart",
+          saleCompleted: "Sale completed successfully!",
+          saleCompletedDebt: "Sale completed and charged to customer!",
+          errorCompletingSale: "Error completing sale",
+          pleaseAddItems: "Please add items to the cart before completing the sale",
+          selectCustomerForDebt: "Please select a customer for debt transactions",
+          cashReceivedMustBeGreater: "Cash received must be equal to or greater than total amount"
+        },
+        my: {
+          // Navigation
+          dashboard: "ဒက်ရှဘုတ်",
+          pos: "ရောင်းရန်",
+          products: "ကုန်ပစ္စည်းများ",
+          sales: "ရောင်းရာသွင်းမှု",
+          reports: "အစီရင်ခံစာများ",
+          promotions: "ပရိုမိုးရှင်းများ",
+          customers: "ဖောက်သည်များ",
+          debts: "အကြွေးများ",
+          suppliers: "ထောက်ပံ့သူများ",
+          purchases: "ဝယ်ယူမှုများ",
+          warehouse: "ကုန်လက်ကျန်",
+          deliveries: "ပို့ဆောင်မှု",
+          users: "အသုံးပြုသူများ",
+          settings: "ဆက်တင်များ",
+          logout: "ထွက်ရန်",
+          
+          // Dashboard
+          todaysSales: "ယနေ့ရောင်းရာ",
+          totalProducts: "စုစုပေါင်းကုန်ပစ္စည်း",
+          recentTransactions: "မကြာသေးမီငွေပေးချေမှု",
+          fromYesterday: "မနေ့ကနှင့်ယှဉ်",
+          lowStockItems: "ကုန်လက်ကျန်နည်းနေသည်",
+          last24Hours: "နောက်ဆုံး ၂၄ နာရီ",
+          salesOverview: "ရောင်းရာသွင်းမှုအပေါ်မြင်ကွင်း",
+          topProducts: "အရောင်းရဆုံးကုန်ပစ္စည်းများ",
+          
+          // POS
+          pointOfSale: "ရောင်းရာနေရာ",
+          clearCart: "ခြင်းရှင်းလင်းရန်",
+          customerOptional: "ဖောက်သည် (ရွေးချယ်နိုင်)",
+          walkInCustomer: "ဝင်ရောက်ဖောက်သည်",
+          viewDetails: "အသေးစိတ်ကြည့်ရန်",
+          scanBarcodeOrSearch: "ဘားကုတ်စကင်န်ဖတ်ရန် သို့ ရှာရန်...",
+          search: "ရှာရန်",
+          currentSale: "လက်ရှိရောင်းရမှု",
+          noItemsAdded: "ကုန်ပစ္စည်းမထည့်ရသေး",
+          subtotal: "စုစုပေါင်း:",
+          tax: "အခွန်:",
+          total: "စုစုပေါင်း:",
+          paymentMethod: "ငွေပေးချေမှုနည်းလမ်း",
+          cash: "ငွေသား",
+          creditCard: "ခရက်ဒစ်ကတ်",
+          debitCard: "ဒက်ဘစ်ကတ်",
+          mobilePayment: "မိုဘိုင်းငွေပေးချေမှု",
+          chargeToCustomer: "ဖောက်သည်အပေါ်အကြွေး",
+          enableDelivery: "ပို့ဆောင်မှုဖွင့်ရန်",
+          recipientName: "လက်ခံသူအမည်",
+          recipientPhone: "လက်ခံသူဖုန်း",
+          deliveryAddress: "ပို့ဆောင်မည်းနေရပ်လိပ်စာ",
+          fee: "အခကြေးငွေ",
+          cashReceived: "ရရှိငွေ",
+          refundChange: "ပြန်အမ်းငွေ:",
+          completeSale: "ရောင်းရမှုအပြီးသတ်ရန်",
+          processing: "လုပ်ဆောင်နေသည်...",
+          pleaseWait: "ခဏစောင့်ပါ...",
+          
+          // Products
+          productManagement: "ကုန်ပစ္စည်းစီမံခန့်ခွဲမှု",
+          manageStockWarehouse: "ကုန်လက်ကျန်စီမံရန်",
+          addProduct: "ကုန်ပစ္စည်းထည့်ရန်",
+          printBarcodeLabels: "ဘားကုတ်စာရင်းထုတ်ရန်",
+          searchBarcodeNameCategory: "ဘားကုတ်၊ အမည် သို့ အမျိုးအစားဖြင့်ရှာရန်",
+          photo: "ဓာတ်ပုံ",
+          barcode: "ဘားကုတ်",
+          name: "အမည်",
+          price: "စျေးနှုန်း",
+          stock: "ကုန်လက်ကျန်",
+          category: "အမျိုးအစား",
+          taxRate: "အခွန်နှုန်း",
+          actions: "လုပ်ဆောင်ချက်များ",
+          
+          // Sales
+          salesHistory: "ရောင်းရာသမိုင်း",
+          transactionId: "ငွေပေးချေမှုအိုင်ဒီ",
+          date: "ရက်စွဲ",
+          refund: "ပြန်ပေးငွေ",
+          payment: "ငွေပေးချေမှု",
+          user: "အသုံးပြုသူ",
+          filter: "စိစစ်ရန်",
+          
+          // Settings
+          posName: "POS အမည်",
+          currencyType: "ငွေကြေးအမျိုးအစား",
+          language: "ဘာသာစကား",
+          saveSettings: "ဆက်တင်များသိမ်းဆည်းရန်",
+          aiAgentSettings: "AI ဆက်တင်များ",
+          apiKey: "API Key",
+          saveApiKey: "API Key သိမ်းရန်",
+          clearKey: "Key ဖျက်ရန်",
+          
+          // Common
+          add: "ထည့်ရန်",
+          edit: "ပြင်ဆင်ရန်",
+          delete: "ဖျက်ရန်",
+          cancel: "ပယ်ဖျက်ရန်",
+          save: "သိမ်းဆည်းရန်",
+          update: "အပ်ဒိတ်လုပ်ရန်",
+          create: "ဖန်တီးရန်",
+          searchPlaceholder: "ရှာရန်...",
+          loading: "တင်နေသည်...",
+          noResults: "ရလဒ်မရှိပါ",
+          success: "အောင်မြင်သည်",
+          error: "အမှား",
+          warning: "သတိပေးချက်",
+          confirm: "အတည်ပြုရန်",
+          yes: "ဟုတ်",
+          no: "မဟုတ်",
+          
+          // Messages
+          productNotFound: "ဘားကုတ်အတွက်ကုန်ပစ္စည်းမတွေ့ပါ",
+          addedToCart: "ခြင်းတွင်ထည့်ပြီးပါပြီ",
+          saleCompleted: "ရောင်းရမှုအောင်မြင်ပါသည်!",
+          saleCompletedDebt: "ရောင်းရမှုအောင်မြင်ပြီး ဖောက်သည်အပေါ်အကြွေးစာရင်းသွင်းပြီးပါပြီ!",
+          errorCompletingSale: "ရောင်းရမှုအပြီးသတ်ရာတွင်အမှားရှိသည်",
+          pleaseAddItems: "ကျေးဇူးပြု၍ခြင်းတွင်ကုန်ပစ္စည်းများထည့်ပါ",
+          selectCustomerForDebt: "အကြွေးငွေပေးချေမှုအတွက်ဖောက်သည်ရွေးပါ",
+          cashReceivedMustBeGreater: "ရရှိငွေသည်စုစုပေါင်းထက်ကျော်လွန်ရမည်"
+        }
+      };
+
+      let currentLanguage = localStorage.getItem("pos_language") || "en";
+
+      // Get translation for a key
+      function t(key) {
+        return translations[currentLanguage][key] || translations["en"][key] || key;
+      }
+
+      // Change language
+      function changeLanguage(lang) {
+        currentLanguage = lang;
+        localStorage.setItem("pos_language", lang);
+        
+        // Update body class for font styling
+        document.body.classList.remove("lang-my", "lang-en");
+        document.body.classList.add(lang === "my" ? "lang-my" : "lang-en");
+        
+        // Update HTML lang attribute
+        document.documentElement.lang = lang;
+        
+        applyTranslations();
+        showToast(lang === "my" ? "ဘာသာစကားပြောင်းလဲပြီးပါပြီ" : "Language changed successfully", "success");
+      }
+
+      // Apply translations to all elements with data-i18n attribute
+      function applyTranslations() {
+        // Update elements with data-i18n attribute
+        document.querySelectorAll("[data-i18n]").forEach(el => {
+          const key = el.getAttribute("data-i18n");
+          if (el.tagName === "INPUT" && el.hasAttribute("placeholder")) {
+            el.placeholder = t(key);
+          } else {
+            el.textContent = t(key);
+          }
+        });
+
+        // Update sidebar navigation
+        const navLinks = document.querySelectorAll(".sidebar .nav-link");
+        const navKeys = ["dashboard", "pos", "products", "sales", "reports", "promotions", "customers", "debts", "suppliers", "purchases", "warehouse", "deliveries", "users", "settings"];
+        navLinks.forEach((link, index) => {
+          if (index < navKeys.length) {
+            const icon = link.querySelector("i");
+            if (icon) {
+              link.innerHTML = icon.outerHTML + " " + t(navKeys[index]);
+            }
+          }
+        });
+
+        // Update section titles
+        updateSectionTitles();
+        
+        // Update Complete Sale button
+        const completeSaleText = document.getElementById("complete-sale-text");
+        if (completeSaleText) {
+          completeSaleText.textContent = t("completeSale");
+        }
+      }
+
+      // Update section titles
+      function updateSectionTitles() {
+        const titles = {
+          "dashboard-section h2": "dashboard",
+          "pos-section h2": "pointOfSale",
+          "products-section h2": "productManagement",
+          "sales-section h2": "salesHistory",
+          "users-section h2": "users",
+          "promotions-section h2": "promotions",
+          "customers-section h2": "customers",
+          "debts-section h2": "debts",
+          "suppliers-section h2": "suppliers",
+          "purchases-section h2": "purchases",
+          "warehouse-section h2": "warehouse",
+          "deliveries-section h2": "deliveries",
+          "reports-section h2": "reports",
+          "settings-section h2": "settings"
+        };
+
+        Object.entries(titles).forEach((selector, key) => {
+          const [sectionSelector, translationKey] = [selector[0], selector[1]];
+          const el = document.querySelector(sectionSelector);
+          if (el) {
+            el.textContent = t(translationKey);
+          }
+        });
+      }
+
+      // Initialize language on page load
+      function initLanguage() {
+        const savedLang = localStorage.getItem("pos_language") || "en";
+        currentLanguage = savedLang;
+        
+        // Apply body class for font styling
+        document.body.classList.remove("lang-my", "lang-en");
+        document.body.classList.add(savedLang === "my" ? "lang-my" : "lang-en");
+        
+        // Update HTML lang attribute
+        document.documentElement.lang = savedLang;
+        
+        const langSelect = document.getElementById("settings-language");
+        if (langSelect) {
+          langSelect.value = savedLang;
+        }
+        applyTranslations();
+      }
+
+      // ============================================
+      // Rate Limiting for Complete Sale Button
+      // ============================================
+      let isSaleProcessing = false;
+      const SALE_COOLDOWN_MS = 3000; // 3 seconds cooldown
 
       function initResizableSidebar() {
         const sidebar = document.getElementById("sidebar");
@@ -5493,8 +5886,14 @@
       }
 
       function completeSale() {
+        // Rate limiting check
+        if (isSaleProcessing) {
+          showToast(t("pleaseWait"), "warning");
+          return;
+        }
+
         if (cart.length === 0) {
-          alert("Please add items to the cart before completing the sale");
+          alert(t("pleaseAddItems"));
           return;
         }
 
@@ -5503,7 +5902,7 @@
 
         // If payment method is debt, ensure a customer is selected
         if (paymentMethod === "debt" && !customerId) {
-          alert("Please select a customer for debt transactions");
+          alert(t("selectCustomerForDebt"));
           return;
         }
 
@@ -5537,7 +5936,7 @@
           const cashReceived = parseFloat(document.getElementById("cash-received").value || "0");
           const total = getCurrentCartTotal();
           if (isNaN(cashReceived) || cashReceived < total) {
-            alert("Cash received must be equal to or greater than total amount");
+            alert(t("cashReceivedMustBeGreater"));
             return;
           }
           saleData.cash_received = Number(cashReceived.toFixed(2));
@@ -5547,6 +5946,10 @@
         if (customerId) {
           saleData.customer_id = parseInt(customerId);
         }
+
+        // Set processing state and update button
+        isSaleProcessing = true;
+        setCompleteSaleButtonState(true);
 
         fetch("/api/sales", {
           method: "POST",
@@ -5559,8 +5962,8 @@
           .then((data) => {
             if (data.success) {
               const message = paymentMethod === "debt" 
-                ? `Sale completed and charged to customer! Transaction ID: ${data.transaction_id}`
-                : `Sale completed successfully! Transaction ID: ${data.transaction_id}`;
+                ? `${t("saleCompletedDebt")} Transaction ID: ${data.transaction_id}`
+                : `${t("saleCompleted")} Transaction ID: ${data.transaction_id}`;
               
               alert(data.delivery_number ? `${message}\nDelivery: ${data.delivery_number}` : message);
               cart = [];
@@ -5578,13 +5981,51 @@
               loadDashboardStats();
               invalidateProductsCache();
             } else {
-              alert("Error completing sale: " + (data.message || "Unknown error"));
+              alert(t("errorCompletingSale") + ": " + (data.message || "Unknown error"));
             }
           })
           .catch((error) => {
             console.error("Error:", error);
-            alert("Error completing sale: " + error.message);
+            alert(t("errorCompletingSale") + ": " + error.message);
+          })
+          .finally(() => {
+            // Reset processing state after cooldown
+            setTimeout(() => {
+              isSaleProcessing = false;
+              setCompleteSaleButtonState(false);
+            }, SALE_COOLDOWN_MS);
           });
+      }
+
+      // Update Complete Sale button state for rate limiting
+      function setCompleteSaleButtonState(isProcessing) {
+        const btn = document.getElementById("complete-sale-btn");
+        const icon = document.getElementById("complete-sale-icon");
+        const text = document.getElementById("complete-sale-text");
+        
+        if (!btn) return;
+
+        if (isProcessing) {
+          btn.disabled = true;
+          btn.classList.remove("btn-success");
+          btn.classList.add("btn-secondary");
+          if (icon) {
+            icon.className = "bi bi-hourglass-split";
+          }
+          if (text) {
+            text.textContent = t("processing");
+          }
+        } else {
+          btn.disabled = false;
+          btn.classList.remove("btn-secondary");
+          btn.classList.add("btn-success");
+          if (icon) {
+            icon.className = "bi bi-check-circle";
+          }
+          if (text) {
+            text.textContent = t("completeSale");
+          }
+        }
       }
 
       // Barcode Label functions
