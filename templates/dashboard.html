@@ -569,12 +569,13 @@
     <!-- Sidebar Overlay for Mobile -->
     <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
 
-    <!-- Sidebar Toggle Button (Mobile) -->
+    <!-- Sidebar Toggle Button (Mobile) - Hidden when swipe is enabled -->
     <button
-      class="btn btn-primary mobile-toggle-btn position-fixed"
+      class="btn btn-primary mobile-toggle-btn position-fixed d-md-none"
       style="z-index: 1100; top: 10px; left: 10px"
       onclick="toggleSidebar()"
       aria-label="Toggle navigation menu"
+      id="mobile-toggle-btn"
     >
       <i class="bi bi-list fs-5"></i>
     </button>
@@ -4499,7 +4500,157 @@
         navLinks.forEach(link => {
           link.addEventListener("click", handleNavLinkClick);
         });
+
+        // Initialize swipe gestures for sidebar
+        initSidebarSwipeGestures();
       });
+
+      // Swipe gesture handling for sidebar on touch devices
+      function initSidebarSwipeGestures() {
+        // Only enable on touch devices (mobile/tablet)
+        const isTouchDevice = window.matchMedia("(pointer: coarse)").matches || 
+                              ("ontouchstart" in window) ||
+                              navigator.maxTouchPoints > 0;
+        const isMobileViewport = window.innerWidth < 992;
+        
+        if (!isTouchDevice || !isMobileViewport) {
+          return; // Not a touch device or not mobile viewport - don't enable swipe
+        }
+
+        // Hide the toggle button on touch devices (swipe replaces it)
+        const toggleBtn = document.getElementById("mobile-toggle-btn");
+        if (toggleBtn) {
+          toggleBtn.style.display = "none";
+        }
+
+        const sidebar = document.getElementById("sidebar");
+        const mainContent = document.getElementById("main-content");
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let touchEndX = 0;
+        let touchEndY = 0;
+        let isSwiping = false;
+
+        // Minimum swipe distance (in pixels) to trigger sidebar toggle
+        const minSwipeDistance = 60;
+        // Maximum vertical swipe distance to still consider it a horizontal swipe
+        const maxVerticalSwipe = 100;
+        // Edge zone width (in pixels) where right swipe opens sidebar
+        const edgeZoneWidth = 40;
+
+        function handleTouchStart(e) {
+          touchStartX = e.changedTouches[0].screenX;
+          touchStartY = e.changedTouches[0].screenY;
+          isSwiping = true;
+        }
+
+        function handleTouchMove(e) {
+          if (!isSwiping) return;
+          
+          // Prevent default scrolling when swiping from left edge to open sidebar
+          const currentX = e.changedTouches[0].screenX;
+          const currentY = e.changedTouches[0].screenY;
+          const diffX = currentX - touchStartX;
+          const diffY = currentY - touchStartY;
+
+          // If swiping right from left edge and sidebar is closed, prevent scroll
+          if (!sidebar.classList.contains("active") && 
+              touchStartX < edgeZoneWidth && 
+              diffX > 20 && 
+              Math.abs(diffY) < 50) {
+            e.preventDefault();
+          }
+        }
+
+        function handleTouchEnd(e) {
+          if (!isSwiping) return;
+          
+          touchEndX = e.changedTouches[0].screenX;
+          touchEndY = e.changedTouches[0].screenY;
+          
+          const swipeDistance = touchEndX - touchStartX;
+          const verticalDistance = Math.abs(touchEndY - touchStartY);
+          
+          // Check if it's primarily a horizontal swipe
+          if (verticalDistance > maxVerticalSwipe) {
+            isSwiping = false;
+            return;
+          }
+
+          // Swipe right from left edge - open sidebar
+          if (swipeDistance > minSwipeDistance && 
+              touchStartX < edgeZoneWidth && 
+              !sidebar.classList.contains("active")) {
+            toggleSidebar();
+          }
+          
+          // Swipe left - close sidebar
+          if (swipeDistance < -minSwipeDistance && 
+              sidebar.classList.contains("active")) {
+            toggleSidebar();
+          }
+          
+          isSwiping = false;
+        }
+
+        // Add touch event listeners to the document
+        document.addEventListener("touchstart", handleTouchStart, { passive: true });
+        document.addEventListener("touchmove", handleTouchMove, { passive: false });
+        document.addEventListener("touchend", handleTouchEnd, { passive: true });
+
+        // Add visual indicator for swipe area (optional - subtle hint)
+        addSwipeHint();
+      }
+
+      // Add a subtle visual hint for swipe gesture
+      function addSwipeHint() {
+        // Only show hint on first visit or until sidebar is opened
+        if (localStorage.getItem("pos_sidebar_swipe_hint_shown")) {
+          return;
+        }
+
+        const hint = document.createElement("div");
+        hint.id = "sidebar-swipe-hint";
+        hint.style.cssText = `
+          position: fixed;
+          left: 0;
+          top: 50%;
+          transform: translateY(-50%);
+          width: 4px;
+          height: 60px;
+          background: rgba(13, 110, 253, 0.5);
+          border-radius: 0 4px 4px 0;
+          z-index: 998;
+          transition: opacity 0.3s;
+        `;
+        
+        document.body.appendChild(hint);
+
+        // Hide hint after first sidebar interaction
+        const sidebar = document.getElementById("sidebar");
+        const observer = new MutationObserver((mutations) => {
+          mutations.forEach((mutation) => {
+            if (mutation.type === "attributes" && 
+                mutation.attributeName === "class" &&
+                sidebar.classList.contains("active")) {
+              hint.style.opacity = "0";
+              setTimeout(() => hint.remove(), 300);
+              localStorage.setItem("pos_sidebar_swipe_hint_shown", "true");
+              observer.disconnect();
+            }
+          });
+        });
+
+        observer.observe(sidebar, { attributes: true });
+
+        // Also hide hint after 5 seconds
+        setTimeout(() => {
+          if (hint.parentNode) {
+            hint.style.opacity = "0";
+            setTimeout(() => hint.remove(), 300);
+          }
+        }, 5000);
+      }
 
       function initResizableSidebar() {
         const sidebar = document.getElementById("sidebar");
