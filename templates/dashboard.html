@@ -3790,6 +3790,50 @@
       </div>
     </div>
 
+    <!-- Confirmation Modal -->
+    <div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="confirmModalTitle">Confirm</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p id="confirmModalMessage" class="mb-0"></p>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" id="confirmModalBtn">Confirm</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sale Success Modal -->
+    <div class="modal fade" id="saleSuccessModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header bg-success text-white">
+            <h5 class="modal-title"><i class="bi bi-check-circle me-2"></i>Sale Completed!</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body text-center py-4">
+            <div class="mb-3">
+              <i class="bi bi-bag-check text-success" style="font-size: 4rem;"></i>
+            </div>
+            <h4 class="text-success mb-3">Transaction Successful</h4>
+            <p class="mb-2">Transaction ID: <strong id="saleTransactionId"></strong></p>
+            <p class="mb-0 text-muted" id="saleDeliveryInfo"></p>
+          </div>
+          <div class="modal-footer justify-content-center">
+            <button type="button" class="btn btn-success" data-bs-dismiss="modal">
+              <i class="bi bi-check-lg me-1"></i> Done
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
@@ -3975,7 +4019,7 @@
       function saveAISettings() {
         const apiKey = document.getElementById("settings-ai-api-key").value.trim();
         if (!apiKey) {
-          alert("Please enter an API key");
+          showToast("Please enter an API key", "warning");
           return;
         }
 
@@ -3987,45 +4031,47 @@
           .then((response) => response.json())
           .then((data) => {
             if (!data.success) {
-              alert(data.message || "Failed to save API key");
+              showToast(data.message || "Failed to save API key", "error");
               return;
             }
             document.getElementById("settings-ai-api-key").value = "";
             document.getElementById("settings-ai-api-key").placeholder = "API key is configured (hidden for security)";
             updateAIStatusDisplay(true);
-            alert("API key saved successfully");
+            showToast("API key saved successfully", "success");
           })
           .catch((error) => {
             console.error("Error saving AI settings:", error);
-            alert("Failed to save API key");
+            showToast("Failed to save API key", "error");
           });
       }
 
       function clearAISettings() {
-        if (!confirm("Are you sure you want to clear the API key?")) {
-          return;
-        }
-
-        fetch("/api/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ai_api_key: "" }),
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            if (!data.success) {
-              alert(data.message || "Failed to clear API key");
-              return;
-            }
-            document.getElementById("settings-ai-api-key").value = "";
-            document.getElementById("settings-ai-api-key").placeholder = "Enter your APIFree.ai API key";
-            updateAIStatusDisplay(false);
-            alert("API key cleared successfully");
-          })
-          .catch((error) => {
-            console.error("Error clearing AI settings:", error);
-            alert("Failed to clear API key");
-          });
+        showConfirmDialog(
+          "Clear API Key",
+          "Are you sure you want to clear the API key?",
+          () => {
+            fetch("/api/settings", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ai_api_key: "" }),
+            })
+              .then((response) => response.json())
+              .then((data) => {
+                if (!data.success) {
+                  showToast(data.message || "Failed to clear API key", "error");
+                  return;
+                }
+                document.getElementById("settings-ai-api-key").value = "";
+                document.getElementById("settings-ai-api-key").placeholder = "Enter your APIFree.ai API key";
+                updateAIStatusDisplay(false);
+                showToast("API key cleared successfully", "success");
+              })
+              .catch((error) => {
+                console.error("Error clearing AI settings:", error);
+                showToast("Failed to clear API key", "error");
+              });
+          }
+        );
       }
 
       function saveSettings() {
@@ -4040,18 +4086,18 @@
           .then((response) => response.json())
           .then((data) => {
             if (!data.success) {
-              alert(data.message || "Failed to save settings");
+              showToast(data.message || "Failed to save settings", "error");
               return;
             }
 
             APP_SETTINGS.currencyCode = data.currency_code;
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(data.currency_code);
             applySettingsUI();
-            alert("Settings updated successfully");
+            showToast("Settings updated successfully", "success");
           })
           .catch((error) => {
             console.error("Error saving settings:", error);
-            alert("Failed to save settings");
+            showToast("Failed to save settings", "error");
           });
       }
       let cart = [];
@@ -4799,6 +4845,53 @@
       }
 
       // ============================================
+      // Confirmation Modal Dialog
+      // ============================================
+      let confirmModalCallback = null;
+
+      function showConfirmDialog(title, message, onConfirm) {
+        document.getElementById("confirmModalTitle").textContent = title;
+        document.getElementById("confirmModalMessage").textContent = message;
+        confirmModalCallback = onConfirm;
+        
+        const modal = new bootstrap.Modal(document.getElementById("confirmModal"));
+        modal.show();
+      }
+
+      // Handle confirm button click
+      document.addEventListener("DOMContentLoaded", function() {
+        const confirmBtn = document.getElementById("confirmModalBtn");
+        if (confirmBtn) {
+          confirmBtn.addEventListener("click", function() {
+            const modal = bootstrap.Modal.getInstance(document.getElementById("confirmModal"));
+            modal.hide();
+            if (confirmModalCallback) {
+              confirmModalCallback();
+              confirmModalCallback = null;
+            }
+          });
+        }
+      });
+
+      // ============================================
+      // Sale Success Modal
+      // ============================================
+      function showSaleSuccessModal(transactionId, deliveryNumber, isDebt) {
+        document.getElementById("saleTransactionId").textContent = transactionId;
+        
+        const deliveryInfo = document.getElementById("saleDeliveryInfo");
+        if (deliveryNumber) {
+          deliveryInfo.textContent = `Delivery: ${deliveryNumber}`;
+          deliveryInfo.style.display = "block";
+        } else {
+          deliveryInfo.style.display = "none";
+        }
+        
+        const modal = new bootstrap.Modal(document.getElementById("saleSuccessModal"));
+        modal.show();
+      }
+
+      // ============================================
       // Language Translation System
       // ============================================
       const translations = {
@@ -5253,9 +5346,7 @@
       // Add this function to check for authorization errors
       function checkAuthError(error) {
         if (error.message.includes("401") || error.message.includes("403")) {
-          alert(
-            "You do not have permission to access this feature. Please contact a manager."
-          );
+          showToast("You do not have permission to access this feature. Please contact a manager.", "error");
           return true;
         }
         return false;
@@ -5685,88 +5776,97 @@
           })
           .then((product) => {
             if (!product) {
-              alert("Product not found!");
+              showToast("Product not found!", "error");
               return;
             }
 
             // Check stock
             const maxAvailable = product.stock;
             if (quantity > maxAvailable) {
-              const available = confirm(
-                `${product.name} has only ${maxAvailable} in stock.\n` +
-                  `Would you like to add ${maxAvailable} instead?`
-              );
-              if (!available) return;
-              quantity = maxAvailable;
-            }
-
-            // Apply promotions (if any)
-            let finalPrice = product.price;
-            const now = new Date();
-
-            if (product.promotions && Array.isArray(product.promotions)) {
-              const activePromo = product.promotions.find((p) => {
-                const start = new Date(p.start_date);
-                const end = new Date(p.end_date);
-                return now >= start && now <= end;
-              });
-
-              if (activePromo) {
-                if (activePromo.discount_type === "percent") {
-                  const discountAmount =
-                    product.price * (activePromo.discount_value / 100);
-                  finalPrice = Math.max(0, product.price - discountAmount);
-                } else if (activePromo.discount_type === "fixed") {
-                  finalPrice = Math.max(
-                    0,
-                    product.price - activePromo.discount_value
-                  );
+              showConfirmDialog(
+                "Limited Stock",
+                `${product.name} has only ${maxAvailable} in stock.\nWould you like to add ${maxAvailable} instead?`,
+                () => {
+                  addToCartToInternal(product, maxAvailable);
                 }
-                showToast(
-                  `${product.name} discounted to ${formatCurrency(finalPrice)}!`,
-                  "success"
-                );
-              }
+              );
+              return;
             }
 
-            // Add or update cart
-            const existingItem = cart.find(
-              (item) => item.product_id === productId
-            );
-            if (existingItem) {
-              const newQty = existingItem.quantity + quantity;
-              if (newQty > maxAvailable) {
-                alert(
-                  `Cannot add more than ${maxAvailable} units of ${product.name}.`
-                );
-                return;
-              }
-              existingItem.quantity = newQty;
-              existingItem.price = finalPrice;
-            } else {
-              cart.push({
-                product_id: productId,
-                name: product.name,
-                price: finalPrice,
-                quantity: quantity,
-                tax_rate: product.tax_rate || 0,
-                original_price: product.price,
-              });
-            }
-
-            updateCartDisplay();
-            // Quick subtle toast for cart additions (1.5s duration, success type for green color)
-            showToast(`+${quantity} ${product.name}`, "success", 1500);
-
-            // Refocus search
-            const searchInput = document.getElementById("product-search");
-            searchInput.value = "";
-            searchInput.focus();
+            addToCartToInternal(product, quantity);
           })
           .catch((err) => {
             console.error("Error adding to cart:", err);
-            alert("Failed to add product. Check connection.");
+            showToast("Failed to add product. Check connection.", "error");
           });
+      }
+
+      // Internal function to add product to cart
+      function addToCartToInternal(product, quantity) {
+        const productId = product.id;
+        // Apply promotions (if any)
+        let finalPrice = product.price;
+        const now = new Date();
+
+        if (product.promotions && Array.isArray(product.promotions)) {
+          const activePromo = product.promotions.find((p) => {
+            const start = new Date(p.start_date);
+            const end = new Date(p.end_date);
+            return now >= start && now <= end;
+          });
+
+          if (activePromo) {
+            if (activePromo.discount_type === "percent") {
+              const discountAmount =
+                product.price * (activePromo.discount_value / 100);
+              finalPrice = Math.max(0, product.price - discountAmount);
+            } else if (activePromo.discount_type === "fixed") {
+              finalPrice = Math.max(
+                0,
+                product.price - activePromo.discount_value
+              );
+            }
+            showToast(
+              `${product.name} discounted to ${formatCurrency(finalPrice)}!`,
+              "success"
+            );
+          }
+        }
+
+        // Add or update cart
+        const existingItem = cart.find(
+          (item) => item.product_id === productId
+        );
+        if (existingItem) {
+          const newQty = existingItem.quantity + quantity;
+          if (newQty > product.stock) {
+            showToast(
+              `Cannot add more than ${product.stock} units of ${product.name}.`,
+              "warning"
+            );
+            return;
+          }
+          existingItem.quantity = newQty;
+          existingItem.price = finalPrice;
+        } else {
+          cart.push({
+            product_id: productId,
+            name: product.name,
+            price: finalPrice,
+            quantity: quantity,
+            tax_rate: product.tax_rate || 0,
+            original_price: product.price,
+          });
+        }
+
+        updateCartDisplay();
+        // Quick subtle toast for cart additions (1.5s duration, success type for green color)
+        showToast(`+${quantity} ${product.name}`, "success", 1500);
+
+        // Refocus search
+        const searchInput = document.getElementById("product-search");
+        searchInput.value = "";
+        searchInput.focus();
       }
 
       function updateCartDisplay() {
@@ -5893,7 +5993,7 @@
         }
 
         if (cart.length === 0) {
-          alert(t("pleaseAddItems"));
+          showToast(t("pleaseAddItems"), "warning");
           return;
         }
 
@@ -5902,7 +6002,7 @@
 
         // If payment method is debt, ensure a customer is selected
         if (paymentMethod === "debt" && !customerId) {
-          alert(t("selectCustomerForDebt"));
+          showToast(t("selectCustomerForDebt"), "warning");
           return;
         }
 
@@ -5927,7 +6027,7 @@
             delivery_fee: parseFloat(document.getElementById("pos-delivery-fee").value || "0") || 0,
           };
           if (!saleData.delivery.recipient_name || !saleData.delivery.recipient_phone || !saleData.delivery.delivery_address) {
-            alert("Recipient name, phone and address are required for delivery");
+            showToast("Recipient name, phone and address are required for delivery", "warning");
             return;
           }
         }
@@ -5936,7 +6036,7 @@
           const cashReceived = parseFloat(document.getElementById("cash-received").value || "0");
           const total = getCurrentCartTotal();
           if (isNaN(cashReceived) || cashReceived < total) {
-            alert(t("cashReceivedMustBeGreater"));
+            showToast(t("cashReceivedMustBeGreater"), "warning");
             return;
           }
           saleData.cash_received = Number(cashReceived.toFixed(2));
@@ -5965,7 +6065,9 @@
                 ? `${t("saleCompletedDebt")} Transaction ID: ${data.transaction_id}`
                 : `${t("saleCompleted")} Transaction ID: ${data.transaction_id}`;
               
-              alert(data.delivery_number ? `${message}\nDelivery: ${data.delivery_number}` : message);
+              // Show success modal instead of alert
+              showSaleSuccessModal(data.transaction_id, data.delivery_number, paymentMethod === "debt");
+              
               cart = [];
               updateCartDisplay();
               document.getElementById("cash-received").value = "";
@@ -5981,12 +6083,12 @@
               loadDashboardStats();
               invalidateProductsCache();
             } else {
-              alert(t("errorCompletingSale") + ": " + (data.message || "Unknown error"));
+              showToast(t("errorCompletingSale") + ": " + (data.message || "Unknown error"), "error");
             }
           })
           .catch((error) => {
             console.error("Error:", error);
-            alert(t("errorCompletingSale") + ": " + error.message);
+            showToast(t("errorCompletingSale") + ": " + error.message, "error");
           })
           .finally(() => {
             // Reset processing state after cooldown
@@ -6114,7 +6216,7 @@
           });
 
         if (selectedProducts.length === 0) {
-          alert("Please select at least one product to generate labels");
+          showToast("Please select at least one product to generate labels", "warning");
           return;
         }
 
@@ -6150,10 +6252,11 @@
               document.getElementById("barcodeLabelModal")
             );
             modal.hide();
+            showToast("Barcode labels generated successfully!", "success");
           })
           .catch((error) => {
             console.error("Error generating labels:", error);
-            alert("Error generating labels: " + error.message);
+            showToast("Error generating labels: " + error.message, "error");
           });
       }
 
@@ -6254,7 +6357,7 @@
         const photoFile = document.getElementById("add-photo").files[0];
 
         if (!name || isNaN(price)) {
-          alert("Please fill in all required fields with valid values");
+          showToast("Please fill in all required fields with valid values", "warning");
           return;
         }
 
@@ -6277,7 +6380,7 @@
           .then((response) => response.json())
           .then((data) => {
             if (data.success) {
-              alert("Product added successfully!");
+              showToast("Product added successfully!", "success");
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("addProductModal")
               );
@@ -6289,14 +6392,15 @@
               loadProducts();
               loadDashboardStats();
             } else {
-              alert(
-                "Error adding product: " + (data.message || "Unknown error")
+              showToast(
+                "Error adding product: " + (data.message || "Unknown error"),
+                "error"
               );
             }
           })
           .catch((error) => {
             console.error("Error saving product:", error);
-            alert("Error saving product: " + error.message);
+            showToast("Error saving product: " + error.message, "error");
           });
       }
 
@@ -6334,13 +6438,13 @@
           })
           .catch((error) => {
             console.error("Error fetching product:", error);
-            alert("Failed to load product for editing");
+            showToast("Failed to load product for editing", "error");
           });
       }
 
       function updateProduct() {
         if (!currentProduct) {
-          alert("No product selected for update");
+          showToast("No product selected for update", "warning");
           return;
         }
 
@@ -6358,7 +6462,7 @@
         const removePhoto = document.getElementById("edit-remove-photo").checked;
 
         if (!name || isNaN(price)) {
-          alert("Please fill in all required fields with valid values");
+          showToast("Please fill in all required fields with valid values", "warning");
           return;
         }
 
@@ -6382,7 +6486,7 @@
           .then((response) => response.json())
           .then((data) => {
             if (data.success) {
-              alert("Product updated successfully!");
+              showToast("Product updated successfully!", "success");
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("editProductModal")
               );
@@ -6392,47 +6496,47 @@
               loadProducts();
               loadDashboardStats();
             } else {
-              alert(
-                "Error updating product: " + (data.message || "Unknown error")
+              showToast(
+                "Error updating product: " + (data.message || "Unknown error"),
+                "error"
               );
             }
           })
           .catch((error) => {
             console.error("Error updating product:", error);
-            alert("Error updating product: " + error.message);
+            showToast("Error updating product: " + error.message, "error");
           });
       }
 
       function deleteProduct(productId, productName) {
-        if (
-          !confirm(
-            `Are you sure you want to delete "${productName}"? This action cannot be undone.`
-          )
-        ) {
-          return;
-        }
-
-        fetch("/api/products/" + productId, {
-          method: "DELETE",
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
-              alert("Product deleted successfully!");
-              // Invalidate cache since products have changed
-              invalidateProductsCache();
-              loadProducts();
-              loadDashboardStats();
-            } else {
-              alert(
-                "Error deleting product: " + (data.message || "Unknown error")
-              );
-            }
-          })
-          .catch((error) => {
-            console.error("Error deleting product:", error);
-            alert("Error deleting product: " + error.message);
-          });
+        showConfirmDialog(
+          "Delete Product",
+          `Are you sure you want to delete "${productName}"? This action cannot be undone.`,
+          () => {
+            fetch("/api/products/" + productId, {
+              method: "DELETE",
+            })
+              .then((response) => response.json())
+              .then((data) => {
+                if (data.success) {
+                  showToast("Product deleted successfully!", "success");
+                  // Invalidate cache since products have changed
+                  invalidateProductsCache();
+                  loadProducts();
+                  loadDashboardStats();
+                } else {
+                  showToast(
+                    "Error deleting product: " + (data.message || "Unknown error"),
+                    "error"
+                  );
+                }
+              })
+              .catch((error) => {
+                console.error("Error deleting product:", error);
+                showToast("Error deleting product: " + error.message, "error");
+              });
+          }
+        );
       }
 
       // Sales history functions
@@ -6874,7 +6978,7 @@
         if (!returnExchangeSaleData) return;
         const { returnItems, exchangeItems } = collectReturnExchangePayload();
         if (!returnItems.length) {
-          alert("Please add at least one return item.");
+          showToast("Please add at least one return item.", "warning");
           return;
         }
 
@@ -6894,10 +6998,10 @@
           .then((r) => r.json())
           .then((data) => {
             if (!data.success) {
-              alert(data.message || "Failed to process return/exchange");
+              showToast(data.message || "Failed to process return/exchange", "error");
               return;
             }
-            alert(`Workflow completed. ID: ${data.workflow_id}`);
+            showToast(`Workflow completed. ID: ${data.workflow_id}`, "success");
             const modal = bootstrap.Modal.getInstance(document.getElementById("returnExchangeModal"));
             modal.hide();
             invalidateProductsCache();
@@ -6907,7 +7011,7 @@
             loadDashboardStats();
           })
           .catch((e) => {
-            alert(`Failed to process return/exchange: ${e.message}`);
+            showToast(`Failed to process return/exchange: ${e.message}`, "error");
           });
       }
 
@@ -7077,7 +7181,7 @@
         const endDate = document.getElementById("end-date").value;
 
         if (!startDate || !endDate) {
-          alert("Please select both start and end dates");
+          showToast("Please select both start and end dates", "warning");
           return;
         }
 
@@ -7326,12 +7430,12 @@
         const role = document.getElementById("add-role").value;
 
         if (!username || !password) {
-          alert("Please fill in all required fields");
+          showToast("Please fill in all required fields", "warning");
           return;
         }
 
         if (password !== confirmPassword) {
-          alert("Passwords do not match");
+          showToast("Passwords do not match", "warning");
           return;
         }
 
@@ -7358,7 +7462,7 @@
           })
           .then((data) => {
             if (data.success) {
-              alert("User added successfully!");
+              showToast("User added successfully!", "success");
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("addUserModal")
               );
@@ -7366,12 +7470,12 @@
               document.getElementById("add-user-form").reset();
               loadUsers();
             } else {
-              alert("Error adding user: " + (data.message || "Unknown error"));
+              showToast("Error adding user: " + (data.message || "Unknown error"), "error");
             }
           })
           .catch((error) => {
             console.error("Error saving user:", error);
-            alert("Error saving user: " + error.message);
+            showToast("Error saving user: " + error.message, "error");
           });
       }
 
@@ -7390,7 +7494,7 @@
           })
           .catch((error) => {
             console.error("Error fetching user:", error);
-            alert("Failed to load user for editing");
+            showToast("Failed to load user for editing", "error");
           });
       }
 
@@ -7404,12 +7508,12 @@
         const role = document.getElementById("edit-role").value;
 
         if (!username) {
-          alert("Please fill in all required fields");
+          showToast("Please fill in all required fields", "warning");
           return;
         }
 
         if (password && password !== confirmPassword) {
-          alert("Passwords do not match");
+          showToast("Passwords do not match", "warning");
           return;
         }
 
@@ -7433,51 +7537,51 @@
           .then((response) => response.json())
           .then((data) => {
             if (data.success) {
-              alert("User updated successfully!");
+              showToast("User updated successfully!", "success");
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("editUserModal")
               );
               modal.hide();
               loadUsers();
             } else {
-              alert(
-                "Error updating user: " + (data.message || "Unknown error")
+              showToast(
+                "Error updating user: " + (data.message || "Unknown error"),
+                "error"
               );
             }
           })
           .catch((error) => {
             console.error("Error updating user:", error);
-            alert("Error updating user: " + error.message);
+            showToast("Error updating user: " + error.message, "error");
           });
       }
 
       function deleteUser(userId, username) {
-        if (
-          !confirm(
-            `Are you sure you want to delete user "${username}"? This action cannot be undone.`
-          )
-        ) {
-          return;
-        }
-
-        fetch("/api/users/" + userId, {
-          method: "DELETE",
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
-              alert("User deleted successfully!");
-              loadUsers();
-            } else {
-              alert(
-                "Error deleting user: " + (data.message || "Unknown error")
-              );
-            }
-          })
-          .catch((error) => {
-            console.error("Error deleting user:", error);
-            alert("Error deleting user: " + error.message);
-          });
+        showConfirmDialog(
+          "Delete User",
+          `Are you sure you want to delete user "${username}"? This action cannot be undone.`,
+          () => {
+            fetch("/api/users/" + userId, {
+              method: "DELETE",
+            })
+              .then((response) => response.json())
+              .then((data) => {
+                if (data.success) {
+                  showToast("User deleted successfully!", "success");
+                  loadUsers();
+                } else {
+                  showToast(
+                    "Error deleting user: " + (data.message || "Unknown error"),
+                    "error"
+                  );
+                }
+              })
+              .catch((error) => {
+                console.error("Error deleting user:", error);
+                showToast("Error deleting user: " + error.message, "error");
+              });
+          }
+        );
       }
 
       function savePromotion() {
@@ -7492,7 +7596,7 @@
         const endDate = document.getElementById("promotion-end-date").value;
 
         if (!productId || isNaN(discountValue) || !startDate || !endDate) {
-          alert("Please fill all fields");
+          showToast("Please fill all fields", "warning");
           return;
         }
 
@@ -7510,14 +7614,14 @@
           .then((r) => r.json())
           .then((data) => {
             if (data.success) {
-              alert("Promotion created!");
+              showToast("Promotion created!", "success");
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("addPromotionModal")
               );
               modal.hide();
               loadPromotions();
             } else {
-              alert("Error: " + data.message);
+              showToast("Error: " + data.message, "error");
             }
           });
       }
@@ -7565,7 +7669,7 @@
           })
           .catch((err) => {
             console.error("Error loading promotion:", err);
-            alert("Failed to load promotion");
+            showToast("Failed to load promotion", "error");
           });
       }
 
@@ -7581,7 +7685,7 @@
         const endDate = document.getElementById("promotion-end-date").value;
 
         if (!productId || isNaN(discountValue) || !startDate || !endDate) {
-          alert("Please fill all fields");
+          showToast("Please fill all fields", "warning");
           return;
         }
 
@@ -7655,17 +7759,22 @@
       }
 
       function deletePromotion(promoId) {
-        if (!confirm("Delete this promotion?")) return;
-        fetch(`/api/promotions/${promoId}`, { method: "DELETE" })
-          .then((r) => r.json())
-          .then((data) => {
-            if (data.success) {
-              alert("Promotion deleted!");
-              loadPromotions();
-            } else {
-              alert("Error: " + data.message);
-            }
-          });
+        showConfirmDialog(
+          "Delete Promotion",
+          "Are you sure you want to delete this promotion?",
+          () => {
+            fetch(`/api/promotions/${promoId}`, { method: "DELETE" })
+              .then((r) => r.json())
+              .then((data) => {
+                if (data.success) {
+                  showToast("Promotion deleted!", "success");
+                  loadPromotions();
+                } else {
+                  showToast("Error: " + data.message, "error");
+                }
+              });
+          }
+        );
       }
 
       function exportReport() {
@@ -7673,7 +7782,7 @@
         const endDate = document.getElementById("end-date").value;
 
         if (!startDate || !endDate) {
-          alert("Please select both start and end dates");
+          showToast("Please select both start and end dates", "warning");
           return;
         }
 
@@ -7764,7 +7873,7 @@
         const address = document.getElementById("add-customer-address").value.trim();
 
         if (!name) {
-          alert("Please fill in the customer name");
+          showToast("Please fill in the customer name", "warning");
           return;
         }
 
@@ -7785,7 +7894,7 @@
           .then((response) => response.json())
           .then((data) => {
             if (data.success) {
-              alert("Customer added successfully!");
+              showToast("Customer added successfully!", "success");
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("addCustomerModal")
               );
@@ -7795,12 +7904,12 @@
               loadCustomersForPOS();
               loadCustomersForDebtModal();
             } else {
-              alert("Error adding customer: " + (data.message || "Unknown error"));
+              showToast("Error adding customer: " + (data.message || "Unknown error"), "error");
             }
           })
           .catch((error) => {
             console.error("Error saving customer:", error);
-            alert("Error saving customer: " + error.message);
+            showToast("Error saving customer: " + error.message, "error");
           });
       }
 
@@ -7821,7 +7930,7 @@
           })
           .catch((error) => {
             console.error("Error fetching customer:", error);
-            alert("Failed to load customer for editing");
+            showToast("Failed to load customer for editing", "error");
           });
       }
 
@@ -7833,7 +7942,7 @@
         const address = document.getElementById("edit-customer-address").value.trim();
 
         if (!name) {
-          alert("Please fill in the customer name");
+          showToast("Please fill in the customer name", "warning");
           return;
         }
 
@@ -7854,7 +7963,7 @@
           .then((response) => response.json())
           .then((data) => {
             if (data.success) {
-              alert("Customer updated successfully!");
+              showToast("Customer updated successfully!", "success");
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("editCustomerModal")
               );
@@ -7863,42 +7972,40 @@
               loadCustomersForPOS();
               loadCustomersForDebtModal();
             } else {
-              alert("Error updating customer: " + (data.message || "Unknown error"));
+              showToast("Error updating customer: " + (data.message || "Unknown error"), "error");
             }
           })
           .catch((error) => {
             console.error("Error updating customer:", error);
-            alert("Error updating customer: " + error.message);
+            showToast("Error updating customer: " + error.message, "error");
           });
       }
 
       function deleteCustomer(customerId, customerName) {
-        if (
-          !confirm(
-            `Are you sure you want to delete "${customerName}"? This action cannot be undone.`
-          )
-        ) {
-          return;
-        }
-
-        fetch("/api/customers/" + customerId, {
-          method: "DELETE",
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
-              alert("Customer deleted successfully!");
-              loadCustomers();
-              loadCustomersForPOS();
-              loadCustomersForDebtModal();
-            } else {
-              alert("Error deleting customer: " + (data.message || "Unknown error"));
-            }
-          })
-          .catch((error) => {
-            console.error("Error deleting customer:", error);
-            alert("Error deleting customer: " + error.message);
-          });
+        showConfirmDialog(
+          "Delete Customer",
+          `Are you sure you want to delete "${customerName}"? This action cannot be undone.`,
+          () => {
+            fetch("/api/customers/" + customerId, {
+              method: "DELETE",
+            })
+              .then((response) => response.json())
+              .then((data) => {
+                if (data.success) {
+                  showToast("Customer deleted successfully!", "success");
+                  loadCustomers();
+                  loadCustomersForPOS();
+                  loadCustomersForDebtModal();
+                } else {
+                  showToast("Error deleting customer: " + (data.message || "Unknown error"), "error");
+                }
+              })
+              .catch((error) => {
+                console.error("Error deleting customer:", error);
+                showToast("Error deleting customer: " + error.message, "error");
+              });
+          }
+        );
       }
 
       function viewCustomerDetails(customerId) {
@@ -8179,7 +8286,7 @@
       function showBulkActionsModal() {
         updateSelectedDebts();
         if (selectedDebts.length === 0) {
-          alert("Please select at least one debt record");
+          showToast("Please select at least one debt record", "warning");
           return;
         }
         document.getElementById("bulk-selected-count").textContent = selectedDebts.length;
@@ -8200,14 +8307,14 @@
         .then((r) => r.json())
         .then((data) => {
           if (data.success) {
-            alert(data.message);
+            showToast(data.message, "success");
             bootstrap.Modal.getInstance(document.getElementById("bulkActionsModal")).hide();
             loadDebts();
           } else {
-            alert("Error: " + data.message);
+            showToast("Error: " + data.message, "error");
           }
         })
-        .catch((e) => alert("Error: " + e.message));
+        .catch((e) => showToast("Error: " + e.message, "error"));
       }
 
       function bulkUpdateDueDate() {
@@ -8218,7 +8325,7 @@
       function confirmUpdateDueDate() {
         const dueDate = document.getElementById("bulk-due-date").value;
         if (!dueDate) {
-          alert("Please select a due date");
+          showToast("Please select a due date", "warning");
           return;
         }
         fetch("/api/debts/bulk", {
@@ -8233,39 +8340,42 @@
         .then((r) => r.json())
         .then((data) => {
           if (data.success) {
-            alert(data.message);
+            showToast(data.message, "success");
             bootstrap.Modal.getInstance(document.getElementById("updateDueDateModal")).hide();
             loadDebts();
           } else {
-            alert("Error: " + data.message);
+            showToast("Error: " + data.message, "error");
           }
         })
-        .catch((e) => alert("Error: " + e.message));
+        .catch((e) => showToast("Error: " + e.message, "error"));
       }
 
       function bulkDeleteDebts() {
-        if (!confirm(`Are you sure you want to delete ${selectedDebts.length} debt record(s)? Debts with existing payments will be skipped.`)) {
-          return;
-        }
-        fetch("/api/debts/bulk", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "delete",
-            debt_ids: selectedDebts
-          })
-        })
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.success) {
-            alert(data.message);
-            bootstrap.Modal.getInstance(document.getElementById("bulkActionsModal")).hide();
-            loadDebts();
-          } else {
-            alert("Error: " + data.message);
+        showConfirmDialog(
+          "Delete Debt Records",
+          `Are you sure you want to delete ${selectedDebts.length} debt record(s)? Debts with existing payments will be skipped.`,
+          () => {
+            fetch("/api/debts/bulk", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "delete",
+                debt_ids: selectedDebts
+              })
+            })
+            .then((r) => r.json())
+            .then((data) => {
+              if (data.success) {
+                showToast(data.message, "success");
+                bootstrap.Modal.getInstance(document.getElementById("bulkActionsModal")).hide();
+                loadDebts();
+              } else {
+                showToast("Error: " + data.message, "error");
+              }
+            })
+            .catch((e) => showToast("Error: " + e.message, "error"));
           }
-        })
-        .catch((e) => alert("Error: " + e.message));
+        );
       }
 
       function exportDebts() {
@@ -8413,7 +8523,7 @@
         const notes = document.getElementById("communication-notes").value.trim();
         
         if (!notes) {
-          alert("Please enter communication notes");
+          showToast("Please enter communication notes", "warning");
           return;
         }
 
@@ -8425,14 +8535,14 @@
         .then((r) => r.json())
         .then((data) => {
           if (data.success) {
-            alert("Communication logged successfully");
+            showToast("Communication logged successfully", "success");
             bootstrap.Modal.getInstance(document.getElementById("addCommunicationModal")).hide();
             loadDebts();
           } else {
-            alert("Error: " + data.message);
+            showToast("Error: " + data.message, "error");
           }
         })
-        .catch((e) => alert("Error: " + e.message));
+        .catch((e) => showToast("Error: " + e.message, "error"));
       }
 
       function saveDebt() {
@@ -8442,7 +8552,7 @@
         const notes = document.getElementById("debt-notes").value.trim();
 
         if (!customerId || isNaN(amount) || amount <= 0) {
-          alert("Please fill in all required fields with valid values");
+          showToast("Please fill in all required fields with valid values", "warning");
           return;
         }
 
@@ -8466,7 +8576,7 @@
           .then((response) => response.json())
           .then((data) => {
             if (data.success) {
-              alert("Debt record added successfully!");
+              showToast("Debt record added successfully!", "success");
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("addDebtModal")
               );
@@ -8475,37 +8585,39 @@
               loadDebts();
               loadCustomers();
             } else {
-              alert("Error adding debt record: " + (data.message || "Unknown error"));
+              showToast("Error adding debt record: " + (data.message || "Unknown error"), "error");
             }
           })
           .catch((error) => {
             console.error("Error saving debt:", error);
-            alert("Error saving debt: " + error.message);
+            showToast("Error saving debt: " + error.message, "error");
           });
       }
 
       function deleteDebt(debtId) {
-        if (!confirm("Are you sure you want to delete this debt record?")) {
-          return;
-        }
-
-        fetch("/api/debts/" + debtId, {
-          method: "DELETE",
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
-              alert("Debt record deleted successfully!");
-              loadDebts();
-              loadCustomers();
-            } else {
-              alert("Error deleting debt record: " + (data.message || "Unknown error"));
-            }
-          })
-          .catch((error) => {
-            console.error("Error deleting debt:", error);
-            alert("Error deleting debt: " + error.message);
-          });
+        showConfirmDialog(
+          "Delete Debt Record",
+          "Are you sure you want to delete this debt record?",
+          () => {
+            fetch("/api/debts/" + debtId, {
+              method: "DELETE",
+            })
+              .then((response) => response.json())
+              .then((data) => {
+                if (data.success) {
+                  showToast("Debt record deleted successfully!", "success");
+                  loadDebts();
+                  loadCustomers();
+                } else {
+                  showToast("Error deleting debt record: " + (data.message || "Unknown error"), "error");
+                }
+              })
+              .catch((error) => {
+                console.error("Error deleting debt:", error);
+                showToast("Error deleting debt: " + error.message, "error");
+              });
+          }
+        );
       }
 
       function showMakePaymentModal(debtId) {
@@ -8526,7 +8638,7 @@
           })
           .catch((error) => {
             console.error("Error loading debt details:", error);
-            alert("Failed to load debt details");
+            showToast("Failed to load debt details", "error");
           });
       }
 
@@ -8536,7 +8648,7 @@
         const notes = document.getElementById("payment-notes").value.trim();
 
         if (!debtId || isNaN(amount) || amount <= 0) {
-          alert("Please enter a valid payment amount");
+          showToast("Please enter a valid payment amount", "warning");
           return;
         }
 
@@ -8555,7 +8667,7 @@
           .then((response) => response.json())
           .then((data) => {
             if (data.success) {
-              alert(`Payment recorded successfully! Remaining balance: ${formatCurrency(data.remaining_balance || 0)}`);
+              showToast(`Payment recorded successfully! Remaining balance: ${formatCurrency(data.remaining_balance || 0)}`, "success");
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("makePaymentModal")
               );
@@ -8563,12 +8675,12 @@
               loadDebts();
               loadCustomers();
             } else {
-              alert("Error recording payment: " + (data.message || "Unknown error"));
+              showToast("Error recording payment: " + (data.message || "Unknown error"), "error");
             }
           })
           .catch((error) => {
             console.error("Error making payment:", error);
-            alert("Error making payment: " + error.message);
+            showToast("Error making payment: " + error.message, "error");
           });
       }
 
@@ -8624,7 +8736,7 @@
       function showCustomerDetails() {
         const customerId = document.getElementById("pos-customer-select").value;
         if (!customerId) {
-          alert("Please select a customer first");
+          showToast("Please select a customer first", "warning");
           return;
         }
         viewCustomerDetails(parseInt(customerId));
@@ -8952,12 +9064,12 @@
         const payload = collectSupplierPayload("add");
 
         if (!payload.name) {
-          alert("Supplier name is required");
+          showToast("Supplier name is required", "warning");
           return;
         }
 
         if (payload.lead_time_days !== null && payload.lead_time_days < 0) {
-          alert("Lead time cannot be negative");
+          showToast("Lead time cannot be negative", "warning");
           return;
         }
 
@@ -8969,18 +9081,18 @@
           .then((response) => response.json())
           .then((data) => {
             if (data.success) {
-              alert("Supplier added successfully!");
+              showToast("Supplier added successfully!", "success");
               const modal = bootstrap.Modal.getInstance(document.getElementById("addSupplierModal"));
               modal.hide();
               document.getElementById("add-supplier-form").reset();
               loadSuppliers();
             } else {
-              alert("Error adding supplier: " + (data.message || "Unknown error"));
+              showToast("Error adding supplier: " + (data.message || "Unknown error"), "error");
             }
           })
           .catch((error) => {
             console.error("Error saving supplier:", error);
-            alert("Error saving supplier: " + error.message);
+            showToast("Error saving supplier: " + error.message, "error");
           });
       }
 
@@ -9010,13 +9122,13 @@
           })
           .catch((error) => {
             console.error("Error loading supplier:", error);
-            alert("Failed to load supplier");
+            showToast("Failed to load supplier", "error");
           });
       }
 
       function updateSupplier() {
         if (!currentSupplier) {
-          alert("No supplier selected");
+          showToast("No supplier selected", "warning");
           return;
         }
 
@@ -9024,12 +9136,12 @@
         const payload = collectSupplierPayload("edit");
 
         if (!payload.name) {
-          alert("Supplier name is required");
+          showToast("Supplier name is required", "warning");
           return;
         }
 
         if (payload.lead_time_days !== null && payload.lead_time_days < 0) {
-          alert("Lead time cannot be negative");
+          showToast("Lead time cannot be negative", "warning");
           return;
         }
 
@@ -9041,39 +9153,41 @@
           .then((response) => response.json())
           .then((data) => {
             if (data.success) {
-              alert("Supplier updated successfully!");
+              showToast("Supplier updated successfully!", "success");
               const modal = bootstrap.Modal.getInstance(document.getElementById("editSupplierModal"));
               modal.hide();
               loadSuppliers();
             } else {
-              alert("Error updating supplier: " + (data.message || "Unknown error"));
+              showToast("Error updating supplier: " + (data.message || "Unknown error"), "error");
             }
           })
           .catch((error) => {
             console.error("Error updating supplier:", error);
-            alert("Error updating supplier: " + error.message);
+            showToast("Error updating supplier: " + error.message, "error");
           });
       }
 
       function deleteSupplier(supplierId, supplierName) {
-        if (!confirm(`Are you sure you want to delete "${supplierName}"?`)) {
-          return;
-        }
-
-        fetch(`/api/suppliers/${supplierId}`, { method: "DELETE" })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
-              alert("Supplier deleted successfully!");
-              loadSuppliers();
-            } else {
-              alert("Error deleting supplier: " + (data.message || "Unknown error"));
-            }
-          })
-          .catch((error) => {
-            console.error("Error deleting supplier:", error);
-            alert("Error deleting supplier: " + error.message);
-          });
+        showConfirmDialog(
+          "Delete Supplier",
+          `Are you sure you want to delete "${supplierName}"?`,
+          () => {
+            fetch(`/api/suppliers/${supplierId}`, { method: "DELETE" })
+              .then((response) => response.json())
+              .then((data) => {
+                if (data.success) {
+                  showToast("Supplier deleted successfully!", "success");
+                  loadSuppliers();
+                } else {
+                  showToast("Error deleting supplier: " + (data.message || "Unknown error"), "error");
+                }
+              })
+              .catch((error) => {
+                console.error("Error deleting supplier:", error);
+                showToast("Error deleting supplier: " + error.message, "error");
+              });
+          }
+        );
       }
 
       // Purchase workflow functions
@@ -9453,7 +9567,7 @@
       function removePurchaseOrderItemRow(button) {
         const rows = document.querySelectorAll(".po-item-row");
         if (rows.length <= 1) {
-          alert("At least one item is required.");
+          showToast("At least one item is required.", "warning");
           return;
         }
         button.closest(".po-item-row").remove();
@@ -9464,7 +9578,7 @@
         const notes = document.getElementById("po-notes").value.trim();
         const expectedDelivery = document.getElementById("po-expected-delivery").value;
         if (!supplierId) {
-          alert("Please select supplier.");
+          showToast("Please select supplier.", "warning");
           return;
         }
 
@@ -9475,7 +9589,7 @@
           const orderedQty = parseInt(row.querySelector(".po-item-qty").value || "0", 10);
           const unitCost = parseFloat(row.querySelector(".po-item-cost").value || "0");
           if (!productId || orderedQty <= 0) {
-            alert("Each item must have product and quantity > 0");
+            showToast("Each item must have product and quantity > 0", "warning");
             return;
           }
           items.push({ product_id: productId, ordered_qty: orderedQty, unit_cost: Number.isFinite(unitCost) ? unitCost : 0 });
@@ -9492,17 +9606,17 @@
           .then((r) => r.json())
           .then((data) => {
             if (!data.success) {
-              alert(data.message || "Failed to create purchase order");
+              showToast(data.message || "Failed to create purchase order", "error");
               return;
             }
-            alert("Purchase order created successfully");
+            showToast("Purchase order created successfully", "success");
             const modal = bootstrap.Modal.getInstance(document.getElementById("addPurchaseOrderModal"));
             modal.hide();
             loadPurchaseOrders();
           })
           .catch((err) => {
             console.error("Error creating PO:", err);
-            alert("Failed to create purchase order");
+            showToast("Failed to create purchase order", "error");
           });
       }
 
@@ -9511,7 +9625,7 @@
           .then((r) => r.json())
           .then((po) => {
             if (!po.id) {
-              alert(po.message || "Purchase order not found");
+              showToast(po.message || "Purchase order not found", "error");
               return;
             }
 
@@ -9539,7 +9653,7 @@
           })
           .catch((err) => {
             console.error("Error loading PO details:", err);
-            alert("Failed to load purchase order details");
+            showToast("Failed to load purchase order details", "error");
           });
       }
 
@@ -9553,7 +9667,7 @@
           .filter((x) => x.received_qty > 0);
 
         if (items.length === 0) {
-          alert("Enter at least one receiving quantity.");
+          showToast("Enter at least one receiving quantity.", "warning");
           return;
         }
 
@@ -9565,10 +9679,10 @@
           .then((r) => r.json())
           .then((data) => {
             if (!data.success) {
-              alert(data.message || "Failed to receive items");
+              showToast(data.message || "Failed to receive items", "error");
               return;
             }
-            alert("Stock received successfully");
+            showToast("Stock received successfully", "success");
             const modal = bootstrap.Modal.getInstance(document.getElementById("receivePurchaseOrderModal"));
             modal.hide();
             selectedReceivePO = null;
@@ -9580,7 +9694,7 @@
           })
           .catch((err) => {
             console.error("Error receiving PO:", err);
-            alert("Failed to receive items");
+            showToast("Failed to receive items", "error");
           });
       }
 
