@@ -3825,7 +3825,10 @@
             <p class="mb-2">Transaction ID: <strong id="saleTransactionId"></strong></p>
             <p class="mb-0 text-muted" id="saleDeliveryInfo"></p>
           </div>
-          <div class="modal-footer justify-content-center">
+          <div class="modal-footer justify-content-center gap-2">
+            <button type="button" class="btn btn-outline-primary" id="printReceiptBtn" onclick="printReceiptFromSuccessModal()">
+              <i class="bi bi-printer me-1"></i> Print Receipt
+            </button>
             <button type="button" class="btn btn-success" data-bs-dismiss="modal">
               <i class="bi bi-check-lg me-1"></i> Done
             </button>
@@ -4876,7 +4879,10 @@
       // ============================================
       // Sale Success Modal
       // ============================================
+      let currentSaleTransactionId = null;
+
       function showSaleSuccessModal(transactionId, deliveryNumber, isDebt) {
+        currentSaleTransactionId = transactionId;
         document.getElementById("saleTransactionId").textContent = transactionId;
         
         const deliveryInfo = document.getElementById("saleDeliveryInfo");
@@ -4889,6 +4895,12 @@
         
         const modal = new bootstrap.Modal(document.getElementById("saleSuccessModal"));
         modal.show();
+      }
+
+      function printReceiptFromSuccessModal() {
+        if (currentSaleTransactionId) {
+          window.open(`/api/sales/${currentSaleTransactionId}/print`, "_blank");
+        }
       }
 
       // ============================================
