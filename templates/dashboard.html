@@ -4475,6 +4475,9 @@
 
         // Initialize swipe gestures for sidebar
         initSidebarSwipeGestures();
+
+        // Initialize global barcode scanner listener
+        initGlobalBarcodeScanner();
       });
 
       // Swipe gesture handling for sidebar on touch devices
@@ -4616,6 +4619,146 @@
             setTimeout(() => hint.remove(), 300);
           }
         }, 5000);
+      }
+
+      // Global Barcode Scanner Listener
+      // Detects rapid character input followed by Enter key (typical barcode scanner behavior)
+      function initGlobalBarcodeScanner() {
+        let barcodeBuffer = "";
+        let lastKeyTime = 0;
+        const BARCODE_TIMEOUT = 100; // Max ms between characters to be considered part of same barcode
+        const MIN_BARCODE_LENGTH = 3; // Minimum length to be considered a valid barcode
+
+        // Listen for keypress events globally
+        document.addEventListener("keydown", function(e) {
+          const currentTime = Date.now();
+          const timeDiff = currentTime - lastKeyTime;
+          lastKeyTime = currentTime;
+
+          // Ignore if user is typing in an input field (except for rapid barcode input)
+          const activeElement = document.activeElement;
+          const isInputField = activeElement && (
+            activeElement.tagName === "INPUT" ||
+            activeElement.tagName === "TEXTAREA" ||
+            activeElement.isContentEditable
+          );
+
+          // If user is in an input field and typing normally (slow), don't intercept
+          if (isInputField && timeDiff > BARCODE_TIMEOUT && barcodeBuffer === "") {
+            return;
+          }
+
+          // Handle Enter key - process barcode
+          if (e.key === "Enter") {
+            if (barcodeBuffer.length >= MIN_BARCODE_LENGTH) {
+              e.preventDefault();
+              processBarcodeScan(barcodeBuffer);
+              barcodeBuffer = "";
+              return;
+            }
+            barcodeBuffer = "";
+            return;
+          }
+
+          // Ignore control keys
+          if (e.key.length > 1 || e.ctrlKey || e.altKey || e.metaKey) {
+            return;
+          }
+
+          // If too much time has passed, start fresh buffer
+          if (timeDiff > BARCODE_TIMEOUT) {
+            barcodeBuffer = "";
+          }
+
+          // Add character to buffer
+          barcodeBuffer += e.key;
+        });
+      }
+
+      // Process scanned barcode - navigate to POS and add product to cart
+      function processBarcodeScan(barcode) {
+        console.log("Barcode scanned:", barcode);
+
+        // Show scanning feedback
+        showToast(`Scanning: ${barcode}`, "info");
+
+        // Search for product by barcode
+        fetch("/api/products/search?q=" + encodeURIComponent(barcode))
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.length === 0) {
+              showToast(`Product not found for barcode: ${barcode}`, "error");
+              return;
+            }
+
+            // Find exact barcode match or partial match
+            let product = data.find(p => p.barcode === barcode) || data[0];
+
+            // Navigate to POS section if not already there
+            if (currentSection !== "pos") {
+              showSection("pos");
+            }
+
+            // Add product to cart
+            addToCart(product.id, product.name, product.price, 1, product.tax_rate || 0);
+
+            // Show success message
+            showToast(`Added ${product.name} to cart`, "success");
+          })
+          .catch((error) => {
+            console.error("Error processing barcode:", error);
+            showToast("Error scanning barcode. Please try again.", "error");
+          });
+      }
+
+      // Toast notification helper
+      function showToast(message, type = "info") {
+        const toastContainer = document.getElementById("toast-container");
+        if (!toastContainer) {
+          // Create toast container if it doesn't exist
+          const container = document.createElement("div");
+          container.id = "toast-container";
+          container.style.cssText = `
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 9999;
+            pointer-events: none;
+            max-width: 320px;
+          `;
+          document.body.appendChild(container);
+        }
+
+        const alertClass = type === "success" ? "alert-success" : 
+                          type === "error" ? "alert-danger" : "alert-info";
+        const iconClass = type === "success" ? "bi-check-circle" : 
+                         type === "error" ? "bi-exclamation-triangle" : "bi-info-circle";
+
+        const toast = document.createElement("div");
+        toast.className = `alert ${alertClass} d-flex align-items-center gap-2`;
+        toast.style.cssText = `
+          pointer-events: auto;
+          font-size: 0.875rem;
+          padding: 0.5rem 0.75rem;
+          margin-bottom: 8px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+          border-radius: 6px;
+          animation: slideInRight 0.3s ease-out;
+        `;
+        toast.innerHTML = `
+          <i class="bi ${iconClass}"></i>
+          <span>${escapeHtml(message)}</span>
+        `;
+
+        const container = document.getElementById("toast-container");
+        container.appendChild(toast);
+
+        // Remove after 3 seconds
+        setTimeout(() => {
+          toast.style.opacity = "0";
+          toast.style.transition = "opacity 0.3s";
+          setTimeout(() => toast.remove(), 300);
+        }, 3000);
       }
 
       function initResizableSidebar() {
