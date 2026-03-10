@@ -687,7 +687,12 @@
     <div class="main-content" id="main-content">
       <!-- Dashboard Section -->
       <div id="dashboard-section">
-        <h2>Dashboard</h2>
+        <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
+          <h2 class="mb-0">Dashboard</h2>
+          <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+            <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span>
+          </button>
+        </div>
         <div class="row mt-4 summary-cards-row">
           <div class="col-6 col-md-4 mb-3">
             <div class="card card-stat bg-white summary-card">
@@ -754,9 +759,14 @@
       <div id="pos-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">Point of Sale</h2>
-          <button class="btn btn-outline-secondary" onclick="clearCart()">
-            <i class="bi bi-x-circle"></i> Clear Cart
-          </button>
+          <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span>
+            </button>
+            <button class="btn btn-outline-danger" onclick="clearCart()">
+              <i class="bi bi-x-circle"></i> <span class="d-none d-sm-inline">Clear Cart</span><span class="d-sm-none">Clear</span>
+            </button>
+          </div>
         </div>
 
         <div class="row">
@@ -899,6 +909,9 @@
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">Product Management</h2>
           <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+            </button>
             <button class="btn btn-outline-primary" onclick="showSection('warehouse')">
               <i class="bi bi-house-door"></i> <span class="d-none d-sm-inline">Manage Stock</span><span class="d-sm-none">Stock</span>
             </button>
@@ -962,13 +975,18 @@
       <div id="categories-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">Category Management</h2>
-          <button
-            class="btn btn-primary"
-            data-bs-toggle="modal"
-            data-bs-target="#addCategoryModal"
-          >
-            <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Add Category</span><span class="d-sm-none">Add</span>
-          </button>
+          <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+            </button>
+            <button
+              class="btn btn-primary"
+              data-bs-toggle="modal"
+              data-bs-target="#addCategoryModal"
+            >
+              <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Add Category</span><span class="d-sm-none">Add</span>
+            </button>
+          </div>
         </div>
 
         <!-- Summary Cards -->
@@ -1058,15 +1076,20 @@
       <div id="sales-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">Sales History</h2>
-          <div class="input-group" style="max-width: 300px">
-            <input type="date" id="sales-date-filter" class="form-control" />
-            <button
-              class="btn btn-outline-secondary"
-              type="button"
-              onclick="filterSalesByDate()"
-            >
-              <i class="bi bi-filter"></i> <span class="d-none d-sm-inline">Filter</span>
+          <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
             </button>
+            <div class="input-group" style="max-width: 300px">
+              <input type="date" id="sales-date-filter" class="form-control" />
+              <button
+                class="btn btn-outline-secondary"
+                type="button"
+                onclick="filterSalesByDate()"
+              >
+                <i class="bi bi-filter"></i> <span class="d-none d-sm-inline">Filter</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1115,7 +1138,12 @@
 
       <!-- Reports Section -->
       <div id="reports-section" style="display: none">
-        <h2>Reports</h2>
+        <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
+          <h2 class="mb-0">Reports</h2>
+          <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+            <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+          </button>
+        </div>
         <div class="row mb-3 g-2">
           <div class="col-12 col-sm-6 col-md-3">
             <label class="form-label">Start Date</label>
@@ -1179,13 +1207,18 @@
       <div id="promotions-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">Promotions Management</h2>
-          <button
-            class="btn btn-primary"
-            data-bs-toggle="modal"
-            data-bs-target="#addPromotionModal"
-          >
-            <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Add Promotion</span><span class="d-sm-none">Add</span>
-          </button>
+          <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+            </button>
+            <button
+              class="btn btn-primary"
+              data-bs-toggle="modal"
+              data-bs-target="#addPromotionModal"
+            >
+              <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Add Promotion</span><span class="d-sm-none">Add</span>
+            </button>
+          </div>
         </div>
         <div class="row mb-3">
           <div class="col-12 col-md-5">
@@ -1231,13 +1264,18 @@
       <div id="customers-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">Customer Management</h2>
-          <button
-            class="btn btn-primary"
-            data-bs-toggle="modal"
-            data-bs-target="#addCustomerModal"
-          >
-            <i class="bi bi-person-plus"></i> <span class="d-none d-sm-inline">Add Customer</span><span class="d-sm-none">Add</span>
-          </button>
+          <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+            </button>
+            <button
+              class="btn btn-primary"
+              data-bs-toggle="modal"
+              data-bs-target="#addCustomerModal"
+            >
+              <i class="bi bi-person-plus"></i> <span class="d-none d-sm-inline">Add Customer</span><span class="d-sm-none">Add</span>
+            </button>
+          </div>
         </div>
 
         <div class="row mb-3">
@@ -1286,6 +1324,9 @@
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">Debt Management</h2>
           <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+            </button>
             <button class="btn btn-outline-success" onclick="exportDebts()">
               <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Export</span>
             </button>
@@ -1447,6 +1488,9 @@
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">Supplier Management</h2>
           <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+            </button>
             <button class="btn btn-outline-secondary" onclick="clearSupplierFilters()">
               <i class="bi bi-x-circle"></i> <span class="d-none d-sm-inline">Reset</span>
             </button>
@@ -1584,14 +1628,19 @@
       <div id="purchases-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">Purchase & Receiving</h2>
-          <button
-            class="btn btn-primary"
-            data-bs-toggle="modal"
-            data-bs-target="#addPurchaseOrderModal"
-            onclick="preparePurchaseOrderModal()"
-          >
-            <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Create PO</span><span class="d-sm-none">New PO</span>
-          </button>
+          <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+            </button>
+            <button
+              class="btn btn-primary"
+              data-bs-toggle="modal"
+              data-bs-target="#addPurchaseOrderModal"
+              onclick="preparePurchaseOrderModal()"
+            >
+              <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Create PO</span><span class="d-sm-none">New PO</span>
+            </button>
+          </div>
         </div>
 
         <!-- Summary Cards -->
@@ -1731,6 +1780,9 @@
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">Warehouse Management</h2>
           <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+            </button>
             <button class="btn btn-outline-info" onclick="showTransferHistoryModal()">
               <i class="bi bi-clock-history"></i> <span class="d-none d-sm-inline">History</span>
             </button>
@@ -1845,9 +1897,14 @@
       <div id="deliveries-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">Delivery Management</h2>
-          <button class="btn btn-primary" onclick="openCreateDeliveryModal()">
-            <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Create Delivery</span><span class="d-sm-none">New</span>
-          </button>
+          <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+            </button>
+            <button class="btn btn-primary" onclick="openCreateDeliveryModal()">
+              <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Create Delivery</span><span class="d-sm-none">New</span>
+            </button>
+          </div>
         </div>
 
         <div class="row mb-3 summary-cards-row">
@@ -1918,13 +1975,18 @@
       <div id="users-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">User Management</h2>
-          <button
-            class="btn btn-primary"
-            data-bs-toggle="modal"
-            data-bs-target="#addUserModal"
-          >
-            <i class="bi bi-person-plus"></i> <span class="d-none d-sm-inline">Add User</span><span class="d-sm-none">Add</span>
-          </button>
+          <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+            </button>
+            <button
+              class="btn btn-primary"
+              data-bs-toggle="modal"
+              data-bs-target="#addUserModal"
+            >
+              <i class="bi bi-person-plus"></i> <span class="d-none d-sm-inline">Add User</span><span class="d-sm-none">Add</span>
+            </button>
+          </div>
         </div>
 
         <div class="row mb-3">
@@ -1969,7 +2031,12 @@
 
       <!-- Settings Section -->
       <div id="settings-section" style="display: none">
-        <h2>Settings</h2>
+        <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
+          <h2 class="mb-0">Settings</h2>
+          <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+            <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+          </button>
+        </div>
         <div class="card mt-3">
           <div class="card-body">
             <div class="mb-3">
@@ -5754,6 +5821,57 @@
           return true;
         }
         return false;
+      }
+
+      // Refresh current section function
+      function refreshCurrentSection() {
+        const sectionId = currentSection;
+        
+        // Show loading toast
+        showToast("Refreshing " + sectionId.charAt(0).toUpperCase() + sectionId.slice(1) + "...", "info");
+        
+        // Reload data based on current section
+        if (sectionId === "pos") {
+          loadProductsForPOS();
+          loadCustomersForPOS();
+        } else if (sectionId === "reports") {
+          initSalesChart();
+          initPaymentChart();
+          loadSalesReportData();
+        } else if (sectionId === "products") {
+          loadProducts();
+        } else if (sectionId === "dashboard") {
+          loadDashboardStats();
+        } else if (sectionId === "users") {
+          loadUsers();
+        } else if (sectionId === "sales") {
+          loadSales();
+        } else if (sectionId === "promotions") {
+          loadPromotions();
+          loadProductsForPromotionModal();
+        } else if (sectionId === "customers") {
+          loadCustomers();
+        } else if (sectionId === "debts") {
+          loadDebts();
+          loadCustomersForDebtModal();
+        } else if (sectionId === "suppliers") {
+          loadSuppliers();
+        } else if (sectionId === "purchases") {
+          loadPOSupplierFilter();
+          loadPurchaseOrders();
+        } else if (sectionId === "warehouse") {
+          loadWarehouseSummary();
+          loadWarehouseInventory();
+        } else if (sectionId === "deliveries") {
+          loadDeliveryStats();
+          loadDeliveries();
+        } else if (sectionId === "categories") {
+          loadCategories();
+        } else if (sectionId === "settings") {
+          loadSettings();
+        }
+        
+        showToast(sectionId.charAt(0).toUpperCase() + sectionId.slice(1) + " refreshed successfully!", "success");
       }
 
       // Update your fetch calls to use this check
