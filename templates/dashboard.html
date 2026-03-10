@@ -5120,6 +5120,7 @@
           dashboard: "Dashboard",
           pos: "POS",
           products: "Products",
+          categories: "Categories",
           sales: "Sales",
           reports: "Reports",
           promotions: "Promotions",
@@ -5240,6 +5241,7 @@
           dashboard: "ဒက်ရှဘုတ်",
           pos: "ရောင်းရန်",
           products: "ကုန်ပစ္စည်းများ",
+          categories: "အမျိုးအစားများ",
           sales: "ရောင်းရာသွင်းမှု",
           reports: "အစီရင်ခံစာများ",
           promotions: "ပရိုမိုးရှင်းများ",
@@ -5394,7 +5396,7 @@
 
         // Update sidebar navigation
         const navLinks = document.querySelectorAll(".sidebar .nav-link");
-        const navKeys = ["dashboard", "pos", "products", "sales", "reports", "promotions", "customers", "debts", "suppliers", "purchases", "warehouse", "deliveries", "users", "settings"];
+        const navKeys = ["dashboard", "pos", "products", "categories", "sales", "reports", "promotions", "customers", "debts", "suppliers", "purchases", "warehouse", "deliveries", "users", "settings"];
         navLinks.forEach((link, index) => {
           if (index < navKeys.length) {
             const icon = link.querySelector("i");
@@ -5420,6 +5422,7 @@
           "dashboard-section h2": "dashboard",
           "pos-section h2": "pointOfSale",
           "products-section h2": "productManagement",
+          "categories-section h2": "categories",
           "sales-section h2": "salesHistory",
           "users-section h2": "users",
           "promotions-section h2": "promotions",
