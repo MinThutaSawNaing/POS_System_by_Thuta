@@ -9735,7 +9735,7 @@
               bootstrap.Modal.getInstance(document.getElementById("supplierCommunicationModal")).hide();
               showToast('Communication logged', 'success');
             } else {
-              alert(data.message || 'Failed to save');
+              showToast(data.message || 'Failed to save', 'error');
             }
           });
       }
@@ -10629,7 +10629,7 @@
         };
 
         if (!payload.sale_transaction_id || !payload.recipient_name || !payload.recipient_phone || !payload.delivery_address) {
-          alert("Sale transaction, recipient name, phone and address are required");
+          showToast("Sale transaction, recipient name, phone and address are required", "warning");
           return;
         }
 
@@ -10641,17 +10641,17 @@
           .then((r) => r.json())
           .then((data) => {
             if (!data.success) {
-              alert(data.message || "Failed to create delivery");
+              showToast(data.message || "Failed to create delivery", "error");
               return;
             }
-            alert("Delivery created successfully");
+            showToast("Delivery created successfully", "success");
             bootstrap.Modal.getInstance(document.getElementById("createDeliveryModal")).hide();
             loadDeliveryStats();
             loadDeliveries();
           })
           .catch((e) => {
             console.error("Error creating delivery", e);
-            alert("Failed to create delivery");
+            showToast("Failed to create delivery", "error");
           });
       }
 
@@ -10670,7 +10670,7 @@
           })
           .catch((e) => {
             console.error("Error loading delivery", e);
-            alert("Failed to load delivery");
+            showToast("Failed to load delivery", "error");
           });
       }
 
@@ -10693,17 +10693,17 @@
           .then((r) => r.json())
           .then((data) => {
             if (!data.success) {
-              alert(data.message || "Failed to update delivery");
+              showToast(data.message || "Failed to update delivery", "error");
               return;
             }
-            alert("Delivery updated");
+            showToast("Delivery updated", "success");
             bootstrap.Modal.getInstance(document.getElementById("updateDeliveryModal")).hide();
             loadDeliveryStats();
             loadDeliveries();
           })
           .catch((e) => {
             console.error("Error updating delivery", e);
-            alert("Failed to update delivery");
+            showToast("Failed to update delivery", "error");
           });
       }
 
@@ -10716,7 +10716,7 @@
           .then((r) => r.json())
           .then((data) => {
             if (!data.success) {
-              alert(data.message || "Failed to update stage");
+              showToast(data.message || "Failed to update stage", "error");
               return;
             }
             loadDeliveryStats();
@@ -10820,12 +10820,12 @@
         const availableQty = parseInt(document.getElementById("restock-available-qty").value || "0", 10);
 
         if (!quantity || quantity <= 0) {
-          alert("Please enter a valid quantity.");
+          showToast("Please enter a valid quantity.", "warning");
           return;
         }
 
         if (quantity > availableQty) {
-          alert(`Quantity cannot exceed available warehouse stock (${availableQty}).`);
+          showToast(`Quantity cannot exceed available warehouse stock (${availableQty}).`, "warning");
           return;
         }
 
@@ -10842,17 +10842,17 @@
           .then((r) => r.json())
           .then((data) => {
             if (data.success) {
-              alert(data.message);
+              showToast(data.message || "Items restocked successfully!", "success");
               bootstrap.Modal.getInstance(document.getElementById("warehouseRestockModal")).hide();
               loadWarehouseSummary();
               loadWarehouseInventory();
             } else {
-              alert(data.message || "Failed to transfer");
+              showToast(data.message || "Failed to transfer items from warehouse", "error");
             }
           })
           .catch((e) => {
             console.error("Error transferring from warehouse", e);
-            alert("Failed to process transfer");
+            showToast("Failed to process transfer. Please try again.", "error");
           });
       }
 
