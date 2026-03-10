@@ -17,23 +17,19 @@ jobs:
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
-      - name: Deploy via SSH with Cloudflare Access
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ssh.nationalcancercenter.click
-          username: minthuta
-          password: ${{ secrets.SSH_PASSWORD }}
-          proxy_host: localhost
-          proxy_port: 2222
-          script: |
-            cd /home/minthuta/Desktop/POS/POS_System_by_Thuta
-            git pull origin main
-            echo "${{ secrets.SSH_PASSWORD }}" | sudo -S systemctl restart pos.service
-
-      - name: Setup Cloudflare Tunnel for SSH (Fallback)
-        if: failure()
+      - name: Deploy via Direct Cloudflare SSH
         run: |
-          echo "Primary SSH method failed, trying alternative approach..."
-          cloudflared access ssh --hostname ssh.nationalcancercenter.click --url localhost:2222 &
-          sleep 5
-          ssh -o "StrictHostKeyChecking=no" -o "UserKnownHostsFile=/dev/null" -p 2222 minthuta@localhost "cd /home/minthuta/Desktop/POS/POS_System_by_Thuta && git pull origin main && echo '${{ secrets.SSH_PASSWORD }}' | sudo -S systemctl restart pos.service"
+          # Create SSH key directory
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          
+          # Disable host key checking for automation
+          echo "Host *" >> ~/.ssh/config
+          echo "    StrictHostKeyChecking no" >> ~/.ssh/config
+          echo "    UserKnownHostsFile /dev/null" >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+          
+          # Execute deployment using the same method that works manually
+          ssh -o "ProxyCommand=cloudflared access ssh --hostname %h" \
+              minthuta@ssh.nationalcancercenter.click \
+              "cd /home/minthuta/Desktop/POS/POS_System_by_Thuta && git pull origin main && echo '${{ secrets.SSH_PASSWORD }}' | sudo -S systemctl restart pos.service"
