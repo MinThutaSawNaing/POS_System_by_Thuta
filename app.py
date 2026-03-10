@@ -207,7 +207,8 @@ def serialize_product(product):
         'price': product.price,
         'cost': product.cost,
         'stock': product.stock,
-        'category': product.category,
+        'category': product.category_ref.name if product.category_ref else product.category,
+        'category_id': product.category_id,
         'tax_rate': product.tax_rate,
         'reorder_point': product.reorder_point,
         'reorder_quantity': product.reorder_quantity,
@@ -404,6 +405,35 @@ class AppSetting(db.Model):
     key = db.Column(db.String(100), unique=True, nullable=False)
     value = db.Column(db.String(255), nullable=False)
 
+class Category(db.Model):
+    """Centralized category management for products and suppliers"""
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True, nullable=False)
+    description = db.Column(db.String(200))
+    color = db.Column(db.String(7), default='#6c757d')  # Hex color for UI display
+    is_active = db.Column(db.Boolean, default=True)
+    sort_order = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    products = db.relationship('Product', backref='category_ref', lazy=True, foreign_keys='Product.category_id')
+    suppliers = db.relationship('Supplier', backref='category_ref', lazy=True, foreign_keys='Supplier.category_id')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'description': self.description,
+            'color': self.color,
+            'is_active': self.is_active,
+            'sort_order': self.sort_order,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'product_count': len(self.products) if self.products else 0,
+            'supplier_count': len(self.suppliers) if self.suppliers else 0
+        }
+
 class Product(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     barcode = db.Column(db.String(50), unique=True)
@@ -411,7 +441,8 @@ class Product(db.Model):
     price = db.Column(db.Float, nullable=False)
     cost = db.Column(db.Float)
     stock = db.Column(db.Integer, default=0)
-    category = db.Column(db.String(50))
+    category = db.Column(db.String(50))  # Legacy field, kept for backward compatibility
+    category_id = db.Column(db.Integer, db.ForeignKey('category.id'))  # New foreign key
     tax_rate = db.Column(db.Float, default=0.0)
     photo_filename = db.Column(db.String(255))
     reorder_point = db.Column(db.Integer, default=10)
@@ -430,7 +461,8 @@ class Supplier(db.Model):
     is_active = db.Column(db.Boolean, default=True)
     notes = db.Column(db.String(300))
     # Enhanced fields
-    category = db.Column(db.String(50))
+    category = db.Column(db.String(50))  # Legacy field, kept for backward compatibility
+    category_id = db.Column(db.Integer, db.ForeignKey('category.id'))  # New foreign key
     tax_id = db.Column(db.String(50))
     website = db.Column(db.String(200))
     bank_name = db.Column(db.String(100))
@@ -716,6 +748,94 @@ def serialize_delivery(delivery):
 with app.app_context():
     db.create_all()
     inspector = inspect(db.engine)
+    
+    # Category table migration
+    if not inspector.has_table('category'):
+        db.session.execute(text('''
+            CREATE TABLE category (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name VARCHAR(50) NOT NULL UNIQUE,
+                description VARCHAR(200),
+                color VARCHAR(7) DEFAULT '#6c757d',
+                is_active BOOLEAN DEFAULT 1,
+                sort_order INTEGER DEFAULT 0,
+                created_at DATETIME,
+                updated_at DATETIME
+            )
+        '''))
+        db.session.commit()
+    
+    # Add category_id columns to product and supplier tables
+    if inspector.has_table('product'):
+        product_columns = [col['name'] for col in inspector.get_columns('product')]
+        if 'category_id' not in product_columns:
+            db.session.execute(text('ALTER TABLE product ADD COLUMN category_id INTEGER REFERENCES category (id)'))
+            db.session.commit()
+    
+    if inspector.has_table('supplier'):
+        supplier_cols = [col['name'] for col in inspector.get_columns('supplier')]
+        if 'category_id' not in supplier_cols:
+            db.session.execute(text('ALTER TABLE supplier ADD COLUMN category_id INTEGER REFERENCES category (id)'))
+            db.session.commit()
+    
+    # Migrate existing category strings to Category table
+    if inspector.has_table('category') and inspector.has_table('product'):
+        # Get unique categories from products
+        existing_categories = db.session.execute(text(
+            "SELECT DISTINCT category FROM product WHERE category IS NOT NULL AND category != ''"
+        )).fetchall()
+        existing_categories = [c[0] for c in existing_categories if c[0]]
+        
+        # Get unique categories from suppliers
+        supplier_categories = db.session.execute(text(
+            "SELECT DISTINCT category FROM supplier WHERE category IS NOT NULL AND category != ''"
+        )).fetchall()
+        supplier_categories = [c[0] for c in supplier_categories if c[0]]
+        
+        # Combine and deduplicate
+        all_categories = set(existing_categories + supplier_categories)
+        
+        # Create category records for existing categories
+        for idx, cat_name in enumerate(sorted(all_categories)):
+            # Check if category already exists
+            existing = db.session.execute(text(
+                "SELECT id FROM category WHERE LOWER(name) = LOWER(:name)"
+            ), {'name': cat_name}).fetchone()
+            if not existing:
+                db.session.execute(text('''
+                    INSERT INTO category (name, is_active, sort_order, created_at, updated_at)
+                    VALUES (:name, 1, :sort_order, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                '''), {'name': cat_name, 'sort_order': idx})
+        db.session.commit()
+        
+        # Update product category_id references
+        products_with_category = db.session.execute(text(
+            "SELECT id, category FROM product WHERE category IS NOT NULL AND category != '' AND category_id IS NULL"
+        )).fetchall()
+        for prod_id, cat_name in products_with_category:
+            cat_record = db.session.execute(text(
+                "SELECT id FROM category WHERE LOWER(name) = LOWER(:name)"
+            ), {'name': cat_name}).fetchone()
+            if cat_record:
+                db.session.execute(text(
+                    "UPDATE product SET category_id = :cat_id WHERE id = :prod_id"
+                ), {'cat_id': cat_record[0], 'prod_id': prod_id})
+        db.session.commit()
+        
+        # Update supplier category_id references
+        suppliers_with_category = db.session.execute(text(
+            "SELECT id, category FROM supplier WHERE category IS NOT NULL AND category != '' AND category_id IS NULL"
+        )).fetchall()
+        for sup_id, cat_name in suppliers_with_category:
+            cat_record = db.session.execute(text(
+                "SELECT id FROM category WHERE LOWER(name) = LOWER(:name)"
+            ), {'name': cat_name}).fetchone()
+            if cat_record:
+                db.session.execute(text(
+                    "UPDATE supplier SET category_id = :cat_id WHERE id = :sup_id"
+                ), {'cat_id': cat_record[0], 'sup_id': sup_id})
+        db.session.commit()
+    
     product_columns = [col['name'] for col in inspector.get_columns('product')]
     if 'photo_filename' not in product_columns:
         db.session.execute(text('ALTER TABLE product ADD COLUMN photo_filename VARCHAR(255)'))
@@ -1184,6 +1304,153 @@ def product_image(filename):
 def public_file(filename):
     return send_from_directory(os.path.join(app.root_path, 'public'), filename)
 
+# Category API Endpoints
+@app.route('/api/categories', methods=['GET', 'POST'])
+def api_categories():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if request.method == 'GET':
+        # Get all categories with optional filtering
+        active_only = request.args.get('active_only', 'false').lower() == 'true'
+        query = Category.query
+        if active_only:
+            query = query.filter_by(is_active=True)
+        categories = query.order_by(Category.sort_order, Category.name).all()
+        return jsonify([c.to_dict() for c in categories])
+
+    elif request.method == 'POST':
+        # Create new category
+        data = request.get_json() or {}
+        name = (data.get('name') or '').strip()
+        
+        if not name:
+            return jsonify({'success': False, 'message': 'Category name is required'}), 400
+        
+        # Check for duplicate
+        existing = Category.query.filter(db.func.lower(Category.name) == name.lower()).first()
+        if existing:
+            return jsonify({'success': False, 'message': f'Category "{name}" already exists'}), 400
+        
+        category = Category(
+            name=name,
+            description=(data.get('description') or '').strip(),
+            color=data.get('color', '#6c757d'),
+            is_active=data.get('is_active', True),
+            sort_order=data.get('sort_order', 0)
+        )
+        db.session.add(category)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Category created', 'category': category.to_dict()}), 201
+
+@app.route('/api/categories/<int:category_id>', methods=['GET', 'PUT', 'DELETE'])
+def api_single_category(category_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    category = db.session.get(Category, category_id)
+    if not category:
+        return jsonify({'success': False, 'message': 'Category not found'}), 404
+
+    if request.method == 'GET':
+        return jsonify(category.to_dict())
+
+    elif request.method == 'PUT':
+        data = request.get_json() or {}
+        name = (data.get('name') or '').strip()
+        
+        if not name:
+            return jsonify({'success': False, 'message': 'Category name is required'}), 400
+        
+        # Check for duplicate (excluding current category)
+        existing = Category.query.filter(
+            db.func.lower(Category.name) == name.lower(),
+            Category.id != category_id
+        ).first()
+        if existing:
+            return jsonify({'success': False, 'message': f'Category "{name}" already exists'}), 400
+        
+        category.name = name
+        category.description = (data.get('description') or '').strip()
+        category.color = data.get('color', category.color)
+        category.is_active = data.get('is_active', category.is_active)
+        category.sort_order = data.get('sort_order', category.sort_order)
+        
+        # Update legacy category field in products and suppliers
+        old_name = category.category if hasattr(category, 'category') else None
+        if old_name and old_name != name:
+            Product.query.filter_by(category=old_name).update({'category': name})
+            Supplier.query.filter_by(category=old_name).update({'category': name})
+        
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Category updated', 'category': category.to_dict()})
+
+    elif request.method == 'DELETE':
+        # Check if category is in use
+        product_count = Product.query.filter_by(category_id=category_id).count()
+        supplier_count = Supplier.query.filter_by(category_id=category_id).count()
+        
+        if product_count > 0 or supplier_count > 0:
+            return jsonify({
+                'success': False, 
+                'message': f'Cannot delete category. It is used by {product_count} product(s) and {supplier_count} supplier(s).',
+                'product_count': product_count,
+                'supplier_count': supplier_count
+            }), 400
+        
+        db.session.delete(category)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Category deleted'})
+
+@app.route('/api/categories/bulk-update', methods=['POST'])
+def api_categories_bulk_update():
+    """Bulk update category assignments for products or suppliers"""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    data = request.get_json() or {}
+    action = data.get('action')
+    item_type = data.get('item_type')  # 'product' or 'supplier'
+    item_ids = data.get('item_ids', [])
+    category_id = data.get('category_id')
+    
+    if not item_ids:
+        return jsonify({'success': False, 'message': 'No items selected'}), 400
+    
+    if item_type == 'product':
+        if category_id:
+            category = db.session.get(Category, category_id)
+            if not category:
+                return jsonify({'success': False, 'message': 'Category not found'}), 404
+            Product.query.filter(Product.id.in_(item_ids)).update(
+                {'category_id': category_id, 'category': category.name},
+                synchronize_session=False
+            )
+        else:
+            Product.query.filter(Product.id.in_(item_ids)).update(
+                {'category_id': None, 'category': None},
+                synchronize_session=False
+            )
+    elif item_type == 'supplier':
+        if category_id:
+            category = db.session.get(Category, category_id)
+            if not category:
+                return jsonify({'success': False, 'message': 'Category not found'}), 404
+            Supplier.query.filter(Supplier.id.in_(item_ids)).update(
+                {'category_id': category_id, 'category': category.name},
+                synchronize_session=False
+            )
+        else:
+            Supplier.query.filter(Supplier.id.in_(item_ids)).update(
+                {'category_id': None, 'category': None},
+                synchronize_session=False
+            )
+    else:
+        return jsonify({'success': False, 'message': 'Invalid item type'}), 400
+    
+    db.session.commit()
+    return jsonify({'success': True, 'message': f'Updated {len(item_ids)} item(s)'})
+
 # Product API Endpoints
 @app.route('/api/products', methods=['GET', 'POST'])
 def api_products():
@@ -1257,13 +1524,18 @@ def api_products():
             price=price,
             cost=cost,
             stock=stock,
-            category=data.get('category'),
+            category_id=int(data.get('category_id')) if data.get('category_id') else None,
             tax_rate=tax_rate,
             reorder_point=reorder_point,
             reorder_quantity=reorder_quantity,
             reorder_enabled=reorder_enabled,
             photo_filename=photo_filename
         )
+        # Set legacy category field for backward compatibility
+        if product.category_id:
+            cat = db.session.get(Category, product.category_id)
+            if cat:
+                product.category = cat.name
         db.session.add(product)
         db.session.commit()
         return jsonify({'success': True, 'message': 'Product added'}), 201
@@ -1286,7 +1558,8 @@ def api_single_product(product_id):
             'price': product.price,
             'cost': product.cost,
             'stock': product.stock,
-            'category': product.category,
+            'category': product.category_ref.name if product.category_ref else product.category,
+            'category_id': product.category_id,
             'tax_rate': product.tax_rate,
             'reorder_point': product.reorder_point,
             'reorder_quantity': product.reorder_quantity,
@@ -1333,7 +1606,21 @@ def api_single_product(product_id):
             except (ValueError, TypeError):
                 return jsonify({'success': False, 'message': 'Invalid stock value'}), 400
 
-        product.category = data.get('category', product.category)
+        if 'category_id' in data:
+            category_id = data.get('category_id')
+            if category_id:
+                try:
+                    product.category_id = int(category_id)
+                    cat = db.session.get(Category, product.category_id)
+                    if cat:
+                        product.category = cat.name
+                except (ValueError, TypeError):
+                    return jsonify({'success': False, 'message': 'Invalid category_id value'}), 400
+            else:
+                product.category_id = None
+                product.category = None
+        elif 'category' in data:
+            product.category = data.get('category', product.category)
         if 'tax_rate' in data:
             try:
                 product.tax_rate = float(data.get('tax_rate') or 0)
@@ -3157,6 +3444,7 @@ def api_suppliers():
         search_query = (request.args.get('q') or '').strip()
         active_filter = (request.args.get('active') or '').strip().lower()
         category_filter = (request.args.get('category') or '').strip()
+        category_id_filter = request.args.get('category_id')
 
         if search_query:
             like_query = f"%{search_query}%"
@@ -3170,7 +3458,12 @@ def api_suppliers():
         if active_filter in ('active', 'inactive'):
             query = query.filter(Supplier.is_active.is_(active_filter == 'active'))
         
-        if category_filter:
+        if category_id_filter:
+            try:
+                query = query.filter(Supplier.category_id == int(category_id_filter))
+            except ValueError:
+                pass  # Invalid category_id, ignore filter
+        elif category_filter:
             query = query.filter(Supplier.category == category_filter)
 
         suppliers = query.order_by(Supplier.name.asc()).all()
@@ -3185,7 +3478,8 @@ def api_suppliers():
             'lead_time_days': s.lead_time_days,
             'is_active': bool(s.is_active),
             'notes': s.notes,
-            'category': s.category,
+            'category': s.category_ref.name if s.category_ref else s.category,
+            'category_id': s.category_id,
             'tax_id': s.tax_id,
             'website': s.website,
             'bank_name': s.bank_name,
@@ -3237,6 +3531,7 @@ def api_suppliers():
             lead_time_days=lead_time_days,
             is_active=bool(data.get('is_active', True)),
             notes=(data.get('notes') or '').strip() or None,
+            category_id=data.get('category_id'),
             category=(data.get('category') or '').strip() or None,
             tax_id=(data.get('tax_id') or '').strip() or None,
             website=(data.get('website') or '').strip() or None,
@@ -3245,6 +3540,11 @@ def api_suppliers():
             quality_rating=float(data.get('quality_rating', 0) or 0),
             delivery_rating=float(data.get('delivery_rating', 0) or 0)
         )
+        # Sync category name from Category table if category_id is provided
+        if supplier.category_id:
+            cat = db.session.get(Category, supplier.category_id)
+            if cat:
+                supplier.category = cat.name
         db.session.add(supplier)
         db.session.commit()
         return jsonify({'success': True, 'message': 'Supplier added', 'supplier_id': supplier.id}), 201
@@ -3273,7 +3573,8 @@ def api_single_supplier(supplier_id):
             'lead_time_days': supplier.lead_time_days,
             'is_active': bool(supplier.is_active),
             'notes': supplier.notes,
-            'category': supplier.category,
+            'category': supplier.category_ref.name if supplier.category_ref else supplier.category,
+            'category_id': supplier.category_id,
             'tax_id': supplier.tax_id,
             'website': supplier.website,
             'bank_name': supplier.bank_name,
@@ -3330,6 +3631,11 @@ def api_single_supplier(supplier_id):
         supplier.is_active = bool(data.get('is_active', supplier.is_active))
         supplier.notes = (data.get('notes', supplier.notes) or '').strip() or None
         supplier.category = (data.get('category', supplier.category) or '').strip() or None
+        supplier.category_id = data.get('category_id') or supplier.category_id
+        if supplier.category_id:
+            cat = db.session.get(Category, supplier.category_id)
+            if cat:
+                supplier.category = cat.name
         supplier.tax_id = (data.get('tax_id', supplier.tax_id) or '').strip() or None
         supplier.website = (data.get('website', supplier.website) or '').strip() or None
         supplier.bank_name = (data.get('bank_name', supplier.bank_name) or '').strip() or None
