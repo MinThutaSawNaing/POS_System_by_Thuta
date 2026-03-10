@@ -1113,55 +1113,64 @@
         </div>
       </div>
 
-      <!-- Users Section -->
-      <div id="users-section" style="display: none">
-        <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
-          <h2 class="mb-0">User Management</h2>
-          <button
-            class="btn btn-primary"
-            data-bs-toggle="modal"
-            data-bs-target="#addUserModal"
-          >
-            <i class="bi bi-person-plus"></i> <span class="d-none d-sm-inline">Add User</span><span class="d-sm-none">Add</span>
-          </button>
+      <!-- Reports Section -->
+      <div id="reports-section" style="display: none">
+        <h2>Reports</h2>
+        <div class="row mb-3 g-2">
+          <div class="col-12 col-sm-6 col-md-3">
+            <label class="form-label">Start Date</label>
+            <input type="date" id="start-date" class="form-control" />
+          </div>
+          <div class="col-12 col-sm-6 col-md-3">
+            <label class="form-label">End Date</label>
+            <input type="date" id="end-date" class="form-control" />
+          </div>
+          <div class="col-6 col-md-3 d-flex align-items-end">
+            <button class="btn btn-primary w-100" onclick="generateReport()">
+              <i class="bi bi-file-earmark-text"></i> <span class="d-none d-sm-inline">Generate</span><span class="d-sm-none">Go</span>
+            </button>
+          </div>
+          <div class="col-6 col-md-3 d-flex align-items-end">
+            <button class="btn btn-outline-secondary w-100" onclick="exportReport()">
+              <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Export</span>
+            </button>
+          </div>
         </div>
 
-        <div class="row mb-3">
-          <div class="col-12 col-md-5">
-            <input
-              type="text"
-              id="users-search"
-              class="form-control"
-              placeholder="Search by username, role or ID"
-            />
+        <div class="row">
+          <div class="col-12 col-lg-8 mb-3">
+            <div class="card">
+              <div class="card-header bg-white">
+                <h5 class="mb-0">Sales Chart</h5>
+              </div>
+              <div class="card-body">
+                <canvas id="salesChart" height="250"></canvas>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-lg-4 mb-3">
+            <div class="card">
+              <div class="card-header bg-white">
+                <h5 class="mb-0">Payment Methods</h5>
+              </div>
+              <div class="card-body">
+                <canvas id="paymentChart" height="250"></canvas>
+              </div>
+            </div>
           </div>
         </div>
 
         <div class="card">
+          <div class="card-header bg-white">
+            <h5 class="mb-0">Report Results</h5>
+          </div>
           <div class="card-body">
-            <div class="table-responsive">
-              <table class="table table-striped table-hover">
-                <thead>
-                  <tr>
-                    <th class="d-none d-sm-table-cell">ID</th>
-                    <th>Username</th>
-                    <th>Role</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="users-table">
-                  <!-- Users will be loaded here -->
-                  <tr>
-                    <td colspan="4" class="text-center py-4">
-                      <div class="spinner-border text-primary" role="status">
-                        <span class="visually-hidden">Loading...</span>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            <div id="report-results" class="table-responsive">
+              <!-- Report results will be displayed here -->
+              <p class="text-muted text-center py-3">
+                Select date range and generate report
+              </p>
             </div>
-            <div id="users-pagination" class="d-flex justify-content-center justify-content-md-end mt-3"></div>
           </div>
         </div>
       </div>
@@ -1905,64 +1914,55 @@
         </div>
       </div>
 
-      <!-- Reports Section -->
-      <div id="reports-section" style="display: none">
-        <h2>Reports</h2>
-        <div class="row mb-3 g-2">
-          <div class="col-12 col-sm-6 col-md-3">
-            <label class="form-label">Start Date</label>
-            <input type="date" id="start-date" class="form-control" />
-          </div>
-          <div class="col-12 col-sm-6 col-md-3">
-            <label class="form-label">End Date</label>
-            <input type="date" id="end-date" class="form-control" />
-          </div>
-          <div class="col-6 col-md-3 d-flex align-items-end">
-            <button class="btn btn-primary w-100" onclick="generateReport()">
-              <i class="bi bi-file-earmark-text"></i> <span class="d-none d-sm-inline">Generate</span><span class="d-sm-none">Go</span>
-            </button>
-          </div>
-          <div class="col-6 col-md-3 d-flex align-items-end">
-            <button class="btn btn-outline-secondary w-100" onclick="exportReport()">
-              <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Export</span>
-            </button>
-          </div>
+      <!-- Users Section -->
+      <div id="users-section" style="display: none">
+        <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
+          <h2 class="mb-0">User Management</h2>
+          <button
+            class="btn btn-primary"
+            data-bs-toggle="modal"
+            data-bs-target="#addUserModal"
+          >
+            <i class="bi bi-person-plus"></i> <span class="d-none d-sm-inline">Add User</span><span class="d-sm-none">Add</span>
+          </button>
         </div>
 
-        <div class="row">
-          <div class="col-12 col-lg-8 mb-3">
-            <div class="card">
-              <div class="card-header bg-white">
-                <h5 class="mb-0">Sales Chart</h5>
-              </div>
-              <div class="card-body">
-                <canvas id="salesChart" height="250"></canvas>
-              </div>
-            </div>
-          </div>
-          <div class="col-12 col-lg-4 mb-3">
-            <div class="card">
-              <div class="card-header bg-white">
-                <h5 class="mb-0">Payment Methods</h5>
-              </div>
-              <div class="card-body">
-                <canvas id="paymentChart" height="250"></canvas>
-              </div>
-            </div>
+        <div class="row mb-3">
+          <div class="col-12 col-md-5">
+            <input
+              type="text"
+              id="users-search"
+              class="form-control"
+              placeholder="Search by username, role or ID"
+            />
           </div>
         </div>
 
         <div class="card">
-          <div class="card-header bg-white">
-            <h5 class="mb-0">Report Results</h5>
-          </div>
           <div class="card-body">
-            <div id="report-results" class="table-responsive">
-              <!-- Report results will be displayed here -->
-              <p class="text-muted text-center py-3">
-                Select date range and generate report
-              </p>
+            <div class="table-responsive">
+              <table class="table table-striped table-hover">
+                <thead>
+                  <tr>
+                    <th class="d-none d-sm-table-cell">ID</th>
+                    <th>Username</th>
+                    <th>Role</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="users-table">
+                  <!-- Users will be loaded here -->
+                  <tr>
+                    <td colspan="4" class="text-center py-4">
+                      <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
+            <div id="users-pagination" class="d-flex justify-content-center justify-content-md-end mt-3"></div>
           </div>
         </div>
       </div>
