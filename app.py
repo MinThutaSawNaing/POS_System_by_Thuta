@@ -1233,6 +1233,75 @@ def api_settings_database_backup():
         download_name=backup_filename
     )
 
+@app.route('/api/settings/database_restore', methods=['POST'])
+@manager_required
+def api_settings_database_restore():
+    """Restore database from a backup file."""
+    if 'database' not in request.files:
+        return jsonify({'success': False, 'message': 'No database file provided'}), 400
+    
+    file = request.files['database']
+    if file.filename == '':
+        return jsonify({'success': False, 'message': 'No file selected'}), 400
+    
+    # Check file extension
+    if not file.filename.lower().endswith('.db'):
+        return jsonify({'success': False, 'message': 'Invalid file type. Please select a .db file'}), 400
+    
+    # Get current database path
+    db_file_path = resolve_database_file_path()
+    if not db_file_path:
+        return jsonify({'success': False, 'message': 'Current database file not found'}), 404
+    
+    try:
+        # Read the uploaded file
+        uploaded_data = file.read()
+        
+        # Validate it's a valid SQLite database by checking the header
+        # SQLite databases start with "SQLite format 3\x00"
+        if not uploaded_data.startswith(b'SQLite format 3\x00'):
+            return jsonify({'success': False, 'message': 'Invalid database file. The file is not a valid SQLite database.'}), 400
+        
+        # Create a backup of the current database before replacing
+        backup_path = db_file_path + '.pre_restore_backup'
+        if os.path.exists(db_file_path):
+            import shutil
+            shutil.copy2(db_file_path, backup_path)
+        
+        # Close all database connections
+        db.session.remove()
+        db.engine.dispose()
+        
+        # Write the new database
+        with open(db_file_path, 'wb') as f:
+            f.write(uploaded_data)
+        
+        # Re-initialize the database connection
+        db.session.configure(bind=db.engine)
+        
+        # Verify the restored database by trying to query it
+        try:
+            db.session.execute(text('SELECT 1'))
+            db.session.commit()
+        except Exception as verify_error:
+            # Restore failed, revert to the backup
+            if os.path.exists(backup_path):
+                shutil.copy2(backup_path, db_file_path)
+            return jsonify({'success': False, 'message': f'Restored database is corrupted. Rolled back to previous state. Error: {str(verify_error)}'}), 500
+        
+        # Clean up the pre-restore backup
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+        
+        return jsonify({
+            'success': True,
+            'message': 'Database restored successfully. Please refresh the page to see the changes.'
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error restoring database: {str(e)}")
+        return jsonify({'success': False, 'message': f'Failed to restore database: {str(e)}'}), 500
+
 @app.route('/api/inventory/alerts', methods=['GET'])
 @manager_required
 def api_inventory_alerts():
