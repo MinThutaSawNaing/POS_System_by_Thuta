@@ -3524,11 +3524,11 @@
     >
       <div class="modal-dialog modal-lg">
         <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">Create Purchase Order</h5>
+          <div class="modal-header bg-primary text-white">
+            <h5 class="modal-title"><i class="bi bi-file-earmark-plus me-2"></i>Create Purchase Order</h5>
             <button
               type="button"
-              class="btn-close"
+              class="btn-close btn-close-white"
               data-bs-dismiss="modal"
               aria-label="Close"
             ></button>
@@ -3548,11 +3548,11 @@
             </div>
             <div class="mb-3">
               <label class="form-label">Notes</label>
-              <textarea class="form-control" id="po-notes" rows="2"></textarea>
+              <textarea class="form-control" id="po-notes" rows="2" placeholder="Optional notes for this purchase order..."></textarea>
             </div>
             <hr />
             <div class="d-flex justify-content-between align-items-center mb-2">
-              <h6 class="mb-0">Items</h6>
+              <h6 class="mb-0"><i class="bi bi-list-ul me-1"></i>Items</h6>
               <button class="btn btn-sm btn-outline-primary" onclick="addPurchaseOrderItemRow()">
                 <i class="bi bi-plus"></i> Add Item
               </button>
@@ -3568,7 +3568,7 @@
               Cancel
             </button>
             <button type="button" class="btn btn-primary" onclick="savePurchaseOrder()">
-              Create PO
+              <i class="bi bi-check-lg me-1"></i>Create PO
             </button>
           </div>
         </div>
@@ -3584,16 +3584,20 @@
     >
       <div class="modal-dialog modal-lg">
         <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">Receive Purchase Order</h5>
+          <div class="modal-header bg-success text-white">
+            <h5 class="modal-title"><i class="bi bi-box-arrow-in-down me-2"></i>Receive Purchase Order</h5>
             <button
               type="button"
-              class="btn-close"
+              class="btn-close btn-close-white"
               data-bs-dismiss="modal"
               aria-label="Close"
             ></button>
           </div>
           <div class="modal-body">
+            <div class="alert alert-info d-flex align-items-center mb-3">
+              <i class="bi bi-info-circle-fill me-2"></i>
+              <span>Enter the quantities received for each item. Stock will be updated automatically.</span>
+            </div>
             <p class="mb-2">PO: <strong id="receive-po-number">-</strong></p>
             <div id="receive-po-items-container"></div>
           </div>
@@ -3606,7 +3610,7 @@
               Cancel
             </button>
             <button type="button" class="btn btn-success" onclick="submitPurchaseReceiving()">
-              Confirm Receiving
+              <i class="bi bi-check-lg me-1"></i>Confirm Receiving
             </button>
           </div>
         </div>
@@ -3638,21 +3642,25 @@
     <div class="modal fade" id="cancelPurchaseOrderModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog">
         <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">Cancel Purchase Order</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          <div class="modal-header bg-danger text-white">
+            <h5 class="modal-title"><i class="bi bi-exclamation-triangle me-2"></i>Cancel Purchase Order</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
+            <div class="alert alert-warning d-flex align-items-center mb-3">
+              <i class="bi bi-exclamation-triangle-fill me-2 fs-5"></i>
+              <span>This action cannot be undone!</span>
+            </div>
             <p>Are you sure you want to cancel this purchase order?</p>
-            <p class="fw-bold" id="cancel-po-number-display"></p>
+            <p class="fw-bold text-danger" id="cancel-po-number-display"></p>
             <div class="mb-3">
               <label class="form-label">Cancellation Reason</label>
               <textarea class="form-control" id="cancel-po-reason" rows="2" placeholder="Optional reason for cancellation"></textarea>
             </div>
           </div>
           <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="button" class="btn btn-danger" onclick="confirmCancelPurchaseOrder()">Confirm Cancellation</button>
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Keep Order</button>
+            <button type="button" class="btn btn-danger" onclick="confirmCancelPurchaseOrder()"><i class="bi bi-x-lg me-1"></i>Confirm Cancellation</button>
           </div>
         </div>
       </div>
@@ -3794,16 +3802,16 @@
     <div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title" id="confirmModalTitle">Confirm</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          <div class="modal-header bg-primary text-white">
+            <h5 class="modal-title" id="confirmModalTitle"><i class="bi bi-question-circle me-2"></i>Confirm</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
-            <p id="confirmModalMessage" class="mb-0"></p>
+            <p id="confirmModalMessage" class="mb-0 fs-6"></p>
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="button" class="btn btn-primary" id="confirmModalBtn">Confirm</button>
+            <button type="button" class="btn btn-primary" id="confirmModalBtn"><i class="bi bi-check-lg me-1"></i>Confirm</button>
           </div>
         </div>
       </div>
@@ -4816,9 +4824,11 @@
         }
 
         const alertClass = type === "success" ? "alert-success" : 
-                          type === "error" ? "alert-danger" : "alert-info";
+                          type === "error" ? "alert-danger" :
+                          type === "warning" ? "alert-warning" : "alert-info";
         const iconClass = type === "success" ? "bi-check-circle" : 
-                         type === "error" ? "bi-exclamation-triangle" : "bi-info-circle";
+                         type === "error" ? "bi-exclamation-triangle" :
+                         type === "warning" ? "bi-exclamation-triangle" : "bi-info-circle";
 
         const toast = document.createElement("div");
         toast.className = `alert ${alertClass} d-flex align-items-center gap-2`;
@@ -9457,31 +9467,75 @@
       }
 
       function submitPurchaseOrderForApproval(poId) {
-        if (!confirm('Submit this purchase order for approval?')) return;
-        fetch(`/api/purchase_orders/${poId}/submit`, { method: 'POST' })
-          .then((r) => r.json())
-          .then((data) => {
-            if (data.success) {
-              showToast('Purchase order submitted for approval', 'success');
-              loadPurchaseOrders();
-            } else {
-              alert(data.message || 'Failed to submit');
+        showConfirmDialog(
+          'Submit for Approval',
+          'Are you sure you want to submit this purchase order for approval?',
+          () => {
+            const btn = document.querySelector(`button[onclick="submitPurchaseOrderForApproval(${poId})"]`);
+            if (btn) {
+              btn.disabled = true;
+              btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Submitting...';
             }
-          });
+            fetch(`/api/purchase_orders/${poId}/submit`, { method: 'POST' })
+              .then((r) => r.json())
+              .then((data) => {
+                if (data.success) {
+                  showToast('Purchase order submitted for approval successfully', 'success');
+                  loadPurchaseOrders();
+                } else {
+                  showToast(data.message || 'Failed to submit purchase order', 'error');
+                  if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-send"></i>';
+                  }
+                }
+              })
+              .catch((err) => {
+                console.error('Error submitting PO:', err);
+                showToast('Network error. Please try again.', 'error');
+                if (btn) {
+                  btn.disabled = false;
+                  btn.innerHTML = '<i class="bi bi-send"></i>';
+                }
+              });
+          }
+        );
       }
 
       function approvePurchaseOrder(poId) {
-        if (!confirm('Approve this purchase order?')) return;
-        fetch(`/api/purchase_orders/${poId}/approve`, { method: 'POST' })
-          .then((r) => r.json())
-          .then((data) => {
-            if (data.success) {
-              showToast('Purchase order approved', 'success');
-              loadPurchaseOrders();
-            } else {
-              alert(data.message || 'Failed to approve');
+        showConfirmDialog(
+          'Approve Purchase Order',
+          'Are you sure you want to approve this purchase order? This will allow receiving of items.',
+          () => {
+            const btn = document.querySelector(`button[onclick="approvePurchaseOrder(${poId})"]`);
+            if (btn) {
+              btn.disabled = true;
+              btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Approving...';
             }
-          });
+            fetch(`/api/purchase_orders/${poId}/approve`, { method: 'POST' })
+              .then((r) => r.json())
+              .then((data) => {
+                if (data.success) {
+                  showToast('Purchase order approved successfully', 'success');
+                  loadPurchaseOrders();
+                } else {
+                  showToast(data.message || 'Failed to approve purchase order', 'error');
+                  if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="bi bi-check-lg"></i>';
+                  }
+                }
+              })
+              .catch((err) => {
+                console.error('Error approving PO:', err);
+                showToast('Network error. Please try again.', 'error');
+                if (btn) {
+                  btn.disabled = false;
+                  btn.innerHTML = '<i class="bi bi-check-lg"></i>';
+                }
+              });
+          }
+        );
       }
 
       function showCancelPOModal(poId, poNumber) {
@@ -9493,6 +9547,14 @@
 
       function confirmCancelPurchaseOrder() {
         const reason = document.getElementById("cancel-po-reason").value.trim();
+        const confirmBtn = document.querySelector('#cancelPurchaseOrderModal .btn-danger');
+        const originalBtnContent = confirmBtn ? confirmBtn.innerHTML : '';
+        
+        if (confirmBtn) {
+          confirmBtn.disabled = true;
+          confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Cancelling...';
+        }
+        
         fetch(`/api/purchase_orders/${cancelPOId}/cancel`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -9502,10 +9564,22 @@
           .then((data) => {
             if (data.success) {
               bootstrap.Modal.getInstance(document.getElementById("cancelPurchaseOrderModal")).hide();
-              showToast('Purchase order cancelled', 'success');
+              showToast('Purchase order cancelled successfully', 'success');
               loadPurchaseOrders();
             } else {
-              alert(data.message || 'Failed to cancel');
+              showToast(data.message || 'Failed to cancel purchase order', 'error');
+              if (confirmBtn) {
+                confirmBtn.disabled = false;
+                confirmBtn.innerHTML = originalBtnContent;
+              }
+            }
+          })
+          .catch((err) => {
+            console.error('Error cancelling PO:', err);
+            showToast('Network error. Please try again.', 'error');
+            if (confirmBtn) {
+              confirmBtn.disabled = false;
+              confirmBtn.innerHTML = originalBtnContent;
             }
           });
       }
@@ -9590,7 +9664,7 @@
         const notes = document.getElementById("po-notes").value.trim();
         const expectedDelivery = document.getElementById("po-expected-delivery").value;
         if (!supplierId) {
-          showToast("Please select supplier.", "warning");
+          showToast("Please select a supplier.", "warning");
           return;
         }
 
@@ -9601,7 +9675,7 @@
           const orderedQty = parseInt(row.querySelector(".po-item-qty").value || "0", 10);
           const unitCost = parseFloat(row.querySelector(".po-item-cost").value || "0");
           if (!productId || orderedQty <= 0) {
-            showToast("Each item must have product and quantity > 0", "warning");
+            showToast("Each item must have a product and quantity greater than 0.", "warning");
             return;
           }
           items.push({ product_id: productId, ordered_qty: orderedQty, unit_cost: Number.isFinite(unitCost) ? unitCost : 0 });
@@ -9609,6 +9683,14 @@
 
         const payload = { supplier_id: supplierId, notes, items };
         if (expectedDelivery) payload.expected_delivery_date = expectedDelivery;
+
+        // Get save button and show loading state
+        const saveBtn = document.querySelector('#addPurchaseOrderModal .btn-primary');
+        const originalBtnContent = saveBtn ? saveBtn.innerHTML : '';
+        if (saveBtn) {
+          saveBtn.disabled = true;
+          saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Creating...';
+        }
 
         fetch("/api/purchase_orders", {
           method: "POST",
@@ -9619,16 +9701,24 @@
           .then((data) => {
             if (!data.success) {
               showToast(data.message || "Failed to create purchase order", "error");
+              if (saveBtn) {
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = originalBtnContent;
+              }
               return;
             }
-            showToast("Purchase order created successfully", "success");
+            showToast("Purchase order created successfully!", "success");
             const modal = bootstrap.Modal.getInstance(document.getElementById("addPurchaseOrderModal"));
             modal.hide();
             loadPurchaseOrders();
           })
           .catch((err) => {
             console.error("Error creating PO:", err);
-            showToast("Failed to create purchase order", "error");
+            showToast("Network error. Please try again.", "error");
+            if (saveBtn) {
+              saveBtn.disabled = false;
+              saveBtn.innerHTML = originalBtnContent;
+            }
           });
       }
 
@@ -9683,31 +9773,61 @@
           return;
         }
 
-        fetch(`/api/purchase_orders/${selectedReceivePO.id}/receive`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ items }),
-        })
-          .then((r) => r.json())
-          .then((data) => {
-            if (!data.success) {
-              showToast(data.message || "Failed to receive items", "error");
-              return;
+        // Calculate total receiving quantity for confirmation message
+        const totalQty = items.reduce((sum, item) => sum + item.received_qty, 0);
+        const itemNames = items.map(item => {
+          const input = document.querySelector(`.receive-item-qty[data-po-item-id="${item.purchase_order_item_id}"]`);
+          const productName = input?.closest('.row')?.querySelector('strong')?.textContent || 'Item';
+          return `${productName} (${item.received_qty})`;
+        }).join(', ');
+
+        showConfirmDialog(
+          'Confirm Receiving',
+          `Receive ${totalQty} item(s) into inventory?\n${itemNames}`,
+          () => {
+            const confirmBtn = document.querySelector('#receivePurchaseOrderModal .btn-success');
+            const originalBtnContent = confirmBtn ? confirmBtn.innerHTML : '';
+            
+            if (confirmBtn) {
+              confirmBtn.disabled = true;
+              confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Processing...';
             }
-            showToast("Stock received successfully", "success");
-            const modal = bootstrap.Modal.getInstance(document.getElementById("receivePurchaseOrderModal"));
-            modal.hide();
-            selectedReceivePO = null;
-            invalidateProductsCache();
-            loadProducts();
-            loadProductsForPOS();
-            loadPurchaseOrders();
-            loadDashboardStats();
-          })
-          .catch((err) => {
-            console.error("Error receiving PO:", err);
-            showToast("Failed to receive items", "error");
-          });
+
+            fetch(`/api/purchase_orders/${selectedReceivePO.id}/receive`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ items }),
+            })
+              .then((r) => r.json())
+              .then((data) => {
+                if (!data.success) {
+                  showToast(data.message || "Failed to receive items", "error");
+                  if (confirmBtn) {
+                    confirmBtn.disabled = false;
+                    confirmBtn.innerHTML = originalBtnContent;
+                  }
+                  return;
+                }
+                showToast("Stock received successfully! Inventory has been updated.", "success");
+                const modal = bootstrap.Modal.getInstance(document.getElementById("receivePurchaseOrderModal"));
+                modal.hide();
+                selectedReceivePO = null;
+                invalidateProductsCache();
+                loadProducts();
+                loadProductsForPOS();
+                loadPurchaseOrders();
+                loadDashboardStats();
+              })
+              .catch((err) => {
+                console.error("Error receiving PO:", err);
+                showToast("Network error. Please try again.", "error");
+                if (confirmBtn) {
+                  confirmBtn.disabled = false;
+                  confirmBtn.innerHTML = originalBtnContent;
+                }
+              });
+          }
+        );
       }
 
       function togglePosDeliveryFields() {
