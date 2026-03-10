@@ -20,6 +20,7 @@ jobs:
       - name: Configure Cloudflare SSH
         run: |
           mkdir -p ~/.cloudflared
+          mkdir -p ~/.ssh
           # Create SSH config for Cloudflare Access
           cat > ~/.ssh/config << 'EOF'
           Host ssh.nationalcancercenter.click
