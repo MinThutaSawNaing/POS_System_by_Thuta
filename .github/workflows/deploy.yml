@@ -17,13 +17,23 @@ jobs:
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
-      - name: Deploy via SSH through Cloudflare Tunnel
+      - name: Configure Cloudflare SSH
+        run: |
+          mkdir -p ~/.cloudflared
+          # Create SSH config for Cloudflare Access
+          cat > ~/.ssh/config << 'EOF'
+          Host ssh.nationalcancercenter.click
+            ProxyCommand cloudflared access ssh --hostname %h
+            User minthuta
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ssh.nationalcancercenter.click
           username: minthuta
           password: ${{ secrets.SSH_PASSWORD }}
-          proxy_command: cloudflared access ssh --hostname %h
           script: |
             cd /home/minthuta/Desktop/POS/POS_System_by_Thuta
             git pull origin main
