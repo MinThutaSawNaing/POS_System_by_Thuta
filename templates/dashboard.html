@@ -6846,7 +6846,7 @@
             filtered.forEach((cat) => {
               const row = document.createElement("tr");
               row.innerHTML = `
-                <td><span class="badge" style="background-color: ${cat.color || '#6c757d'}; width: 30px; height: 30px; border-radius: 4px;"></span></td>
+                <td><span class="badge" style="background-color: ${cat.color || '#6c757d'}; width: 30px; height: 30px; border-radius: 4px; display: inline-block;">&nbsp;</span></td>
                 <td><strong>${escapeHtml(cat.name)}</strong></td>
                 <td class="d-none d-md-table-cell">${escapeHtml(cat.description || '-')}</td>
                 <td class="text-center"><span class="badge bg-primary">${cat.product_count || 0}</span></td>
