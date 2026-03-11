@@ -765,6 +765,15 @@ with app.app_context():
         '''))
         db.session.commit()
     
+    # Ensure all existing categories have a default color value
+    if inspector.has_table('category'):
+        db.session.execute(text("""
+            UPDATE category 
+            SET color = '#6c757d' 
+            WHERE color IS NULL OR color = ''
+        """))
+        db.session.commit()
+    
     # Add category_id columns to product and supplier tables
     if inspector.has_table('product'):
         product_columns = [col['name'] for col in inspector.get_columns('product')]
@@ -803,8 +812,8 @@ with app.app_context():
             ), {'name': cat_name}).fetchone()
             if not existing:
                 db.session.execute(text('''
-                    INSERT INTO category (name, is_active, sort_order, created_at, updated_at)
-                    VALUES (:name, 1, :sort_order, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    INSERT INTO category (name, color, is_active, sort_order, created_at, updated_at)
+                    VALUES (:name, '#6c757d', 1, :sort_order, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 '''), {'name': cat_name, 'sort_order': idx})
         db.session.commit()
         
