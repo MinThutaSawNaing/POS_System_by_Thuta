@@ -104,11 +104,15 @@ def to_bool(value, default=False):
         return False
     return default
 
-def build_inventory_alert_payload():
+def build_inventory_alert_payload(branch_id=None):
     low_stock_items = []
     out_of_stock_count = 0
 
-    products = Product.query.order_by(Product.name.asc()).all()
+    query = Product.query
+    if branch_id:
+        query = query.filter_by(branch_id=branch_id)
+    
+    products = query.order_by(Product.name.asc()).all()
     for product in products:
         current_stock = int(product.stock or 0)
         reorder_point = max(int(product.reorder_point or 0), 0)
@@ -317,6 +321,39 @@ def calculate_debt_status(debt):
         return 'overdue'
     return 'pending'
 
+# Branch helper functions
+def get_current_branch_id():
+    """Get the current branch ID from session, or return the default branch"""
+    branch_id = session.get('branch_id')
+    if branch_id:
+        # Verify the branch still exists and is active
+        branch = Branch.query.get(branch_id)
+        if branch and branch.is_active:
+            return branch_id
+        # Branch no longer valid, clear from session
+        session.pop('branch_id', None)
+    
+    # Get default branch
+    default_branch = Branch.query.filter_by(is_default=True, is_active=True).first()
+    if default_branch:
+        session['branch_id'] = default_branch.id
+        return default_branch.id
+    
+    # Fallback to first active branch
+    first_branch = Branch.query.filter_by(is_active=True).first()
+    if first_branch:
+        session['branch_id'] = first_branch.id
+        return first_branch.id
+    
+    return None
+
+def get_current_branch():
+    """Get the current branch object"""
+    branch_id = get_current_branch_id()
+    if branch_id:
+        return Branch.query.get(branch_id)
+    return None
+
 def serialize_debt(debt):
     """Serialize debt record with all computed fields"""
     days_outstanding = calculate_debt_aging_days(debt.date)
@@ -405,6 +442,33 @@ class AppSetting(db.Model):
     key = db.Column(db.String(100), unique=True, nullable=False)
     value = db.Column(db.String(255), nullable=False)
 
+class Branch(db.Model):
+    """Multi-branch support for POS system"""
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    code = db.Column(db.String(20), unique=True, nullable=False)
+    address = db.Column(db.String(300))
+    phone = db.Column(db.String(30))
+    email = db.Column(db.String(100))
+    is_active = db.Column(db.Boolean, default=True)
+    is_default = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'code': self.code,
+            'address': self.address,
+            'phone': self.phone,
+            'email': self.email,
+            'is_active': self.is_active,
+            'is_default': self.is_default,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+
 class Category(db.Model):
     """Centralized category management for products and suppliers"""
     id = db.Column(db.Integer, primary_key=True)
@@ -413,12 +477,14 @@ class Category(db.Model):
     color = db.Column(db.String(7), default='#6c757d')  # Hex color for UI display
     is_active = db.Column(db.Boolean, default=True)
     sort_order = db.Column(db.Integer, default=0)
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
     products = db.relationship('Product', backref='category_ref', lazy=True, foreign_keys='Product.category_id')
     suppliers = db.relationship('Supplier', backref='category_ref', lazy=True, foreign_keys='Supplier.category_id')
+    branch = db.relationship('Branch', backref='categories')
     
     def to_dict(self):
         return {
@@ -428,6 +494,7 @@ class Category(db.Model):
             'color': self.color,
             'is_active': self.is_active,
             'sort_order': self.sort_order,
+            'branch_id': self.branch_id,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'product_count': len(self.products) if self.products else 0,
@@ -448,6 +515,7 @@ class Product(db.Model):
     reorder_point = db.Column(db.Integer, default=10)
     reorder_quantity = db.Column(db.Integer, default=50)
     reorder_enabled = db.Column(db.Boolean, default=True)
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
 
 class Supplier(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -471,6 +539,7 @@ class Supplier(db.Model):
     delivery_rating = db.Column(db.Float, default=0.0)
     total_orders = db.Column(db.Integer, default=0)
     on_time_deliveries = db.Column(db.Integer, default=0)
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -487,6 +556,7 @@ class PurchaseOrder(db.Model):
     approved_at = db.Column(db.DateTime)
     cancelled_at = db.Column(db.DateTime)
     cancelled_reason = db.Column(db.String(300))
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -544,6 +614,7 @@ class WarehouseInventory(db.Model):
     expiry_date = db.Column(db.DateTime)  # Optional for perishables
     unit_cost = db.Column(db.Float)  # Cost at time of receiving
     notes = db.Column(db.String(200))
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -558,6 +629,7 @@ class WarehouseTransfer(db.Model):
     batch_number = db.Column(db.String(50))  # Reference to warehouse batch
     performed_by = db.Column(db.Integer, db.ForeignKey('user.id'))
     notes = db.Column(db.String(200))
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     product = db.relationship('Product', backref='transfers')
@@ -573,6 +645,7 @@ class Sale(db.Model):
     refund_amount = db.Column(db.Float, default=0.0)
     payment_method = db.Column(db.String(20))
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     user = db.relationship('User', backref='sales')
 
 # Database Model for Promotions
@@ -637,6 +710,7 @@ class Customer(db.Model):
     phone = db.Column(db.String(20))
     email = db.Column(db.String(100))
     address = db.Column(db.String(200))
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relationship with debts
@@ -655,6 +729,7 @@ class Debt(db.Model):
     communication_notes = db.Column(db.Text)  # Track customer communications
     last_contacted_at = db.Column(db.DateTime)  # Last communication date
     created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -674,6 +749,7 @@ class DebtPayment(db.Model):
     payment_date = db.Column(db.DateTime, default=datetime.utcnow)
     notes = db.Column(db.String(500))
     processed_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -703,6 +779,7 @@ class Delivery(db.Model):
     cancelled_at = db.Column(db.DateTime)
     proof_note = db.Column(db.String(300))
     created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -748,6 +825,70 @@ def serialize_delivery(delivery):
 with app.app_context():
     db.create_all()
     inspector = inspect(db.engine)
+    
+    # Branch table migration for multi-branch support
+    if not inspector.has_table('branch'):
+        db.session.execute(text('''
+            CREATE TABLE branch (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name VARCHAR(100) NOT NULL,
+                code VARCHAR(20) NOT NULL UNIQUE,
+                address VARCHAR(300),
+                phone VARCHAR(30),
+                email VARCHAR(100),
+                is_active BOOLEAN DEFAULT 1,
+                is_default BOOLEAN DEFAULT 0,
+                created_at DATETIME,
+                updated_at DATETIME
+            )
+        '''))
+        db.session.commit()
+    
+    # Create default branch if none exists
+    if inspector.has_table('branch'):
+        branch_count = db.session.execute(text('SELECT COUNT(*) FROM branch')).scalar()
+        if branch_count == 0:
+            db.session.execute(text('''
+                INSERT INTO branch (name, code, address, is_active, is_default, created_at, updated_at)
+                VALUES ('Main Branch', 'MAIN', 'Main Location', 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            '''))
+            db.session.commit()
+    
+    # Add branch_id columns to existing tables
+    tables_to_migrate = [
+        ('category', 'branch_id', 'ALTER TABLE category ADD COLUMN branch_id INTEGER REFERENCES branch (id)'),
+        ('product', 'branch_id', 'ALTER TABLE product ADD COLUMN branch_id INTEGER REFERENCES branch (id)'),
+        ('supplier', 'branch_id', 'ALTER TABLE supplier ADD COLUMN branch_id INTEGER REFERENCES branch (id)'),
+        ('purchase_order', 'branch_id', 'ALTER TABLE purchase_order ADD COLUMN branch_id INTEGER REFERENCES branch (id)'),
+        ('sale', 'branch_id', 'ALTER TABLE sale ADD COLUMN branch_id INTEGER REFERENCES branch (id)'),
+        ('customer', 'branch_id', 'ALTER TABLE customer ADD COLUMN branch_id INTEGER REFERENCES branch (id)'),
+        ('debt', 'branch_id', 'ALTER TABLE debt ADD COLUMN branch_id INTEGER REFERENCES branch (id)'),
+        ('debt_payment', 'branch_id', 'ALTER TABLE debt_payment ADD COLUMN branch_id INTEGER REFERENCES branch (id)'),
+        ('delivery', 'branch_id', 'ALTER TABLE delivery ADD COLUMN branch_id INTEGER REFERENCES branch (id)'),
+        ('warehouse_inventory', 'branch_id', 'ALTER TABLE warehouse_inventory ADD COLUMN branch_id INTEGER REFERENCES branch (id)'),
+        ('warehouse_transfer', 'branch_id', 'ALTER TABLE warehouse_transfer ADD COLUMN branch_id INTEGER REFERENCES branch (id)')
+    ]
+    
+    for table_name, column_name, migration_sql in tables_to_migrate:
+        if inspector.has_table(table_name):
+            columns = [col['name'] for col in inspector.get_columns(table_name)]
+            if column_name not in columns:
+                try:
+                    db.session.execute(text(migration_sql))
+                    db.session.commit()
+                except Exception as e:
+                    app.logger.warning(f"Could not add {column_name} to {table_name}: {str(e)}")
+    
+    # Set existing records to default branch
+    default_branch = db.session.execute(text('SELECT id FROM branch WHERE is_default = 1 LIMIT 1')).scalar()
+    if default_branch:
+        for table_name, _, _ in tables_to_migrate:
+            if inspector.has_table(table_name):
+                try:
+                    db.session.execute(text(f'UPDATE {table_name} SET branch_id = :branch_id WHERE branch_id IS NULL'), {'branch_id': default_branch})
+                    db.session.commit()
+                except Exception as e:
+                    app.logger.warning(f"Could not update branch_id in {table_name}: {str(e)}")
     
     # Category table migration
     if not inspector.has_table('category'):
@@ -1130,6 +1271,15 @@ def login():
             session['user_id'] = user.id
             session['username'] = user.username
             session['role'] = user.role
+            # Set default branch in session
+            default_branch = Branch.query.filter_by(is_default=True, is_active=True).first()
+            if default_branch:
+                session['branch_id'] = default_branch.id
+            else:
+                # Fallback to first active branch
+                first_branch = Branch.query.filter_by(is_active=True).first()
+                if first_branch:
+                    session['branch_id'] = first_branch.id
             return redirect(url_for('dashboard'))
         return render_template('login.html', error='Invalid credentials')
     return render_template('login.html')
@@ -1311,10 +1461,180 @@ def api_settings_database_restore():
         app.logger.error(f"Error restoring database: {str(e)}")
         return jsonify({'success': False, 'message': f'Failed to restore database: {str(e)}'}), 500
 
+# Branch Management API Endpoints
+@app.route('/api/branches', methods=['GET', 'POST'])
+def api_branches():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    if request.method == 'GET':
+        # List all branches
+        branches = Branch.query.order_by(Branch.is_default.desc(), Branch.name.asc()).all()
+        return jsonify([branch.to_dict() for branch in branches])
+    
+    # POST - Create new branch (manager only)
+    if session.get('role') != 'manager':
+        return jsonify({'success': False, 'message': 'Manager access required'}), 403
+    
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    code = (data.get('code') or '').strip().upper()
+    address = (data.get('address') or '').strip()
+    phone = (data.get('phone') or '').strip()
+    email = (data.get('email') or '').strip()
+    is_default = data.get('is_default', False)
+    
+    if not name:
+        return jsonify({'success': False, 'message': 'Branch name is required'}), 400
+    if not code:
+        return jsonify({'success': False, 'message': 'Branch code is required'}), 400
+    
+    # Check for duplicate code
+    existing = Branch.query.filter_by(code=code).first()
+    if existing:
+        return jsonify({'success': False, 'message': 'Branch code already exists'}), 400
+    
+    try:
+        # If this is set as default, unset other defaults
+        if is_default:
+            Branch.query.update({'is_default': False})
+        
+        branch = Branch(
+            name=name,
+            code=code,
+            address=address or None,
+            phone=phone or None,
+            email=email or None,
+            is_default=is_default,
+            is_active=True
+        )
+        db.session.add(branch)
+        db.session.commit()
+        return jsonify({'success': True, 'branch': branch.to_dict()})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/branches/<int:branch_id>', methods=['GET', 'PUT', 'DELETE'])
+def api_branch(branch_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    branch = db.session.get(Branch, branch_id)
+    if not branch:
+        return jsonify({'success': False, 'message': 'Branch not found'}), 404
+    
+    if request.method == 'GET':
+        return jsonify(branch.to_dict())
+    
+    # PUT and DELETE require manager access
+    if session.get('role') != 'manager':
+        return jsonify({'success': False, 'message': 'Manager access required'}), 403
+    
+    if request.method == 'PUT':
+        data = request.get_json() or {}
+        name = (data.get('name') or '').strip()
+        code = (data.get('code') or '').strip().upper()
+        address = (data.get('address') or '').strip()
+        phone = (data.get('phone') or '').strip()
+        email = (data.get('email') or '').strip()
+        is_active = data.get('is_active', branch.is_active)
+        is_default = data.get('is_default', False)
+        
+        if name:
+            branch.name = name
+        if code:
+            # Check for duplicate code
+            existing = Branch.query.filter(Branch.code == code, Branch.id != branch_id).first()
+            if existing:
+                return jsonify({'success': False, 'message': 'Branch code already exists'}), 400
+            branch.code = code
+        branch.address = address or None
+        branch.phone = phone or None
+        branch.email = email or None
+        branch.is_active = is_active
+        
+        # Handle default branch
+        if is_default and not branch.is_default:
+            Branch.query.update({'is_default': False})
+            branch.is_default = True
+        
+        db.session.commit()
+        return jsonify({'success': True, 'branch': branch.to_dict()})
+    
+    # DELETE - Deactivate branch (soft delete)
+    if branch.is_default:
+        return jsonify({'success': False, 'message': 'Cannot delete the default branch'}), 400
+    
+    # Check if branch has data
+    has_products = Product.query.filter_by(branch_id=branch_id).count() > 0
+    has_sales = Sale.query.filter_by(branch_id=branch_id).count() > 0
+    
+    if has_products or has_sales:
+        # Soft delete - just deactivate
+        branch.is_active = False
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Branch deactivated (has associated data)'})
+    
+    db.session.delete(branch)
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'Branch deleted'})
+
+@app.route('/api/branches/switch/<int:branch_id>', methods=['POST'])
+def api_switch_branch(branch_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    branch = db.session.get(Branch, branch_id)
+    if not branch:
+        return jsonify({'success': False, 'message': 'Branch not found'}), 404
+    
+    if not branch.is_active:
+        return jsonify({'success': False, 'message': 'Cannot switch to inactive branch'}), 400
+    
+    session['branch_id'] = branch_id
+    return jsonify({
+        'success': True,
+        'branch': branch.to_dict(),
+        'message': f'Switched to {branch.name}'
+    })
+
+@app.route('/api/branches/current', methods=['GET'])
+def api_current_branch():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    branch = get_current_branch()
+    if branch:
+        return jsonify(branch.to_dict())
+    return jsonify({'error': 'No active branch found'}), 404
+
+@app.route('/api/branches/<int:branch_id>/set_default', methods=['POST'])
+def api_set_default_branch(branch_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    if session.get('role') != 'manager':
+        return jsonify({'success': False, 'message': 'Manager access required'}), 403
+    
+    branch = db.session.get(Branch, branch_id)
+    if not branch:
+        return jsonify({'success': False, 'message': 'Branch not found'}), 404
+    
+    if not branch.is_active:
+        return jsonify({'success': False, 'message': 'Cannot set inactive branch as default'}), 400
+    
+    # Unset all defaults
+    Branch.query.update({'is_default': False})
+    branch.is_default = True
+    db.session.commit()
+    
+    return jsonify({'success': True, 'branch': branch.to_dict()})
+
 @app.route('/api/inventory/alerts', methods=['GET'])
 @manager_required
 def api_inventory_alerts():
-    return jsonify(build_inventory_alert_payload())
+    return jsonify(build_inventory_alert_payload(get_current_branch_id()))
 
 @app.route('/api/inventory/suggested_purchase_order', methods=['POST'])
 @manager_required
@@ -1328,7 +1648,7 @@ def api_inventory_suggested_purchase_order():
     if not supplier:
         return jsonify({'success': False, 'message': 'Supplier not found'}), 404
 
-    payload = build_inventory_alert_payload()
+    payload = build_inventory_alert_payload(get_current_branch_id())
     suggested_items = payload.get('suggested_purchase_order', {}).get('items', [])
     if not suggested_items:
         return jsonify({'success': False, 'message': 'No low-stock items to generate purchase order'}), 400
@@ -1339,7 +1659,8 @@ def api_inventory_suggested_purchase_order():
             supplier_id=supplier.id,
             status='draft',
             notes=(data.get('notes') or '').strip() or 'System generated from inventory alerts',
-            created_by=session.get('user_id')
+            created_by=session.get('user_id'),
+            branch_id=get_current_branch_id()
         )
         db.session.add(po)
         db.session.flush()
@@ -1388,10 +1709,12 @@ def api_categories():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
+    branch_id = get_current_branch_id()
+
     if request.method == 'GET':
         # Get all categories with optional filtering
         active_only = request.args.get('active_only', 'false').lower() == 'true'
-        query = Category.query
+        query = Category.query.filter_by(branch_id=branch_id)
         if active_only:
             query = query.filter_by(is_active=True)
         categories = query.order_by(Category.sort_order, Category.name).all()
@@ -1405,8 +1728,8 @@ def api_categories():
         if not name:
             return jsonify({'success': False, 'message': 'Category name is required'}), 400
         
-        # Check for duplicate
-        existing = Category.query.filter(db.func.lower(Category.name) == name.lower()).first()
+        # Check for duplicate within same branch
+        existing = Category.query.filter(db.func.lower(Category.name) == name.lower(), Category.branch_id == branch_id).first()
         if existing:
             return jsonify({'success': False, 'message': f'Category "{name}" already exists'}), 400
         
@@ -1415,7 +1738,8 @@ def api_categories():
             description=(data.get('description') or '').strip(),
             color=data.get('color', '#6c757d'),
             is_active=data.get('is_active', True),
-            sort_order=data.get('sort_order', 0)
+            sort_order=data.get('sort_order', 0),
+            branch_id=branch_id
         )
         db.session.add(category)
         db.session.commit()
@@ -1426,7 +1750,8 @@ def api_single_category(category_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    category = db.session.get(Category, category_id)
+    branch_id = get_current_branch_id()
+    category = Category.query.filter_by(id=category_id, branch_id=branch_id).first()
     if not category:
         return jsonify({'success': False, 'message': 'Category not found'}), 404
 
@@ -1440,10 +1765,11 @@ def api_single_category(category_id):
         if not name:
             return jsonify({'success': False, 'message': 'Category name is required'}), 400
         
-        # Check for duplicate (excluding current category)
+        # Check for duplicate within same branch (excluding current category)
         existing = Category.query.filter(
             db.func.lower(Category.name) == name.lower(),
-            Category.id != category_id
+            Category.id != category_id,
+            Category.branch_id == branch_id
         ).first()
         if existing:
             return jsonify({'success': False, 'message': f'Category "{name}" already exists'}), 400
@@ -1539,8 +1865,9 @@ def api_products():
         q = (request.args.get('q') or '').strip()
         page = request.args.get('page', type=int)
         per_page = request.args.get('per_page', type=int)
+        branch_id = get_current_branch_id()
 
-        query = Product.query
+        query = Product.query.filter_by(branch_id=branch_id)
         if q:
             like_q = f'%{q}%'
             query = query.filter(
@@ -1587,6 +1914,15 @@ def api_products():
             return jsonify({'success': False, 'message': 'Invalid numeric values'}), 400
 
         reorder_enabled = to_bool(data.get('reorder_enabled'), True)
+        
+        branch_id = get_current_branch_id()
+
+        # Check for duplicate barcode within same branch
+        barcode = data.get('barcode')
+        if barcode:
+            existing = Product.query.filter_by(barcode=barcode, branch_id=branch_id).first()
+            if existing:
+                return jsonify({'success': False, 'message': 'Barcode already in use in this branch'}), 400
 
         photo_filename = None
         photo_file = request.files.get('photo') if is_multipart else None
@@ -1597,7 +1933,7 @@ def api_products():
                 return jsonify({'success': False, 'message': str(e)}), 400
 
         product = Product(
-            barcode=data.get('barcode'),
+            barcode=barcode,
             name=name,
             price=price,
             cost=cost,
@@ -1607,7 +1943,8 @@ def api_products():
             reorder_point=reorder_point,
             reorder_quantity=reorder_quantity,
             reorder_enabled=reorder_enabled,
-            photo_filename=photo_filename
+            photo_filename=photo_filename,
+            branch_id=get_current_branch_id()
         )
         # Set legacy category field for backward compatibility
         if product.category_id:
@@ -1624,7 +1961,8 @@ def api_single_product(product_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    product = db.session.get(Product, product_id)
+    branch_id = get_current_branch_id()
+    product = Product.query.filter_by(id=product_id, branch_id=branch_id).first()
     if not product:
         return jsonify({'success': False, 'message': 'Product not found'}), 404
 
@@ -1659,9 +1997,13 @@ def api_single_product(product_id):
         if not data:
             return jsonify({'success': False, 'message': 'No data provided'}), 400
 
-        # Check for duplicate barcode
+        # Check for duplicate barcode within same branch
         if 'barcode' in data and data['barcode']:
-            existing = Product.query.filter(Product.barcode == data['barcode'], Product.id != product_id).first()
+            existing = Product.query.filter(
+                Product.barcode == data['barcode'], 
+                Product.id != product_id,
+                Product.branch_id == branch_id
+            ).first()
             if existing:
                 return jsonify({'success': False, 'message': 'Barcode already in use'}), 400
             product.barcode = data['barcode']
@@ -1972,7 +2314,8 @@ def api_create_sale():
             cash_received=cash_received,
             refund_amount=refund_amount,
             payment_method=payment_method,
-            user_id=session['user_id']
+            user_id=session['user_id'],
+            branch_id=get_current_branch_id()
         )
         db.session.add(sale)
         db.session.flush()  # To get the sale.id before commit
@@ -2003,7 +2346,8 @@ def api_create_sale():
                 sale_id=sale.id,
                 amount=round_money(total),
                 balance=round_money(total),
-                notes=f'Sale transaction {sale.transaction_id}'
+                notes=f'Sale transaction {sale.transaction_id}',
+                branch_id=sale.branch_id
             )
             db.session.add(debt)
             
@@ -2034,7 +2378,8 @@ def api_create_sale():
                 tracking_code=(delivery_payload.get('tracking_code') or '').strip() or None,
                 delivery_fee=round_money(delivery_payload.get('delivery_fee') or 0),
                 scheduled_at=parse_iso_datetime(delivery_payload.get('scheduled_at')),
-                created_by=session.get('user_id')
+                created_by=session.get('user_id'),
+                branch_id=sale.branch_id
             )
             db.session.add(delivery)
 
@@ -2052,13 +2397,84 @@ def api_create_sale():
         app.logger.error(f"Error creating sale: {str(e)}")
         return jsonify({'success': False, 'message': f'Error creating sale: {str(e)}'}), 500
 
+# --- Get Sales History (GET /api/sales) ---
+@app.route('/api/sales', methods=['GET'])
+def api_sales():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    branch_id = get_current_branch_id()
+    
+    # Get query parameters
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    q = (request.args.get('q') or '').strip()
+    start_date = request.args.get('start')
+    end_date = request.args.get('end')
+    
+    # Base query filtered by branch
+    query = Sale.query.filter_by(branch_id=branch_id)
+    
+    # Apply date filters
+    if start_date:
+        try:
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+            query = query.filter(Sale.date >= start_dt)
+        except ValueError:
+            pass
+    
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            query = query.filter(Sale.date <= end_dt.replace(hour=23, minute=59, second=59))
+        except ValueError:
+            pass
+    
+    # Apply search filter
+    if q:
+        like_q = f'%{q}%'
+        query = query.outerjoin(User, User.id == Sale.user_id).filter(
+            (Sale.transaction_id.ilike(like_q)) |
+            (Sale.payment_method.ilike(like_q)) |
+            (User.username.ilike(like_q))
+        )
+    
+    # Cashiers can only see their own sales
+    if session.get('role') == 'cashier':
+        query = query.filter(Sale.user_id == session['user_id'])
+    
+    # Order by date descending
+    query = query.order_by(Sale.date.desc())
+    
+    # Paginate results
+    safe_per_page = max(1, min(per_page, 100))
+    pagination = query.paginate(page=page, per_page=safe_per_page, error_out=False)
+    
+    return jsonify({
+        'items': [{
+            'transaction_id': s.transaction_id,
+            'date': s.date.isoformat() if s.date else None,
+            'total': s.total,
+            'tax': s.tax,
+            'payment_method': s.payment_method,
+            'user_id': s.user_id,
+            'username': s.user.username if s.user else 'Unknown',
+            'branch_id': s.branch_id
+        } for s in pagination.items],
+        'page': pagination.page,
+        'per_page': safe_per_page,
+        'total': pagination.total,
+        'total_pages': pagination.pages
+    })
+
 # --- Get Single Sale with Items ---
 @app.route('/api/sales/<string:transaction_id>', methods=['GET'])
 def api_single_sale(transaction_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    sale = Sale.query.filter_by(transaction_id=transaction_id).first()
+    branch_id = get_current_branch_id()
+    sale = Sale.query.filter_by(transaction_id=transaction_id, branch_id=branch_id).first()
     if not sale:
         return jsonify({'success': False, 'message': 'Sale not found'}), 404
 
@@ -2379,8 +2795,10 @@ def api_deliveries():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
+    branch_id = get_current_branch_id()
+
     if request.method == 'GET':
-        query = Delivery.query
+        query = Delivery.query.filter_by(branch_id=branch_id)
         stage = normalize_delivery_stage(request.args.get('stage'))
         priority = normalize_delivery_priority(request.args.get('priority') or 'normal') if request.args.get('priority') else None
         q = (request.args.get('q') or '').strip().lower()
@@ -2440,7 +2858,8 @@ def api_deliveries():
         tracking_code=(data.get('tracking_code') or '').strip() or None,
         delivery_fee=round_money(data.get('delivery_fee') or 0),
         scheduled_at=parse_iso_datetime(data.get('scheduled_at')),
-        created_by=session.get('user_id')
+        created_by=session.get('user_id'),
+        branch_id=branch_id
     )
     db.session.add(delivery)
     db.session.commit()
@@ -2493,7 +2912,8 @@ def api_delivery_stats():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    deliveries = Delivery.query.all()
+    branch_id = get_current_branch_id()
+    deliveries = Delivery.query.filter_by(branch_id=branch_id).all()
     stage_counts = {key: 0 for key in DELIVERY_STAGE_FLOW.keys()}
     for d in deliveries:
         if d.stage in stage_counts:
@@ -2512,7 +2932,8 @@ def print_receipt(transaction_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    sale = Sale.query.filter_by(transaction_id=transaction_id).first()
+    branch_id = get_current_branch_id()
+    sale = Sale.query.filter_by(transaction_id=transaction_id, branch_id=branch_id).first()
     if not sale:
         return jsonify({'success': False, 'message': 'Sale not found'}), 404
 
@@ -2645,7 +3066,9 @@ def export_sales_report():
 
     start_date = request.args.get('start')
     end_date = request.args.get('end')
-    query = Sale.query
+    branch_id = get_current_branch_id()
+    
+    query = Sale.query.filter_by(branch_id=branch_id)
     try:
         if start_date:
             start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
@@ -2691,8 +3114,9 @@ def api_report_sales():
 
     start_date = request.args.get('start')  # Format: 'YYYY-MM-DD'
     end_date = request.args.get('end')      # Format: 'YYYY-MM-DD'
+    branch_id = get_current_branch_id()
 
-    query = Sale.query
+    query = Sale.query.filter_by(branch_id=branch_id)
     myanmar_tz = pytz.timezone('Asia/Yangon')
     q = (request.args.get('q') or '').strip()
     page = request.args.get('page', type=int)
@@ -2762,11 +3186,14 @@ def api_dashboard_sales_data():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
+    branch_id = get_current_branch_id()
+
     # Get sales for the last 7 days
     end_date = datetime.now(pytz.timezone('Asia/Yangon'))
     start_date = end_date - timedelta(days=7)
     
     sales = Sale.query.filter(
+        Sale.branch_id == branch_id,
         Sale.date >= start_date,
         Sale.date <= end_date
     ).order_by(Sale.date).all()
@@ -2797,6 +3224,8 @@ def api_dashboard_top_products():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
+    branch_id = get_current_branch_id()
+
     rows = (
         db.session.query(
             Product.id,
@@ -2807,6 +3236,8 @@ def api_dashboard_top_products():
             func.sum(SaleItem.price * SaleItem.quantity).label('sales_amount')
         )
         .join(SaleItem, SaleItem.product_id == Product.id)
+        .join(Sale, Sale.id == SaleItem.sale_id)
+        .filter(Sale.branch_id == branch_id)
         .group_by(Product.id)
         .order_by(func.sum(SaleItem.quantity).desc())
         .limit(5)
@@ -3020,8 +3451,10 @@ def api_single_promotion(promo_id):
 @app.route('/api/customers', methods=['GET', 'POST'])
 @manager_required
 def api_customers():
+    branch_id = get_current_branch_id()
+    
     if request.method == 'GET':
-        customers = Customer.query.all()
+        customers = Customer.query.filter_by(branch_id=branch_id).all()
         return jsonify([{
             'id': c.id,
             'name': c.name,
@@ -3041,7 +3474,8 @@ def api_customers():
             name=data['name'],
             phone=data.get('phone'),
             email=data.get('email'),
-            address=data.get('address')
+            address=data.get('address'),
+            branch_id=branch_id
         )
         db.session.add(customer)
         db.session.commit()
@@ -3051,6 +3485,8 @@ def api_customers():
 @app.route('/api/purchase_orders', methods=['GET', 'POST'])
 @manager_required
 def api_purchase_orders():
+    branch_id = get_current_branch_id()
+    
     if request.method == 'GET':
         # Get filter parameters
         search_query = (request.args.get('q') or '').strip()
@@ -3059,7 +3495,7 @@ def api_purchase_orders():
         start_date = (request.args.get('start_date') or '').strip()
         end_date = (request.args.get('end_date') or '').strip()
         
-        query = PurchaseOrder.query
+        query = PurchaseOrder.query.filter_by(branch_id=branch_id)
         
         # Apply filters
         if search_query:
@@ -3143,7 +3579,8 @@ def api_purchase_orders():
             status='draft',
             notes=(data.get('notes') or '').strip() or None,
             expected_delivery_date=exp_delivery_dt,
-            created_by=session.get('user_id')
+            created_by=session.get('user_id'),
+            branch_id=get_current_branch_id()
         )
         db.session.add(po)
         db.session.flush()
@@ -3185,30 +3622,34 @@ def api_purchase_orders():
 @manager_required
 def api_purchase_orders_summary():
     """Get purchase order summary statistics"""
+    branch_id = get_current_branch_id()
     now = datetime.utcnow()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
-    total_pos = PurchaseOrder.query.count()
-    pending_approval = PurchaseOrder.query.filter(PurchaseOrder.status == 'pending').count()
-    approved = PurchaseOrder.query.filter(PurchaseOrder.status == 'approved').count()
-    partially_received = PurchaseOrder.query.filter(PurchaseOrder.status == 'partially_received').count()
-    received = PurchaseOrder.query.filter(PurchaseOrder.status == 'received').count()
-    cancelled = PurchaseOrder.query.filter(PurchaseOrder.status == 'cancelled').count()
+    base_query = PurchaseOrder.query.filter_by(branch_id=branch_id)
+    
+    total_pos = base_query.count()
+    pending_approval = base_query.filter(PurchaseOrder.status == 'pending').count()
+    approved = base_query.filter(PurchaseOrder.status == 'approved').count()
+    partially_received = base_query.filter(PurchaseOrder.status == 'partially_received').count()
+    received = base_query.filter(PurchaseOrder.status == 'received').count()
+    cancelled = base_query.filter(PurchaseOrder.status == 'cancelled').count()
     
     # This month's totals
-    monthly_received = PurchaseOrder.query.filter(
+    monthly_received = base_query.filter(
         PurchaseOrder.status == 'received',
         PurchaseOrder.updated_at >= month_start
     ).count()
     
     monthly_amount = db.session.query(db.func.sum(PurchaseOrder.total_amount)).filter(
+        PurchaseOrder.branch_id == branch_id,
         PurchaseOrder.created_at >= month_start,
         PurchaseOrder.status != 'cancelled'
     ).scalar() or 0
     
     return jsonify({
         'total': total_pos,
-        'draft': PurchaseOrder.query.filter(PurchaseOrder.status == 'draft').count(),
+        'draft': base_query.filter(PurchaseOrder.status == 'draft').count(),
         'pending_approval': pending_approval,
         'approved': approved,
         'partially_received': partially_received,
@@ -3221,7 +3662,8 @@ def api_purchase_orders_summary():
 @app.route('/api/purchase_orders/<int:po_id>', methods=['GET', 'PUT'])
 @manager_required
 def api_single_purchase_order(po_id):
-    po = db.session.get(PurchaseOrder, po_id)
+    branch_id = get_current_branch_id()
+    po = PurchaseOrder.query.filter_by(id=po_id, branch_id=branch_id).first()
     if not po:
         return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
 
@@ -3517,8 +3959,10 @@ def api_print_purchase_order(po_id):
 @app.route('/api/suppliers', methods=['GET', 'POST'])
 @manager_required
 def api_suppliers():
+    branch_id = get_current_branch_id()
+    
     if request.method == 'GET':
-        query = Supplier.query
+        query = Supplier.query.filter_by(branch_id=branch_id)
         search_query = (request.args.get('q') or '').strip()
         active_filter = (request.args.get('active') or '').strip().lower()
         category_filter = (request.args.get('category') or '').strip()
@@ -3616,7 +4060,8 @@ def api_suppliers():
             bank_name=(data.get('bank_name') or '').strip() or None,
             bank_account=(data.get('bank_account') or '').strip() or None,
             quality_rating=float(data.get('quality_rating', 0) or 0),
-            delivery_rating=float(data.get('delivery_rating', 0) or 0)
+            delivery_rating=float(data.get('delivery_rating', 0) or 0),
+            branch_id=branch_id
         )
         # Sync category name from Category table if category_id is provided
         if supplier.category_id:
@@ -3630,7 +4075,8 @@ def api_suppliers():
 @app.route('/api/suppliers/<int:supplier_id>', methods=['GET', 'PUT', 'DELETE'])
 @manager_required
 def api_single_supplier(supplier_id):
-    supplier = db.session.get(Supplier, supplier_id)
+    branch_id = get_current_branch_id()
+    supplier = Supplier.query.filter_by(id=supplier_id, branch_id=branch_id).first()
     if not supplier:
         return jsonify({'success': False, 'message': 'Supplier not found'}), 404
 
@@ -3885,10 +4331,11 @@ def api_supplier_products(supplier_id):
 @manager_required
 def api_warehouse_inventory():
     """Get all warehouse inventory with optional filters"""
+    branch_id = get_current_branch_id()
     search_query = (request.args.get('q') or '').strip()
     low_stock = request.args.get('low_stock', '').strip().lower() == 'true'
     
-    query = WarehouseInventory.query.filter(WarehouseInventory.quantity > 0)
+    query = WarehouseInventory.query.filter(WarehouseInventory.quantity > 0, WarehouseInventory.branch_id == branch_id)
     
     if search_query:
         like_query = f"%{search_query}%"
@@ -3930,7 +4377,8 @@ def api_warehouse_inventory():
 @manager_required
 def api_warehouse_summary():
     """Get warehouse summary statistics"""
-    inventory = WarehouseInventory.query.filter(WarehouseInventory.quantity > 0).all()
+    branch_id = get_current_branch_id()
+    inventory = WarehouseInventory.query.filter(WarehouseInventory.quantity > 0, WarehouseInventory.branch_id == branch_id).all()
     
     total_skus = len(set(item.product_id for item in inventory))
     total_units = sum(item.quantity for item in inventory)
@@ -3961,6 +4409,7 @@ def api_warehouse_transfer():
     quantity = int(data.get('quantity', 0) or 0)
     batch_number = data.get('batch_number')
     notes = (data.get('notes') or '').strip() or None
+    branch_id = get_current_branch_id()
     
     if not product_id or quantity <= 0:
         return jsonify({'success': False, 'message': 'Product and valid quantity are required'}), 400
@@ -3969,8 +4418,8 @@ def api_warehouse_transfer():
     if not product:
         return jsonify({'success': False, 'message': 'Product not found'}), 404
     
-    # Get warehouse inventory for this product
-    warehouse_query = WarehouseInventory.query.filter_by(product_id=product_id)
+    # Get warehouse inventory for this product (filtered by branch)
+    warehouse_query = WarehouseInventory.query.filter_by(product_id=product_id, branch_id=branch_id)
     if batch_number:
         warehouse_query = warehouse_query.filter_by(batch_number=batch_number)
     
@@ -4006,6 +4455,7 @@ def api_warehouse_transfer():
             from_warehouse=True,
             batch_number=batch_number,
             performed_by=session.get('user_id'),
+            branch_id=branch_id,
             notes=notes
         )
         db.session.add(transfer)
@@ -4025,11 +4475,13 @@ def api_warehouse_transfer():
 @manager_required
 def api_warehouse_transfers():
     """Get transfer history"""
+    branch_id = get_current_branch_id()
     page = int(request.args.get('page', 1))
     per_page = int(request.args.get('per_page', 50))
     
-    transfers = WarehouseTransfer.query.order_by(WarehouseTransfer.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
-    total = WarehouseTransfer.query.count()
+    query = WarehouseTransfer.query.filter_by(branch_id=branch_id)
+    transfers = query.order_by(WarehouseTransfer.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
+    total = query.count()
     
     return jsonify({
         'items': [{
@@ -4053,7 +4505,8 @@ def api_warehouse_transfers():
 @app.route('/api/customers/<int:customer_id>', methods=['GET', 'PUT', 'DELETE'])
 @manager_required
 def api_single_customer(customer_id):
-    customer = db.session.get(Customer, customer_id)
+    branch_id = get_current_branch_id()
+    customer = Customer.query.filter_by(id=customer_id, branch_id=branch_id).first()
     if not customer:
         return jsonify({'success': False, 'message': 'Customer not found'}), 404
     
@@ -4094,8 +4547,10 @@ def api_single_customer(customer_id):
 @app.route('/api/debts', methods=['GET', 'POST'])
 @manager_required
 def api_debts():
+    branch_id = get_current_branch_id()
+    
     if request.method == 'GET':
-        query = Debt.query.join(Customer, Debt.customer_id == Customer.id)
+        query = Debt.query.join(Customer, Debt.customer_id == Customer.id).filter(Debt.branch_id == branch_id)
         search_query = (request.args.get('q') or '').strip()
         debt_type = (request.args.get('type') or '').strip().lower()
         status = (request.args.get('status') or '').strip().lower()
@@ -4213,7 +4668,8 @@ def api_debts():
                 due_date=due_date,
                 status='pending',
                 notes=(data.get('notes') or '').strip() or None,
-                created_by=session.get('user_id')
+                created_by=session.get('user_id'),
+                branch_id=branch_id
             )
             db.session.add(debt)
             db.session.commit()
@@ -4227,8 +4683,9 @@ def api_debts():
 @manager_required
 def api_debts_summary():
     """Get debt summary statistics"""
+    branch_id = get_current_branch_id()
     # Get all outstanding debts (all debts are actual debts now, no type filter needed)
-    outstanding_debts = Debt.query.filter(Debt.balance > 0).all()
+    outstanding_debts = Debt.query.filter(Debt.balance > 0, Debt.branch_id == branch_id).all()
     
     total_outstanding = sum(d.balance for d in outstanding_debts)
     total_debts = len(outstanding_debts)
@@ -4271,7 +4728,8 @@ def api_debts_summary():
 @manager_required
 def api_debts_aging():
     """Get debt aging analysis"""
-    outstanding_debts = Debt.query.filter(Debt.balance > 0).all()
+    branch_id = get_current_branch_id()
+    outstanding_debts = Debt.query.filter(Debt.balance > 0, Debt.branch_id == branch_id).all()
     
     aging_data = {
         'current': [],
@@ -4292,7 +4750,8 @@ def api_debts_aging():
 @manager_required
 def export_debts():
     """Export debts to Excel"""
-    query = Debt.query.join(Customer, Debt.customer_id == Customer.id)
+    branch_id = get_current_branch_id()
+    query = Debt.query.join(Customer, Debt.customer_id == Customer.id).filter(Debt.branch_id == branch_id)
     
     # Apply filters
     status = request.args.get('status')
@@ -4507,7 +4966,8 @@ def make_debt_payment(debt_id):
             customer_id=debt.customer_id,
             amount=round_money(payment_amount),
             notes=payment_notes,
-            processed_by=session.get('user_id')
+            processed_by=session.get('user_id'),
+            branch_id=debt.branch_id
         )
         db.session.add(payment)
         
