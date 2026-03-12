@@ -208,24 +208,6 @@
         font-size: 1rem;
       }
 
-      .branch-selector-container {
-        background: rgba(255, 255, 255, 0.05);
-        padding: 0.75rem;
-        border-radius: 0.5rem;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-      }
-
-      .branch-selector-container .form-select {
-        background-color: rgba(255, 255, 255, 0.9);
-        border: none;
-        font-weight: 500;
-      }
-
-      .branch-selector-container .form-select:focus {
-        background-color: #fff;
-        box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.5);
-      }
-
       /* Mobile Sidebar Overlay */
       .sidebar-overlay {
         display: none;
@@ -627,18 +609,6 @@
             >Welcome,
             <strong id="username-display">{{ session.username }}</strong></span
           >
-        </div>
-        <!-- Branch Selector -->
-        <div class="branch-selector-container mb-3">
-          <label class="form-label text-light small mb-1">
-            <i class="bi bi-building me-1"></i>Current Branch
-          </label>
-          <select class="form-select form-select-sm" id="branch-selector" onchange="switchBranch(this.value)">
-            <option value="">Loading...</option>
-          </select>
-          <div id="current-branch-display" class="mt-2 small text-light opacity-75">
-            <i class="bi bi-geo-alt me-1"></i><span id="current-branch-name">-</span>
-          </div>
         </div>
         <div class="sidebar-resize-hint">⇔ Drag right edge to resize</div>
       </div>
@@ -2163,7 +2133,32 @@
             <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
           </button>
         </div>
+
+        <!-- Branch Selection -->
+        <div class="card mt-3 border-primary">
+          <div class="card-header bg-primary text-white">
+            <h5 class="mb-0"><i class="bi bi-building me-2"></i>Branch Selection</h5>
+          </div>
+          <div class="card-body">
+            <div class="mb-3">
+              <label class="form-label">Current Branch</label>
+              <select class="form-select" id="branch-selector" onchange="switchBranch(this.value)">
+                <option value="">Loading branches...</option>
+              </select>
+              <div class="form-text">
+                <i class="bi bi-info-circle me-1"></i>Select the branch you want to work with. All data (products, sales, customers, etc.) will be filtered by this branch.
+              </div>
+            </div>
+            <div id="current-branch-info" class="alert alert-info mb-0">
+              <i class="bi bi-geo-alt me-2"></i><strong>Active Branch:</strong> <span id="current-branch-name">-</span>
+            </div>
+          </div>
+        </div>
+
         <div class="card mt-3">
+          <div class="card-header bg-secondary text-white">
+            <h5 class="mb-0"><i class="bi bi-gear me-2"></i>General Settings</h5>
+          </div>
           <div class="card-body">
             <div class="mb-3">
               <label class="form-label">POS Name</label>

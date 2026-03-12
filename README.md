@@ -44,6 +44,13 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
   - Warehouse inventory management with transfers
   - User roles (`manager`, `cashier`)
 
+- **Multi-Branch Support**
+  - Manage multiple store locations from a single system
+  - Complete data isolation between branches (products, sales, customers, etc.)
+  - Easy branch switching via Settings
+  - Default branch configuration with automatic fallback
+  - Branch-specific reporting and analytics
+
 - **AI Agent Assistant (Loli)**
   - Natural language inventory queries
   - Automated purchase order suggestions
@@ -121,6 +128,44 @@ The AI agent uses APIFree.ai (Gemini 2.5 Flash Lite) for natural language proces
 3. Save settings
 
 > **Note**: The AI agent works with real database data and can perform actual operations like creating purchase orders. Always verify important actions.
+
+---
+
+## 🏢 Multi-Branch Support
+
+Parrot POS supports managing multiple store locations from a single installation. Each branch has complete data isolation while sharing the same system configuration.
+
+### Features
+
+- **Complete Data Isolation**: Products, sales, customers, suppliers, debts, purchase orders, and warehouse inventory are all scoped to individual branches
+- **Easy Branch Switching**: Change active branch from the Settings page - all data updates automatically
+- **Default Branch**: Set a default branch for automatic selection on login
+- **Session Persistence**: Selected branch is maintained across page navigations
+- **Branch Indicators**: Visual indicators show the current active branch in every section
+
+### How to Use
+
+1. **Switch Branches**:
+   - Go to **Settings** in the dashboard
+   - Find the **Branch Selection** section at the top
+   - Select your desired branch from the dropdown
+   - All data will automatically refresh for the selected branch
+
+2. **Set Default Branch** (Manager only):
+   - Navigate to **Branches** section
+   - Click the star icon next to the desired branch
+   - This branch will be automatically selected on future logins
+
+3. **Manage Branches** (Manager only):
+   - Create new branches with unique codes
+   - Activate/deactivate branches as needed
+   - View branch-specific reports and analytics
+
+### Database Architecture
+
+- Single database with `branch_id` foreign keys on all relevant tables
+- Automatic filtering by current branch for all API endpoints
+- Migration support for existing data (assigns to default branch)
 
 ---
 
@@ -279,6 +324,8 @@ An admin account is auto-created if missing:
 - Purchase orders go through a workflow: Draft → Pending → Approved → Received.
 - Debt management includes aging analysis (0-30, 31-60, 61-90, 90+ days).
 - Warehouse transfers automatically update main stock levels when confirmed.
+- Multi-branch system isolates all data by branch - ensure you're on the correct branch before making changes.
+- First branch is auto-created on initial setup; additional branches can be added from the Branches section.
 
 ---
 
@@ -326,5 +373,6 @@ GitHub: [@MinThutaSawNaing](https://github.com/MinThutaSawNaing)
 ## 📄 License
 
 This project is available for learning, customization, and business adaptation.
-#   C I / C D   T e s t  
+#   C I / C D   T e s t 
+ 
  
