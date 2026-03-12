@@ -9,6 +9,22 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+    - name: Setup SSH config for Cloudflare Tunnel
+      run: |
+        mkdir -p ~/.ssh
+        echo "Host ssh.nationalcancercenter.click
+          HostName ssh.nationalcancercenter.click
+          User minthuta
+          ProxyCommand cloudflared access ssh --hostname %h
+          StrictHostKeyChecking no
+        " > ~/.ssh/config
+        chmod 600 ~/.ssh/config
+        
+    - name: Install cloudflared
+      run: |
+        curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+        sudo dpkg -i cloudflared.deb || sudo apt-get install -f -y
+        
     - name: Deploy to Server via SSH
       uses: appleboy/ssh-action@master
       with:
