@@ -237,6 +237,40 @@ def manager_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+def manager_or_boss_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session or session.get('role') not in ('manager', 'boss'):
+            return jsonify({'error': 'Manager access required'}), 403
+        return f(*args, **kwargs)
+    return decorated_function
+
+def resolve_report_scope():
+    """Resolve report scope and branch filtering based on role and query params."""
+    role = session.get('role')
+    scope = (request.args.get('scope') or 'current').strip().lower()
+    report_branch_id = request.args.get('report_branch_id')
+
+    if role not in ('manager', 'boss'):
+        return 'current', get_current_branch_id()
+
+    if scope == 'all':
+        return 'all', None
+
+    if scope == 'branch':
+        if report_branch_id:
+            try:
+                branch_id = int(report_branch_id)
+            except (TypeError, ValueError):
+                return 'branch', get_current_branch_id()
+
+            branch = Branch.query.filter_by(id=branch_id, is_active=True).first()
+            if branch:
+                return 'branch', branch_id
+        return 'branch', get_current_branch_id()
+
+    return 'current', get_current_branch_id()
+
 def generate_po_number():
     return f"PO-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
 
@@ -353,6 +387,50 @@ def get_current_branch():
     if branch_id:
         return Branch.query.get(branch_id)
     return None
+
+def get_default_branch_id():
+    """Get the default active branch ID for operational modules."""
+    default_branch = Branch.query.filter_by(is_default=True, is_active=True).first()
+    if default_branch:
+        return default_branch.id
+
+    first_branch = Branch.query.filter_by(is_active=True).first()
+    if first_branch:
+        return first_branch.id
+
+    return None
+
+def build_branch_scoped_barcode(base_barcode, branch):
+    """Create a unique fallback barcode when the same product barcode is reused across branches."""
+    cleaned = (base_barcode or '').strip()
+    if not cleaned:
+        return None
+
+    branch_code = (branch.code or f'B{branch.id}').strip().upper()
+    candidate = f"{cleaned}-{branch_code}"
+    suffix = 1
+    while Product.query.filter_by(barcode=candidate).first():
+        candidate = f"{cleaned}-{branch_code}-{suffix}"
+        suffix += 1
+    return candidate
+
+def get_requested_branch_id(default_to_current=False):
+    """Resolve an optional branch_id from query string or JSON payload."""
+    raw_branch_id = request.args.get('branch_id')
+    if raw_branch_id in (None, '') and request.is_json:
+        payload = request.get_json(silent=True) or {}
+        raw_branch_id = payload.get('branch_id')
+
+    if raw_branch_id in (None, '', 'all'):
+        return get_current_branch_id() if default_to_current else None
+
+    if str(raw_branch_id).lower() == 'current':
+        return get_current_branch_id()
+
+    try:
+        return int(raw_branch_id)
+    except (TypeError, ValueError):
+        return get_current_branch_id() if default_to_current else None
 
 def serialize_debt(debt):
     """Serialize debt record with all computed fields"""
@@ -1709,7 +1787,7 @@ def api_categories():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    branch_id = get_current_branch_id()
+    branch_id = get_default_branch_id()
 
     if request.method == 'GET':
         # Get all categories with optional filtering
@@ -1750,8 +1828,7 @@ def api_single_category(category_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    branch_id = get_current_branch_id()
-    category = Category.query.filter_by(id=category_id, branch_id=branch_id).first()
+    category = Category.query.filter_by(id=category_id, branch_id=get_default_branch_id()).first()
     if not category:
         return jsonify({'success': False, 'message': 'Category not found'}), 404
 
@@ -1769,7 +1846,7 @@ def api_single_category(category_id):
         existing = Category.query.filter(
             db.func.lower(Category.name) == name.lower(),
             Category.id != category_id,
-            Category.branch_id == branch_id
+            Category.branch_id == category.branch_id
         ).first()
         if existing:
             return jsonify({'success': False, 'message': f'Category "{name}" already exists'}), 400
@@ -1865,7 +1942,9 @@ def api_products():
         q = (request.args.get('q') or '').strip()
         page = request.args.get('page', type=int)
         per_page = request.args.get('per_page', type=int)
-        branch_id = get_current_branch_id()
+        branch_id = get_requested_branch_id(default_to_current=True)
+        if branch_id is None:
+            branch_id = get_current_branch_id()
 
         query = Product.query.filter_by(branch_id=branch_id)
         if q:
@@ -1944,7 +2023,7 @@ def api_products():
             reorder_quantity=reorder_quantity,
             reorder_enabled=reorder_enabled,
             photo_filename=photo_filename,
-            branch_id=get_current_branch_id()
+            branch_id=branch_id
         )
         # Set legacy category field for backward compatibility
         if product.category_id:
@@ -1961,7 +2040,9 @@ def api_single_product(product_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    branch_id = get_current_branch_id()
+    branch_id = get_requested_branch_id(default_to_current=True)
+    if branch_id is None:
+        branch_id = get_current_branch_id()
     product = Product.query.filter_by(id=product_id, branch_id=branch_id).first()
     if not product:
         return jsonify({'success': False, 'message': 'Product not found'}), 404
@@ -2088,17 +2169,22 @@ def api_search_products():
     query = request.args.get('q', '')
     if not query:
         return jsonify([])
+    branch_id = get_requested_branch_id(default_to_current=True)
+    if branch_id is None:
+        branch_id = get_current_branch_id()
+
     products = Product.query.filter(
         (Product.name.ilike(f'%{query}%')) | 
         (Product.barcode.ilike(f'%{query}%')) |
         (Product.category.ilike(f'%{query}%'))
-    ).limit(10).all()
+    ).filter(Product.branch_id == branch_id).limit(10).all()
     return jsonify([{
         'id': p.id,
         'barcode': p.barcode,
         'name': p.name,
         'price': p.price,
         'stock': p.stock,
+        'tax_rate': p.tax_rate,
         'photo_url': product_photo_url(p.photo_filename)
     } for p in products])
 
@@ -2795,7 +2881,7 @@ def api_deliveries():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    branch_id = get_current_branch_id()
+    branch_id = get_default_branch_id()
 
     if request.method == 'GET':
         query = Delivery.query.filter_by(branch_id=branch_id)
@@ -2870,7 +2956,7 @@ def api_single_delivery(delivery_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    delivery = db.session.get(Delivery, delivery_id)
+    delivery = Delivery.query.filter_by(id=delivery_id, branch_id=get_default_branch_id()).first()
     if not delivery:
         return jsonify({'success': False, 'message': 'Delivery not found'}), 404
 
@@ -2912,7 +2998,7 @@ def api_delivery_stats():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    branch_id = get_current_branch_id()
+    branch_id = get_default_branch_id()
     deliveries = Delivery.query.filter_by(branch_id=branch_id).all()
     stage_counts = {key: 0 for key in DELIVERY_STAGE_FLOW.keys()}
     for d in deliveries:
@@ -3060,15 +3146,15 @@ def print_receipt(transaction_id):
 
 # --- Excel Export ---
 @app.route('/api/reports/sales/export', methods=['GET'])
+@manager_or_boss_required
 def export_sales_report():
-    if 'user_id' not in session or session['role'] != 'manager':
-        return jsonify({'error': 'Unauthorized'}), 401
-
     start_date = request.args.get('start')
     end_date = request.args.get('end')
-    branch_id = get_current_branch_id()
+    _, branch_id = resolve_report_scope()
     
-    query = Sale.query.filter_by(branch_id=branch_id)
+    query = Sale.query
+    if branch_id:
+        query = query.filter_by(branch_id=branch_id)
     try:
         if start_date:
             start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
@@ -3114,9 +3200,11 @@ def api_report_sales():
 
     start_date = request.args.get('start')  # Format: 'YYYY-MM-DD'
     end_date = request.args.get('end')      # Format: 'YYYY-MM-DD'
-    branch_id = get_current_branch_id()
+    scope, branch_id = resolve_report_scope()
 
-    query = Sale.query.filter_by(branch_id=branch_id)
+    query = Sale.query
+    if branch_id:
+        query = query.filter_by(branch_id=branch_id)
     myanmar_tz = pytz.timezone('Asia/Yangon')
     q = (request.args.get('q') or '').strip()
     page = request.args.get('page', type=int)
@@ -3160,7 +3248,9 @@ def api_report_sales():
                 'payment_method': s.payment_method,
                 'user_id': s.user_id,
                 'username': s.user.username if s.user else 'Unknown',
-                'has_delivery': hasattr(s, 'delivery') and s.delivery is not None
+                'has_delivery': hasattr(s, 'delivery') and s.delivery is not None,
+                'branch_id': s.branch_id,
+                'report_scope': scope
             }
 
         if page and per_page:
@@ -3485,7 +3575,7 @@ def api_customers():
 @app.route('/api/purchase_orders', methods=['GET', 'POST'])
 @manager_required
 def api_purchase_orders():
-    branch_id = get_current_branch_id()
+    branch_id = get_default_branch_id()
     
     if request.method == 'GET':
         # Get filter parameters
@@ -3580,7 +3670,7 @@ def api_purchase_orders():
             notes=(data.get('notes') or '').strip() or None,
             expected_delivery_date=exp_delivery_dt,
             created_by=session.get('user_id'),
-            branch_id=get_current_branch_id()
+            branch_id=get_default_branch_id()
         )
         db.session.add(po)
         db.session.flush()
@@ -3622,7 +3712,7 @@ def api_purchase_orders():
 @manager_required
 def api_purchase_orders_summary():
     """Get purchase order summary statistics"""
-    branch_id = get_current_branch_id()
+    branch_id = get_default_branch_id()
     now = datetime.utcnow()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
@@ -3662,7 +3752,7 @@ def api_purchase_orders_summary():
 @app.route('/api/purchase_orders/<int:po_id>', methods=['GET', 'PUT'])
 @manager_required
 def api_single_purchase_order(po_id):
-    branch_id = get_current_branch_id()
+    branch_id = get_default_branch_id()
     po = PurchaseOrder.query.filter_by(id=po_id, branch_id=branch_id).first()
     if not po:
         return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
@@ -3823,7 +3913,8 @@ def api_receive_purchase_order(po_id):
                 quantity=receive_qty,
                 batch_number=po.po_number,  # Use PO number as batch reference
                 received_date=datetime.utcnow(),
-                unit_cost=po_item.unit_cost
+                unit_cost=po_item.unit_cost,
+                branch_id=po.branch_id
             )
             db.session.add(warehouse_item)
 
@@ -3959,7 +4050,7 @@ def api_print_purchase_order(po_id):
 @app.route('/api/suppliers', methods=['GET', 'POST'])
 @manager_required
 def api_suppliers():
-    branch_id = get_current_branch_id()
+    branch_id = get_default_branch_id()
     
     if request.method == 'GET':
         query = Supplier.query.filter_by(branch_id=branch_id)
@@ -4075,7 +4166,7 @@ def api_suppliers():
 @app.route('/api/suppliers/<int:supplier_id>', methods=['GET', 'PUT', 'DELETE'])
 @manager_required
 def api_single_supplier(supplier_id):
-    branch_id = get_current_branch_id()
+    branch_id = get_default_branch_id()
     supplier = Supplier.query.filter_by(id=supplier_id, branch_id=branch_id).first()
     if not supplier:
         return jsonify({'success': False, 'message': 'Supplier not found'}), 404
@@ -4186,7 +4277,10 @@ def api_supplier_orders(supplier_id):
     if not supplier:
         return jsonify({'success': False, 'message': 'Supplier not found'}), 404
     
-    orders = PurchaseOrder.query.filter_by(supplier_id=supplier_id).order_by(PurchaseOrder.created_at.desc()).all()
+    orders = PurchaseOrder.query.filter_by(
+        supplier_id=supplier_id,
+        branch_id=get_default_branch_id()
+    ).order_by(PurchaseOrder.created_at.desc()).all()
     return jsonify([{
         'id': po.id,
         'po_number': po.po_number,
@@ -4331,7 +4425,7 @@ def api_supplier_products(supplier_id):
 @manager_required
 def api_warehouse_inventory():
     """Get all warehouse inventory with optional filters"""
-    branch_id = get_current_branch_id()
+    branch_id = get_default_branch_id()
     search_query = (request.args.get('q') or '').strip()
     low_stock = request.args.get('low_stock', '').strip().lower() == 'true'
     
@@ -4377,7 +4471,7 @@ def api_warehouse_inventory():
 @manager_required
 def api_warehouse_summary():
     """Get warehouse summary statistics"""
-    branch_id = get_current_branch_id()
+    branch_id = get_default_branch_id()
     inventory = WarehouseInventory.query.filter(WarehouseInventory.quantity > 0, WarehouseInventory.branch_id == branch_id).all()
     
     total_skus = len(set(item.product_id for item in inventory))
@@ -4386,7 +4480,10 @@ def api_warehouse_summary():
     
     # Get recent transfers count (last 7 days)
     week_ago = datetime.utcnow() - timedelta(days=7)
-    recent_transfers = WarehouseTransfer.query.filter(WarehouseTransfer.created_at >= week_ago).count()
+    recent_transfers = WarehouseTransfer.query.filter(
+        WarehouseTransfer.created_at >= week_ago,
+        WarehouseTransfer.branch_id == branch_id
+    ).count()
     
     # Low stock items (quantity <= 5)
     low_stock_count = sum(1 for item in inventory if item.quantity <= 5)
@@ -4408,8 +4505,9 @@ def api_warehouse_transfer():
     product_id = data.get('product_id')
     quantity = int(data.get('quantity', 0) or 0)
     batch_number = data.get('batch_number')
+    target_branch_id = data.get('target_branch_id')
     notes = (data.get('notes') or '').strip() or None
-    branch_id = get_current_branch_id()
+    branch_id = get_default_branch_id()
     
     if not product_id or quantity <= 0:
         return jsonify({'success': False, 'message': 'Product and valid quantity are required'}), 400
@@ -4417,6 +4515,18 @@ def api_warehouse_transfer():
     product = db.session.get(Product, product_id)
     if not product:
         return jsonify({'success': False, 'message': 'Product not found'}), 404
+
+    if target_branch_id in (None, '', 'current'):
+        target_branch_id = get_current_branch_id()
+    else:
+        try:
+            target_branch_id = int(target_branch_id)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': 'Invalid target branch'}), 400
+
+    target_branch = Branch.query.filter_by(id=target_branch_id, is_active=True).first()
+    if not target_branch:
+        return jsonify({'success': False, 'message': 'Target branch not found'}), 404
     
     # Get warehouse inventory for this product (filtered by branch)
     warehouse_query = WarehouseInventory.query.filter_by(product_id=product_id, branch_id=branch_id)
@@ -4445,8 +4555,40 @@ def api_warehouse_transfer():
             item.updated_at = datetime.utcnow()
             remaining_to_transfer -= transfer_from_this
         
-        # Update main product stock
-        product.stock += quantity
+        target_product = Product.query.filter_by(branch_id=target_branch_id, barcode=product.barcode).first() if product.barcode else None
+        if not target_product:
+            target_product = Product.query.filter_by(branch_id=target_branch_id, name=product.name).first()
+
+        if not target_product:
+            target_barcode = product.barcode
+            if target_barcode:
+                barcode_conflict = Product.query.filter(
+                    Product.barcode == target_barcode,
+                    Product.branch_id != target_branch_id
+                ).first()
+                if barcode_conflict:
+                    target_barcode = build_branch_scoped_barcode(target_barcode, target_branch)
+
+            target_product = Product(
+                barcode=target_barcode,
+                name=product.name,
+                price=product.price,
+                cost=product.cost,
+                stock=0,
+                category=product.category,
+                category_id=product.category_id,
+                tax_rate=product.tax_rate,
+                photo_filename=product.photo_filename,
+                reorder_point=product.reorder_point,
+                reorder_quantity=product.reorder_quantity,
+                reorder_enabled=product.reorder_enabled,
+                branch_id=target_branch_id
+            )
+            db.session.add(target_product)
+            db.session.flush()
+
+        # Update target branch stock
+        target_product.stock += quantity
         
         # Record the transfer
         transfer = WarehouseTransfer(
@@ -4455,16 +4597,16 @@ def api_warehouse_transfer():
             from_warehouse=True,
             batch_number=batch_number,
             performed_by=session.get('user_id'),
-            branch_id=branch_id,
-            notes=notes
+            branch_id=target_branch_id,
+            notes=notes or f'Transferred from warehouse to {target_branch.name}'
         )
         db.session.add(transfer)
         db.session.commit()
         
         return jsonify({
             'success': True,
-            'message': f'Transferred {quantity} units to main stock',
-            'new_main_stock': product.stock
+            'message': f'Transferred {quantity} units to {target_branch.name}',
+            'new_main_stock': target_product.stock
         })
     except Exception as e:
         db.session.rollback()
@@ -4475,7 +4617,7 @@ def api_warehouse_transfer():
 @manager_required
 def api_warehouse_transfers():
     """Get transfer history"""
-    branch_id = get_current_branch_id()
+    branch_id = get_default_branch_id()
     page = int(request.args.get('page', 1))
     per_page = int(request.args.get('per_page', 50))
     

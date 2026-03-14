@@ -190,6 +190,30 @@
         border-left: 4px solid var(--primary-color);
       }
 
+      .pos-customer-highlight {
+        border: 2px solid #0d6efd !important;
+        border-left-width: 6px !important;
+        background: linear-gradient(180deg, rgba(13, 110, 253, 0.08) 0%, rgba(13, 110, 253, 0.02) 100%);
+        box-shadow: 0 0.5rem 1rem rgba(13, 110, 253, 0.12);
+      }
+
+      .pos-customer-highlight .form-label {
+        color: #0a58ca;
+        font-weight: 700;
+      }
+
+      .pos-customer-highlight .form-text {
+        color: #0a58ca;
+        font-size: 0.85rem;
+      }
+
+      .report-scope-highlight {
+        border: 1px solid #cfe2ff;
+        background: #f8fbff;
+        border-radius: 0.5rem;
+        padding: 0.75rem;
+      }
+
       /* Branch indicator styles */
       .branch-indicator {
         display: inline-flex;
@@ -799,10 +823,24 @@
           </div>
         </div>
 
+        <div class="card mb-3 border-primary">
+          <div class="card-body py-3">
+            <div class="row g-2 align-items-end">
+              <div class="col-12 col-md-6 col-lg-4">
+                <label class="form-label mb-1">POS Branch</label>
+                <select class="form-select" id="pos-branch-selector" onchange="switchBranch(this.value)">
+                  <option value="">Loading branches...</option>
+                </select>
+                <div class="form-text">Products and stock in POS are shown for the selected branch.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="row">
           <div class="col-12 col-lg-8 order-2 order-lg-1">
             <!-- Add customer selection here -->
-            <div class="card mb-3">
+            <div class="card mb-3 pos-customer-highlight">
               <div class="card-body">
                 <div class="row g-2">
                   <div class="col-12 col-md-8">
@@ -810,6 +848,9 @@
                     <select class="form-select searchable-select" id="pos-customer-select" data-search-placeholder="Search customer...">
                       <option value="">Walk-in Customer</option>
                     </select>
+                    <div class="form-text">
+                      Select a customer if this sale should be linked to customer history, debt, or details.
+                    </div>
                   </div>
                   <div class="col-12 col-md-4 d-flex align-items-end">
                     <button class="btn btn-outline-primary w-100" onclick="showCustomerDetails()">
@@ -1206,6 +1247,25 @@
           <div class="col-12 col-sm-6 col-md-3">
             <label class="form-label">End Date</label>
             <input type="date" id="end-date" class="form-control" />
+          </div>
+          <div class="col-12 col-md-3" id="report-scope-controls" style="display: none">
+            <div class="report-scope-highlight h-100">
+              <label class="form-label">Manager / Boss Report View</label>
+              <select id="report-scope" class="form-select">
+                <option value="current">Current Branch</option>
+                <option value="all">All Branches (Combined)</option>
+                <option value="branch">Individual Branch</option>
+              </select>
+              <div class="form-text mb-0">Managers and Boss can switch between combined branch reports or a single branch report.</div>
+            </div>
+          </div>
+          <div class="col-12 col-md-3" id="report-branch-controls" style="display: none">
+            <div class="report-scope-highlight h-100">
+              <label class="form-label">Select Branch</label>
+              <select id="report-branch-selector" class="form-select">
+                <option value="">Current branch</option>
+              </select>
+            </div>
           </div>
           <div class="col-6 col-md-3 d-flex align-items-end">
             <button class="btn btn-primary w-100" onclick="generateReport()">
@@ -3139,6 +3199,7 @@
                 <select class="form-select" id="add-role" required>
                   <option value="cashier">Cashier</option>
                   <option value="manager">Manager</option>
+                  <option value="boss">Boss</option>
                 </select>
               </div>
             </form>
@@ -3211,6 +3272,7 @@
                 <select class="form-select" id="edit-role" required>
                   <option value="cashier">Cashier</option>
                   <option value="manager">Manager</option>
+                  <option value="boss">Boss</option>
                 </select>
               </div>
             </form>
@@ -4246,7 +4308,7 @@
       <div class="modal-dialog">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title">Restock to Main Inventory</h5>
+            <h5 class="modal-title">Restock to Branch Inventory</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
@@ -4265,6 +4327,10 @@
                 <label class="form-label">Current Main Stock</label>
                 <input type="text" class="form-control" id="restock-main-stock" readonly />
               </div>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Target Branch</label>
+              <select class="form-select" id="warehouse-target-branch"></select>
             </div>
             <div class="mb-3">
               <label class="form-label">Quantity to Transfer <span class="text-danger">*</span></label>
@@ -4375,6 +4441,12 @@
         currencyCode: "{{ currency_code }}",
         currencySuffix: "{{ currency_suffix }}",
       };
+      const CURRENT_USER_ROLE = "{{ session.role }}";
+
+      function hasManagerOrBossAccess() {
+        const role = String(CURRENT_USER_ROLE || "").toLowerCase();
+        return role === "manager" || role === "boss";
+      }
 
       function currencySuffixFromCode(code) {
         const map = { USD: "$", MMK: "MMK", THB: "THB" };
@@ -4770,9 +4842,17 @@
           .then((data) => {
             branchesList = data;
             const selector = document.getElementById("branch-selector");
+            const posSelector = document.getElementById("pos-branch-selector");
+            const reportBranchSelector = document.getElementById("report-branch-selector");
             if (!selector) return;
             
             selector.innerHTML = "";
+            if (posSelector) {
+              posSelector.innerHTML = "";
+            }
+            if (reportBranchSelector) {
+              reportBranchSelector.innerHTML = '<option value="">Current branch</option>';
+            }
             data.forEach((branch) => {
               const option = document.createElement("option");
               option.value = branch.id;
@@ -4782,6 +4862,15 @@
                 option.textContent += " [Inactive]";
               }
               selector.appendChild(option);
+              if (posSelector) {
+                posSelector.appendChild(option.cloneNode(true));
+              }
+              if (reportBranchSelector && branch.is_active) {
+                const reportOption = document.createElement("option");
+                reportOption.value = branch.id;
+                reportOption.textContent = branch.name;
+                reportBranchSelector.appendChild(reportOption);
+              }
             });
             
             // Set current branch
@@ -4790,8 +4879,15 @@
               .then((current) => {
                 currentBranch = current;
                 selector.value = current.id;
+                if (posSelector) {
+                  posSelector.value = current.id;
+                }
+                if (reportBranchSelector) {
+                  reportBranchSelector.value = "";
+                }
                 // Update all branch indicators
                 updateBranchIndicators(current);
+                toggleReportScopeControls();
               })
               .catch(() => {});
           })
@@ -4838,6 +4934,43 @@
         });
       }
 
+      function toggleReportScopeControls() {
+        const scopeControls = document.getElementById("report-scope-controls");
+        const branchControls = document.getElementById("report-branch-controls");
+        const scopeSelect = document.getElementById("report-scope");
+
+        if (!scopeControls || !branchControls || !scopeSelect) return;
+
+        if (!hasManagerOrBossAccess()) {
+          scopeControls.style.display = "none";
+          branchControls.style.display = "none";
+          return;
+        }
+
+        scopeControls.style.display = "block";
+        const selectedScope = scopeSelect.value || "current";
+        branchControls.style.display = selectedScope === "branch" ? "block" : "none";
+      }
+
+      function buildReportQuery(startDate, endDate) {
+        const params = new URLSearchParams();
+        if (startDate) params.set("start", startDate);
+        if (endDate) params.set("end", endDate);
+
+        if (hasManagerOrBossAccess()) {
+          const scope = document.getElementById("report-scope")?.value || "current";
+          if (scope) params.set("scope", scope);
+          if (scope === "branch") {
+            const selectedBranchId = document.getElementById("report-branch-selector")?.value;
+            if (selectedBranchId) {
+              params.set("report_branch_id", selectedBranchId);
+            }
+          }
+        }
+
+        return params.toString();
+      }
+
       function switchBranch(branchId) {
         if (!branchId) return;
         
@@ -4858,6 +4991,16 @@
             // Clear product cache
             cachedProducts = [];
             productsCacheTimestamp = 0;
+
+            const selector = document.getElementById("warehouse-target-branch");
+            if (selector) {
+              selector.value = branchId;
+            }
+
+            const posSelector = document.getElementById("pos-branch-selector");
+            if (posSelector) {
+              posSelector.value = branchId;
+            }
           })
           .catch((error) => {
             console.error("Error switching branch:", error);
@@ -5097,22 +5240,30 @@
       // Product data caching to reduce API calls
       let cachedProducts = [];
       let productsCacheTimestamp = 0;
+      let cachedProductsBranchId = null;
       const CACHE_DURATION = 60000; // 1 minute cache duration
       
       // Function to load products with caching
       async function loadProductsCached() {
         const now = Date.now();
+        const activeBranchId = currentBranch?.id || null;
         // If cache is still valid, return cached data
-        if (cachedProducts.length > 0 && (now - productsCacheTimestamp) < CACHE_DURATION) {
+        if (
+          cachedProducts.length > 0 &&
+          cachedProductsBranchId === activeBranchId &&
+          (now - productsCacheTimestamp) < CACHE_DURATION
+        ) {
           return cachedProducts;
         }
         
         // Otherwise, fetch fresh data
         try {
-          const res = await fetch("/api/products");
+          const url = activeBranchId ? `/api/products?branch_id=${activeBranchId}` : "/api/products";
+          const res = await fetch(url);
           const data = await res.json();
           cachedProducts = data;
           productsCacheTimestamp = now;
+          cachedProductsBranchId = activeBranchId;
           return data;
         } catch (error) {
           console.error("Error loading products:", error);
@@ -5125,6 +5276,7 @@
       function invalidateProductsCache() {
         cachedProducts = [];
         productsCacheTimestamp = 0;
+        cachedProductsBranchId = null;
       }
       // ===== END CACHING IMPLEMENTATION =====
 
@@ -5411,6 +5563,26 @@
         bindReload("deliveries-search", loadDeliveries, "deliveries");
 
         initSearchableSelects();
+
+        const reportScopeSelect = document.getElementById("report-scope");
+        const reportBranchSelect = document.getElementById("report-branch-selector");
+        if (reportScopeSelect) {
+          reportScopeSelect.addEventListener("change", () => {
+            if (reportScopeSelect.value !== "branch" && reportBranchSelect) {
+              reportBranchSelect.value = "";
+            }
+            toggleReportScopeControls();
+          });
+        }
+        if (reportBranchSelect) {
+          reportBranchSelect.addEventListener("change", () => {
+            if (currentSection === "reports") {
+              initSalesChart();
+              initPaymentChart();
+            }
+          });
+        }
+        toggleReportScopeControls();
 
         // Purchase order filter event listeners
         ["purchase-orders-status-filter", "purchase-orders-supplier-filter"].forEach((id) => {
@@ -6281,6 +6453,7 @@
           loadProductsForPOS();
           loadCustomersForPOS();
         } else if (sectionId === "reports") {
+          toggleReportScopeControls();
           initSalesChart();
           initPaymentChart();
         } else if (sectionId === "products") {
@@ -6314,6 +6487,7 @@
           loadCategories();
         } else if (sectionId === "settings") {
           loadSettings();
+          loadBranches();
         }
 
         // Scroll to top when switching sections
@@ -6375,6 +6549,7 @@
           loadCategories();
         } else if (sectionId === "settings") {
           loadSettings();
+          loadBranches();
         }
         
         showToast(sectionId.charAt(0).toUpperCase() + sectionId.slice(1) + " refreshed successfully!", "success");
@@ -6707,7 +6882,7 @@
 
             data.forEach((product) => {
               const productCard = document.createElement("div");
-              productCard.className = "col-md-4 mb-3";
+              productCard.className = "col-6 col-md-4 col-xl-3 mb-3";
               productCard.innerHTML = `
           <div class="card product-card" onclick="addToCart(${
             product.id
@@ -6744,7 +6919,12 @@
           return;
         }
 
-        fetch("/api/products/search?q=" + encodeURIComponent(query))
+        const activeBranchId = currentBranch?.id;
+        const url = activeBranchId
+          ? `/api/products/search?q=${encodeURIComponent(query)}&branch_id=${encodeURIComponent(activeBranchId)}`
+          : "/api/products/search?q=" + encodeURIComponent(query);
+
+        fetch(url)
           .then((response) => response.json())
           .then((data) => {
             const productGrid = document.getElementById("product-grid");
@@ -6758,7 +6938,7 @@
 
             data.forEach((product) => {
               const productCard = document.createElement("div");
-              productCard.className = "col-md-4 mb-3";
+              productCard.className = "col-6 col-md-4 col-xl-3 mb-3";
               productCard.innerHTML = `
                                   <div class="card product-card" onclick="addToCart(${
                                     product.id
@@ -6795,7 +6975,12 @@
 
       function addToCart(productId, name, price, quantity, tax_rate) {
         // First, fetch the product to check stock AND promotions
-        fetch(`/api/products/${productId}`)
+        const activeBranchId = currentBranch?.id;
+        const url = activeBranchId
+          ? `/api/products/${productId}?branch_id=${encodeURIComponent(activeBranchId)}`
+          : `/api/products/${productId}`;
+
+        fetch(url)
           .then((response) => {
             if (!response.ok) {
               throw new Error("Product not found: " + response.status);
@@ -8370,7 +8555,8 @@
           document.getElementById("end-date").value ||
           new Date().toISOString().split("T")[0];
 
-        fetch("/api/reports/sales?start=" + startDate + "&end=" + endDate)
+        const query = buildReportQuery(startDate, endDate);
+        fetch(`/api/reports/sales?${query}`)
           .then((response) => response.json())
           .then((data) => {
             // Group sales by date
@@ -8456,7 +8642,8 @@
           document.getElementById("end-date").value ||
           new Date().toISOString().split("T")[0];
 
-        fetch("/api/reports/sales?start=" + startDate + "&end=" + endDate)
+        const query = buildReportQuery(startDate, endDate);
+        fetch(`/api/reports/sales?${query}`)
           .then((response) => response.json())
           .then((data) => {
             // Group sales by payment method
@@ -8531,7 +8718,8 @@
                       </div>
                   `;
 
-        fetch("/api/reports/sales?start=" + startDate + "&end=" + endDate)
+        const query = buildReportQuery(startDate, endDate);
+        fetch(`/api/reports/sales?${query}`)
           .then((response) => response.json())
           .then((data) => {
             const totalSales = data.reduce((sum, sale) => sum + sale.total, 0);
@@ -9123,10 +9311,8 @@
           return;
         }
 
-        window.open(
-          `/api/reports/sales/export?start=${startDate}&end=${endDate}`,
-          "_blank"
-        );
+        const query = buildReportQuery(startDate, endDate);
+        window.open(`/api/reports/sales/export?${query}`, "_blank");
       }
 
       // Customer management functions
@@ -11102,6 +11288,16 @@
           () => {
             const confirmBtn = document.querySelector('#receivePurchaseOrderModal .btn-success');
             const originalBtnContent = confirmBtn ? confirmBtn.innerHTML : '';
+            const restoreConfirmButton = () => {
+              if (confirmBtn) {
+                confirmBtn.disabled = false;
+                confirmBtn.innerHTML = originalBtnContent;
+              }
+            };
+
+            if (confirmBtn?.disabled) {
+              return;
+            }
             
             if (confirmBtn) {
               confirmBtn.disabled = true;
@@ -11117,10 +11313,6 @@
               .then((data) => {
                 if (!data.success) {
                   showToast(data.message || "Failed to receive items", "error");
-                  if (confirmBtn) {
-                    confirmBtn.disabled = false;
-                    confirmBtn.innerHTML = originalBtnContent;
-                  }
                   return;
                 }
                 showToast("Stock received successfully! Inventory has been updated.", "success");
@@ -11136,10 +11328,9 @@
               .catch((err) => {
                 console.error("Error receiving PO:", err);
                 showToast("Network error. Please try again.", "error");
-                if (confirmBtn) {
-                  confirmBtn.disabled = false;
-                  confirmBtn.innerHTML = originalBtnContent;
-                }
+              })
+              .finally(() => {
+                restoreConfirmButton();
               });
           }
         );
@@ -11433,6 +11624,19 @@
         document.getElementById("restock-quantity").value = "";
         document.getElementById("restock-notes").value = "";
         document.getElementById("restock-quantity").max = availableQty;
+
+        const branchSelect = document.getElementById("warehouse-target-branch");
+        if (branchSelect) {
+          branchSelect.innerHTML = branchesList
+            .filter((branch) => branch.is_active)
+            .map((branch) => `<option value="${branch.id}">${escapeHtml(branch.name)}</option>`)
+            .join("");
+
+          if (currentBranch && currentBranch.id) {
+            branchSelect.value = String(currentBranch.id);
+          }
+        }
+
         new bootstrap.Modal(document.getElementById("warehouseRestockModal")).show();
       }
 
@@ -11441,7 +11645,13 @@
         const quantity = parseInt(document.getElementById("restock-quantity").value || "0", 10);
         const batchNumber = document.getElementById("restock-batch-number").value;
         const notes = document.getElementById("restock-notes").value.trim();
+        const targetBranchId = document.getElementById("warehouse-target-branch")?.value;
         const availableQty = parseInt(document.getElementById("restock-available-qty").value || "0", 10);
+        const confirmBtn = document.querySelector('#warehouseRestockModal .btn.btn-success');
+
+        if (confirmBtn?.disabled) {
+          return;
+        }
 
         if (!quantity || quantity <= 0) {
           showToast("Please enter a valid quantity.", "warning");
@@ -11453,6 +11663,12 @@
           return;
         }
 
+        if (confirmBtn) {
+          confirmBtn.disabled = true;
+          confirmBtn.dataset.originalHtml = confirmBtn.innerHTML;
+          confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Processing...';
+        }
+
         fetch("/api/warehouse/transfer", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -11460,6 +11676,7 @@
             product_id: parseInt(productId, 10),
             quantity: quantity,
             batch_number: batchNumber || null,
+            target_branch_id: targetBranchId || null,
             notes: notes || null
           })
         })
@@ -11468,8 +11685,15 @@
             if (data.success) {
               showToast(data.message || "Items restocked successfully!", "success");
               bootstrap.Modal.getInstance(document.getElementById("warehouseRestockModal")).hide();
+              invalidateProductsCache();
               loadWarehouseSummary();
               loadWarehouseInventory();
+              loadProducts();
+
+              const resolvedTargetBranchId = parseInt(targetBranchId || currentBranch?.id || "0", 10);
+              if (resolvedTargetBranchId && currentBranch && resolvedTargetBranchId === currentBranch.id) {
+                loadProductsForPOS();
+              }
             } else {
               showToast(data.message || "Failed to transfer items from warehouse", "error");
             }
@@ -11477,6 +11701,12 @@
           .catch((e) => {
             console.error("Error transferring from warehouse", e);
             showToast("Failed to process transfer. Please try again.", "error");
+          })
+          .finally(() => {
+            if (confirmBtn) {
+              confirmBtn.disabled = false;
+              confirmBtn.innerHTML = confirmBtn.dataset.originalHtml || '<i class="bi bi-box-arrow-in-up"></i> Transfer to Stock';
+            }
           });
       }
 
