@@ -18,11 +18,10 @@ jobs:
       env:
         SSH_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
       run: |
-        # Install sshpass for password-based SSH
-        sudo apt-get update && sudo apt-get install -y sshpass
+        sudo apt-get update
+        sudo apt-get install -y sshpass
         
-        # Run deployment commands through Cloudflare Tunnel
-        sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no \
+        sshpass -p "$SSH_PASSWORD" ssh -tt -o StrictHostKeyChecking=no \
           -o ProxyCommand="cloudflared access ssh --hostname ssh.nationalcancercenter.click" \
           minthuta@ssh.nationalcancercenter.click \
-          "rm -rf /home/minthuta/Desktop/POS/POS_System_by_Thuta && git clone https://github.com/MinThutaSawNaing/POS_System_by_Thuta.git /home/minthuta/Desktop/POS/POS_System_by_Thuta && sudo systemctl restart pos.service"
+          "rm -rf /home/minthuta/Desktop/POS/POS_System_by_Thuta && git clone --depth 1 https://github.com/MinThutaSawNaing/POS_System_by_Thuta.git /home/minthuta/Desktop/POS/POS_System_by_Thuta && sudo systemctl restart pos.service"
