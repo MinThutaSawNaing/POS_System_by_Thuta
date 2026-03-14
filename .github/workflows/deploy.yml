@@ -25,4 +25,4 @@ jobs:
         sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no \
           -o ProxyCommand="cloudflared access ssh --hostname ssh.nationalcancercenter.click" \
           minthuta@ssh.nationalcancercenter.click \
-          "cd /home/minthuta/Desktop/POS/POS_System_by_Thuta && git pull origin main && sudo systemctl restart pos.service"
+          "rm -rf /home/minthuta/Desktop/POS/POS_System_by_Thuta && git clone https://github.com/MinThutaSawNaing/POS_System_by_Thuta.git /home/minthuta/Desktop/POS/POS_System_by_Thuta && sudo systemctl restart pos.service"
