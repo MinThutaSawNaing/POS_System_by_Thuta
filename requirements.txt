@@ -6,3 +6,4 @@ pandas
 XlsxWriter
 pytz
 requests
+numpy==1.23.5
