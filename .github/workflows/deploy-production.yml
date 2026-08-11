@@ -1,0 +1,68 @@
+name: Deploy Parrot POS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parrot-pos-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to production VPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://parrotdemo.winterarc.asia
+
+    steps:
+      - name: Configure deployment SSH key
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/parrot_deploy"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/parrot_deploy" "$HOME/.ssh/known_hosts"
+
+      - name: Deploy exact commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh \
+            -i "$HOME/.ssh/parrot_deploy" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 \
+            parrot-deploy@47.79.35.105 \
+            "deploy $GITHUB_SHA"
+
+      - name: Verify production HTTPS health
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            if response=$(curl \
+              --fail \
+              --silent \
+              --show-error \
+              --max-time 10 \
+              https://parrotdemo.winterarc.asia/healthz); then
+              test "$response" = '{"status":"ok"}'
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'Production health verification failed.' >&2
+          exit 1
