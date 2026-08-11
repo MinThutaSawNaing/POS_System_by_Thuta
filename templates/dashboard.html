@@ -5480,6 +5480,10 @@
         select.addEventListener("change", syncFromSelect);
 
         const observer = new MutationObserver(() => {
+          if (!select.isConnected) {
+            observer.disconnect();
+            return;
+          }
           if (document.activeElement !== input) {
             syncFromSelect();
           }

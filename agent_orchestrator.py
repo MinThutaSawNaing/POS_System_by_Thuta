@@ -5,11 +5,13 @@ Manages the AI agent, tool registration, and conversation flow
 
 import json
 import os
+import threading
+from collections import OrderedDict
 import re
 from typing import Dict, List, Any, Optional, Set
 from datetime import datetime
 
-from ai_agent import AIAgent, get_agent, ChatResponse
+from ai_agent import AIAgent
 from ai_tools import create_tools_instance, get_all_tools
 from dataclasses import dataclass, field
 from enum import Enum
@@ -146,7 +148,11 @@ class AgentOrchestrator:
         self.app = app  # Flask app instance for context
         self.ai_tools = create_tools_instance(db, models)
         self.get_setting_func = get_setting_func
-        self.agent = get_agent(db_get_setting=get_setting_func)
+        # Conversation state must not be shared between users. A process-wide agent
+        # leaked chat/tool payloads across accounts and grew without a bound.
+        self.agent = AIAgent(db_get_setting=get_setting_func)
+        self._conversation_lock = threading.RLock()
+        self.max_history_messages = max(1, int(os.environ.get("AI_MAX_HISTORY_MESSAGES", "40")))
         self.session_context = {
             "last_query": None,
             "last_results": None,
@@ -230,6 +236,13 @@ class AgentOrchestrator:
         Returns:
             Dict containing the response and any actions taken
         """
+        # Serialize a user's turns so concurrent requests cannot interleave tool-call
+        # messages and corrupt the conversation sent to the upstream API.
+        with self._conversation_lock:
+            return self._process_command_locked(command, user_id)
+
+    def _process_command_locked(self, command: str, user_id: Optional[int] = None) -> Dict[str, Any]:
+        """Process one command while the owning conversation lock is held."""
         try:
             print(f"[AI Agent] Processing command: {command[:50]}...")
             
@@ -311,12 +324,13 @@ class AgentOrchestrator:
             # Log the interaction (optional)
             self._log_interaction(user_id, command, final_message, tool_results)
             
-            return {
+            result = {
                 "success": True,
                 "message": final_message,
                 "tool_results": tool_results,
                 "usage": response.usage
             }
+            return result
             
         except Exception as e:
             import traceback
@@ -344,6 +358,8 @@ class AgentOrchestrator:
                 "error": str(e),
                 "message": user_message
             }
+        finally:
+            self.agent.trim_history(self.max_history_messages)
             
     def _execute_tools_with_context(self, tool_calls: List) -> List[Dict]:
         """Execute tool calls within Flask application context"""
@@ -1133,22 +1149,33 @@ class AgentOrchestrator:
         }
 
 
-# Singleton instance
-_orchestrator_instance: Optional[AgentOrchestrator] = None
+# Keep only a bounded number of isolated in-memory conversations. LRU eviction
+# prevents inactive users from becoming another process-lifetime memory leak.
+_MAX_ORCHESTRATORS = max(1, int(os.environ.get("AI_MAX_ACTIVE_SESSIONS", "32")))
+_orchestrator_instances = OrderedDict()
+_orchestrator_instances_lock = threading.RLock()
 
 
-def get_orchestrator(db=None, models=None, get_setting_func=None, app=None) -> AgentOrchestrator:
-    """Get or create the singleton orchestrator instance"""
-    global _orchestrator_instance
-    if _orchestrator_instance is None and db is not None and models is not None:
-        _orchestrator_instance = AgentOrchestrator(db, models, get_setting_func, app)
-    return _orchestrator_instance
+def get_orchestrator(db=None, models=None, get_setting_func=None, app=None,
+                     conversation_id=None) -> AgentOrchestrator:
+    """Get an isolated, bounded-LRU orchestrator for one conversation owner."""
+    key = str(conversation_id if conversation_id is not None else "default")
+    with _orchestrator_instances_lock:
+        orchestrator = _orchestrator_instances.pop(key, None)
+        if orchestrator is None:
+            if db is None or models is None:
+                return None
+            orchestrator = AgentOrchestrator(db, models, get_setting_func, app)
+        _orchestrator_instances[key] = orchestrator
+        while len(_orchestrator_instances) > _MAX_ORCHESTRATORS:
+            _orchestrator_instances.popitem(last=False)
+        return orchestrator
 
 
 def reset_orchestrator():
-    """Reset the singleton orchestrator instance"""
-    global _orchestrator_instance
-    _orchestrator_instance = None
+    """Clear all cached user orchestrators (for example after API-key changes)."""
+    with _orchestrator_instances_lock:
+        _orchestrator_instances.clear()
 
 
 # Convenience function for processing commands
@@ -1159,5 +1186,5 @@ def process_agent_command(command: str, db, models: Dict[str, Any], user_id: Opt
     Usage:
         result = process_agent_command("Check low stock items", db, models, current_user.id)
     """
-    orchestrator = get_orchestrator(db, models)
+    orchestrator = get_orchestrator(db, models, conversation_id=user_id)
     return orchestrator.process_command(command, user_id)

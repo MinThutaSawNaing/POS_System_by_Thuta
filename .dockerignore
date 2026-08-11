@@ -1,6 +1,7 @@
 .git
 .gitignore
 __pycache__/
+test_*.py
 *.py[cod]
 *.pyo
 *.pyd
@@ -13,6 +14,10 @@ instance/
 uploads/
 .vscode/
 .idea/
+.qoder/
+.github/
 *.log
 *.tmp
 *.swp
+README.md
+SoftwareManager.bat

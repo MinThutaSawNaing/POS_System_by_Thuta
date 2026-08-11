@@ -63,6 +63,30 @@ class AIAgent:
         self.conversation_history: List[Message] = []
         self.tools: List[Dict] = []
         self.tool_functions: Dict[str, Callable] = {}
+
+    def trim_history(self, max_messages: int = 40):
+        """Bound retained chat data while preserving the system prompt.
+
+        Tool results can contain large inventory and report payloads, so keeping an
+        unlimited process-lifetime history causes steady memory growth. Trimming is
+        performed after a complete request to avoid separating a tool call from its
+        result while that request is in progress.
+        """
+        if max_messages < 1:
+            self.clear_history()
+            return
+
+        system_messages = [m for m in self.conversation_history if m.role == "system"][:1]
+        conversation = [m for m in self.conversation_history if m.role != "system"]
+        if len(conversation) <= max_messages:
+            return
+
+        retained = conversation[-max_messages:]
+        # A tool result without its preceding assistant tool call is not a valid API
+        # conversation. Start at the first ordinary user/assistant message instead.
+        while retained and retained[0].role == "tool":
+            retained.pop(0)
+        self.conversation_history = system_messages + retained
         
     def register_tool(self, name: str, description: str, parameters: Dict, function: Callable):
         """Register a tool that the AI can call"""
@@ -318,7 +342,8 @@ class AIAgent:
         return "\n".join(summary)
 
 
-# Singleton instance for the application
+# Backwards-compatible singleton for callers outside the web orchestrator. The web
+# application creates one AIAgent per bounded user session instead.
 _agent_instance: Optional[AIAgent] = None
 _db_get_setting = None
 

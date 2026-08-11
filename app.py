@@ -25,7 +25,7 @@ from reportlab.graphics.barcode import createBarcodeDrawing
 from agent_orchestrator import get_orchestrator
 
 app = Flask(__name__)
-app.secret_key = 'your_super_secret_key_here'  # Change this in production!
+app.secret_key = os.environ.get('SECRET_KEY', 'your_super_secret_key_here')
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pos.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = os.path.join(app.root_path, 'uploads', 'products')
@@ -1459,15 +1459,13 @@ def api_settings_database_backup():
     if not db_file_path:
         return jsonify({'success': False, 'message': 'Database file not found'}), 404
 
-    with open(db_file_path, 'rb') as f:
-        db_bytes = f.read()
-
     backup_filename = f"pos_backup_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.db"
     return send_file(
-        io.BytesIO(db_bytes),
+        db_file_path,
         mimetype='application/octet-stream',
         as_attachment=True,
-        download_name=backup_filename
+        download_name=backup_filename,
+        conditional=True
     )
 
 @app.route('/api/settings/database_restore', methods=['POST'])
@@ -5228,8 +5226,11 @@ AI_MODELS = {
 
 
 def get_ai_orchestrator():
-    """Get or create AI orchestrator with database settings access"""
-    return get_orchestrator(db, AI_MODELS, get_setting, app)
+    """Get the current user's isolated AI conversation."""
+    return get_orchestrator(
+        db, AI_MODELS, get_setting, app,
+        conversation_id=session.get('user_id')
+    )
 
 
 @app.route('/api/agent/chat', methods=['POST'])
@@ -5323,5 +5324,11 @@ def agent_clear():
         }), 500
 
 
+@app.route('/healthz', methods=['GET'])
+def healthcheck():
+    """Lightweight container health endpoint without database side effects."""
+    return jsonify({'status': 'ok'})
+
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8888, debug=True)
+    app.run(host='0.0.0.0', port=8888, debug=os.environ.get('FLASK_DEBUG') == '1')
