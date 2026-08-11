@@ -188,6 +188,8 @@ POS_System_by_Thuta/
 ├── ai_tools.py               # AI Agent database tools
 ├── requirements.txt
 ├── Dockerfile
+├── compose.yaml              # Resource-limited VPS deployment
+├── .env.example              # Safe environment template (copy to .env)
 ├── .dockerignore
 ├── SetupTheSoftware.bat      # Windows automated setup
 ├── templates/
@@ -262,43 +264,154 @@ After it completes, run:
 
 ---
 
-## 🐳 Run with Docker
+## 🐳 Docker Deployment (Resource-Limited VPS)
 
-### 1) Build the image
+Docker containers have no CPU or memory limit by default. For a VPS, the recommended deployment is `compose.yaml`, which applies conservative limits while keeping the SQLite database and uploads persistent.
+
+### Default resource profile
+
+| Resource | Limit | Notes |
+| --- | ---: | --- |
+| CPU | `0.75` CPU | The container can use at most 75% of one CPU core. |
+| Memory | `768 MiB` | Hard limit; Docker may restart the app if it exceeds this limit. |
+| Memory reservation | `384 MiB` | Soft target used when the host is under memory pressure. |
+| Memory + swap | `1 GiB` | Allows a small swap buffer instead of unlimited swap usage. |
+| Processes/threads | `128` PIDs | Protects the host from process/thread exhaustion. |
+| Application workers | `2` threads | Conservative Waitress concurrency for SQLite and small VPS hosts. |
+| Temporary storage | `64 MiB` | `/tmp` is a size-limited in-memory filesystem. |
+| Container logs | `3 × 10 MiB` | Log rotation prevents Docker logs from filling the VPS disk. |
+
+The `768 MiB` memory limit leaves room for legitimate temporary spikes from Pandas, Excel exports, and PDF generation. If Docker reports OOM kills during large exports, increase it to `1g` rather than disabling the limit.
+
+### Recommended: Docker Compose
+
+Requirements: Docker Engine with the Compose plugin (`docker compose version`).
+
+1. Create the environment file and generate a persistent session secret:
 
 ```bash
-docker build -t parrot-pos .
+cp .env.example .env
+SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+sed -i "s|^SECRET_KEY=.*|SECRET_KEY=${SECRET}|" .env
+chmod 600 .env
 ```
 
-### 2) Run the container
+Do not commit `.env`. Keep the same `SECRET_KEY` across restarts; changing it signs out all existing sessions.
+
+2. Build and start the service:
 
 ```bash
-docker run --name parrot-pos \
-  -p 8888:8888 \
-  -v "${PWD}/instance:/app/instance" \
-  -v "${PWD}/uploads:/app/uploads" \
-  parrot-pos
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail=100 app
 ```
 
-> Windows CMD example:
+3. Verify it:
 
-```cmd
-docker run --name parrot-pos -p 8888:8888 -v "%cd%\instance:/app/instance" -v "%cd%\uploads:/app/uploads" parrot-pos
+```bash
+curl --fail http://127.0.0.1:8888/healthz
+docker stats parrot-pos --no-stream
+docker inspect parrot-pos --format '{{.State.Health.Status}}'
 ```
 
-Using volume mounts keeps your SQLite database and uploaded product images persistent between container restarts.
+By default, `POS_BIND_ADDRESS=127.0.0.1`, so the application is reachable only from the VPS itself. This is recommended when Nginx, Caddy, or Cloudflare Tunnel is the public entry point. Set `POS_BIND_ADDRESS=0.0.0.0` in `.env` only if port `8888` must be exposed directly, and restrict it with the VPS firewall.
 
-Application URL:
+Application URL from the VPS itself:
 
 ```text
 http://127.0.0.1:8888
 ```
 
-### 3) Stop and remove
+### Alternative: resource-limited `docker run`
+
+Build the image:
 
 ```bash
-docker stop parrot-pos && docker rm parrot-pos
+docker build -t parrot-pos:latest .
+docker volume create parrot-pos-instance
+docker volume create parrot-pos-uploads
 ```
+
+Run it with limits equivalent to the Compose profile:
+
+```bash
+docker run -d \
+  --name parrot-pos \
+  --restart unless-stopped \
+  --init \
+  --cpus="0.75" \
+  --memory="768m" \
+  --memory-reservation="384m" \
+  --memory-swap="1g" \
+  --pids-limit=128 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=64m,mode=1777 \
+  --security-opt no-new-privileges=true \
+  --cap-drop ALL \
+  --log-driver json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
+  -p 127.0.0.1:8888:8888 \
+  --env-file .env \
+  -v parrot-pos-instance:/app/instance \
+  -v parrot-pos-uploads:/app/uploads \
+  parrot-pos:latest
+```
+
+Named volumes are recommended because the image runs as non-root UID/GID `10001`. If you prefer Linux bind mounts, create and assign them first:
+
+```bash
+mkdir -p instance uploads/products
+sudo chown -R 10001:10001 instance uploads
+```
+
+On Windows, use Docker Compose rather than the Linux `docker run` example; Compose handles path and command differences more reliably.
+
+### Operations
+
+View status, resource usage, health, and logs:
+
+```bash
+docker compose ps
+docker stats parrot-pos
+docker inspect parrot-pos --format 'health={{.State.Health.Status}} oom={{.State.OOMKilled}} restarts={{.RestartCount}}'
+docker compose logs -f --tail=100 app
+```
+
+Restart or stop without deleting persistent data:
+
+```bash
+docker compose restart app
+docker compose down
+```
+
+Update to the latest source and rebuild:
+
+```bash
+git pull --ff-only
+docker compose up -d --build
+docker image prune -f
+```
+
+Back up the named volumes before an update:
+
+```bash
+mkdir -p backups
+docker compose stop app
+docker run --rm -v parrot-pos_pos_instance:/data:ro -v "${PWD}/backups:/backup" alpine sh -c 'tar czf /backup/instance-$(date +%Y%m%d-%H%M%S).tgz -C /data .'
+docker run --rm -v parrot-pos_pos_uploads:/data:ro -v "${PWD}/backups:/backup" alpine sh -c 'tar czf /backup/uploads-$(date +%Y%m%d-%H%M%S).tgz -C /data .'
+docker compose start app
+```
+
+Stopping the app briefly ensures the SQLite backup is consistent. Compose prefixes named volumes with the project name (`parrot-pos`), producing `parrot-pos_pos_instance` and `parrot-pos_pos_uploads`. Confirm names with `docker volume ls` before backup or restore. The manager database-backup function in the dashboard is an alternative that does not require downtime.
+
+Remove the containers **and all persistent POS data** only when you intentionally want a full reset:
+
+```bash
+docker compose down --volumes
+```
+
+> Warning: `--volumes` permanently deletes the SQLite database and uploaded product images.
 
 ---
 
@@ -365,7 +478,7 @@ An admin account is auto-created if missing:
 
 ## Maintainer
 
-**Min Thuta Saw Naing**  
+**Min Thuta Saw Naing**
 GitHub: [@MinThutaSawNaing](https://github.com/MinThutaSawNaing)
 Phone: +95 977 144 320
 
@@ -374,6 +487,3 @@ Phone: +95 977 144 320
 ## 📄 License
 
 This project is available for learning, customization, and business adaptation.
-#   C I / C D   T e s t 
- 
- 
