@@ -185,7 +185,10 @@
         max-height: calc(100vh - 310px);
         overflow-y: auto;
         overflow-x: hidden;
-        padding-right: 4px;
+        padding: 0.5rem;
+        border: 1px solid #333;
+        border-radius: 0.375rem;
+        background: #fff;
       }
 
       /* === Barcode Search Bar - Clean Professional === */
@@ -7016,7 +7019,11 @@
       }
 
       // POS functions
-      function loadProductsForPOS() {
+      let posProductPage = 1;
+      const POS_PER_PAGE = 50;
+      let posProductTotalPages = 1;
+
+      function loadProductsForPOS(resetPage = true) {
         const productGrid = document.getElementById("product-grid");
         productGrid.innerHTML = `
                       <div style="grid-column: 1 / -1; text-align: center; padding: 3rem 0;">
@@ -7026,18 +7033,35 @@
                       </div>
                   `;
 
-        // USING CACHED PRODUCTS
-        loadProductsCached()
-          .then((data) => {
-            productGrid.innerHTML = "";
+        if (resetPage) posProductPage = 1;
 
-            if (data.length === 0) {
+        const activeBranchId = currentBranch?.id;
+        const url = activeBranchId
+          ? `/api/products?branch_id=${encodeURIComponent(activeBranchId)}&page=${posProductPage}&per_page=${POS_PER_PAGE}`
+          : `/api/products?page=${posProductPage}&per_page=${POS_PER_PAGE}`;
+
+        fetch(url)
+          .then((response) => response.json())
+          .then((data) => {
+            // API returns {items, page, per_page, total, total_pages} when paginated
+            const products = data.items || data;
+            posProductTotalPages = data.total_pages || 1;
+
+            if (resetPage) {
+              productGrid.innerHTML = "";
+            } else {
+              // Remove "load more" placeholder if present
+              const loadMoreBtn = productGrid.querySelector(".pos-load-more-cell");
+              if (loadMoreBtn) loadMoreBtn.remove();
+            }
+
+            if (products.length === 0 && resetPage) {
               productGrid.innerHTML =
                 '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #6c757d;">No products available.</div>';
               return;
             }
 
-            data.forEach((product) => {
+            products.forEach((product) => {
               const productCard = document.createElement("div");
               productCard.className = "pos-product-cell";
               productCard.innerHTML = `
@@ -7056,9 +7080,21 @@
               </div>
           </div>
       `;
-
               productGrid.appendChild(productCard);
             });
+
+            // Add "Load More" button if there are more pages
+            if (posProductPage < posProductTotalPages) {
+              const loadMoreCell = document.createElement("div");
+              loadMoreCell.className = "pos-load-more-cell";
+              loadMoreCell.style.cssText = "grid-column: 1 / -1; text-align: center; padding: 0.75rem 0;";
+              loadMoreCell.innerHTML = `
+                <button class="btn btn-outline-dark btn-sm" onclick="loadMorePOSProducts()">
+                  <i class="bi bi-arrow-down"></i> Load More Products (Page ${posProductPage} of ${posProductTotalPages})
+                </button>
+              `;
+              productGrid.appendChild(loadMoreCell);
+            }
 
             normalizeCurrencyDisplay(productGrid);
           })
@@ -7067,6 +7103,11 @@
             productGrid.innerHTML =
               '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #dc3545;">Failed to load products.</div>';
           });
+      }
+
+      function loadMorePOSProducts() {
+        posProductPage++;
+        loadProductsForPOS(false);
       }
 
       function searchProducts() {
