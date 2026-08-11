@@ -5646,6 +5646,46 @@
             }
           });
 
+        // Blur guard: keep barcode scanner always ready
+        // Only allow focus to leave for cart/nav fields
+        document
+          .getElementById("product-search")
+          .addEventListener("blur", function () {
+            setTimeout(() => {
+              const active = document.activeElement;
+              if (!active) return;
+              const tag = active.tagName;
+              const id = active.id || "";
+              const cls = active.className || "";
+
+              // Allow focus on cart fields, nav, modals
+              if (
+                id === "cash-received" ||
+                id === "payment-method" ||
+                id === "pos-customer-select" ||
+                id === "pos-enable-delivery" ||
+                id === "pos-delivery-recipient-name" ||
+                id === "pos-delivery-recipient-phone" ||
+                id === "pos-delivery-address" ||
+                id === "pos-delivery-priority" ||
+                id === "pos-delivery-fee" ||
+                id === "complete-sale-btn" ||
+                cls.includes("sidebar") ||
+                cls.includes("nav-link") ||
+                tag === "A" ||
+                tag === "BUTTON"
+              ) {
+                return; // user is in cart or navigating — let them be
+              }
+
+              // Still in POS tab? Refocus the scanner
+              if (currentSection === "pos") {
+                const input = document.getElementById("product-search");
+                if (input) input.focus();
+              }
+            }, 150);
+          });
+
         const bindReload = (id, fn, key) => {
           const el = document.getElementById(id);
           if (!el) return;
@@ -6564,6 +6604,11 @@
         if (sectionId === "pos") {
           loadProductsForPOS();
           loadCustomersForPOS();
+          // Auto-focus barcode search so scanner is immediately ready
+          setTimeout(() => {
+            const searchInput = document.getElementById("product-search");
+            if (searchInput) searchInput.focus();
+          }, 100);
         } else if (sectionId === "reports") {
           toggleReportScopeControls();
           initSalesChart();
