@@ -180,10 +180,146 @@
       }
 
       .pos-products-scroll {
-        max-height: calc(100vh - 260px);
+        max-height: calc(100vh - 310px);
         overflow-y: auto;
         overflow-x: hidden;
         padding-right: 4px;
+      }
+
+      /* === Barcode Search Bar Highlight === */
+      .barcode-search-wrapper {
+        position: relative;
+        margin-bottom: 1rem;
+      }
+
+      .barcode-search-label {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 700;
+        font-size: 0.875rem;
+        color: #0a58ca;
+        margin-bottom: 0.5rem;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .barcode-search-label i {
+        font-size: 1.25rem;
+        color: #0d6efd;
+        animation: barcodePulse 1.8s ease-in-out infinite;
+      }
+
+      .barcode-input-group {
+        position: relative;
+        border-radius: 0.5rem;
+        box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.25), 0 4px 16px rgba(13, 110, 253, 0.12);
+        animation: barcodeGlow 2.2s ease-in-out infinite;
+        transition: all 0.3s ease;
+      }
+
+      .barcode-input-group:focus-within {
+        box-shadow: 0 0 0 4px rgba(13, 110, 253, 0.45), 0 6px 24px rgba(13, 110, 253, 0.25);
+        animation: none;
+      }
+
+      .barcode-input-group .form-control {
+        border: 2px solid #0d6efd;
+        border-right: none;
+        border-radius: 0.5rem 0 0 0.5rem;
+        padding-left: 2.75rem;
+        font-size: 1.05rem;
+        font-weight: 500;
+        min-height: 52px;
+        background: #f8fbff;
+        transition: all 0.3s ease;
+        box-shadow: none;
+      }
+
+      .barcode-input-group .form-control:focus {
+        border-color: #0a58ca;
+        background: #fff;
+        box-shadow: none;
+      }
+
+      .barcode-input-group .form-control::placeholder {
+        color: #6c9bd2;
+        font-weight: 400;
+        font-size: 1rem;
+      }
+
+      .barcode-input-group .barcode-icon-left {
+        position: absolute;
+        left: 0.875rem;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 1.35rem;
+        color: #0d6efd;
+        z-index: 5;
+        pointer-events: none;
+      }
+
+      .barcode-input-group .btn {
+        border-radius: 0 0.5rem 0.5rem 0;
+        border: 2px solid #0d6efd;
+        border-left: none;
+        min-height: 52px;
+        padding: 0 1.25rem;
+        font-weight: 600;
+        background: linear-gradient(135deg, #0d6efd 0%, #0a58ca 100%);
+        border-color: #0d6efd;
+      }
+
+      .barcode-input-group .btn:hover {
+        background: linear-gradient(135deg, #0b5ed7 0%, #084298 100%);
+        border-color: #0a58ca;
+      }
+
+      @keyframes barcodeGlow {
+        0%, 100% {
+          box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.25), 0 4px 16px rgba(13, 110, 253, 0.12);
+        }
+        50% {
+          box-shadow: 0 0 0 5px rgba(13, 110, 253, 0.35), 0 4px 22px rgba(13, 110, 253, 0.22);
+        }
+      }
+
+      @keyframes barcodePulse {
+        0%, 100% {
+          transform: scale(1);
+          opacity: 1;
+        }
+        50% {
+          transform: scale(1.15);
+          opacity: 0.7;
+        }
+      }
+
+      /* === POS Product Grid: CSS Grid for perfect cross-platform fit === */
+      #product-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+        gap: 0.5rem;
+      }
+
+      #product-grid .product-card {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #product-grid .product-card .card-body {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+
+      /* Remove Bootstrap row/col margin overrides inside grid */
+      #product-grid > div {
+        width: 100% !important;
+        padding: 0 !important;
+        margin: 0 !important;
       }
 
       .card-stat {
@@ -349,10 +485,42 @@
           position: relative;
           top: 0;
           margin-top: 1rem;
+          margin-bottom: 1rem;
         }
 
         .pos-products-scroll {
-          max-height: calc(100vh - 350px);
+          max-height: calc(100vh - 380px);
+        }
+
+        /* Barcode search bar on mobile */
+        .barcode-input-group .form-control {
+          min-height: 46px;
+          font-size: 0.95rem;
+        }
+
+        .barcode-input-group .btn {
+          min-height: 46px;
+          padding: 0 0.75rem;
+        }
+
+        .barcode-search-label {
+          font-size: 0.8rem;
+        }
+
+        #product-grid {
+          grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+          gap: 0.35rem;
+        }
+
+        /* POS section full-width on mobile */
+        #pos-section .row {
+          margin-left: 0;
+          margin-right: 0;
+        }
+
+        #pos-section .col-12 {
+          padding-left: 0;
+          padding-right: 0;
         }
 
         /* Table adjustments */
@@ -435,19 +603,19 @@
           max-height: 35vh;
         }
 
-        /* Input groups on mobile */
-        .input-group {
+        /* Input groups on mobile - exclude barcode input group */
+        .input-group:not(.barcode-input-group) {
           flex-wrap: wrap;
         }
 
-        .input-group .form-control,
-        .input-group .form-select {
+        .input-group:not(.barcode-input-group) .form-control,
+        .input-group:not(.barcode-input-group) .form-select {
           width: 100%;
           border-radius: 0.375rem !important;
           margin-bottom: 0.5rem;
         }
 
-        .input-group .btn {
+        .input-group:not(.barcode-input-group) .btn {
           width: 100%;
           border-radius: 0.375rem !important;
         }
@@ -478,6 +646,11 @@
           width: 33.333%;
         }
 
+        /* POS - 3 column grid on tablet */
+        #product-grid {
+          grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        }
+
         /* Summary cards */
         .summary-cards-row > div {
           width: 33.333%;
@@ -494,12 +667,92 @@
         .product-grid-col {
           width: 25%;
         }
+
+        /* POS - 4 column grid on desktop */
+        #product-grid {
+          grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+        }
       }
 
       @media (min-width: 1200px) {
         /* Extra large devices */
         .product-grid-col {
           width: 20%;
+        }
+
+        /* POS - 5 column grid on xl */
+        #product-grid {
+          grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+        }
+      }
+
+      @media (min-width: 1600px) {
+        /* Ultra-wide / 4K screens */
+        #product-grid {
+          grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        }
+
+        .pos-products-scroll {
+          max-height: calc(100vh - 280px);
+        }
+
+        .barcode-input-group .form-control {
+          min-height: 56px;
+          font-size: 1.1rem;
+        }
+
+        .barcode-input-group .btn {
+          min-height: 56px;
+        }
+      }
+
+      @media (max-width: 480px) {
+        /* Extra small devices (small phones) */
+        .product-card-img {
+          height: 80px;
+        }
+
+        .product-card .card-body {
+          padding: 6px;
+        }
+
+        .product-card .card-title {
+          font-size: 0.8rem;
+        }
+
+        .product-card .text-success {
+          font-size: 0.85rem;
+        }
+
+        #product-grid {
+          grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+          gap: 0.25rem;
+        }
+
+        .barcode-input-group .form-control {
+          min-height: 42px;
+          font-size: 0.85rem;
+          padding-left: 2.25rem;
+        }
+
+        .barcode-input-group .btn {
+          min-height: 42px;
+          padding: 0 0.5rem;
+          font-size: 0.85rem;
+        }
+
+        .barcode-input-group .barcode-icon-left {
+          font-size: 1.1rem;
+          left: 0.5rem;
+        }
+
+        .barcode-search-label {
+          font-size: 0.7rem;
+          margin-bottom: 0.25rem;
+        }
+
+        .pos-products-scroll {
+          max-height: calc(100vh - 420px);
         }
       }
 
@@ -861,26 +1114,34 @@
               </div>
             </div>
 
-            <div class="input-group mb-3">
-              <input
-                type="text"
-                id="product-search"
-                class="form-control"
-                placeholder="Scan barcode or search products..."
-                autofocus
-              />
-              <button
-                class="btn btn-primary"
-                type="button"
-                onclick="searchProducts()"
-              >
-                <i class="bi bi-search"></i> Search
-              </button>
+            <div class="barcode-search-wrapper">
+              <div class="barcode-search-label">
+                <i class="bi bi-upc-scan"></i>
+                <span data-i18n="barcodeScanner">Barcode Scanner</span>
+              </div>
+              <div class="barcode-input-group input-group">
+                <i class="bi bi-upc-scan barcode-icon-left"></i>
+                <input
+                  type="text"
+                  id="product-search"
+                  class="form-control"
+                  placeholder="Scan barcode or search products..."
+                  data-i18n-placeholder="scanBarcodeOrSearch"
+                  autofocus
+                />
+                <button
+                  class="btn btn-primary"
+                  type="button"
+                  onclick="searchProducts()"
+                >
+                  <i class="bi bi-search"></i> <span data-i18n="search">Search</span>
+                </button>
+              </div>
             </div>
             <div class="pos-products-scroll">
-              <div class="row g-2" id="product-grid">
+              <div id="product-grid">
                 <!-- Products will be loaded here -->
-                <div class="col-12 text-center py-5">
+                <div style="grid-column: 1 / -1; text-align: center; padding: 3rem 0;">
                   <div class="spinner-border text-primary" role="status">
                     <span class="visually-hidden">Loading...</span>
                   </div>
@@ -6074,6 +6335,7 @@
           
           // POS
           pointOfSale: "Point of Sale",
+          barcodeScanner: "Barcode Scanner",
           clearCart: "Clear Cart",
           customerOptional: "Customer (Optional)",
           walkInCustomer: "Walk-in Customer",
@@ -6195,6 +6457,7 @@
           
           // POS
           pointOfSale: "ရောင်းရာနေရာ",
+          barcodeScanner: "ဘားကုတ်စကင်နာ",
           clearCart: "ခြင်းရှင်းလင်းရန်",
           customerOptional: "ဖောက်သည် (ရွေးချယ်နိုင်)",
           walkInCustomer: "ဝင်ရောက်ဖောက်သည်",
@@ -6319,6 +6582,14 @@
             el.placeholder = t(key);
           } else {
             el.textContent = t(key);
+          }
+        });
+
+        // Update elements with data-i18n-placeholder (for inputs that need translated placeholder)
+        document.querySelectorAll("[data-i18n-placeholder]").forEach(el => {
+          const key = el.getAttribute("data-i18n-placeholder");
+          if (key) {
+            el.placeholder = t(key);
           }
         });
 
@@ -6866,7 +7137,7 @@
       function loadProductsForPOS() {
         const productGrid = document.getElementById("product-grid");
         productGrid.innerHTML = `
-                      <div class="col-12 text-center py-5">
+                      <div style="grid-column: 1 / -1; text-align: center; padding: 3rem 0;">
                           <div class="spinner-border text-primary" role="status">
                               <span class="visually-hidden">Loading...</span>
                           </div>
@@ -6880,13 +7151,13 @@
 
             if (data.length === 0) {
               productGrid.innerHTML =
-                '<div class="col-12 text-center py-4 text-muted">No products available.</div>';
+                '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #6c757d;">No products available.</div>';
               return;
             }
 
             data.forEach((product) => {
               const productCard = document.createElement("div");
-              productCard.className = "col-6 col-md-4 col-xl-3 mb-3";
+              productCard.className = "pos-product-cell";
               productCard.innerHTML = `
           <div class="card product-card" onclick="addToCart(${
             product.id
@@ -6912,7 +7183,7 @@
           .catch((error) => {
             console.error("Error loading products:", error);
             productGrid.innerHTML =
-              '<div class="col-12 text-center py-4 text-danger">Failed to load products.</div>';
+              '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #dc3545;">Failed to load products.</div>';
           });
       }
 
@@ -6936,13 +7207,13 @@
 
             if (data.length === 0) {
               productGrid.innerHTML =
-                '<div class="col-12 text-center py-4 text-muted">No products found matching your search.</div>';
+                '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #6c757d;">No products found matching your search.</div>';
               return;
             }
 
             data.forEach((product) => {
               const productCard = document.createElement("div");
-              productCard.className = "col-6 col-md-4 col-xl-3 mb-3";
+              productCard.className = "pos-product-cell";
               productCard.innerHTML = `
                                   <div class="card product-card" onclick="addToCart(${
                                     product.id
@@ -6973,7 +7244,7 @@
           .catch((error) => {
             console.error("Error searching products:", error);
             document.getElementById("product-grid").innerHTML =
-              '<div class="col-12 text-center py-4 text-danger">Failed to search products.</div>';
+              '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #dc3545;">Failed to search products.</div>';
           });
       }
 
