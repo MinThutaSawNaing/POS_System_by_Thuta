@@ -186,113 +186,29 @@
         padding-right: 4px;
       }
 
-      /* === Barcode Search Bar Highlight === */
+      /* === Barcode Search Bar - Clean Professional === */
       .barcode-search-wrapper {
-        position: relative;
         margin-bottom: 1rem;
       }
 
-      .barcode-search-label {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        font-weight: 700;
-        font-size: 0.875rem;
-        color: #0a58ca;
-        margin-bottom: 0.5rem;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-      }
-
-      .barcode-search-label i {
-        font-size: 1.25rem;
-        color: #0d6efd;
-        animation: barcodePulse 1.8s ease-in-out infinite;
-      }
-
       .barcode-input-group {
-        position: relative;
-        border-radius: 0.5rem;
-        box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.25), 0 4px 16px rgba(13, 110, 253, 0.12);
-        animation: barcodeGlow 2.2s ease-in-out infinite;
-        transition: all 0.3s ease;
-      }
-
-      .barcode-input-group:focus-within {
-        box-shadow: 0 0 0 4px rgba(13, 110, 253, 0.45), 0 6px 24px rgba(13, 110, 253, 0.25);
-        animation: none;
+        border-radius: 0.375rem;
       }
 
       .barcode-input-group .form-control {
-        border: 2px solid #0d6efd;
-        border-right: none;
-        border-radius: 0.5rem 0 0 0.5rem;
-        padding-left: 2.75rem;
-        font-size: 1.05rem;
-        font-weight: 500;
-        min-height: 52px;
-        background: #f8fbff;
-        transition: all 0.3s ease;
-        box-shadow: none;
+        min-height: 46px;
+        font-size: 1rem;
+        border: 1px solid #ced4da;
       }
 
       .barcode-input-group .form-control:focus {
-        border-color: #0a58ca;
-        background: #fff;
-        box-shadow: none;
-      }
-
-      .barcode-input-group .form-control::placeholder {
-        color: #6c9bd2;
-        font-weight: 400;
-        font-size: 1rem;
-      }
-
-      .barcode-input-group .barcode-icon-left {
-        position: absolute;
-        left: 0.875rem;
-        top: 50%;
-        transform: translateY(-50%);
-        font-size: 1.35rem;
-        color: #0d6efd;
-        z-index: 5;
-        pointer-events: none;
+        border-color: #86b7fe;
+        box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
       }
 
       .barcode-input-group .btn {
-        border-radius: 0 0.5rem 0.5rem 0;
-        border: 2px solid #0d6efd;
-        border-left: none;
-        min-height: 52px;
-        padding: 0 1.25rem;
-        font-weight: 600;
-        background: linear-gradient(135deg, #0d6efd 0%, #0a58ca 100%);
-        border-color: #0d6efd;
-      }
-
-      .barcode-input-group .btn:hover {
-        background: linear-gradient(135deg, #0b5ed7 0%, #084298 100%);
-        border-color: #0a58ca;
-      }
-
-      @keyframes barcodeGlow {
-        0%, 100% {
-          box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.25), 0 4px 16px rgba(13, 110, 253, 0.12);
-        }
-        50% {
-          box-shadow: 0 0 0 5px rgba(13, 110, 253, 0.35), 0 4px 22px rgba(13, 110, 253, 0.22);
-        }
-      }
-
-      @keyframes barcodePulse {
-        0%, 100% {
-          transform: scale(1);
-          opacity: 1;
-        }
-        50% {
-          transform: scale(1.15);
-          opacity: 0.7;
-        }
+        min-height: 46px;
+        font-weight: 500;
       }
 
       /* === POS Product Grid: CSS Grid for perfect cross-platform fit === */
@@ -324,23 +240,6 @@
 
       .card-stat {
         border-left: 4px solid var(--primary-color);
-      }
-
-      .pos-customer-highlight {
-        border: 2px solid #0d6efd !important;
-        border-left-width: 6px !important;
-        background: linear-gradient(180deg, rgba(13, 110, 253, 0.08) 0%, rgba(13, 110, 253, 0.02) 100%);
-        box-shadow: 0 0.5rem 1rem rgba(13, 110, 253, 0.12);
-      }
-
-      .pos-customer-highlight .form-label {
-        color: #0a58ca;
-        font-weight: 700;
-      }
-
-      .pos-customer-highlight .form-text {
-        color: #0a58ca;
-        font-size: 0.85rem;
       }
 
       .report-scope-highlight {
@@ -499,12 +398,8 @@
         }
 
         .barcode-input-group .btn {
-          min-height: 46px;
+          min-height: 42px;
           padding: 0 0.75rem;
-        }
-
-        .barcode-search-label {
-          font-size: 0.8rem;
         }
 
         #product-grid {
@@ -730,25 +625,14 @@
         }
 
         .barcode-input-group .form-control {
-          min-height: 42px;
+          min-height: 38px;
           font-size: 0.85rem;
-          padding-left: 2.25rem;
         }
 
         .barcode-input-group .btn {
-          min-height: 42px;
+          min-height: 38px;
           padding: 0 0.5rem;
           font-size: 0.85rem;
-        }
-
-        .barcode-input-group .barcode-icon-left {
-          font-size: 1.1rem;
-          left: 0.5rem;
-        }
-
-        .barcode-search-label {
-          font-size: 0.7rem;
-          margin-bottom: 0.25rem;
         }
 
         .pos-products-scroll {
@@ -1067,76 +951,34 @@
             </span>
           </div>
           <div class="d-flex gap-2">
-            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
-              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span>
+            <button class="btn btn-outline-secondary btn-sm" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> Refresh
             </button>
-            <button class="btn btn-outline-danger" onclick="clearCart()">
-              <i class="bi bi-x-circle"></i> <span class="d-none d-sm-inline">Clear Cart</span><span class="d-sm-none">Clear</span>
+            <button class="btn btn-outline-danger btn-sm" onclick="clearCart()">
+              <i class="bi bi-x-circle"></i> Clear Cart
             </button>
-          </div>
-        </div>
-
-        <div class="card mb-3 border-primary">
-          <div class="card-body py-3">
-            <div class="row g-2 align-items-end">
-              <div class="col-12 col-md-6 col-lg-4">
-                <label class="form-label mb-1">POS Branch</label>
-                <select class="form-select" id="pos-branch-selector" onchange="switchBranch(this.value)">
-                  <option value="">Loading branches...</option>
-                </select>
-                <div class="form-text">Products and stock in POS are shown for the selected branch.</div>
-              </div>
-            </div>
           </div>
         </div>
 
         <div class="row">
           <div class="col-12 col-lg-8 order-2 order-lg-1">
-            <!-- Add customer selection here -->
-            <div class="card mb-3 pos-customer-highlight">
-              <div class="card-body">
-                <div class="row g-2">
-                  <div class="col-12 col-md-8">
-                    <label class="form-label">Customer (Optional)</label>
-                    <select class="form-select searchable-select" id="pos-customer-select" data-search-placeholder="Search customer...">
-                      <option value="">Walk-in Customer</option>
-                    </select>
-                    <div class="form-text">
-                      Select a customer if this sale should be linked to customer history, debt, or details.
-                    </div>
-                  </div>
-                  <div class="col-12 col-md-4 d-flex align-items-end">
-                    <button class="btn btn-outline-primary w-100" onclick="showCustomerDetails()">
-                      <i class="bi bi-person"></i> View Details
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div class="barcode-search-wrapper">
-              <div class="barcode-search-label">
-                <i class="bi bi-upc-scan"></i>
-                <span data-i18n="barcodeScanner">Barcode Scanner</span>
-              </div>
-              <div class="barcode-input-group input-group">
-                <i class="bi bi-upc-scan barcode-icon-left"></i>
-                <input
-                  type="text"
-                  id="product-search"
-                  class="form-control"
-                  placeholder="Scan barcode or search products..."
-                  data-i18n-placeholder="scanBarcodeOrSearch"
-                  autofocus
-                />
-                <button
-                  class="btn btn-primary"
-                  type="button"
-                  onclick="searchProducts()"
-                >
-                  <i class="bi bi-search"></i> <span data-i18n="search">Search</span>
-                </button>
-              </div>
+            <div class="input-group mb-3">
+              <span class="input-group-text"><i class="bi bi-upc-scan"></i></span>
+              <input
+                type="text"
+                id="product-search"
+                class="form-control"
+                placeholder="Scan barcode or search products..."
+                data-i18n-placeholder="scanBarcodeOrSearch"
+                autofocus
+              />
+              <button
+                class="btn btn-primary"
+                type="button"
+                onclick="searchProducts()"
+              >
+                <i class="bi bi-search"></i> Search
+              </button>
             </div>
             <div class="pos-products-scroll">
               <div id="product-grid">
@@ -1150,32 +992,37 @@
             </div>
           </div>
           <div class="col-12 col-lg-4 order-1 order-lg-2 mb-3 mb-lg-0">
-            <div class="card shadow pos-cart-sticky">
-              <div class="card-header bg-primary text-white">
-                <h5 class="card-title mb-0">Current Sale</h5>
+            <div class="card shadow-sm pos-cart-sticky">
+              <div class="card-header d-flex justify-content-between align-items-center">
+                <h6 class="mb-0">Current Sale</h6>
+                <small class="text-muted" id="cart-item-count">0 items</small>
               </div>
               <div class="card-body">
-                <div id="cart-items" class="mb-3">
+                <div class="mb-3">
+                  <label class="form-label small fw-semibold">Customer</label>
+                  <select class="form-select form-select-sm" id="pos-customer-select">
+                    <option value="">Walk-in Customer</option>
+                  </select>
+                </div>
+                <div id="cart-items" style="max-height: 35vh; overflow-y: auto;">
                   <!-- Cart items will be displayed here -->
-                  <p class="text-muted text-center py-3">No items added</p>
+                  <p class="text-muted text-center py-3 small">No items added</p>
                 </div>
                 <hr />
-                <div class="d-flex justify-content-between mb-2">
-                  <span>Subtotal:</span>
+                <div class="d-flex justify-content-between small mb-1">
+                  <span>Subtotal</span>
                   <span id="subtotal">$0.00</span>
                 </div>
-                <div class="d-flex justify-content-between mb-2">
-                  <span>Tax:</span>
+                <div class="d-flex justify-content-between small mb-1">
+                  <span>Tax</span>
                   <span id="tax">$0.00</span>
                 </div>
-                <div class="d-flex justify-content-between mb-3 fw-bold">
-                  <span>Total:</span>
+                <div class="d-flex justify-content-between fw-bold mb-2">
+                  <span>Total</span>
                   <span id="total">$0.00</span>
                 </div>
-                <hr />
-                <div class="mb-3">
-                  <label class="form-label">Payment Method</label>
-                  <select id="payment-method" class="form-select">
+                <div class="mb-2">
+                  <select id="payment-method" class="form-select form-select-sm">
                     <option value="cash">Cash</option>
                     <option value="credit_card">Credit Card</option>
                     <option value="debit_card">Debit Card</option>
@@ -1183,16 +1030,16 @@
                     <option value="debt">Charge to Customer</option>
                   </select>
                 </div>
-                <div class="mb-3 border rounded p-2">
-                  <div class="form-check form-switch mb-2">
+                <div class="mb-2 border rounded p-2 small">
+                  <div class="form-check form-switch mb-1">
                     <input class="form-check-input" type="checkbox" id="pos-enable-delivery" onchange="togglePosDeliveryFields()" />
-                    <label class="form-check-label" for="pos-enable-delivery">Enable Delivery</label>
+                    <label class="form-check-label small" for="pos-enable-delivery">Enable Delivery</label>
                   </div>
                   <div id="pos-delivery-fields" style="display: none">
-                    <input type="text" class="form-control form-control-sm mb-2" id="pos-delivery-recipient-name" placeholder="Recipient Name" />
-                    <input type="text" class="form-control form-control-sm mb-2" id="pos-delivery-recipient-phone" placeholder="Recipient Phone" />
-                    <textarea class="form-control form-control-sm mb-2" id="pos-delivery-address" rows="2" placeholder="Delivery Address"></textarea>
-                    <div class="row g-2">
+                    <input type="text" class="form-control form-control-sm mb-1" id="pos-delivery-recipient-name" placeholder="Recipient Name" />
+                    <input type="text" class="form-control form-control-sm mb-1" id="pos-delivery-recipient-phone" placeholder="Recipient Phone" />
+                    <textarea class="form-control form-control-sm mb-1" id="pos-delivery-address" rows="2" placeholder="Delivery Address"></textarea>
+                    <div class="row g-1">
                       <div class="col-6">
                         <select class="form-select form-select-sm" id="pos-delivery-priority">
                           <option value="normal">Normal</option>
@@ -1207,25 +1054,25 @@
                     </div>
                   </div>
                 </div>
-                <div class="mb-3" id="cash-payment-fields">
-                  <label class="form-label">Cash Received</label>
+                <div class="mb-2" id="cash-payment-fields">
+                  <label class="form-label small fw-semibold">Cash Received</label>
                   <input
                     type="number"
                     min="0"
                     step="0.01"
                     id="cash-received"
-                    class="form-control"
+                    class="form-control form-control-sm"
                     placeholder="0.00"
                     oninput="updateCashRefundDisplay()"
                   />
-                  <div class="d-flex justify-content-between mt-2">
-                    <small class="text-muted">Refund / Change:</small>
+                  <div class="d-flex justify-content-between mt-1">
+                    <small class="text-muted">Change</small>
                     <small class="fw-bold" id="refund-amount">$0.00</small>
                   </div>
                 </div>
                 <button
                   id="complete-sale-btn"
-                  class="btn btn-success w-100 py-2"
+                  class="btn btn-success w-100"
                   onclick="completeSale()"
                 >
                   <i class="bi bi-check-circle" id="complete-sale-icon"></i> <span id="complete-sale-text">Complete Sale</span>
@@ -5103,14 +4950,10 @@
           .then((data) => {
             branchesList = data;
             const selector = document.getElementById("branch-selector");
-            const posSelector = document.getElementById("pos-branch-selector");
             const reportBranchSelector = document.getElementById("report-branch-selector");
             if (!selector) return;
             
             selector.innerHTML = "";
-            if (posSelector) {
-              posSelector.innerHTML = "";
-            }
             if (reportBranchSelector) {
               reportBranchSelector.innerHTML = '<option value="">Current branch</option>';
             }
@@ -5123,9 +4966,6 @@
                 option.textContent += " [Inactive]";
               }
               selector.appendChild(option);
-              if (posSelector) {
-                posSelector.appendChild(option.cloneNode(true));
-              }
               if (reportBranchSelector && branch.is_active) {
                 const reportOption = document.createElement("option");
                 reportOption.value = branch.id;
@@ -5256,11 +5096,6 @@
             const selector = document.getElementById("warehouse-target-branch");
             if (selector) {
               selector.value = branchId;
-            }
-
-            const posSelector = document.getElementById("pos-branch-selector");
-            if (posSelector) {
-              posSelector.value = branchId;
             }
           })
           .catch((error) => {
@@ -7359,6 +7194,11 @@
 
       function updateCartDisplay() {
         const cartItems = document.getElementById("cart-items");
+        const cartCount = document.getElementById("cart-item-count");
+        if (cartCount) {
+          const totalQty = cart.reduce((sum, item) => sum + item.quantity, 0);
+          cartCount.textContent = totalQty + " item" + (totalQty !== 1 ? "s" : "");
+        }
         if (cart.length === 0) {
           cartItems.innerHTML =
             '<p class="text-muted text-center py-3">No items added</p>';
