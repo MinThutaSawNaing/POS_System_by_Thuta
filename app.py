@@ -3626,13 +3626,24 @@ def api_promotions():
             db.session.rollback()
             return jsonify({'success': False, 'message': str(e)}), 500
 
-@app.route('/api/promotions/<int:promo_id>', methods=['PUT', 'DELETE'])
+@app.route('/api/promotions/<int:promo_id>', methods=['GET', 'PUT', 'DELETE'])
 @manager_required
 def api_single_promotion(promo_id):
     promo = Promotion.query.get_or_404(promo_id)
     myanmar_tz = pytz.timezone('Asia/Yangon')
 
-    if request.method == 'DELETE':
+    if request.method == 'GET':
+        return jsonify({
+            'id': promo.id,
+            'product_id': promo.product_id,
+            'product_name': promo.product.name,
+            'discount_type': promo.discount_type,
+            'discount_value': promo.discount_value,
+            'start_date': promo.start_date.astimezone(myanmar_tz).isoformat() if promo.start_date.tzinfo else myanmar_tz.localize(promo.start_date).isoformat(),
+            'end_date': promo.end_date.astimezone(myanmar_tz).isoformat() if promo.end_date.tzinfo else myanmar_tz.localize(promo.end_date).isoformat()
+        })
+
+    elif request.method == 'DELETE':
         db.session.delete(promo)
         db.session.commit()
         return jsonify({'success': True, 'message': 'Promotion deleted'})
