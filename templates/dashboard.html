@@ -965,13 +965,13 @@
             </span>
           </div>
           <div class="d-flex gap-2">
-            <button class="btn btn-outline-secondary btn-sm" onclick="refreshCurrentSection()">
-              <i class="bi bi-arrow-repeat"></i> Refresh
-            </button>
             <div class="form-check form-switch auto-barcode-scanner-control mb-0 d-flex align-items-center gap-1" title="Auto Barcode Scanner Detection">
               <input class="form-check-input mt-0" type="checkbox" role="switch" id="auto-barcode-scanner-toggle" />
               <label class="form-check-label text-muted" for="auto-barcode-scanner-toggle"><i class="bi bi-upc-scan"></i> Scanner</label>
             </div>
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> Refresh
+            </button>
             <button class="btn btn-outline-danger btn-sm" onclick="clearCart()">
               <i class="bi bi-x-circle"></i> Clear Cart
             </button>
@@ -5318,6 +5318,7 @@
 
       let cart = [];
       let currentSection = "dashboard";
+      const ACTIVE_SECTION_STORAGE_KEY = "pos_active_section";
       let currentProduct = null;
       let currentSupplier = null;
       let dashboardChart = null;
@@ -5652,6 +5653,7 @@
         loadProducts();
         loadSales();
         initAutoBarcodeScannerToggle();
+        restoreActiveSection();
 
         // Set up product search to work on Enter key
         document
@@ -6632,6 +6634,17 @@
         });
       }
 
+      // Restore the last open section after a browser refresh.
+      function restoreActiveSection() {
+        const savedSection = localStorage.getItem(ACTIVE_SECTION_STORAGE_KEY);
+        const savedSectionElement = savedSection && document.getElementById(`${savedSection}-section`);
+        const savedNavLink = savedSection && document.querySelector(`[onclick="showSection('${savedSection}')"]`);
+
+        if (savedSectionElement && savedNavLink && savedSection !== currentSection) {
+          showSection(savedSection);
+        }
+      }
+
       // Show different sections
       function showSection(sectionId) {
         document.getElementById(currentSection + "-section").style.display =
@@ -6642,6 +6655,7 @@
           .querySelector(`[onclick="showSection('${sectionId}')"]`)
           .classList.add("active");
         currentSection = sectionId;
+        localStorage.setItem(ACTIVE_SECTION_STORAGE_KEY, sectionId);
 
         // Load data for the section if needed
         if (sectionId === "pos") {
