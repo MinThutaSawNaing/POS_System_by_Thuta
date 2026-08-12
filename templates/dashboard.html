@@ -1608,6 +1608,7 @@
               class="btn btn-primary"
               data-bs-toggle="modal"
               data-bs-target="#addPromotionModal"
+              onclick="prepareNewPromotion()"
             >
               <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Add Promotion</span><span class="d-sm-none">Add</span>
             </button>
@@ -9906,6 +9907,24 @@
               });
           }
         );
+      }
+
+      function prepareNewPromotion() {
+        document.getElementById("add-promotion-form").reset();
+
+        const productSelect = document.getElementById("promotion-product-id");
+        productSelect.value = "";
+        productSelect.dispatchEvent(new Event("change"));
+
+        document.querySelector(
+          "#addPromotionModal .modal-title"
+        ).textContent = "Create Promotion";
+
+        const saveBtn = document.querySelector(
+          "#addPromotionModal .btn-primary"
+        );
+        saveBtn.textContent = "Save Promotion";
+        saveBtn.onclick = savePromotion;
       }
 
       function savePromotion() {
