@@ -11,7 +11,16 @@ RECEIPT_PAPER_58MM = "THERMAL_58MM"
 RECEIPT_PAPER_80MM = "THERMAL_80MM"
 RECEIPT_PAPER_OPTIONS = {RECEIPT_PAPER_58MM, RECEIPT_PAPER_80MM}
 DEFAULT_RECEIPT_PAPER_SIZE = RECEIPT_PAPER_80MM
-RECEIPT_SNAPSHOT_VERSION = 1
+RECEIPT_SNAPSHOT_VERSION = 2
+DEFAULT_RECEIPT_BRAND_NAME = "Parrot POS"
+DEFAULT_RECEIPT_FOOTER = "Thank you for your purchase.\nPlease keep your receipt."
+RECEIPT_IDENTITY_LIMITS = {
+    "brand_name": 100,
+    "email": 100,
+    "phone": 30,
+    "address": 300,
+    "footer_message": 200,
+}
 
 PAPER_PROFILES = {
     RECEIPT_PAPER_58MM: {
@@ -34,6 +43,50 @@ def normalize_receipt_paper_size(value: Any) -> str:
 
 def get_paper_profile(value: Any) -> dict[str, Any]:
     return dict(PAPER_PROFILES[normalize_receipt_paper_size(value)])
+
+
+def detect_receipt_logo_extension(header: bytes) -> str | None:
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def normalize_receipt_identity(
+    values: Mapping[str, Any] | None,
+    branch: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    """Validate receipt identity and resolve blank contact overrides from a branch."""
+    values = values or {}
+    branch = branch or {}
+    normalized = {
+        "brand_name": str(values.get("brand_name") or DEFAULT_RECEIPT_BRAND_NAME).strip(),
+        "logo_filename": str(values.get("logo_filename") or "").strip(),
+        "email": str(values.get("email") or "").strip() or str(branch.get("email") or "").strip(),
+        "phone": str(values.get("phone") or "").strip() or str(branch.get("phone") or "").strip(),
+        "address": str(values.get("address") or "").strip() or str(branch.get("address") or "").strip(),
+        "footer_message": str(
+            values.get("footer_message")
+            if "footer_message" in values
+            else DEFAULT_RECEIPT_FOOTER
+        ).strip(),
+    }
+
+    if not normalized["brand_name"]:
+        raise ValueError("Receipt brand name is required")
+    for field, limit in RECEIPT_IDENTITY_LIMITS.items():
+        if len(normalized[field]) > limit:
+            label = field.replace("_", " ").capitalize()
+            raise ValueError(f"{label} must be {limit} characters or fewer")
+
+    email = normalized["email"]
+    if email and ("@" not in email or email.startswith("@") or email.endswith("@") or "." not in email.rsplit("@", 1)[-1]):
+        raise ValueError("Invalid receipt email address")
+
+    return normalized
 
 
 def calculate_thermal_page_height_mm(content_height_px: Any, safety_mm: int = 3) -> int:
@@ -73,6 +126,7 @@ def build_receipt_snapshot(
     subtotal: Any,
     tax: Any,
     total: Any,
+    receipt_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     snapshot_items = []
     for item in items:
@@ -92,11 +146,16 @@ def build_receipt_snapshot(
         })
 
     branch = branch or {}
+    identity = normalize_receipt_identity(
+        receipt_identity or {"brand_name": pos_name},
+        branch,
+    )
     return {
         "version": RECEIPT_SNAPSHOT_VERSION,
         "transaction_id": str(transaction_id),
         "sale_datetime": _iso(sale_date),
         "pos_name": str(pos_name or "Parrot POS"),
+        "receipt_identity": identity,
         "currency_code": str(currency_code or "USD"),
         "currency_suffix": str(currency_suffix or "$"),
         "branch": {
@@ -130,6 +189,15 @@ def build_receipt_view(snapshot: Mapping[str, Any], paper_size: Any) -> dict[str
     payment = dict(snapshot.get("payment") or {})
     branch = dict(snapshot.get("branch") or {})
     cashier = dict(snapshot.get("cashier") or {})
+    stored_identity = snapshot.get("receipt_identity")
+    if stored_identity:
+        identity = normalize_receipt_identity(dict(stored_identity))
+    else:
+        # Version-1 snapshots stored the title and contact details separately.
+        identity = normalize_receipt_identity(
+            {"brand_name": snapshot.get("pos_name") or DEFAULT_RECEIPT_BRAND_NAME},
+            branch,
+        )
 
     raw_date = snapshot.get("sale_datetime")
     display_date = str(raw_date or "")
@@ -157,7 +225,13 @@ def build_receipt_view(snapshot: Mapping[str, Any], paper_size: Any) -> dict[str
         "transaction_id": transaction_id,
         "receipt_number": transaction_id[-8:].upper() if transaction_id else "UNKNOWN",
         "date": display_date,
-        "pos_name": str(snapshot.get("pos_name") or "Parrot POS"),
+        "pos_name": identity["brand_name"],
+        "brand_name": identity["brand_name"],
+        "logo_filename": identity["logo_filename"],
+        "email": identity["email"],
+        "phone": identity["phone"],
+        "address_lines": identity["address"].splitlines() if identity["address"] else [],
+        "footer_lines": identity["footer_message"].splitlines() if identity["footer_message"] else [],
         "branch": branch,
         "cashier_name": str(cashier.get("name") or "Unknown"),
         "payment_method": str(payment.get("method") or "unknown").replace("_", " ").title(),

@@ -16,10 +16,14 @@ from reportlab.lib import colors
 import pandas as pd
 from reportlab.graphics.barcode import createBarcodeDrawing
 from receipt import (
+    DEFAULT_RECEIPT_BRAND_NAME,
+    DEFAULT_RECEIPT_FOOTER,
     DEFAULT_RECEIPT_PAPER_SIZE,
     RECEIPT_PAPER_OPTIONS,
     build_receipt_snapshot,
     build_receipt_view,
+    detect_receipt_logo_extension,
+    normalize_receipt_identity,
     normalize_receipt_paper_size,
 )
 from reportlab.graphics import renderPDF
@@ -37,10 +41,12 @@ app.secret_key = os.environ.get('SECRET_KEY', 'your_super_secret_key_here')
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pos.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = os.path.join(app.root_path, 'uploads', 'products')
+app.config['RECEIPT_LOGO_FOLDER'] = os.path.join(app.root_path, 'uploads', 'receipts')
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB per request
 db = SQLAlchemy(app)
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(app.config['RECEIPT_LOGO_FOLDER'], exist_ok=True)
 
 MONEY_QUANT = Decimal('0.01')
 ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
@@ -96,6 +102,38 @@ def get_receipt_paper_size():
     return normalize_receipt_paper_size(
         get_setting('receipt_paper_size', DEFAULT_RECEIPT_PAPER_SIZE)
     )
+
+def get_receipt_identity(branch=None):
+    return normalize_receipt_identity({
+        'brand_name': get_setting('receipt_brand_name', DEFAULT_RECEIPT_BRAND_NAME),
+        'logo_filename': get_setting('receipt_logo_filename', ''),
+        'email': get_setting('receipt_email', ''),
+        'phone': get_setting('receipt_phone', ''),
+        'address': get_setting('receipt_address', ''),
+        'footer_message': get_setting('receipt_footer_message', DEFAULT_RECEIPT_FOOTER),
+    }, {
+        'email': branch.email if branch else '',
+        'phone': branch.phone if branch else '',
+        'address': branch.address if branch else '',
+    })
+
+def get_receipt_customization_settings(branch=None):
+    identity = get_receipt_identity(branch)
+    return {
+        'brand_name': get_setting('receipt_brand_name', DEFAULT_RECEIPT_BRAND_NAME),
+        'logo_filename': get_setting('receipt_logo_filename', ''),
+        'logo_url': receipt_logo_url(get_setting('receipt_logo_filename', '')),
+        'email': get_setting('receipt_email', ''),
+        'phone': get_setting('receipt_phone', ''),
+        'address': get_setting('receipt_address', ''),
+        'footer_message': get_setting('receipt_footer_message', DEFAULT_RECEIPT_FOOTER),
+        'effective_email': identity['email'],
+        'effective_phone': identity['phone'],
+        'effective_address': identity['address'],
+    }
+
+def receipt_logo_url(filename):
+    return url_for('receipt_logo', filename=filename) if filename else None
 
 def format_currency(value, currency_code=None):
     symbol = get_currency_suffix(currency_code)
@@ -1417,6 +1455,9 @@ def api_settings():
             'currency_code': get_currency_code(),
             'currency_suffix': get_currency_suffix(),
             'receipt_paper_size': get_receipt_paper_size(),
+            'receipt_customization': get_receipt_customization_settings(
+                db.session.get(Branch, get_current_branch_id())
+            ),
             'ai_api_key_configured': bool(ai_api_key and len(ai_api_key) > 10)
         })
 
@@ -1441,6 +1482,31 @@ def api_settings():
             return jsonify({'success': False, 'message': 'Invalid receipt paper size'}), 400
         updated_settings['receipt_paper_size'] = normalized_paper_size
 
+    customization = data.get('receipt_customization')
+    if customization is not None:
+        if not isinstance(customization, dict):
+            return jsonify({'success': False, 'message': 'Invalid receipt customization'}), 400
+        if not str(customization.get('brand_name') or '').strip():
+            return jsonify({'success': False, 'message': 'Receipt brand name is required'}), 400
+        try:
+            normalized_identity = normalize_receipt_identity({
+                'brand_name': customization.get('brand_name'),
+                'logo_filename': get_setting('receipt_logo_filename', ''),
+                'email': customization.get('email'),
+                'phone': customization.get('phone'),
+                'address': customization.get('address'),
+                'footer_message': customization.get('footer_message'),
+            })
+        except ValueError as error:
+            return jsonify({'success': False, 'message': str(error)}), 400
+        updated_settings.update({
+            'receipt_brand_name': normalized_identity['brand_name'],
+            'receipt_email': str(customization.get('email') or '').strip(),
+            'receipt_phone': str(customization.get('phone') or '').strip(),
+            'receipt_address': str(customization.get('address') or '').strip(),
+            'receipt_footer_message': normalized_identity['footer_message'],
+        })
+
     if updated_settings:
         for key, value in updated_settings.items():
             setting = AppSetting.query.filter_by(key=key).first()
@@ -1455,7 +1521,10 @@ def api_settings():
             'message': 'Settings updated',
             'currency_code': effective_currency,
             'currency_suffix': get_currency_suffix(effective_currency),
-            'receipt_paper_size': updated_settings.get('receipt_paper_size', get_receipt_paper_size())
+            'receipt_paper_size': updated_settings.get('receipt_paper_size', get_receipt_paper_size()),
+            'receipt_customization': get_receipt_customization_settings(
+                db.session.get(Branch, get_current_branch_id())
+            )
         })
     
     # Handle AI API key update
@@ -1820,6 +1889,46 @@ def api_inventory_suggested_purchase_order():
 @app.route('/uploads/products/<path:filename>')
 def product_image(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+@app.route('/uploads/receipts/<path:filename>')
+@login_required
+def receipt_logo(filename):
+    response = make_response(send_from_directory(app.config['RECEIPT_LOGO_FOLDER'], filename))
+    response.headers['Cache-Control'] = 'private, max-age=86400'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+@app.route('/api/settings/receipt-logo', methods=['POST', 'DELETE'])
+@manager_required
+def api_receipt_logo():
+    if request.method == 'DELETE':
+        set_setting('receipt_logo_filename', '')
+        return jsonify({'success': True, 'message': 'Receipt logo removed', 'logo_url': None})
+
+    logo = request.files.get('logo')
+    if not logo or not logo.filename:
+        return jsonify({'success': False, 'message': 'Select a logo image'}), 400
+    if request.content_length and request.content_length > 600 * 1024:
+        return jsonify({'success': False, 'message': 'Receipt logo must be 512 KB or smaller'}), 413
+    header = logo.stream.read(16)
+    logo.stream.seek(0)
+    extension = detect_receipt_logo_extension(header)
+    if extension not in {'png', 'jpg', 'webp'}:
+        return jsonify({'success': False, 'message': 'Use a valid PNG, JPG, or WebP logo'}), 400
+
+    filename = f"{uuid.uuid4().hex}.{extension}"
+    destination = os.path.join(app.config['RECEIPT_LOGO_FOLDER'], filename)
+    logo.save(destination)
+    if os.path.getsize(destination) > 512 * 1024:
+        os.remove(destination)
+        return jsonify({'success': False, 'message': 'Receipt logo must be 512 KB or smaller'}), 413
+    set_setting('receipt_logo_filename', filename)
+    return jsonify({
+        'success': True,
+        'message': 'Receipt logo updated',
+        'logo_filename': filename,
+        'logo_url': receipt_logo_url(filename)
+    })
 
 @app.route('/public/<path:filename>')
 def public_file(filename):
@@ -2542,7 +2651,8 @@ def api_create_sale():
                 } for item in items],
                 subtotal=subtotal,
                 tax=tax_total,
-                total=total_rounded
+                total=total_rounded,
+                receipt_identity=get_receipt_identity(receipt_branch)
             ),
             ensure_ascii=False
         )
@@ -3148,10 +3258,12 @@ def print_receipt(transaction_id):
             items=legacy_items,
             subtotal=subtotal,
             tax=sale.tax,
-            total=sale.total
+            total=sale.total,
+            receipt_identity=get_receipt_identity(branch)
         )
 
     receipt_view = build_receipt_view(snapshot, get_receipt_paper_size())
+    receipt_view['logo_url'] = receipt_logo_url(receipt_view.get('logo_filename'))
     response = make_response(render_template('receipt.html', receipt=receipt_view))
     response.headers['Cache-Control'] = 'private, no-store, max-age=0'
     response.headers['X-Content-Type-Options'] = 'nosniff'

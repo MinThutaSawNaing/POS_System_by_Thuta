@@ -209,6 +209,68 @@
         font-size: 0.875rem;
       }
 
+      .receipt-customization-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 210px;
+        gap: 1.25rem;
+        align-items: start;
+      }
+
+      .receipt-logo-preview {
+        width: 120px;
+        height: 72px;
+        display: grid;
+        place-items: center;
+        border: 1px dashed #adb5bd;
+        border-radius: 0.5rem;
+        background: #f8f9fa;
+        overflow: hidden;
+      }
+
+      .receipt-logo-preview img {
+        max-width: 108px;
+        max-height: 62px;
+        object-fit: contain;
+        filter: grayscale(1) contrast(1.35);
+      }
+
+      .receipt-live-preview {
+        width: 100%;
+        min-height: 250px;
+        padding: 14px 11px;
+        border: 1px solid #ced4da;
+        background: #fff;
+        box-shadow: 0 5px 18px rgba(33, 37, 41, 0.12);
+        font: 600 10px/1.35 "Courier New", monospace;
+        color: #111;
+        text-align: center;
+        overflow-wrap: anywhere;
+      }
+
+      .receipt-live-preview img {
+        display: block;
+        max-width: 92px;
+        max-height: 48px;
+        margin: 0 auto 7px;
+        object-fit: contain;
+        filter: grayscale(1) contrast(1.35);
+      }
+
+      .receipt-live-preview .preview-brand {
+        font: 800 15px/1.15 Arial, sans-serif;
+        margin-bottom: 4px;
+      }
+
+      .receipt-live-preview .preview-rule {
+        margin: 8px 0;
+        border-top: 1px dashed #111;
+      }
+
+      @media (max-width: 767.98px) {
+        .receipt-customization-layout { grid-template-columns: 1fr; }
+        .receipt-preview-column { max-width: 260px; margin: 0 auto; width: 100%; }
+      }
+
       #cart-items {
         max-height: 45vh;
         overflow-y: auto;
@@ -2457,6 +2519,79 @@
         </div>
 
         <div class="card mt-3">
+          <div class="card-header bg-primary text-white">
+            <h5 class="mb-0"><i class="bi bi-shop-window me-2"></i>Receipt Customization</h5>
+          </div>
+          <div class="card-body">
+            <div class="receipt-customization-layout">
+              <div>
+                <div class="d-flex align-items-center gap-3 flex-wrap mb-3">
+                  <div class="receipt-logo-preview" id="receipt-logo-preview">
+                    <span class="small text-muted">No logo</span>
+                  </div>
+                  <div>
+                    <label class="btn btn-outline-primary btn-sm mb-1" for="receipt-logo-file">
+                      <i class="bi bi-upload me-1"></i>Upload logo
+                    </label>
+                    <input type="file" id="receipt-logo-file" class="visually-hidden" accept="image/png,image/jpeg,image/webp" />
+                    <button type="button" class="btn btn-outline-danger btn-sm mb-1" id="remove-receipt-logo-btn" onclick="removeReceiptLogo()">
+                      <i class="bi bi-trash me-1"></i>Remove
+                    </button>
+                    <div class="form-text">PNG, JPG, or WebP up to 512 KB. A high-contrast monochrome logo prints best.</div>
+                  </div>
+                </div>
+
+                <div class="mb-3">
+                  <label class="form-label" for="receipt-brand-name">Brand name *</label>
+                  <input type="text" class="form-control" id="receipt-brand-name" maxlength="100" required />
+                </div>
+                <div class="row g-3 mb-3">
+                  <div class="col-md-6">
+                    <label class="form-label" for="receipt-email">Email</label>
+                    <input type="email" class="form-control" id="receipt-email" maxlength="100" />
+                    <div class="form-text">Leave blank to use the active branch email.</div>
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label" for="receipt-phone">Phone</label>
+                    <input type="text" class="form-control" id="receipt-phone" maxlength="30" />
+                    <div class="form-text">Leave blank to use the active branch phone.</div>
+                  </div>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label" for="receipt-address">Address</label>
+                  <textarea class="form-control" id="receipt-address" rows="2" maxlength="300"></textarea>
+                  <div class="form-text">Leave blank to use the active branch address.</div>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label" for="receipt-footer-message">Footer message</label>
+                  <textarea class="form-control" id="receipt-footer-message" rows="2" maxlength="200"></textarea>
+                </div>
+                <button type="button" class="btn btn-primary" id="save-receipt-customization-btn" onclick="saveReceiptCustomization()">
+                  <i class="bi bi-save me-1"></i>Save customization
+                </button>
+                <div class="alert alert-light border mt-3 mb-0 py-2" id="receipt-customization-access-note" style="display: none;">
+                  Manager access is required to change receipt customization.
+                </div>
+              </div>
+
+              <aside class="receipt-preview-column" aria-label="Live receipt header preview">
+                <div class="small text-muted fw-semibold mb-2 text-center">55/58 mm preview</div>
+                <div class="receipt-live-preview">
+                  <img id="receipt-preview-logo" alt="Receipt logo preview" style="display: none;" />
+                  <div class="preview-brand" id="receipt-preview-brand">Parrot POS</div>
+                  <div id="receipt-preview-address"></div>
+                  <div id="receipt-preview-contact"></div>
+                  <div class="preview-rule"></div>
+                  <div>Receipt · DATE · TOTAL</div>
+                  <div class="preview-rule"></div>
+                  <div id="receipt-preview-footer">Thank you for your purchase.</div>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mt-3">
           <div class="card-header bg-dark text-white">
             <h5 class="mb-0"><i class="bi bi-printer me-2"></i>Receipt Printer</h5>
           </div>
@@ -4688,7 +4823,21 @@
         currencyCode: "{{ currency_code }}",
         currencySuffix: "{{ currency_suffix }}",
         receiptPaperSize: "THERMAL_80MM",
+        receiptCustomization: {
+          brand_name: "Parrot POS",
+          logo_filename: "",
+          logo_url: null,
+          email: "",
+          phone: "",
+          address: "",
+          footer_message: "Thank you for your purchase.\nPlease keep your receipt.",
+          effective_email: "",
+          effective_phone: "",
+          effective_address: "",
+        },
       };
+      let pendingReceiptLogoFile = null;
+      let pendingReceiptLogoObjectUrl = null;
       const CURRENT_USER_ROLE = "{{ session.role }}";
 
       function hasManagerOrBossAccess() {
@@ -4820,6 +4969,29 @@
         const receiptAccessNote = document.getElementById("receipt-paper-access-note");
         if (receiptAccessNote) receiptAccessNote.style.display = hasManagerAccess() ? "none" : "block";
 
+        const customization = APP_SETTINGS.receiptCustomization;
+        const fieldMap = {
+          "receipt-brand-name": customization.brand_name,
+          "receipt-email": customization.email,
+          "receipt-phone": customization.phone,
+          "receipt-address": customization.address,
+          "receipt-footer-message": customization.footer_message,
+        };
+        Object.entries(fieldMap).forEach(([id, value]) => {
+          const field = document.getElementById(id);
+          if (field && document.activeElement !== field) field.value = value || "";
+          if (field) field.disabled = !hasManagerAccess();
+        });
+        const customizationSaveButton = document.getElementById("save-receipt-customization-btn");
+        const logoInput = document.getElementById("receipt-logo-file");
+        const removeLogoButton = document.getElementById("remove-receipt-logo-btn");
+        if (customizationSaveButton) customizationSaveButton.disabled = !hasManagerAccess();
+        if (logoInput) logoInput.disabled = !hasManagerAccess();
+        if (removeLogoButton) removeLogoButton.disabled = !hasManagerAccess() || !customization.logo_url;
+        const customizationAccessNote = document.getElementById("receipt-customization-access-note");
+        if (customizationAccessNote) customizationAccessNote.style.display = hasManagerAccess() ? "none" : "block";
+        renderReceiptCustomizationPreview();
+
         normalizeCurrencyDisplay();
       }
 
@@ -4831,6 +5003,10 @@
             APP_SETTINGS.currencyCode = data.currency_code || APP_SETTINGS.currencyCode;
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(APP_SETTINGS.currencyCode);
             APP_SETTINGS.receiptPaperSize = data.receipt_paper_size || APP_SETTINGS.receiptPaperSize;
+            APP_SETTINGS.receiptCustomization = {
+              ...APP_SETTINGS.receiptCustomization,
+              ...(data.receipt_customization || {}),
+            };
             applySettingsUI();
             loadAISettings();
           })
@@ -4838,6 +5014,130 @@
             console.error("Error loading settings:", error);
             applySettingsUI();
           });
+      }
+
+      function getReceiptCustomizationFormValues() {
+        return {
+          brand_name: document.getElementById("receipt-brand-name")?.value.trim() || "",
+          email: document.getElementById("receipt-email")?.value.trim() || "",
+          phone: document.getElementById("receipt-phone")?.value.trim() || "",
+          address: document.getElementById("receipt-address")?.value.trim() || "",
+          footer_message: document.getElementById("receipt-footer-message")?.value.trim() || "",
+        };
+      }
+
+      function renderReceiptCustomizationPreview() {
+        const form = getReceiptCustomizationFormValues();
+        const saved = APP_SETTINGS.receiptCustomization;
+        const previewBrand = document.getElementById("receipt-preview-brand");
+        const previewAddress = document.getElementById("receipt-preview-address");
+        const previewContact = document.getElementById("receipt-preview-contact");
+        const previewFooter = document.getElementById("receipt-preview-footer");
+        const previewLogo = document.getElementById("receipt-preview-logo");
+        const logoBox = document.getElementById("receipt-logo-preview");
+        const effectiveEmail = form.email || saved.effective_email || "";
+        const effectivePhone = form.phone || saved.effective_phone || "";
+        const effectiveAddress = form.address || saved.effective_address || "";
+        const logoUrl = pendingReceiptLogoObjectUrl || saved.logo_url;
+
+        if (previewBrand) previewBrand.textContent = form.brand_name || "Brand name";
+        if (previewAddress) previewAddress.textContent = effectiveAddress;
+        if (previewContact) previewContact.textContent = [effectivePhone, effectiveEmail].filter(Boolean).join(" · ");
+        if (previewFooter) previewFooter.textContent = form.footer_message || "";
+        if (previewLogo) {
+          previewLogo.src = logoUrl || "";
+          previewLogo.style.display = logoUrl ? "block" : "none";
+        }
+        if (logoBox) {
+          logoBox.innerHTML = logoUrl
+            ? `<img src="${escapeHtml(logoUrl)}" alt="Current receipt logo" />`
+            : '<span class="small text-muted">No logo</span>';
+        }
+      }
+
+      async function uploadPendingReceiptLogo() {
+        if (!pendingReceiptLogoFile) return null;
+        const formData = new FormData();
+        formData.append("logo", pendingReceiptLogoFile);
+        const response = await fetch("/api/settings/receipt-logo", { method: "POST", body: formData });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.message || "Failed to upload receipt logo");
+        return data;
+      }
+
+      async function saveReceiptCustomization() {
+        if (!hasManagerAccess()) return;
+        const values = getReceiptCustomizationFormValues();
+        if (!values.brand_name) {
+          showToast("Receipt brand name is required", "warning");
+          document.getElementById("receipt-brand-name")?.focus();
+          return;
+        }
+        const button = document.getElementById("save-receipt-customization-btn");
+        const originalContent = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
+        try {
+          const response = await fetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ receipt_customization: values }),
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) throw new Error(data.message || "Failed to save receipt customization");
+          APP_SETTINGS.receiptCustomization = {
+            ...APP_SETTINGS.receiptCustomization,
+            ...(data.receipt_customization || {}),
+          };
+          const logoData = await uploadPendingReceiptLogo();
+          if (logoData) {
+            APP_SETTINGS.receiptCustomization.logo_filename = logoData.logo_filename;
+            APP_SETTINGS.receiptCustomization.logo_url = logoData.logo_url;
+          }
+          pendingReceiptLogoFile = null;
+          if (pendingReceiptLogoObjectUrl) URL.revokeObjectURL(pendingReceiptLogoObjectUrl);
+          pendingReceiptLogoObjectUrl = null;
+          document.getElementById("receipt-logo-file").value = "";
+          applySettingsUI();
+          showToast("Receipt customization saved", "success");
+        } catch (error) {
+          console.error("Error saving receipt customization:", error);
+          showToast(error.message || "Failed to save receipt customization", "error");
+          pendingReceiptLogoFile = null;
+          if (pendingReceiptLogoObjectUrl) URL.revokeObjectURL(pendingReceiptLogoObjectUrl);
+          pendingReceiptLogoObjectUrl = null;
+          document.getElementById("receipt-logo-file").value = "";
+          applySettingsUI();
+        } finally {
+          button.disabled = !hasManagerAccess();
+          button.innerHTML = originalContent;
+        }
+      }
+
+      function removeReceiptLogo() {
+        if (!hasManagerAccess() || !APP_SETTINGS.receiptCustomization.logo_url) return;
+        showConfirmDialog(
+          "Remove receipt logo",
+          "Remove the logo from future receipts? Historical receipts will keep their original logo.",
+          performReceiptLogoRemoval
+        );
+      }
+
+      async function performReceiptLogoRemoval() {
+        try {
+          const response = await fetch("/api/settings/receipt-logo", { method: "DELETE" });
+          const data = await response.json();
+          if (!response.ok || !data.success) throw new Error(data.message || "Failed to remove receipt logo");
+          APP_SETTINGS.receiptCustomization.logo_filename = "";
+          APP_SETTINGS.receiptCustomization.logo_url = null;
+          pendingReceiptLogoFile = null;
+          if (pendingReceiptLogoObjectUrl) URL.revokeObjectURL(pendingReceiptLogoObjectUrl);
+          pendingReceiptLogoObjectUrl = null;
+          applySettingsUI();
+          showToast("Receipt logo removed from future receipts", "success");
+        } catch (error) {
+          showToast(error.message || "Failed to remove receipt logo", "error");
+        }
       }
 
       // AI Agent Settings Functions
@@ -5819,6 +6119,27 @@
         loadSettings();
         loadBranchSelector();
         startCurrencyObserver();
+        ["receipt-brand-name", "receipt-email", "receipt-phone", "receipt-address", "receipt-footer-message"].forEach((id) => {
+          document.getElementById(id)?.addEventListener("input", renderReceiptCustomizationPreview);
+        });
+        document.getElementById("receipt-logo-file")?.addEventListener("change", function () {
+          const file = this.files?.[0] || null;
+          if (!file) return;
+          if (file.size > 512 * 1024) {
+            showToast("Receipt logo must be 512 KB or smaller", "warning");
+            this.value = "";
+            return;
+          }
+          if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+            showToast("Use a PNG, JPG, or WebP receipt logo", "warning");
+            this.value = "";
+            return;
+          }
+          pendingReceiptLogoFile = file;
+          if (pendingReceiptLogoObjectUrl) URL.revokeObjectURL(pendingReceiptLogoObjectUrl);
+          pendingReceiptLogoObjectUrl = URL.createObjectURL(file);
+          renderReceiptCustomizationPreview();
+        });
 
         // Set today's date as the default sales-history date range
         const today = new Date().toISOString().split("T")[0];

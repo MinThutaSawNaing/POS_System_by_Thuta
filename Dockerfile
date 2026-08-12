@@ -21,7 +21,7 @@ COPY . .
 # Run as an unprivileged user and keep mutable data in mountable directories.
 RUN addgroup --system --gid 10001 app \
     && adduser --system --uid 10001 --ingroup app --home /app app \
-    && mkdir -p /app/instance /app/uploads/products \
+    && mkdir -p /app/instance /app/uploads/products /app/uploads/receipts \
     && chown -R app:app /app
 
 USER app

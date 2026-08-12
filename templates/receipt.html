@@ -30,6 +30,7 @@
         font-size: {% if receipt.is_narrow %}10.5px{% else %}12px{% endif %}; font-weight: 600; line-height: 1.32;
       }
       .center { text-align: center; }
+      .receipt-logo { display: block; max-width: {% if receipt.is_narrow %}26mm{% else %}34mm{% endif %}; max-height: {% if receipt.is_narrow %}12mm{% else %}15mm{% endif %}; margin: 0 auto 5px; object-fit: contain; filter: grayscale(1) contrast(1.35); }
       .brand { margin: 0; font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if receipt.is_narrow %}16px{% else %}19px{% endif %}; font-weight: 800; letter-spacing: .4px; }
       .branch-name { margin-top: 2px; font-weight: 700; }
       .contact { margin-top: 2px; overflow-wrap: anywhere; font-size: .92em; }
@@ -68,10 +69,11 @@
     <main class="receipt-shell">
       <article class="receipt" id="receipt-content">
         <header class="center">
-          <h1 class="brand">{{ receipt.pos_name }}</h1>
+          {% if receipt.logo_url %}<img class="receipt-logo" src="{{ receipt.logo_url }}" alt="{{ receipt.brand_name }} logo" />{% endif %}
+          <h1 class="brand">{{ receipt.brand_name }}</h1>
           {% if receipt.branch.name %}<div class="branch-name">{{ receipt.branch.name }}</div>{% endif %}
-          {% if receipt.branch.address %}<div class="contact">{{ receipt.branch.address }}</div>{% endif %}
-          {% if receipt.branch.phone or receipt.branch.email %}<div class="contact">{{ receipt.branch.phone }}{% if receipt.branch.phone and receipt.branch.email %} · {% endif %}{{ receipt.branch.email }}</div>{% endif %}
+          {% for address_line in receipt.address_lines %}<div class="contact">{{ address_line }}</div>{% endfor %}
+          {% if receipt.phone or receipt.email %}<div class="contact">{{ receipt.phone }}{% if receipt.phone and receipt.email %} · {% endif %}{{ receipt.email }}</div>{% endif %}
         </header>
         <hr class="rule strong" />
         <div class="meta-row"><span>Receipt</span><span>{{ receipt.receipt_number }}</span></div>
@@ -111,8 +113,7 @@
         {% endif %}
         <hr class="rule" />
         <footer class="footer">
-          <div>Thank you for your purchase.</div>
-          <div>Please keep your receipt.</div>
+          {% for footer_line in receipt.footer_lines %}<div>{{ footer_line }}</div>{% endfor %}
           <div class="cut-line">- - - - - - - - - - - - - - - - - -</div>
         </footer>
       </article>
@@ -142,6 +143,10 @@
         window.addEventListener("beforeprint", preparePage);
         window.addEventListener("load", async () => {
           if (document.fonts?.ready) await document.fonts.ready;
+          const logo = content.querySelector(".receipt-logo");
+          if (logo && !logo.complete && logo.decode) {
+            try { await logo.decode(); } catch (error) { console.warn("Receipt logo could not be decoded", error); }
+          }
           preparePage();
           if (new URLSearchParams(window.location.search).get("autoprint") === "1" && ready) {
             await printReceipt();
