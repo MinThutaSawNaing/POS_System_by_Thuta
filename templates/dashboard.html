@@ -1294,12 +1294,19 @@
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
             </button>
-            <div class="input-group" style="max-width: 300px">
-              <input type="date" id="sales-date-filter" class="form-control" />
+            <div class="d-flex gap-2 flex-wrap align-items-center">
+              <div class="input-group">
+                <label class="input-group-text" for="sales-start-date-filter">Start</label>
+                <input type="date" id="sales-start-date-filter" class="form-control" />
+              </div>
+              <div class="input-group">
+                <label class="input-group-text" for="sales-end-date-filter">End</label>
+                <input type="date" id="sales-end-date-filter" class="form-control" />
+              </div>
               <button
                 class="btn btn-outline-secondary"
                 type="button"
-                onclick="filterSalesByDate()"
+                onclick="filterSalesByDateRange()"
               >
                 <i class="bi bi-filter"></i> <span class="d-none d-sm-inline">Filter</span>
               </button>
@@ -5438,15 +5445,45 @@
         }
 
         const current = pageState[key];
+        const pageNumbers = [];
+        const addPage = (page) => {
+          if (!pageNumbers.includes(page)) pageNumbers.push(page);
+        };
+
+        if (totalPages <= 7) {
+          for (let page = 1; page <= totalPages; page += 1) addPage(page);
+        } else {
+          addPage(1);
+          for (let page = Math.max(2, current - 1); page <= Math.min(totalPages - 1, current + 1); page += 1) {
+            addPage(page);
+          }
+          addPage(totalPages);
+        }
+
+        const pageLinks = pageNumbers
+          .sort((a, b) => a - b)
+          .map((page, index, pages) => {
+            const previousPage = pages[index - 1];
+            const ellipsis = previousPage && page - previousPage > 1
+              ? '<li class="page-item disabled" aria-hidden="true"><span class="page-link">…</span></li>'
+              : "";
+            const isCurrent = page === current;
+            const pageLink = isCurrent
+              ? `<li class="page-item active" aria-current="page"><span class="page-link">${page}</span></li>`
+              : `<li class="page-item"><a class="page-link" href="#" data-page="${page}" aria-label="Page ${page}">${page}</a></li>`;
+            return ellipsis + pageLink;
+          })
+          .join("");
+
         container.innerHTML = `
-          <nav>
+          <nav aria-label="Pagination">
             <ul class="pagination pagination-sm mb-0">
               <li class="page-item ${current <= 1 ? "disabled" : ""}">
-                <a class="page-link" href="#" data-page="${current - 1}">Previous</a>
+                <a class="page-link" href="#" data-page="${current - 1}" aria-label="Previous page">Previous</a>
               </li>
-              <li class="page-item disabled"><span class="page-link">${current} / ${totalPages}</span></li>
+              ${pageLinks}
               <li class="page-item ${current >= totalPages ? "disabled" : ""}">
-                <a class="page-link" href="#" data-page="${current + 1}">Next</a>
+                <a class="page-link" href="#" data-page="${current + 1}" aria-label="Next page">Next</a>
               </li>
             </ul>
           </nav>
@@ -5636,9 +5673,10 @@
         loadBranchSelector();
         startCurrencyObserver();
 
-        // Set today's date as default for sales filter
+        // Set today's date as the default sales-history date range
         const today = new Date().toISOString().split("T")[0];
-        document.getElementById("sales-date-filter").value = today;
+        document.getElementById("sales-start-date-filter").value = today;
+        document.getElementById("sales-end-date-filter").value = today;
 
         // Set default date range for reports (last 7 days)
         const sevenDaysAgo = new Date();
@@ -7546,9 +7584,11 @@
               document.getElementById("pos-enable-delivery").checked = false;
               togglePosDeliveryFields();
               updateCashRefundDisplay();
-              // Clear date filter to ensure new sales appear in history
-              const dateFilter = document.getElementById("sales-date-filter");
-              if (dateFilter) dateFilter.value = "";
+              // Clear date filters to ensure new sales appear in history
+              const startDateFilter = document.getElementById("sales-start-date-filter");
+              const endDateFilter = document.getElementById("sales-end-date-filter");
+              if (startDateFilter) startDateFilter.value = "";
+              if (endDateFilter) endDateFilter.value = "";
               const searchInput = document.getElementById("sales-search");
               if (searchInput) searchInput.value = "";
               loadSales();
@@ -8333,15 +8373,14 @@
                       </tr>
                   `;
 
-        const dateFilter = document.getElementById("sales-date-filter")?.value;
+        const startDate = document.getElementById("sales-start-date-filter")?.value;
+        const endDate = document.getElementById("sales-end-date-filter")?.value;
         const searchQuery = (document.getElementById("sales-search")?.value || "")
           .trim();
 
         const params = new URLSearchParams();
-        if (dateFilter) {
-          params.set("start", dateFilter);
-          params.set("end", dateFilter);
-        }
+        if (startDate) params.set("start", startDate);
+        if (endDate) params.set("end", endDate);
         if (searchQuery) params.set("q", searchQuery);
         params.set("page", String(pageState.sales));
         params.set("per_page", String(pageSize.sales));
@@ -8416,7 +8455,14 @@
           });
       }
 
-      function filterSalesByDate() {
+      function filterSalesByDateRange() {
+        const startDate = document.getElementById("sales-start-date-filter")?.value;
+        const endDate = document.getElementById("sales-end-date-filter")?.value;
+        if (startDate && endDate && startDate > endDate) {
+          showToast("Start date cannot be after end date.", "error");
+          return;
+        }
+
         pageState.sales = 1;
         loadSales();
       }
