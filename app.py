@@ -7,7 +7,9 @@ import os
 import uuid
 import io
 import json
-from sqlalchemy import inspect, text, func
+import time
+from sqlalchemy import inspect, text, func, event
+from sqlalchemy.exc import OperationalError
 from decimal import Decimal, ROUND_HALF_UP
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -74,8 +76,40 @@ DELIVERY_PRIORITIES = {'low', 'normal', 'high', 'urgent'}
 def to_decimal(value):
     return Decimal(str(value))
 
+def safe_to_decimal(value, default=Decimal('0')):
+    """Convert a value to Decimal, returning ``default`` for None/NaN/inf/unparseable input."""
+    if value is None:
+        return default
+    try:
+        result = Decimal(str(value))
+    except (TypeError, ValueError, ArithmeticError):
+        return default
+    if not result.is_finite():
+        return default
+    return result
+
+
 def round_money(value):
-    return float(to_decimal(value).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP))
+    """Round to 2 decimals with ROUND_HALF_UP, staying in Decimal space.
+
+    Intermediate money math stays on Decimal so totals match the JS frontend's
+    integer-cent arithmetic (Math.round per-item). Only final persistence/
+    display boundaries (Float columns, JSON output) convert to float via
+    money_float() or json_default().
+    """
+    return to_decimal(value).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+
+
+def money_float(value):
+    """Convert a rounded Decimal to float for final persistence/display (JSON)."""
+    return float(round_money(value))
+
+
+def json_default(o):
+    """json.dumps default handler: serialize Decimal as float (display boundary)."""
+    if isinstance(o, Decimal):
+        return float(o)
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
 def get_setting(key, default=None):
     setting = AppSetting.query.filter_by(key=key).first()
@@ -231,9 +265,14 @@ def allowed_image_file(filename):
         return False
     return filename.rsplit('.', 1)[1].lower() in ALLOWED_IMAGE_EXTENSIONS
 
+class ProductImageTooLargeError(ValueError):
+    """Raised when a product photo exceeds the 2 MB per-image size limit."""
+
+
 def save_product_image(file_storage):
     if not file_storage or not file_storage.filename:
         return None
+    # Extension validation runs before any path/name operations.
     if not allowed_image_file(file_storage.filename):
         raise ValueError('Only image files are allowed (png, jpg, jpeg, gif, webp)')
 
@@ -242,6 +281,11 @@ def save_product_image(file_storage):
     unique_name = f"{uuid.uuid4().hex}.{extension}"
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_name)
     file_storage.save(file_path)
+    # Enforce a per-image size limit after save (mirrors the receipt logo check).
+    if os.path.getsize(file_path) > 2 * 1024 * 1024:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise ProductImageTooLargeError('Image must be 2 MB or smaller')
     return unique_name
 
 def delete_product_image(filename):
@@ -400,10 +444,15 @@ def calculate_debt_status(debt):
     """Calculate debt status based on balance and due date"""
     if debt.balance <= 0:
         return 'paid'
+    if debt.due_date:
+        due_date = debt.due_date
+        if due_date.tzinfo:
+            # due_date may be parsed as timezone-aware (e.g. 'Z' -> +00:00); compare in naive UTC
+            due_date = due_date.replace(tzinfo=None)
+        if datetime.utcnow() > due_date:
+            return 'overdue'
     if debt.balance < debt.amount:
         return 'partial'
-    if debt.due_date and datetime.utcnow() > debt.due_date:
-        return 'overdue'
     return 'pending'
 
 # Branch helper functions
@@ -632,7 +681,7 @@ class Category(db.Model):
 
 class Product(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    barcode = db.Column(db.String(50), unique=True)
+    barcode = db.Column(db.String(50))  # Branch-scoped: uniqueness enforced per (barcode, branch_id) at app level
     name = db.Column(db.String(100), nullable=False)
     price = db.Column(db.Float, nullable=False)
     cost = db.Column(db.Float)
@@ -788,6 +837,44 @@ class Promotion(db.Model):
     end_date = db.Column(db.DateTime, nullable=False)
     
     product = db.relationship('Product', backref='promotions')
+
+
+def active_promotion_prices(product, now=None):
+    """Return the discounted prices implied by currently-active promotions for a product.
+
+    Only promotions whose [start_date, end_date] window contains ``now``
+    (Asia/Yangon, matching how promotions are stored) are considered.
+    Returns a list of rounded Decimal prices; an empty list means no active
+    promotion applies, i.e. only the normal price is valid.
+    """
+    if not product:
+        return []
+    myanmar_tz = pytz.timezone('Asia/Yangon')
+    now = now or datetime.now(myanmar_tz)
+    normal_price = to_decimal(product.price or 0)
+    prices = []
+    for promo in (product.promotions or []):
+        start = promo.start_date
+        end = promo.end_date
+        if start.tzinfo is None:
+            start = myanmar_tz.localize(start)
+        if end.tzinfo is None:
+            end = myanmar_tz.localize(end)
+        if not (start <= now <= end):
+            continue
+        try:
+            discount_value = to_decimal(promo.discount_value or 0)
+        except Exception:
+            continue
+        if promo.discount_type == 'percent':
+            candidate = normal_price - normal_price * discount_value / Decimal('100')
+        elif promo.discount_type == 'fixed':
+            candidate = normal_price - discount_value
+        else:
+            continue
+        prices.append(round_money(max(candidate, Decimal('0'))))
+    return prices
+
 
 class SaleItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -953,6 +1040,16 @@ def serialize_delivery(delivery):
 
 # Create database tables and admin user
 with app.app_context():
+    # Harden SQLite for concurrent POS writes: WAL journaling plus a busy timeout
+    # on every pooled connection so concurrent sales retry instead of failing fast.
+    @event.listens_for(db.engine, 'connect')
+    def _set_sqlite_busy_timeout(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute('PRAGMA busy_timeout=5000')
+        cursor.close()
+
+    db.session.execute(text('PRAGMA journal_mode=WAL'))
+    db.session.execute(text('PRAGMA busy_timeout=5000'))
     db.create_all()
     inspector = inspect(db.engine)
 
@@ -1141,6 +1238,94 @@ with app.app_context():
     db.session.execute(text('UPDATE product SET reorder_quantity = 50 WHERE reorder_quantity IS NULL'))
     db.session.execute(text('UPDATE product SET reorder_enabled = 1 WHERE reorder_enabled IS NULL'))
     db.session.commit()
+
+    # Barcode migration for branch-scoped uniqueness.
+    # The Product.barcode column no longer declares a global UNIQUE constraint;
+    # uniqueness is enforced per (barcode, branch_id) at the application level.
+    #
+    # Two legacy schema variants must be handled:
+    #   1. A standalone unique index named ix_product_barcode (created by the old
+    #      model definition via SQLAlchemy). Droppable with DROP INDEX.
+    #   2. An inline "UNIQUE (barcode)" table constraint (SQLite autoindex, e.g.
+    #      sqlite_autoindex_product_1) baked into the CREATE TABLE statement.
+    #      SQLite cannot drop such a constraint with ALTER TABLE, so the product
+    #      table must be rebuilt without it (standard SQLite migration pattern).
+    #      FK enforcement is OFF for this app's SQLite connection, so dropping
+    #      and renaming the table is safe; child tables reference it by name.
+    try:
+        db.session.execute(text('DROP INDEX IF EXISTS ix_product_barcode'))
+        db.session.commit()
+    except Exception as e:
+        app.logger.warning(f"Could not drop legacy barcode unique index: {str(e)}")
+
+    product_indexes = [idx[0] for idx in db.session.execute(text(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'product'"
+    )).fetchall()]
+
+    barcode_unique_index = None
+    for idx_name in product_indexes:
+        idx_cols = [col[2] for col in db.session.execute(
+            text(f'PRAGMA index_info("{idx_name}")')
+        ).fetchall()]
+        if idx_cols == ['barcode']:
+            idx_list = db.session.execute(text('PRAGMA index_list("product")')).fetchall()
+            for row in idx_list:
+                # row: (seq, name, unique, origin, partial); origin 'u' = UNIQUE constraint
+                if row[1] == idx_name and row[2] == 1 and row[3] == 'u':
+                    barcode_unique_index = idx_name
+                    break
+        if barcode_unique_index:
+            break
+
+    if barcode_unique_index:
+        app.logger.warning(
+            f"Rebuilding product table to remove global UNIQUE constraint on barcode ({barcode_unique_index})"
+        )
+        db.session.execute(text('PRAGMA foreign_keys=OFF'))
+        db.session.execute(text('''
+            CREATE TABLE product_new (
+                id INTEGER NOT NULL PRIMARY KEY,
+                barcode VARCHAR(50),
+                name VARCHAR(100) NOT NULL,
+                price FLOAT NOT NULL,
+                cost FLOAT,
+                stock INTEGER,
+                category VARCHAR(50),
+                tax_rate FLOAT,
+                photo_filename VARCHAR(255),
+                reorder_point INTEGER DEFAULT 10,
+                reorder_quantity INTEGER DEFAULT 50,
+                reorder_enabled BOOLEAN DEFAULT 1,
+                branch_id INTEGER REFERENCES branch (id),
+                category_id INTEGER REFERENCES category (id)
+            )
+        '''))
+        db.session.execute(text('''
+            INSERT INTO product_new (id, barcode, name, price, cost, stock, category, tax_rate,
+                                     photo_filename, reorder_point, reorder_quantity, reorder_enabled,
+                                     branch_id, category_id)
+            SELECT id, barcode, name, price, cost, stock, category, tax_rate,
+                   photo_filename, reorder_point, reorder_quantity, reorder_enabled,
+                   branch_id, category_id
+            FROM product
+        '''))
+        db.session.execute(text('DROP TABLE product'))
+        db.session.execute(text('ALTER TABLE product_new RENAME TO product'))
+        db.session.commit()
+        # Recreate the standard lookup indexes that were dropped with the old table,
+        # plus the branch-scoped composite index (non-unique; uniqueness is app-level).
+        # IF NOT EXISTS keeps this idempotent even if a stale index entry lingers.
+        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_name ON product (name)'))
+        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_category ON product (category)'))
+        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_barcode_branch ON product (barcode, branch_id)'))
+        db.session.commit()
+    else:
+        # Additive indexes: standard lookups plus the branch-scoped composite index
+        # (non-unique; uniqueness is enforced at the application level).
+        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_name ON product (name)'))
+        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_category ON product (category)'))
+        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_barcode_branch ON product (barcode, branch_id)'))
+        db.session.commit()
 
     supplier_columns = [col['name'] for col in inspector.get_columns('supplier')]
     supplier_migrations = [
@@ -2145,6 +2330,11 @@ def api_products():
         except (ValueError, TypeError):
             return jsonify({'success': False, 'message': 'Invalid numeric values'}), 400
 
+        if price < 0:
+            return jsonify({'success': False, 'message': 'Price cannot be negative'}), 400
+        if cost < 0:
+            return jsonify({'success': False, 'message': 'Cost cannot be negative'}), 400
+
         reorder_enabled = to_bool(data.get('reorder_enabled'), True)
         
         branch_id = get_current_branch_id()
@@ -2161,6 +2351,8 @@ def api_products():
         if photo_file and photo_file.filename:
             try:
                 photo_filename = save_product_image(photo_file)
+            except ProductImageTooLargeError as e:
+                return jsonify({'success': False, 'message': str(e)}), 413
             except ValueError as e:
                 return jsonify({'success': False, 'message': str(e)}), 400
 
@@ -2246,14 +2438,20 @@ def api_single_product(product_id):
             product.name = data.get('name', product.name)
         if 'price' in data:
             try:
-                product.price = float(data.get('price'))
+                new_price = float(data.get('price'))
             except (ValueError, TypeError):
                 return jsonify({'success': False, 'message': 'Invalid price value'}), 400
+            if new_price < 0:
+                return jsonify({'success': False, 'message': 'Price cannot be negative'}), 400
+            product.price = new_price
         if 'cost' in data:
             try:
-                product.cost = float(data.get('cost') or 0)
+                new_cost = float(data.get('cost') or 0)
             except (ValueError, TypeError):
                 return jsonify({'success': False, 'message': 'Invalid cost value'}), 400
+            if new_cost < 0:
+                return jsonify({'success': False, 'message': 'Cost cannot be negative'}), 400
+            product.cost = new_cost
         if 'stock' in data:
             try:
                 product.stock = int(data.get('stock'))
@@ -2304,6 +2502,8 @@ def api_single_product(product_id):
                 new_photo = save_product_image(photo_file)
                 delete_product_image(product.photo_filename)
                 product.photo_filename = new_photo
+            except ProductImageTooLargeError as e:
+                return jsonify({'success': False, 'message': str(e)}), 413
             except ValueError as e:
                 return jsonify({'success': False, 'message': str(e)}), 400
 
@@ -2319,6 +2519,8 @@ def api_single_product(product_id):
 
 @app.route('/api/products/search', methods=['GET'])
 def api_search_products():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
     query = request.args.get('q', '')
     if not query:
         return jsonify([])
@@ -2481,6 +2683,26 @@ def api_create_sale():
     if not data or 'items' not in data:
         return jsonify({'success': False, 'message': 'Missing required fields'}), 400
 
+    # SQLite can raise "database is locked" under concurrent POS writes; retry the
+    # whole transaction (stock checks + guarded decrements) up to 3 times before failing.
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            return _create_sale_transaction(data)
+        except OperationalError as exc:
+            db.session.rollback()
+            if 'database is locked' in str(exc).lower() and attempt < max_attempts - 1:
+                time.sleep(0.2 * (attempt + 1))
+                app.logger.warning(f"Sale transaction hit DB lock (attempt {attempt + 1}); retrying...")
+                continue
+            app.logger.error(f"Error creating sale: {str(exc)}")
+            return jsonify({'success': False, 'message': f'Error creating sale: {str(exc)}'}), 500
+
+    return jsonify({'success': False, 'message': 'Error creating sale'}), 500
+
+
+def _create_sale_transaction(data):
+    """Run a single sale transaction. Raises OperationalError on DB lock so the caller can retry."""
     try:
         # Calculate totals
         subtotal = Decimal('0.00')
@@ -2502,6 +2724,15 @@ def api_create_sale():
             price = to_decimal(item.get('price', 0))
             if price < 0:
                 return jsonify({'success': False, 'message': 'Price cannot be negative'}), 400
+
+            # Server-side promotion validation: a price below the product's normal
+            # price is only accepted when it matches a currently-active promotion
+            # (within 0.01 tolerance). Normal-price sales are always accepted.
+            normal_price = to_decimal(product.price or 0)
+            if price < normal_price:
+                promo_prices = active_promotion_prices(product)
+                if not any(abs(price - promo_price) <= Decimal('0.01') for promo_price in promo_prices):
+                    return jsonify({'success': False, 'message': 'Invalid price or expired promotion'}), 400
 
             item_total = price * quantity
             item_tax = (item_total * to_decimal(product.tax_rate or 0) / Decimal('100')).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
@@ -2569,8 +2800,15 @@ def api_create_sale():
                 tax=round_money(item['tax'])
             )
             db.session.add(sale_item)
-            # Update product stock
-            item['product'].stock -= item['quantity']
+            # Update product stock atomically: only decrement when sufficient stock remains.
+            # This prevents overselling when two concurrent sales race past the app-level check.
+            stock_result = db.session.execute(
+                text('UPDATE product SET stock = stock - :qty WHERE id = :pid AND stock >= :qty'),
+                {'qty': item['quantity'], 'pid': item['product'].id}
+            )
+            if stock_result.rowcount == 0:
+                db.session.rollback()
+                return jsonify({'success': False, 'message': f'Insufficient stock for {item["product"].name}. Available: {item["product"].stock}'}), 400
 
         # Handle debt transactions if customer_id is provided
         if 'customer_id' in data and data['customer_id']:
@@ -2654,7 +2892,8 @@ def api_create_sale():
                 total=total_rounded,
                 receipt_identity=get_receipt_identity(receipt_branch)
             ),
-            ensure_ascii=False
+            ensure_ascii=False,
+            default=json_default
         )
 
         db.session.commit()
@@ -2666,6 +2905,9 @@ def api_create_sale():
             'delivery_number': sale.delivery.delivery_number if getattr(sale, 'delivery', None) else None
         }), 201
 
+    except OperationalError:
+        db.session.rollback()
+        raise
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Error creating sale: {str(e)}")
@@ -2677,17 +2919,21 @@ def api_sales():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    branch_id = get_current_branch_id()
-    
+    # Sales list honors the same scope rule as /api/reports/sales (resolve_report_scope):
+    # managers/bosses with scope=all see every branch; everyone else stays on their branch.
+    scope, branch_id = resolve_report_scope()
+
     # Get query parameters
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
     q = (request.args.get('q') or '').strip()
     start_date = request.args.get('start')
     end_date = request.args.get('end')
-    
-    # Base query filtered by branch
-    query = Sale.query.filter_by(branch_id=branch_id)
+
+    # Base query filtered by branch (None branch_id = all branches for manager scope=all)
+    query = Sale.query
+    if branch_id:
+        query = query.filter_by(branch_id=branch_id)
     
     # Apply date filters
     if start_date:
@@ -3024,6 +3270,10 @@ def api_returns_exchanges():
         }), 201
     except Exception as e:
         db.session.rollback()
+        # Expire all in-memory ORM instances (including product.stock values mutated
+        # before the failed commit) so they are reloaded from the DB on next access
+        # instead of serving stale in-memory state.
+        db.session.expire_all()
         app.logger.error(f"Error processing return/exchange: {str(e)}")
         return jsonify({'success': False, 'message': 'Failed to process return/exchange'}), 500
 
@@ -3225,17 +3475,23 @@ def print_receipt(transaction_id):
         subtotal = Decimal('0.00')
         for sale_item in sale_items:
             product = db.session.get(Product, sale_item.product_id)
-            line_subtotal = to_decimal(sale_item.price) * int(sale_item.quantity or 0)
+            unit_price = safe_to_decimal(sale_item.price)
+            quantity = safe_to_decimal(sale_item.quantity)
+            line_subtotal = unit_price * quantity
+            # Skip rows with missing/zero/negative price or quantity so malformed
+            # legacy data can never poison the receipt or divide by zero.
+            if line_subtotal <= 0:
+                continue
             subtotal += line_subtotal
-            tax_amount = to_decimal(sale_item.tax or 0)
-            tax_rate = (tax_amount / line_subtotal * 100) if line_subtotal else Decimal('0')
+            tax_amount = safe_to_decimal(sale_item.tax)
+            tax_rate = (tax_amount / line_subtotal * Decimal('100')) if line_subtotal else Decimal('0')
             legacy_items.append({
                 'product_id': sale_item.product_id,
                 'name': product.name if product else f'Unavailable item #{sale_item.product_id}',
-                'quantity': sale_item.quantity,
-                'unit_price': sale_item.price,
+                'quantity': int(sale_item.quantity or 0),
+                'unit_price': float(unit_price),
                 'tax_rate': tax_rate,
-                'tax_amount': sale_item.tax
+                'tax_amount': float(tax_amount)
             })
 
         snapshot = build_receipt_snapshot(
@@ -3466,7 +3722,7 @@ def api_dashboard_top_products():
             'price': row.price,
             'stock': row.stock,
             'units_sold': int(row.units_sold or 0),
-            'sales_amount': round_money(row.sales_amount or 0)
+            'sales_amount': money_float(row.sales_amount or 0)
         }
         for row in rows
     ])
@@ -3688,7 +3944,7 @@ def api_customers():
             'email': c.email,
             'address': c.address,
             'created_at': c.created_at.isoformat(),
-            'total_debt': round_money(sum(max(to_decimal(d.balance), Decimal('0.00')) for d in c.debts if d.balance > 0))
+            'total_debt': money_float(sum(max(to_decimal(d.balance), Decimal('0.00')) for d in c.debts if d.balance > 0))
         } for c in customers])
     
     elif request.method == 'POST':
@@ -4627,7 +4883,7 @@ def api_warehouse_summary():
     return jsonify({
         'total_skus': total_skus,
         'total_units': total_units,
-        'total_value': round_money(total_value),
+        'total_value': money_float(total_value),
         'recent_transfers': recent_transfers,
         'low_stock_count': low_stock_count
     })
@@ -4993,12 +5249,12 @@ def api_debts_summary():
     overdue_count = sum(1 for d in outstanding_debts if d.due_date and d.due_date < now)
     
     return jsonify({
-        'total_outstanding': round_money(total_outstanding),
+        'total_outstanding': money_float(total_outstanding),
         'total_debts': total_debts,
         'customers_with_debt': len(customers_with_debt),
         'aging_breakdown': aging_breakdown,
-        'aging_amounts': {k: round_money(v) for k, v in aging_amounts.items()},
-        'total_payments_this_month': round_money(total_payments_this_month),
+        'aging_amounts': {k: money_float(v) for k, v in aging_amounts.items()},
+        'total_payments_this_month': money_float(total_payments_this_month),
         'overdue_count': overdue_count
     })
 
@@ -5197,8 +5453,8 @@ def api_customer_debts(customer_id):
             'address': customer.address
         },
         'summary': {
-            'total_outstanding': round_money(total_debt),
-            'total_paid': round_money(total_paid)
+            'total_outstanding': money_float(total_debt),
+            'total_paid': money_float(total_paid)
         },
         'debts': [serialize_debt(d) for d in debts]
     })
@@ -5249,8 +5505,11 @@ def make_debt_payment(debt_id):
         )
         db.session.add(payment)
         
-        # Update the original debt balance
-        debt.balance = 0.0 if remaining_balance < MONEY_QUANT else round_money(remaining_balance)
+        # Update the original debt balance.
+        # remaining_balance is already a Decimal quantized to MONEY_QUANT, so
+        # money_float() stores it as a plain float consistent with the Float
+        # column type (see round_money()/money_float() docstrings).
+        debt.balance = money_float(remaining_balance)
         debt.status = calculate_debt_status(debt)
         
         # Track payment in communication notes

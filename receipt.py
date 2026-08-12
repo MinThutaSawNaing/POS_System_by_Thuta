@@ -100,8 +100,8 @@ def calculate_thermal_page_height_mm(content_height_px: Any, safety_mm: int = 3)
     return max(20, int(((height_px / 96) * 25.4) + safety_mm + 0.999999))
 
 
-def _money(value: Any) -> float:
-    return float(Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+def _money(value: Any) -> Decimal:
+    return Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def _iso(value: Any) -> str:
@@ -133,7 +133,8 @@ def build_receipt_snapshot(
         quantity = int(item.get("quantity") or 0)
         unit_price = _money(item.get("unit_price"))
         tax_amount = _money(item.get("tax_amount"))
-        line_subtotal = _money(Decimal(str(unit_price)) * quantity)
+        line_subtotal = _money(unit_price * quantity)
+        line_total = _money(line_subtotal + tax_amount)
         snapshot_items.append({
             "product_id": item.get("product_id"),
             "name": str(item.get("name") or "Unavailable item"),
@@ -142,7 +143,7 @@ def build_receipt_snapshot(
             "tax_rate": _money(item.get("tax_rate")),
             "tax_amount": tax_amount,
             "line_subtotal": line_subtotal,
-            "line_total": _money(Decimal(str(line_subtotal)) + Decimal(str(tax_amount))),
+            "line_total": line_total,
         })
 
     branch = branch or {}

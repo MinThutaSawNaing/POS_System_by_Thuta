@@ -7933,11 +7933,18 @@
       }
 
       function getCurrentCartTotal() {
-        return cart.reduce((sum, item) => {
-          const itemTotal = Number(item.price) * Number(item.quantity);
-          const itemTax = (itemTotal * Number(item.tax_rate || 0)) / 100;
-          return sum + itemTotal + itemTax;
-        }, 0);
+        // Must match updateCartDisplay() and the backend (app.py create_sale):
+        // per-item tax = ROUND_HALF_UP(item_total_cents * tax_rate / 100).
+        return (
+          cart.reduce((sum, item) => {
+            const priceCents = Math.round(Number(item.price) * 100);
+            const itemTotalCents = priceCents * Number(item.quantity);
+            const itemTaxCents = Math.round(
+              (itemTotalCents * Number(item.tax_rate || 0)) / 100
+            );
+            return sum + itemTotalCents + itemTaxCents;
+          }, 0) / 100
+        );
       }
 
       function toggleCashPaymentFields() {
