@@ -353,8 +353,21 @@
         align-items: end;
       }
 
+      .sales-history-header-actions {
+        align-items: flex-start;
+      }
+
       .sales-history-header-actions .btn {
         flex: 0 0 auto;
+      }
+
+      .sales-history-date-filters {
+        align-items: flex-start;
+      }
+
+      .sales-history-date-filters .input-group {
+        flex: 0 1 225px;
+        width: 225px;
       }
 
       /* Responsive media queries */
@@ -491,6 +504,15 @@
 
         .section-header .sales-history-header-actions .btn {
           flex: 0 0 auto;
+        }
+
+        .section-header .sales-history-date-filters {
+          width: auto;
+        }
+
+        .sales-history-date-filters .input-group {
+          flex-basis: min(225px, 100%);
+          width: min(225px, 100%);
         }
 
         /* Filter inputs full width on mobile */
@@ -1306,7 +1328,7 @@
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
             </button>
-            <div class="d-flex gap-2 flex-wrap align-items-center">
+            <div class="d-flex gap-2 flex-wrap sales-history-date-filters">
               <div class="input-group">
                 <label class="input-group-text" for="sales-start-date-filter">Start</label>
                 <input type="date" id="sales-start-date-filter" class="form-control" />
