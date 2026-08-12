@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 import uuid
 import io
+import json
 from sqlalchemy import inspect, text, func
 from decimal import Decimal, ROUND_HALF_UP
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -14,6 +15,13 @@ from reportlab.lib.units import mm
 from reportlab.lib import colors
 import pandas as pd
 from reportlab.graphics.barcode import createBarcodeDrawing
+from receipt import (
+    DEFAULT_RECEIPT_PAPER_SIZE,
+    RECEIPT_PAPER_OPTIONS,
+    build_receipt_snapshot,
+    build_receipt_view,
+    normalize_receipt_paper_size,
+)
 from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
 from datetime import datetime, timedelta
@@ -83,6 +91,11 @@ def get_currency_code():
 def get_currency_suffix(currency_code=None):
     code = currency_code or get_currency_code()
     return CURRENCY_OPTIONS.get(code, '$')
+
+def get_receipt_paper_size():
+    return normalize_receipt_paper_size(
+        get_setting('receipt_paper_size', DEFAULT_RECEIPT_PAPER_SIZE)
+    )
 
 def format_currency(value, currency_code=None):
     symbol = get_currency_suffix(currency_code)
@@ -722,6 +735,7 @@ class Sale(db.Model):
     cash_received = db.Column(db.Float)
     refund_amount = db.Column(db.Float, default=0.0)
     payment_method = db.Column(db.String(20))
+    receipt_snapshot = db.Column(db.Text)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     user = db.relationship('User', backref='sales')
@@ -903,6 +917,13 @@ def serialize_delivery(delivery):
 with app.app_context():
     db.create_all()
     inspector = inspect(db.engine)
+
+    # Persist immutable financial and display data for reliable receipt reprints.
+    if inspector.has_table('sale'):
+        sale_columns = [col['name'] for col in inspector.get_columns('sale')]
+        if 'receipt_snapshot' not in sale_columns:
+            db.session.execute(text('ALTER TABLE sale ADD COLUMN receipt_snapshot TEXT'))
+            db.session.commit()
     
     # Branch table migration for multi-branch support
     if not inspector.has_table('branch'):
@@ -1316,6 +1337,10 @@ with app.app_context():
         db.session.add(AppSetting(key='currency_code', value='USD'))
         db.session.commit()
 
+    if not AppSetting.query.filter_by(key='receipt_paper_size').first():
+        db.session.add(AppSetting(key='receipt_paper_size', value=DEFAULT_RECEIPT_PAPER_SIZE))
+        db.session.commit()
+
     # Performance indexes (safe for repeated startup)
     performance_indexes = [
         'CREATE INDEX IF NOT EXISTS idx_product_name ON product(name)',
@@ -1391,6 +1416,7 @@ def api_settings():
             'pos_name': 'Parrot POS',
             'currency_code': get_currency_code(),
             'currency_suffix': get_currency_suffix(),
+            'receipt_paper_size': get_receipt_paper_size(),
             'ai_api_key_configured': bool(ai_api_key and len(ai_api_key) > 10)
         })
 
@@ -1399,17 +1425,37 @@ def api_settings():
 
     data = request.get_json() or {}
     
+    updated_settings = {}
+
     # Handle currency code update
     currency_code = data.get('currency_code')
     if currency_code is not None:
         if currency_code not in CURRENCY_OPTIONS:
             return jsonify({'success': False, 'message': 'Invalid currency code'}), 400
-        set_setting('currency_code', currency_code)
+        updated_settings['currency_code'] = currency_code
+
+    receipt_paper_size = data.get('receipt_paper_size')
+    if receipt_paper_size is not None:
+        normalized_paper_size = str(receipt_paper_size).strip().upper()
+        if normalized_paper_size not in RECEIPT_PAPER_OPTIONS:
+            return jsonify({'success': False, 'message': 'Invalid receipt paper size'}), 400
+        updated_settings['receipt_paper_size'] = normalized_paper_size
+
+    if updated_settings:
+        for key, value in updated_settings.items():
+            setting = AppSetting.query.filter_by(key=key).first()
+            if setting:
+                setting.value = value
+            else:
+                db.session.add(AppSetting(key=key, value=value))
+        db.session.commit()
+        effective_currency = updated_settings.get('currency_code', get_currency_code())
         return jsonify({
             'success': True,
             'message': 'Settings updated',
-            'currency_code': currency_code,
-            'currency_suffix': get_currency_suffix(currency_code)
+            'currency_code': effective_currency,
+            'currency_suffix': get_currency_suffix(effective_currency),
+            'receipt_paper_size': updated_settings.get('receipt_paper_size', get_receipt_paper_size())
         })
     
     # Handle AI API key update
@@ -2467,6 +2513,40 @@ def api_create_sale():
             )
             db.session.add(delivery)
 
+        receipt_branch = db.session.get(Branch, sale.branch_id) if sale.branch_id else None
+        sale.receipt_snapshot = json.dumps(
+            build_receipt_snapshot(
+                transaction_id=sale.transaction_id,
+                sale_date=sale.date,
+                pos_name='Parrot POS',
+                currency_code=get_currency_code(),
+                currency_suffix=get_currency_suffix(),
+                branch={
+                    'name': receipt_branch.name if receipt_branch else '',
+                    'code': receipt_branch.code if receipt_branch else '',
+                    'address': receipt_branch.address if receipt_branch else '',
+                    'phone': receipt_branch.phone if receipt_branch else '',
+                    'email': receipt_branch.email if receipt_branch else ''
+                },
+                cashier_name=session.get('username', 'Unknown'),
+                payment_method=sale.payment_method,
+                cash_received=sale.cash_received,
+                change_given=sale.refund_amount,
+                items=[{
+                    'product_id': item['product'].id,
+                    'name': item['product'].name,
+                    'quantity': item['quantity'],
+                    'unit_price': item['price'],
+                    'tax_rate': item['product'].tax_rate or 0,
+                    'tax_amount': item['tax']
+                } for item in items],
+                subtotal=subtotal,
+                tax=tax_total,
+                total=total_rounded
+            ),
+            ensure_ascii=False
+        )
+
         db.session.commit()
 
         return jsonify({
@@ -3010,7 +3090,7 @@ def api_delivery_stats():
         'ready_dispatch': stage_counts.get('packaged', 0)
     })
 
-# --- PDF Receipt ---
+# --- Thermal Receipt ---
 @app.route('/api/sales/<string:transaction_id>/print', methods=['GET'])
 def print_receipt(transaction_id):
     if 'user_id' not in session:
@@ -3021,125 +3101,60 @@ def print_receipt(transaction_id):
     if not sale:
         return jsonify({'success': False, 'message': 'Sale not found'}), 404
 
-    items = SaleItem.query.filter_by(sale_id=sale.id).all()
-    buffer = io.BytesIO()
+    snapshot = None
+    if sale.receipt_snapshot:
+        try:
+            snapshot = json.loads(sale.receipt_snapshot)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            app.logger.warning('Invalid receipt snapshot for sale %s; using legacy data', sale.id)
 
-    # 80mm thermal slip layout
-    page_width = 80 * mm
-    left_margin = 4 * mm
-    right_margin = 4 * mm
-    top_margin = 4 * mm
-    bottom_margin = 4 * mm
-    content_width = page_width - left_margin - right_margin
+    if not snapshot:
+        sale_items = SaleItem.query.filter_by(sale_id=sale.id).all()
+        branch = db.session.get(Branch, sale.branch_id) if sale.branch_id else None
+        legacy_items = []
+        subtotal = Decimal('0.00')
+        for sale_item in sale_items:
+            product = db.session.get(Product, sale_item.product_id)
+            line_subtotal = to_decimal(sale_item.price) * int(sale_item.quantity or 0)
+            subtotal += line_subtotal
+            tax_amount = to_decimal(sale_item.tax or 0)
+            tax_rate = (tax_amount / line_subtotal * 100) if line_subtotal else Decimal('0')
+            legacy_items.append({
+                'product_id': sale_item.product_id,
+                'name': product.name if product else f'Unavailable item #{sale_item.product_id}',
+                'quantity': sale_item.quantity,
+                'unit_price': sale_item.price,
+                'tax_rate': tax_rate,
+                'tax_amount': sale_item.tax
+            })
 
-    extra_info_lines = 4 + (2 if sale.payment_method == 'cash' else 0)
-    estimated_height_mm = max(120, 42 + (len(items) * 8) + (extra_info_lines * 4))
-    page_height = estimated_height_mm * mm
+        snapshot = build_receipt_snapshot(
+            transaction_id=sale.transaction_id,
+            sale_date=sale.date,
+            pos_name='Parrot POS',
+            currency_code=get_currency_code(),
+            currency_suffix=get_currency_suffix(),
+            branch={
+                'name': branch.name if branch else '',
+                'code': branch.code if branch else '',
+                'address': branch.address if branch else '',
+                'phone': branch.phone if branch else '',
+                'email': branch.email if branch else ''
+            },
+            cashier_name=sale.user.username if sale.user else 'Unknown',
+            payment_method=sale.payment_method,
+            cash_received=sale.cash_received,
+            change_given=sale.refund_amount,
+            items=legacy_items,
+            subtotal=subtotal,
+            tax=sale.tax,
+            total=sale.total
+        )
 
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=(page_width, page_height),
-        rightMargin=right_margin,
-        leftMargin=left_margin,
-        topMargin=top_margin,
-        bottomMargin=bottom_margin
-    )
-    styles = getSampleStyleSheet()
-    wrap_style = styles['Normal'].clone('receipt_wrap')
-    wrap_style.fontName = 'Helvetica'
-    wrap_style.fontSize = 7
-    wrap_style.leading = 9
-    wrap_style.wordWrap = 'CJK'
-
-    def wrap_cell(value):
-        return Paragraph(str(value), wrap_style)
-
-    elements = []
-    elements.append(Paragraph("PARROT POS RECEIPT", styles['Heading4']))
-    elements.append(Spacer(1, 4))
-    cashier_name = sale.user.username if sale.user else 'Unknown'
-    transaction_info = [
-        [wrap_cell("Transaction ID:"), wrap_cell(sale.transaction_id)],
-        [wrap_cell("Date:"), wrap_cell(sale.date.strftime("%Y-%m-%d %H:%M:%S"))],
-        [wrap_cell("Cashier:"), wrap_cell(cashier_name)],
-        [wrap_cell("Payment Method:"), wrap_cell(sale.payment_method.capitalize())]
-    ]
-    if sale.payment_method == 'cash':
-        transaction_info.append([wrap_cell("Cash Received:"), wrap_cell(format_currency(sale.cash_received or 0))])
-        transaction_info.append([wrap_cell("Refund Given:"), wrap_cell(format_currency(sale.refund_amount or 0))])
-    t = Table(transaction_info, colWidths=[content_width * 0.42, content_width * 0.58])
-    t.setStyle(TableStyle([
-        ('FONT', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-        ('LEFTPADDING', (0, 0), (-1, -1), 1),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 1),
-    ]))
-    elements.append(t)
-    elements.append(Spacer(1, 6))
-    items_data = [["Item", "Price", "Qty", "Tax", "Total"]]
-    subtotal_calc = Decimal('0.00')
-    for item in items:
-        product = Product.query.get(item.product_id)
-        item_total = Decimal(str(item.price)) * Decimal(str(item.quantity))
-        subtotal_calc += item_total
-        items_data.append([
-            wrap_cell(product.name),
-            wrap_cell(format_currency(item.price)),
-            wrap_cell(str(item.quantity)),
-            wrap_cell(f"{product.tax_rate:.0f}%"),
-            wrap_cell(format_currency(item_total))
-        ])
-    t = Table(items_data, colWidths=[
-        content_width * 0.38,
-        content_width * 0.17,
-        content_width * 0.10,
-        content_width * 0.12,
-        content_width * 0.23
-    ])
-    t.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('ALIGN', (0, 1), (0, -1), 'LEFT'),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('WORDWRAP', (0, 0), (-1, -1), 'CJK'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 4),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black),
-        ('FONT', (0, 1), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 1), (-1, -1), 7),
-        ('LEFTPADDING', (0, 0), (-1, -1), 1),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 1),
-        ('TOPPADDING', (0, 0), (-1, -1), 2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
-    ]))
-    elements.append(t)
-    elements.append(Spacer(1, 5))
-    totals_data = [
-        [wrap_cell("Subtotal:"), wrap_cell(format_currency(subtotal_calc))],
-        [wrap_cell("Tax:"), wrap_cell(format_currency(sale.tax))],
-        [wrap_cell("Total:"), wrap_cell(format_currency(sale.total))]
-    ]
-    t = Table(totals_data, colWidths=[content_width * 0.55, content_width * 0.45])
-    t.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8),
-        ('LEFTPADDING', (0, 0), (-1, -1), 1),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 1),
-    ]))
-    elements.append(t)
-    elements.append(Spacer(1, 8))
-    elements.append(Paragraph("Thank you for your business!", styles['Normal']))
-    elements.append(Paragraph("Please visit us again soon!", styles['Normal']))
-    doc.build(elements)
-    buffer.seek(0)
-    response = make_response(buffer.getvalue())
-    response.headers['Content-Type'] = 'application/pdf'
-    response.headers['Content-Disposition'] = f'inline; filename=receipt_{transaction_id}.pdf'
+    receipt_view = build_receipt_view(snapshot, get_receipt_paper_size())
+    response = make_response(render_template('receipt.html', receipt=receipt_view))
+    response.headers['Cache-Control'] = 'private, no-store, max-age=0'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
     return response
 
 # --- Excel Export ---

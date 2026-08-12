@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Receipt {{ receipt.receipt_number }} · {{ receipt.pos_name }}</title>
+    <style id="receipt-page-style">
+      @page { size: {{ receipt.paper.width_mm }}mm 20mm; margin: 0; }
+    </style>
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; background: #e9ecef; color: #111; }
+      body { font-family: Arial, "Padauk", "Myanmar Text", sans-serif; }
+      .toolbar {
+        position: sticky; top: 0; z-index: 2; display: flex; justify-content: center;
+        gap: 10px; padding: 12px; background: rgba(33, 37, 41, .96); color: white;
+      }
+      .toolbar button {
+        border: 1px solid rgba(255,255,255,.35); border-radius: 6px; padding: 9px 15px;
+        background: white; color: #212529; font: 600 14px/1 Arial, sans-serif; cursor: pointer;
+      }
+      .toolbar button.primary { background: #0d6efd; border-color: #0d6efd; color: white; }
+      .toolbar button:focus-visible { outline: 3px solid #ffc107; outline-offset: 2px; }
+      .print-help { margin: 10px auto; max-width: 520px; padding: 0 12px; text-align: center; color: #495057; font-size: 13px; }
+      .receipt-shell { width: {{ receipt.paper.width_mm }}mm; margin: 16px auto; background: white; box-shadow: 0 8px 30px rgba(0,0,0,.18); }
+      .receipt {
+        width: {{ receipt.paper.width_mm }}mm; padding: {% if receipt.is_narrow %}3mm{% else %}4mm{% endif %};
+        overflow: hidden; background: white; font-family: "Courier New", "Padauk", "Myanmar Text", monospace;
+        font-size: {% if receipt.is_narrow %}10.5px{% else %}12px{% endif %}; font-weight: 600; line-height: 1.32;
+      }
+      .center { text-align: center; }
+      .brand { margin: 0; font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if receipt.is_narrow %}16px{% else %}19px{% endif %}; font-weight: 800; letter-spacing: .4px; }
+      .branch-name { margin-top: 2px; font-weight: 700; }
+      .contact { margin-top: 2px; overflow-wrap: anywhere; font-size: .92em; }
+      .rule { border: 0; border-top: 1px dashed #111; margin: 6px 0; }
+      .rule.strong { border-top-style: solid; border-top-width: 2px; }
+      .meta-row, .total-row { display: flex; justify-content: space-between; gap: 8px; }
+      .meta-row span:first-child, .total-row span:first-child { flex: 0 0 auto; }
+      .meta-row span:last-child, .total-row span:last-child { text-align: right; overflow-wrap: anywhere; }
+      .item { break-inside: avoid; page-break-inside: avoid; margin: 0 0 7px; }
+      .item-name { font-weight: 800; overflow-wrap: anywhere; }
+      .item-detail { display: flex; justify-content: space-between; gap: 6px; padding-left: {% if receipt.is_narrow %}4px{% else %}10px{% endif %}; }
+      .item-detail span:last-child { text-align: right; white-space: nowrap; }
+      .wide-head { display: grid; grid-template-columns: minmax(0, 1fr) 32px 70px 76px; gap: 4px; font-weight: 800; }
+      .wide-row { display: grid; grid-template-columns: minmax(0, 1fr) 32px 70px 76px; gap: 4px; align-items: start; break-inside: avoid; margin-bottom: 5px; }
+      .wide-head > :not(:first-child), .wide-row > :not(:first-child) { text-align: right; }
+      .wide-row .name { overflow-wrap: anywhere; font-weight: 700; }
+      .tax-line { grid-column: 1 / -1; display: flex; justify-content: space-between; padding-left: 10px; font-size: .9em; }
+      .total-row { padding: 1px 0; }
+      .total-row.grand { padding: 4px 0; font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if receipt.is_narrow %}15px{% else %}17px{% endif %}; font-weight: 900; }
+      .footer { margin-top: 8px; text-align: center; font-size: .92em; }
+      .cut-line { margin-top: 8px; color: #555; letter-spacing: 1px; white-space: nowrap; overflow: hidden; }
+      @media print {
+        html, body { width: {{ receipt.paper.width_mm }}mm; min-height: 0; background: white; }
+        .toolbar, .print-help { display: none !important; }
+        .receipt-shell { margin: 0; box-shadow: none; }
+        .receipt { margin: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="toolbar" aria-label="Receipt actions">
+      <button type="button" class="primary" id="print-button">Print receipt</button>
+      <button type="button" onclick="window.close()">Close</button>
+    </div>
+    <p class="print-help">Use {{ receipt.paper.label }}, 100% / Actual size, with browser headers and footers disabled.</p>
+    <main class="receipt-shell">
+      <article class="receipt" id="receipt-content">
+        <header class="center">
+          <h1 class="brand">{{ receipt.pos_name }}</h1>
+          {% if receipt.branch.name %}<div class="branch-name">{{ receipt.branch.name }}</div>{% endif %}
+          {% if receipt.branch.address %}<div class="contact">{{ receipt.branch.address }}</div>{% endif %}
+          {% if receipt.branch.phone or receipt.branch.email %}<div class="contact">{{ receipt.branch.phone }}{% if receipt.branch.phone and receipt.branch.email %} · {% endif %}{{ receipt.branch.email }}</div>{% endif %}
+        </header>
+        <hr class="rule strong" />
+        <div class="meta-row"><span>Receipt</span><span>{{ receipt.receipt_number }}</span></div>
+        <div class="meta-row"><span>Date</span><span>{{ receipt.date }}</span></div>
+        <div class="meta-row"><span>Cashier</span><span>{{ receipt.cashier_name }}</span></div>
+        <div class="meta-row"><span>Payment</span><span>{{ receipt.payment_method }}</span></div>
+        <hr class="rule" />
+
+        {% if receipt.is_narrow %}
+          {% for item in receipt["items"] %}
+            <section class="item">
+              <div class="item-name">{{ item.name }}</div>
+              <div class="item-detail"><span>{{ item.quantity }} × {{ item.unit_price_display }}</span><span>{{ item.line_subtotal_display }}</span></div>
+              {% if item.tax_amount %}<div class="item-detail"><span>Tax {{ item.tax_rate_display }}</span><span>{{ item.tax_amount_display }}</span></div>{% endif %}
+            </section>
+          {% endfor %}
+        {% else %}
+          <div class="wide-head"><span>Item</span><span>Qty</span><span>Price</span><span>Amount</span></div>
+          <hr class="rule" />
+          {% for item in receipt["items"] %}
+            <section class="wide-row">
+              <span class="name">{{ item.name }}</span><span>{{ item.quantity }}</span><span>{{ item.unit_price_display }}</span><span>{{ item.line_subtotal_display }}</span>
+              {% if item.tax_amount %}<div class="tax-line"><span>Tax {{ item.tax_rate_display }}</span><span>{{ item.tax_amount_display }}</span></div>{% endif %}
+            </section>
+          {% endfor %}
+        {% endif %}
+
+        <hr class="rule" />
+        <div class="total-row"><span>Subtotal</span><span>{{ receipt.subtotal_display }}</span></div>
+        <div class="total-row"><span>Tax</span><span>{{ receipt.tax_display }}</span></div>
+        <hr class="rule strong" />
+        <div class="total-row grand"><span>TOTAL</span><span>{{ receipt.total_display }}</span></div>
+        {% if receipt.is_cash %}
+          <hr class="rule" />
+          <div class="total-row"><span>Cash received</span><span>{{ receipt.cash_received_display }}</span></div>
+          <div class="total-row"><span>Change</span><span>{{ receipt.change_display }}</span></div>
+        {% endif %}
+        <hr class="rule" />
+        <footer class="footer">
+          <div>Thank you for your purchase.</div>
+          <div>Please keep your receipt.</div>
+          <div class="cut-line">- - - - - - - - - - - - - - - - - -</div>
+        </footer>
+      </article>
+    </main>
+    <script>
+      (() => {
+        const widthMm = {{ receipt.paper.width_mm }};
+        const content = document.getElementById("receipt-content");
+        const printButton = document.getElementById("print-button");
+        let ready = false;
+
+        function preparePage() {
+          const heightPx = Math.max(0, content.scrollHeight);
+          const heightMm = Math.max(20, Math.ceil((heightPx / 96) * 25.4 + 3));
+          document.getElementById("receipt-page-style").textContent =
+            `@page { size: ${widthMm}mm ${heightMm}mm; margin: 0; }`;
+          ready = true;
+        }
+
+        async function printReceipt() {
+          preparePage();
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          window.print();
+        }
+
+        printButton.addEventListener("click", printReceipt);
+        window.addEventListener("beforeprint", preparePage);
+        window.addEventListener("load", async () => {
+          if (document.fonts?.ready) await document.fonts.ready;
+          preparePage();
+          if (new URLSearchParams(window.location.search).get("autoprint") === "1" && ready) {
+            await printReceipt();
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

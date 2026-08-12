@@ -171,6 +171,44 @@
         object-fit: cover;
       }
 
+      .receipt-paper-option {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.75rem;
+        padding: 0.9rem;
+        border: 2px solid #dee2e6;
+        border-radius: 0.65rem;
+        cursor: pointer;
+        transition: border-color 0.15s ease, background-color 0.15s ease;
+      }
+
+      .receipt-paper-option:hover {
+        background: #f8f9fa;
+      }
+
+      .receipt-paper-option:has(input:checked) {
+        border-color: var(--primary-color);
+        background: #f0f6ff;
+      }
+
+      .receipt-paper-option input {
+        margin-top: 0.2rem;
+        flex: 0 0 auto;
+      }
+
+      .receipt-paper-option .option-title {
+        display: block;
+        font-weight: 700;
+        color: #212529;
+      }
+
+      .receipt-paper-option .option-detail {
+        display: block;
+        margin-top: 0.2rem;
+        color: #6c757d;
+        font-size: 0.875rem;
+      }
+
       #cart-items {
         max-height: 45vh;
         overflow-y: auto;
@@ -2418,6 +2456,42 @@
           </div>
         </div>
 
+        <div class="card mt-3">
+          <div class="card-header bg-dark text-white">
+            <h5 class="mb-0"><i class="bi bi-printer me-2"></i>Receipt Printer</h5>
+          </div>
+          <div class="card-body">
+            <p class="text-muted mb-3">Choose the shared thermal paper profile used for checkout and Sales History receipts on every device.</p>
+            <fieldset id="receipt-paper-options">
+              <legend class="visually-hidden">Receipt paper size</legend>
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label class="receipt-paper-option h-100">
+                    <input class="form-check-input" type="radio" name="receipt-paper-size" value="THERMAL_58MM" />
+                    <span>
+                      <span class="option-title">55/58 mm thermal</span>
+                      <span class="option-detail">58 mm physical roll for compact printers, with approximately 48–56 mm printable width.</span>
+                    </span>
+                  </label>
+                </div>
+                <div class="col-md-6">
+                  <label class="receipt-paper-option h-100">
+                    <input class="form-check-input" type="radio" name="receipt-paper-size" value="THERMAL_80MM" />
+                    <span>
+                      <span class="option-title">80 mm thermal</span>
+                      <span class="option-detail">Wider retail format with more room for item names, prices, and totals.</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </fieldset>
+            <div class="form-text mt-3"><i class="bi bi-info-circle me-1"></i>In the printer dialog, use 100% / Actual size and disable browser headers and footers.</div>
+            <div class="alert alert-light border mt-3 mb-0 py-2" id="receipt-paper-access-note" style="display: none;">
+              Manager access is required to change the shared printer profile.
+            </div>
+          </div>
+        </div>
+
         <!-- AI Agent Settings -->
         <div class="card mt-4">
           <div class="card-header bg-primary text-white">
@@ -4613,12 +4687,17 @@
         posName: "{{ pos_name }}",
         currencyCode: "{{ currency_code }}",
         currencySuffix: "{{ currency_suffix }}",
+        receiptPaperSize: "THERMAL_80MM",
       };
       const CURRENT_USER_ROLE = "{{ session.role }}";
 
       function hasManagerOrBossAccess() {
         const role = String(CURRENT_USER_ROLE || "").toLowerCase();
         return role === "manager" || role === "boss";
+      }
+
+      function hasManagerAccess() {
+        return String(CURRENT_USER_ROLE || "").toLowerCase() === "manager";
       }
 
       function currencySuffixFromCode(code) {
@@ -4734,6 +4813,13 @@
         const currencySelect = document.getElementById("settings-currency-code");
         if (currencySelect) currencySelect.value = APP_SETTINGS.currencyCode;
 
+        document.querySelectorAll('input[name="receipt-paper-size"]').forEach((input) => {
+          input.checked = input.value === APP_SETTINGS.receiptPaperSize;
+          input.disabled = !hasManagerAccess();
+        });
+        const receiptAccessNote = document.getElementById("receipt-paper-access-note");
+        if (receiptAccessNote) receiptAccessNote.style.display = hasManagerAccess() ? "none" : "block";
+
         normalizeCurrencyDisplay();
       }
 
@@ -4744,6 +4830,7 @@
             APP_SETTINGS.posName = data.pos_name || APP_SETTINGS.posName;
             APP_SETTINGS.currencyCode = data.currency_code || APP_SETTINGS.currencyCode;
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(APP_SETTINGS.currencyCode);
+            APP_SETTINGS.receiptPaperSize = data.receipt_paper_size || APP_SETTINGS.receiptPaperSize;
             applySettingsUI();
             loadAISettings();
           })
@@ -4980,12 +5067,23 @@
 
       function saveSettings() {
         const currencyCode = document.getElementById("settings-currency-code")?.value;
-        if (!currencyCode) return;
+        const receiptPaperSize = document.querySelector('input[name="receipt-paper-size"]:checked')?.value;
+        if (!currencyCode || !receiptPaperSize) return;
+
+        const saveButton = document.querySelector('button[onclick="saveSettings()"]');
+        const originalButtonContent = saveButton?.innerHTML;
+        if (saveButton) {
+          saveButton.disabled = true;
+          saveButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span> Saving...';
+        }
 
         fetch("/api/settings", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ currency_code: currencyCode }),
+          body: JSON.stringify({
+            currency_code: currencyCode,
+            receipt_paper_size: receiptPaperSize,
+          }),
         })
           .then((response) => response.json())
           .then((data) => {
@@ -4996,12 +5094,20 @@
 
             APP_SETTINGS.currencyCode = data.currency_code;
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(data.currency_code);
+            APP_SETTINGS.receiptPaperSize = data.receipt_paper_size || receiptPaperSize;
             applySettingsUI();
             showToast("Settings updated successfully", "success");
           })
           .catch((error) => {
             console.error("Error saving settings:", error);
             showToast("Failed to save settings", "error");
+            applySettingsUI();
+          })
+          .finally(() => {
+            if (saveButton) {
+              saveButton.disabled = false;
+              saveButton.innerHTML = originalButtonContent;
+            }
           });
       }
 
@@ -6297,8 +6403,33 @@
 
       function printReceiptFromSuccessModal() {
         if (currentSaleTransactionId) {
-          window.open(`/api/sales/${currentSaleTransactionId}/print`, "_blank");
+          openReceiptWindow(currentSaleTransactionId, true);
         }
+      }
+
+      function openReceiptWindow(transactionId, autoPrint = false) {
+        const normalizedId = String(transactionId || "").trim();
+        if (!normalizedId) {
+          showToast("Receipt transaction ID is missing", "error");
+          return false;
+        }
+
+        const suffix = autoPrint ? "?autoprint=1" : "";
+        const receiptWindow = window.open("about:blank", "_blank");
+        if (!receiptWindow) {
+          showToast("Receipt window was blocked. Allow popups for this POS and try again.", "warning");
+          return false;
+        }
+        try {
+          receiptWindow.opener = null;
+          receiptWindow.location.replace(`/api/sales/${encodeURIComponent(normalizedId)}/print${suffix}`);
+        } catch (error) {
+          receiptWindow.close();
+          console.error("Failed to open receipt window:", error);
+          showToast("Failed to open the receipt. Please try again.", "error");
+          return false;
+        }
+        return true;
       }
 
       // ============================================
@@ -8669,11 +8800,12 @@
       function printReceipt() {
         const transactionId =
           document.getElementById("sale-id-display").textContent;
-        window.open(`/api/sales/${transactionId}/print`, "_blank");
-        const modal = bootstrap.Modal.getInstance(
-          document.getElementById("saleDetailsModal")
-        );
-        modal.hide();
+        if (openReceiptWindow(transactionId, false)) {
+          const modal = bootstrap.Modal.getInstance(
+            document.getElementById("saleDetailsModal")
+          );
+          modal?.hide();
+        }
       }
 
       function openReturnExchangeModal(transactionId) {
