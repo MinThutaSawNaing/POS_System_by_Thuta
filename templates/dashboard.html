@@ -353,6 +353,10 @@
         align-items: end;
       }
 
+      .sales-history-header-actions .btn {
+        flex: 0 0 auto;
+      }
+
       /* Responsive media queries */
       @media (max-width: 767.98px) {
         /* Small devices (phones) */
@@ -479,6 +483,14 @@
 
         .section-header .btn {
           flex: 1;
+        }
+
+        .section-header .sales-history-header-actions {
+          width: auto;
+        }
+
+        .section-header .sales-history-header-actions .btn {
+          flex: 0 0 auto;
         }
 
         /* Filter inputs full width on mobile */
@@ -1290,7 +1302,7 @@
               <span class="branch-name">-</span>
             </span>
           </div>
-          <div class="d-flex gap-2 flex-wrap">
+          <div class="d-flex gap-2 flex-wrap sales-history-header-actions">
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
             </button>
