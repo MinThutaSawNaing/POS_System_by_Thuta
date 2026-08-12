@@ -9956,8 +9956,24 @@
           .then((promo) => {
             // Load products for dropdown
             loadProductsForPromotionModal().then(() => {
-              document.getElementById("promotion-product-id").value =
-                promo.product_id;
+              const productSelect = document.getElementById(
+                "promotion-product-id"
+              );
+              const productId = String(promo.product_id);
+
+              if (
+                !Array.from(productSelect.options).some(
+                  (option) => option.value === productId
+                )
+              ) {
+                const currentProduct = document.createElement("option");
+                currentProduct.value = productId;
+                currentProduct.textContent = promo.product_name;
+                productSelect.appendChild(currentProduct);
+              }
+
+              productSelect.value = productId;
+              productSelect.dispatchEvent(new Event("change"));
               document.getElementById("promotion-discount-type").value =
                 promo.discount_type;
               document.getElementById("promotion-discount-value").value =
