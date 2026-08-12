@@ -216,6 +216,15 @@
         font-weight: 500;
       }
 
+      .auto-barcode-scanner-control {
+        font-size: 0.75rem;
+        white-space: nowrap;
+      }
+
+      .auto-barcode-scanner-control .form-check-input {
+        cursor: pointer;
+      }
+
       /* === POS Product Grid: CSS Grid for perfect cross-platform fit === */
       #product-grid {
         display: grid;
@@ -959,6 +968,10 @@
             <button class="btn btn-outline-secondary btn-sm" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> Refresh
             </button>
+            <div class="form-check form-switch auto-barcode-scanner-control mb-0 d-flex align-items-center gap-1" title="Auto Barcode Scanner Detection">
+              <input class="form-check-input mt-0" type="checkbox" role="switch" id="auto-barcode-scanner-toggle" />
+              <label class="form-check-label text-muted" for="auto-barcode-scanner-toggle"><i class="bi bi-upc-scan"></i> Scanner</label>
+            </div>
             <button class="btn btn-outline-danger btn-sm" onclick="clearCart()">
               <i class="bi bi-x-circle"></i> Clear Cart
             </button>
@@ -975,7 +988,6 @@
                 class="form-control"
                 placeholder="Scan barcode or search products..."
                 data-i18n-placeholder="scanBarcodeOrSearch"
-                autofocus
               />
               <button
                 class="btn btn-primary"
@@ -5639,6 +5651,7 @@
         loadDashboardStats();
         loadProducts();
         loadSales();
+        initAutoBarcodeScannerToggle();
 
         // Set up product search to work on Enter key
         document
@@ -5654,6 +5667,8 @@
         document
           .getElementById("product-search")
           .addEventListener("blur", function () {
+            if (!isAutoBarcodeScannerDetectionEnabled()) return;
+
             setTimeout(() => {
               const active = document.activeElement;
               if (!active) return;
@@ -5984,6 +5999,26 @@
 
       // Global Barcode Scanner Listener
       // Detects rapid character input followed by Enter key (typical barcode scanner behavior)
+      const AUTO_BARCODE_SCANNER_DETECTION_KEY = "pos_auto_barcode_scanner_detection";
+
+      function isAutoBarcodeScannerDetectionEnabled() {
+        return localStorage.getItem(AUTO_BARCODE_SCANNER_DETECTION_KEY) !== "false";
+      }
+
+      function initAutoBarcodeScannerToggle() {
+        const toggle = document.getElementById("auto-barcode-scanner-toggle");
+        if (!toggle) return;
+
+        toggle.checked = isAutoBarcodeScannerDetectionEnabled();
+        toggle.addEventListener("change", function () {
+          localStorage.setItem(AUTO_BARCODE_SCANNER_DETECTION_KEY, String(toggle.checked));
+
+          if (!toggle.checked) {
+            document.getElementById("product-search")?.blur();
+          }
+        });
+      }
+
       function initGlobalBarcodeScanner() {
         let barcodeBuffer = "";
         let lastKeyTime = 0;
@@ -5992,6 +6027,11 @@
 
         // Listen for keypress events globally
         document.addEventListener("keydown", function(e) {
+          if (!isAutoBarcodeScannerDetectionEnabled()) {
+            barcodeBuffer = "";
+            return;
+          }
+
           const currentTime = Date.now();
           const timeDiff = currentTime - lastKeyTime;
           lastKeyTime = currentTime;
@@ -6608,10 +6648,12 @@
           loadProductsForPOS();
           loadCustomersForPOS();
           // Auto-focus barcode search so scanner is immediately ready
-          setTimeout(() => {
-            const searchInput = document.getElementById("product-search");
-            if (searchInput) searchInput.focus();
-          }, 100);
+          if (isAutoBarcodeScannerDetectionEnabled()) {
+            setTimeout(() => {
+              const searchInput = document.getElementById("product-search");
+              if (searchInput) searchInput.focus();
+            }, 100);
+          }
         } else if (sectionId === "reports") {
           toggleReportScopeControls();
           initSalesChart();
@@ -7076,7 +7118,7 @@
                     product.name
                   }</h6>
                   <p class="card-text mb-1">${formatCurrency(product.price)}</p>
-                  <small class="text-muted">Stock: ${product.stock}</small>
+                  <small class="${Number(product.stock) === 0 ? "text-danger" : "text-muted"}">Stock: ${product.stock}</small>
               </div>
           </div>
       `;
@@ -7150,7 +7192,7 @@
                                             product.name
                                           }</h6>
                                           <p class="card-text">${formatCurrency(product.price)}</p>
-                                          <small class="text-muted">Stock: ${
+                                          <small class="${Number(product.stock) === 0 ? "text-danger" : "text-muted"}">Stock: ${
                                             product.stock
                                           }</small>
                                       </div>
