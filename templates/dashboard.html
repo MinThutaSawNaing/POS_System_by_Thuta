@@ -6162,12 +6162,15 @@
         initAutoBarcodeScannerToggle();
         restoreActiveSection();
 
-        // Set up product search to work on Enter key
+        // Add an exact barcode match on Enter; retain normal product searches.
         document
           .getElementById("product-search")
-          .addEventListener("keypress", function (e) {
+          .addEventListener("keydown", function (e) {
             if (e.key === "Enter") {
-              searchProducts();
+              e.preventDefault();
+              e.stopPropagation();
+              const query = this.value.trim();
+              if (query) processBarcodeScan(query, true);
             }
           });
 
@@ -6586,23 +6589,30 @@
       }
 
       // Process scanned barcode - navigate to POS and add product to cart
-      function processBarcodeScan(barcode) {
+      function processBarcodeScan(barcode, searchIfNotExact = false) {
         console.log("Barcode scanned:", barcode);
 
         // Show scanning feedback
         showToast(`Scanning: ${barcode}`, "info");
 
         // Search for product by barcode
-        fetch("/api/products/search?q=" + encodeURIComponent(barcode))
+        const activeBranchId = currentBranch?.id;
+        const url = activeBranchId
+          ? `/api/products/search?q=${encodeURIComponent(barcode)}&branch_id=${encodeURIComponent(activeBranchId)}`
+          : "/api/products/search?q=" + encodeURIComponent(barcode);
+
+        fetch(url)
           .then((response) => response.json())
           .then((data) => {
-            if (data.length === 0) {
+            const product = data.find((p) => p.barcode === barcode);
+            if (!product && searchIfNotExact) {
+              searchProducts();
+              return;
+            }
+            if (!product) {
               showToast(`Product not found for barcode: ${barcode}`, "error");
               return;
             }
-
-            // Find exact barcode match or partial match
-            let product = data.find(p => p.barcode === barcode) || data[0];
 
             // Navigate to POS section if not already there
             if (currentSection !== "pos") {

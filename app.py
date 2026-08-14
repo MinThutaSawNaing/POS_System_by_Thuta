@@ -2,7 +2,7 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import uuid
 import io
@@ -30,7 +30,6 @@ from receipt import (
 )
 from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
-from datetime import datetime, timedelta
 import pytz
 from functools import wraps
 from reportlab.graphics.barcode import createBarcodeDrawing
@@ -45,6 +44,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = os.path.join(app.root_path, 'uploads', 'products')
 app.config['RECEIPT_LOGO_FOLDER'] = os.path.join(app.root_path, 'uploads', 'receipts')
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB per request
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365)
 db = SQLAlchemy(app)
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -1594,6 +1594,7 @@ def login():
         password = request.form['password']
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password, password):
+            session.permanent = request.form.get('remember') == 'on'
             session['user_id'] = user.id
             session['username'] = user.username
             session['role'] = user.role
