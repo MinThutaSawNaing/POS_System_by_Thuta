@@ -5693,6 +5693,9 @@ def get_ai_orchestrator():
         'user_id': session.get('user_id'),
         'role': session.get('role')
     })
+    # SQLite-backed memory is always available; Mem0 upgrades it to semantic
+    # retrieval when a local embedding backend is configured.
+    orchestrator.memory_service = get_persistent_memory_service()
     return orchestrator
 
 
@@ -5706,7 +5709,7 @@ def get_persistent_memory_service():
         service = get_memory_service(
             db=db, registry_model=MemoryRegistry, audit_model=MemoryAudit
         )
-        if service is None or getattr(service, 'enabled', True) is False:
+        if service is None:
             return None
         return service
     except (ImportError, ModuleNotFoundError) as exc:

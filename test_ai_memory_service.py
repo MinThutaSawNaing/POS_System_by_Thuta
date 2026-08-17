@@ -46,6 +46,41 @@ class MemoryServiceTests(unittest.TestCase):
         self.assertEqual(service.retrieve("preference", user_id=1, branch_id=7), [])
         self.assertFalse(service.remember("I prefer reports", user_id=1, branch_id=7)["saved"])
 
+    def test_sqlite_registry_fallback_saves_and_retrieves_without_mem0(self):
+        class FakeQuery:
+            def __init__(self, rows): self.rows = rows
+            def filter_by(self, **kwargs): return self
+            def order_by(self, *_args): return self
+            def all(self): return self.rows
+            def first(self): return self.rows[0] if self.rows else None
+
+        class Row:
+            def __init__(self):
+                self.memory_id = "sqlite-memory"
+                self.user_id = 1
+                self.branch_id = 7
+                self.scope = "private"
+                self.summary = "I prefer concise reports"
+                self.updated_at = 1
+
+        class Registry:
+            query = FakeQuery([Row()])
+            def __init__(self, **kwargs): self.__dict__.update(kwargs)
+
+        class Session:
+            def __init__(self): self.added = []
+            def add(self, value): self.added.append(value)
+
+        class Db:
+            session = Session()
+
+        service = MemoryService(enabled=False, db=Db(), registry_model=Registry)
+        saved = service.remember("I prefer concise reports", user_id=1, branch_id=7)
+        self.assertTrue(saved["saved"])
+        self.assertEqual(saved["backend"], "sqlite")
+        recalled = service.retrieve("concise report", user_id=1, branch_id=7)
+        self.assertEqual(recalled[0]["memory"], "I prefer concise reports")
+
     def test_forget_checks_namespace_before_deleting(self):
         self.assertTrue(self.service.forget("m-1", user_id=1, branch_id=7)["deleted"])
         self.assertEqual(self.client.deleted, ["m-1"])

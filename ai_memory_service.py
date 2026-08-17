@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import threading
+import uuid
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 LOG = logging.getLogger(__name__)
@@ -112,6 +113,39 @@ class MemoryService:
     def available(self) -> bool:
         return self.enabled and self._client is not None
 
+    def _registry_backend(self, hooks: Mapping[str, Any]) -> Any:
+        """Return the local SQLite registry when semantic Mem0 is unavailable."""
+        return hooks.get("registry_model") or self.registry_model
+
+    def _registry_memories(self, query: str, *, user_id: Any, branch_id: Any,
+                           scopes: List[str], limit: int, hooks: Mapping[str, Any]) -> List[Dict[str, Any]]:
+        registry = self._registry_backend(hooks)
+        if registry is None:
+            return []
+        try:
+            db_query = registry.query.filter_by(branch_id=int(branch_id))
+            updated_at = getattr(registry, "updated_at", None)
+            if updated_at is not None:
+                db_query = db_query.order_by(updated_at.desc())
+            rows = db_query.all()
+            words = {word for word in re.findall(r"[\w-]{3,}", query.lower())}
+            matches = []
+            for row in rows:
+                if getattr(row, "scope", None) not in scopes:
+                    continue
+                if getattr(row, "scope", None) == "private" and int(getattr(row, "user_id", -1)) != int(user_id):
+                    continue
+                text = str(getattr(row, "summary", ""))
+                score = sum(word in text.lower() for word in words)
+                matches.append((score, row))
+            matches.sort(key=lambda item: (item[0], getattr(item[1], "updated_at", None)), reverse=True)
+            return [{"id": row.memory_id, "memory": row.summary,
+                     "metadata": {"user_id": str(row.user_id), "branch_id": str(row.branch_id), "scope": row.scope}}
+                    for _, row in matches[:limit]]
+        except Exception as exc:
+            LOG.warning("SQLite memory retrieval failed: %s", exc)
+            return []
+
     @staticmethod
     def _clean_text(content: Any) -> str:
         if not isinstance(content, str):
@@ -146,7 +180,12 @@ class MemoryService:
         if not explicit and not (allow_auto and self.should_auto_save(text)):
             return {"saved": False, "reason": "auto-save policy", "memory_id": None}
         if not self.enabled or self._client is None:
-            return {"saved": False, "reason": self.unavailable_reason or "disabled", "memory_id": None}
+            registry = self._registry_backend(hooks)
+            if registry is None:
+                return {"saved": False, "reason": self.unavailable_reason or "disabled", "memory_id": None}
+            memory_id = "sqlite-" + uuid.uuid4().hex
+            self._registry("create", memory_id, text, namespace, source, hooks)
+            return {"saved": True, "memory_id": memory_id, "summary": text[:500], "backend": "sqlite"}
         try:
             with self._lock:
                 result = self._client.add([{ "role": "user", "content": text }], user_id=self._mem0_namespace(namespace), metadata=namespace)
@@ -165,9 +204,10 @@ class MemoryService:
         if any(item not in _SCOPES for item in scopes):
             raise ValueError("invalid scope")
         namespace = self._scope(user_id, branch_id, scopes[0])
-        if not self.enabled or self._client is None:
-            return []
         capped = max(1, min(int(limit), _MAX_LIMIT))
+        if not self.enabled or self._client is None:
+            return self._registry_memories(text, user_id=user_id, branch_id=branch_id,
+                                           scopes=scopes, limit=capped, hooks=_)
         found: List[Dict[str, Any]] = []
         try:
             # Fetching a few extra permits reliable client-side isolation across
@@ -224,7 +264,11 @@ class MemoryService:
         scopes = [scope] if scope else ["private", "branch_shared"]
         self._scope(user_id, branch_id, scopes[0])
         if not self.enabled or self._client is None:
-            return {"deleted": False, "reason": self.unavailable_reason or "disabled"}
+            if self._registry_backend(hooks) is None:
+                return {"deleted": False, "reason": self.unavailable_reason or "disabled"}
+            if not self._owns_memory(str(memory_id), user_id, branch_id, scopes, hooks):
+                return {"deleted": False, "reason": "memory not found"}
+            return {"deleted": True, "memory_id": str(memory_id), "backend": "sqlite"}
         try:
             if not self._owns_memory(str(memory_id), user_id, branch_id, scopes, hooks):
                 return {"deleted": False, "reason": "memory not found"}
