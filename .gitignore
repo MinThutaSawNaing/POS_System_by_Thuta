@@ -2,3 +2,5 @@
 .env.*
 !.env.example
 instance/*.db*
+__pycache__/
+*.pyc
