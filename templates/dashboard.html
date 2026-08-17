@@ -5418,8 +5418,12 @@
 
       function loadBranchSelector() {
         fetch("/api/branches")
-          .then((response) => response.json())
+          .then((response) => {
+            if (!response.ok) throw new Error("Unable to load branches");
+            return response.json();
+          })
           .then((data) => {
+            if (!Array.isArray(data)) throw new Error("Invalid branch list response");
             branchesList = data;
             const selector = document.getElementById("branch-selector");
             const reportBranchSelector = document.getElementById("report-branch-selector");
@@ -5429,16 +5433,12 @@
             if (reportBranchSelector) {
               reportBranchSelector.innerHTML = '<option value="">Current branch</option>';
             }
-            data.forEach((branch) => {
+            data.filter((branch) => branch.is_active).forEach((branch) => {
               const option = document.createElement("option");
               option.value = branch.id;
               option.textContent = branch.name + (branch.is_default ? " (Default)" : "");
-              if (!branch.is_active) {
-                option.disabled = true;
-                option.textContent += " [Inactive]";
-              }
               selector.appendChild(option);
-              if (reportBranchSelector && branch.is_active) {
+              if (reportBranchSelector) {
                 const reportOption = document.createElement("option");
                 reportOption.value = branch.id;
                 reportOption.textContent = branch.name;
@@ -5448,13 +5448,13 @@
             
             // Set current branch
             fetch("/api/branches/current")
-              .then((res) => res.json())
+              .then((res) => {
+                if (!res.ok) throw new Error("No active branch is available");
+                return res.json();
+              })
               .then((current) => {
                 currentBranch = current;
                 selector.value = current.id;
-                if (posSelector) {
-                  posSelector.value = current.id;
-                }
                 if (reportBranchSelector) {
                   reportBranchSelector.value = "";
                 }
@@ -5462,21 +5462,27 @@
                 updateBranchIndicators(current);
                 toggleReportScopeControls();
               })
-              .catch(() => {});
+              .catch((error) => {
+                currentBranch = null;
+                updateBranchIndicators(null);
+                console.error("Error loading current branch:", error);
+                showToast("Unable to load the active branch", "error");
+              });
           })
           .catch((error) => {
             console.error("Error loading branches:", error);
+            showToast("Unable to load branches", "error");
           });
       }
 
       // Update all branch indicators across the UI
       function updateBranchIndicators(branch) {
-        if (!branch) return;
+        const branchLabel = branch ? `${branch.name}${branch.code ? ` (${branch.code})` : ""}` : "No active branch";
         
         // Update sidebar branch name
         const sidebarBranchName = document.getElementById("current-branch-name");
         if (sidebarBranchName) {
-          sidebarBranchName.textContent = branch.name;
+          sidebarBranchName.textContent = branchLabel;
         }
         
         // Update all section branch indicators
@@ -5501,7 +5507,7 @@
           if (indicator) {
             const nameSpan = indicator.querySelector(".branch-name");
             if (nameSpan) {
-              nameSpan.textContent = branch.name;
+              nameSpan.textContent = branchLabel;
             }
           }
         });

@@ -5603,6 +5603,8 @@ def print_debt_receipt(debt_id):
 AI_MODELS = {
     'User': User,
     'AppSetting': AppSetting,
+    'Branch': Branch,
+    'Category': Category,
     'Product': Product,
     'Supplier': Supplier,
     'PurchaseOrder': PurchaseOrder,
@@ -5625,10 +5627,16 @@ AI_MODELS = {
 
 def get_ai_orchestrator():
     """Get the current user's isolated AI conversation."""
-    return get_orchestrator(
+    orchestrator = get_orchestrator(
         db, AI_MODELS, get_setting, app,
         conversation_id=session.get('user_id')
     )
+    orchestrator.set_request_context({
+        'branch_id': get_current_branch_id(),
+        'user_id': session.get('user_id'),
+        'role': session.get('role')
+    })
+    return orchestrator
 
 
 @app.route('/api/agent/chat', methods=['POST'])

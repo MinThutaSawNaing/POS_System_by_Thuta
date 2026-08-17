@@ -52,11 +52,10 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
   - Branch-specific reporting and analytics
 
 - **AI Agent Assistant (Loli)**
-  - Natural language inventory queries
-  - Automated purchase order suggestions
-  - Sales trend analysis
-  - Smart reorder recommendations
-  - Real-time database integration
+  - Branch-aware natural language operations queries
+  - Inventory, procurement, warehouse, sales, customer, debt, delivery, promotion, and return summaries
+  - Smart reorder recommendations and sales trend analysis
+  - Secure Markdown-formatted responses backed by live database data
 
 - **Windows Setup Script**
   - `SetupTheSoftware.bat` creates a virtual environment and installs dependencies
@@ -66,6 +65,8 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
 ## 🤖 AI Agent Assistant (Loli)
 
 Parrot POS features an intelligent AI assistant named **Loli** that helps manage inventory, procurement, and business operations through natural language conversations.
+
+Loli always answers from the **currently active branch**. It uses read-only live-data tools, so it can summarize operations accurately without creating or changing records.
 
 ### AI Agent Capabilities
 
@@ -97,6 +98,16 @@ The AI assistant can help with:
   - Identify top-selling products
   - Analyze revenue performance
 
+- **Customers, Debts & Deliveries**
+  - Find customers and outstanding balances
+  - Review overdue debt and aging status
+  - Check delivery stages, priorities, and open delivery work
+
+- **Promotions, Categories & Returns**
+  - Review active, upcoming, and expired promotions
+  - Summarize categories and product coverage
+  - Review recent returns and exchanges
+
 ### How to Use the AI Agent
 
 1. Log in to the POS dashboard
@@ -110,6 +121,10 @@ The AI assistant can help with:
 - "What products need reordering?"
 - "Show inventory status"
 - "Transfer 50 units of Product X from warehouse"
+- "Which customer debts are overdue?"
+- "Show urgent deliveries"
+- "What promotions are active?"
+- "What branch am I working in?"
 
 ### AI Agent Features
 
@@ -118,6 +133,8 @@ The AI assistant can help with:
 - **Fallback Handling**: Even if the AI service is unavailable, built-in fallback logic ensures core queries still work
 - **Conversation History**: Maintains context across multiple questions
 - **Real-time Data**: Always works with live database information
+- **Branch Awareness**: Operational results are scoped to the currently selected branch
+- **Professional Answers**: Supports safe Markdown headings, lists, code, and tables in Loli responses
 
 ### AI Agent Configuration
 

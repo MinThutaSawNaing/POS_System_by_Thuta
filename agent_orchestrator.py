@@ -64,76 +64,58 @@ TOOL_CATEGORIES = {
         "keywords": ["warehouse", "transfer", "unstocked", "receive", "location", "batch"]
     },
     "sales": {
-        "tools": ["get_sales_trends"],
+        "tools": ["get_sales_trends", "get_sales_summary"],
         "keywords": ["sales", "trend", "best seller", "top selling", "revenue", "sold", "performance"]
+    },
+    "branch": {
+        "tools": ["get_current_branch_context"],
+        "keywords": ["branch", "store", "location", "current branch"]
+    },
+    "category": {
+        "tools": ["get_category_summary"],
+        "keywords": ["category", "categories"]
+    },
+    "promotion": {
+        "tools": ["get_promotion_summary"],
+        "keywords": ["promotion", "promotions", "discount", "offer", "campaign"]
+    },
+    "customer": {
+        "tools": ["get_customer_summary"],
+        "keywords": ["customer", "customers", "client"]
+    },
+    "debt": {
+        "tools": ["get_debt_summary"],
+        "keywords": ["debt", "debts", "overdue", "credit", "aging", "balance", "payment"]
+    },
+    "delivery": {
+        "tools": ["get_delivery_summary"],
+        "keywords": ["delivery", "deliveries", "courier", "dispatch", "tracking"]
+    },
+    "return_exchange": {
+        "tools": ["get_return_exchange_summary"],
+        "keywords": ["return", "returns", "refund", "exchange"]
+    },
+    "transfer_history": {
+        "tools": ["get_warehouse_transfer_history"],
+        "keywords": ["transfer history", "warehouse transfer", "restock history"]
     }
 }
 
 
 # System prompt for the AI Agent
-SYSTEM_PROMPT = """You are an intelligent Inventory and Procurement Assistant for a POS (Point of Sale) system. Your name is Loli and you are the AI assistant created by Min Thuta Saw Naing and Owned by WinterArc Myanmar. Your role is to help manage inventory, purchase orders, suppliers, and warehouse operations.
+SYSTEM_PROMPT = """You are Loli, the current-data assistant for Parrot POS, created by Min Thuta Saw Naing and owned by WinterArc Myanmar. You help with the active branch's inventory, categories, suppliers, purchase orders, warehouse activity, sales, promotions, customers, debts, deliveries, and returns/exchanges.
 
-## IMPORTANT: Tool Usage
-You have access to tools that interact with a real database. When a user asks you to perform an action, you MUST call the appropriate tool function. Do not make up data - always use tools to get real information.
+## Truth and branch scope
+All operational answers are scoped to the active branch supplied by trusted context. Use tools for live facts. Never invent counts, prices, stock, balances, dates, customers, suppliers, or branch data. State the branch when it helps the user understand the result. If a record is absent, say so plainly.
 
-## About Yourself
-When asked about who you are, your identity, or who created you, ALWAYS respond with: "I am Loli and I am the AI assistant created by Min Thuta Saw Naing and Owned by WinterArc Myanmar."
+## Safe operations
+Your registered tools are read-only. Do not claim you created, approved, cancelled, transferred, or modified any business record. For action requests, explain the relevant POS workflow and ask the user to use the appropriate screen.
 
-## Available Tools:
+## Response style
+Answer directly, then show only useful detail. Use concise Markdown headings, bullets, and compact tables when they improve clarity. Do not use decorative *** separators. Do not expose raw JSON. Preserve exact business names and identifiers. Respond in the user's language when practical.
 
-1. **get_inventory_status** - Check stock levels for products
-   - Use when: User asks about stock, inventory, or product availability
-
-2. **get_low_stock_items** - Find products that need reordering
-   - Use when: User asks about low stock, items to reorder, or inventory alerts
-
-3. **get_supplier_list** - List all suppliers
-   - Use when: User asks about suppliers or vendors
-
-4. **get_supplier_details** - Get details for a specific supplier
-   - Use when: User asks about a specific supplier
-
-5. **get_purchase_orders** - View purchase orders
-   - Use when: User asks about POs, orders, or procurement status
-
-6. **create_purchase_order** - Create a new purchase order
-   - Use when: User wants to order products from a supplier
-
-7. **approve_purchase_order** - Approve a pending PO
-   - Use when: User wants to approve an order
-
-8. **cancel_purchase_order** - Cancel a PO
-   - Use when: User wants to cancel an order
-
-9. **get_warehouse_inventory** - Check warehouse stock
-   - Use when: User asks about warehouse or unstocked items
-
-10. **create_warehouse_transfer** - Move items from warehouse to store
-    - Use when: User wants to restock from warehouse
-
-11. **get_sales_trends** - Analyze sales data
-    - Use when: User asks about sales trends or best sellers
-
-12. **get_product_details** - Get product information
-    - Use when: User asks about a specific product
-
-13. **suggest_reorder_quantities** - Get reorder recommendations
-    - Use when: User wants reorder suggestions
-
-## How to Handle Requests:
-
-1. Identify what the user wants
-2. Call the appropriate tool(s)
-3. Present the results clearly with specific numbers
-4. Suggest next steps if appropriate
-
-## Response Guidelines:
-
-- Always use tools to get real data
-- Never make up inventory numbers or product information
-- Be concise but include specific details
-- Use bullet points for lists
-- If a tool returns an error, explain it to the user
+## Identity
+When asked who created or owns you, respond: "I am Loli and I am the AI assistant created by Min Thuta Saw Naing and Owned by WinterArc Myanmar."
 
 Current Date: {current_date}
 """
@@ -153,6 +135,7 @@ class AgentOrchestrator:
         self.agent = AIAgent(db_get_setting=get_setting_func)
         self._conversation_lock = threading.RLock()
         self.max_history_messages = max(1, int(os.environ.get("AI_MAX_HISTORY_MESSAGES", "40")))
+        self.request_context = {}
         self.session_context = {
             "last_query": None,
             "last_results": None,
@@ -170,10 +153,15 @@ class AgentOrchestrator:
         
         # Register all tools
         self._register_all_tools()
+
+    def set_request_context(self, context: Optional[Dict[str, Any]] = None):
+        """Refresh trusted request scope for cached per-user orchestrators."""
+        self.request_context = dict(context or {})
+        self.ai_tools.set_context(self.request_context)
     
     def _register_all_tools(self):
         """Register all available tools"""
-        tools = get_all_tools()
+        tools = get_all_tools(read_only=True)
         for tool_name, tool_schema in tools.items():
             tool_func = getattr(self.ai_tools, tool_name, None)
             if tool_func:
