@@ -143,6 +143,7 @@ class AIAgent:
     def chat(self, message: Optional[str] = None, temperature: float = 0.7, 
              max_tokens: int = 2048, stream: bool = False, 
              tools_override: Optional[List[Dict]] = None,
+             force_tool_call: bool = False,
              retry_count: int = 0, max_retries: int = 3) -> ChatResponse:
         """
         Send a chat completion request to APIFree.ai
@@ -153,6 +154,9 @@ class AIAgent:
             max_tokens: Maximum tokens to generate
             stream: Whether to stream the response
             tools_override: Optional list of tools to use instead of all registered tools
+            force_tool_call: When True and tools are provided, sends tool_choice="required"
+                so the model must call a real tool. Use this for data questions so every
+                answer is built from live database results instead of model guesses.
             retry_count: Current retry attempt (for internal use)
             max_retries: Maximum number of retries on failure
             
@@ -186,8 +190,10 @@ class AIAgent:
         tools_to_send = tools_override if tools_override is not None else self.tools
         if tools_to_send:
             payload["tools"] = tools_to_send
-            payload["tool_choice"] = "auto"
-            print(f"[AI Agent API] Sending {len(tools_to_send)} tools with request")
+            # "auto" lets the model answer conversationally without calling a tool;
+            # "required" forces a real tool call so replies come from live data.
+            payload["tool_choice"] = "required" if force_tool_call else "auto"
+            print(f"[AI Agent API] Sending {len(tools_to_send)} tools with request (tool_choice={payload['tool_choice']})")
             
         try:
             response = requests.post(
@@ -252,7 +258,8 @@ class AIAgent:
                 print(f"[AI Agent API] Timeout, retrying in {wait_time}s... (attempt {retry_count + 1}/{max_retries})")
                 time.sleep(wait_time)
                 return self.chat(message=None, temperature=temperature, max_tokens=max_tokens, 
-                               stream=stream, tools_override=tools_override, 
+                               stream=stream, tools_override=tools_override,
+                               force_tool_call=force_tool_call,
                                retry_count=retry_count + 1, max_retries=max_retries)
             return ChatResponse(content="", error="Request timed out. Please try again.")
         except requests.exceptions.ConnectionError:
@@ -263,10 +270,18 @@ class AIAgent:
                 time.sleep(wait_time)
                 return self.chat(message=None, temperature=temperature, max_tokens=max_tokens,
                                stream=stream, tools_override=tools_override,
+                               force_tool_call=force_tool_call,
                                retry_count=retry_count + 1, max_retries=max_retries)
             return ChatResponse(content="", error="Connection error. Please check your internet connection.")
         except requests.exceptions.HTTPError as e:
             error_text = e.response.text if hasattr(e.response, 'text') else str(e)
+            # Some compatible providers reject "required" tool_choice; retry once
+            # with "auto" so forced-tool requests never break chat.
+            if e.response.status_code == 400 and force_tool_call:
+                print("[AI Agent API] Provider rejected forced tool calling, retrying with tool_choice=auto")
+                return self.chat(message=None, temperature=temperature, max_tokens=max_tokens,
+                               stream=stream, tools_override=tools_override,
+                               force_tool_call=False, retry_count=retry_count, max_retries=max_retries)
             # Check for rate limit errors
             if e.response.status_code == 429:
                 if retry_count < max_retries:
@@ -276,6 +291,7 @@ class AIAgent:
                     time.sleep(wait_time)
                     return self.chat(message=None, temperature=temperature, max_tokens=max_tokens,
                                    stream=stream, tools_override=tools_override,
+                                   force_tool_call=force_tool_call,
                                    retry_count=retry_count + 1, max_retries=max_retries)
             return ChatResponse(content="", error=f"HTTP Error {e.response.status_code}: {error_text}")
         except Exception as e:

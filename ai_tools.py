@@ -40,6 +40,20 @@ TOOL_SCHEMAS = {
             "properties": {}
         }
     },
+    "search_products": {
+        "name": "search_products",
+        "description": "Search products in the active branch by name. Returns stock level, price, cost and status for every matching product.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Product name or part of a name to search for."
+                }
+            },
+            "required": ["query"]
+        }
+    },
     "get_supplier_list": {
         "name": "get_supplier_list",
         "description": "Get a list of all suppliers with their details including contact info, ratings, and performance metrics.",
@@ -420,6 +434,34 @@ class AITools:
             },
             "items": low_stock_items
         })
+        
+    def search_products(self, query: str, limit: int = 10) -> Dict[str, Any]:
+        """Search products in the active branch by name and return inventory-style rows."""
+        Product = self._get_model('Product')
+        if not Product or not (query or '').strip():
+            return self._scope({"total_products": 0, "inventory": []})
+        pattern = f"%{query.strip()}%"
+        products = self._branch_filter(
+            Product.query.filter(Product.name.ilike(pattern)), Product
+        ).limit(self._limit(limit)).all()
+        result = []
+        for product in products:
+            current_stock = int(product.stock or 0)
+            reorder_point = max(int(product.reorder_point or 0), 0)
+            is_low = bool(product.reorder_enabled) and current_stock <= reorder_point
+            result.append({
+                "product_id": product.id,
+                "name": product.name,
+                "barcode": product.barcode,
+                "category": product.category,
+                "current_stock": current_stock,
+                "reorder_point": reorder_point,
+                "reorder_enabled": bool(product.reorder_enabled),
+                "status": "out_of_stock" if current_stock <= 0 else ("low_stock" if is_low else "ok"),
+                "price": float(product.price or 0),
+                "cost": float(product.cost or 0)
+            })
+        return self._scope({"total_products": len(result), "inventory": result})
         
     def get_supplier_list(self, active_only: bool = True, category: str = None) -> Dict[str, Any]:
         """Get list of suppliers"""

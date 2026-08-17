@@ -53,8 +53,8 @@ class TaskPlan:
 # Tool categorization for smart filtering
 TOOL_CATEGORIES = {
     "inventory": {
-        "tools": ["get_inventory_status", "get_low_stock_items", "get_product_details", "suggest_reorder_quantities"],
-        "keywords": ["stock", "inventory", "product", "item", "reorder", "quantity", "available", "how many"]
+        "tools": ["get_inventory_status", "get_low_stock_items", "get_product_details", "search_products", "suggest_reorder_quantities"],
+        "keywords": ["stock", "inventory", "product", "item", "reorder", "quantity", "available", "how many", "how much", "barcode", "prices"]
     },
     "supplier": {
         "tools": ["get_supplier_list", "get_supplier_details", "get_supplier_price_for_product"],
@@ -111,7 +111,7 @@ TOOL_CATEGORIES = {
 SYSTEM_PROMPT = """You are Loli, the current-data assistant for Parrot POS, created by Min Thuta Saw Naing and owned by WinterArc Myanmar. You help with the active branch's inventory, categories, suppliers, purchase orders, warehouse activity, sales, promotions, customers, debts, deliveries, and returns/exchanges.
 
 ## Truth and branch scope
-All operational answers are scoped to the active branch supplied by trusted context. Use tools for live facts. Never invent counts, prices, stock, balances, dates, customers, suppliers, or branch data. State the branch when it helps the user understand the result. If a record is absent, say so plainly.
+All operational answers are scoped to the active branch supplied by trusted context. Use tools for live facts. Never invent counts, prices, stock, balances, dates, customers, suppliers, or branch data. If you cannot obtain the data through a tool, say you could not retrieve it instead of guessing. State the branch when it helps the user understand the result. If a record is absent, say so plainly.
 
 ## Safe operations
 Your registered tools are read-only. Do not claim you created, approved, cancelled, transferred, or modified any business record. For action requests, explain the relevant POS workflow and ask the user to use the appropriate screen.
@@ -314,19 +314,41 @@ class AgentOrchestrator:
                     "message": f"I encountered an error: {response.error}"
                 }
                 
-            # Execute any tool calls with Flask app context
             tool_results = []
+            final_message = None
+            
+            # A data query asks about business records (inventory, sales, suppliers,
+            # orders, customers, ...). For those, every answer must be built from real
+            # database results, never from the model's unverified guesses.
+            data_query = bool(self._detect_relevant_categories(command))
+            
+            # Execute any tool calls with Flask app context
             if response.tool_calls:
                 print(f"[AI Agent] Executing {len(response.tool_calls)} tool calls...")
-                # Execute tools within Flask application context
                 tool_results = self._execute_tools_with_context(response.tool_calls)
                 print(f"[AI Agent] Tool execution complete. Results: {len(tool_results)}")
-                
+            elif data_query:
+                # The model answered a data question without calling a tool, so its
+                # text may contain invented figures. Drop that reply and retry once
+                # with tool_choice="required" so the answer is forced from the database.
+                history = self.agent.conversation_history
+                if history and history[-1].role == "assistant" and not history[-1].tool_calls:
+                    history.pop()
+                print("[AI Agent] Data query answered without a tool call; retrying with forced tool use...")
+                response = self.agent.chat(message=None, tools_override=filtered_tools, force_tool_call=True)
+                if response.error:
+                    print(f"[AI Agent Error] Forced tool-call retry failed: {response.error}")
+                elif response.tool_calls:
+                    print(f"[AI Agent] Forced retry made {len(response.tool_calls)} tool calls")
+                    tool_results = self._execute_tools_with_context(response.tool_calls)
+                # else: forced retry still produced no tool call; fall through to the
+                # keyword fallback so real data can still be returned.
+            
+            if tool_results:
                 # Update session context with results
-                if tool_results:
-                    first_result = tool_results[0]
-                    self.session_context["last_tool_used"] = first_result.get("function_name")
-                    self.session_context["last_results"] = first_result.get("result")
+                first_result = tool_results[0]
+                self.session_context["last_tool_used"] = first_result.get("function_name")
+                self.session_context["last_results"] = first_result.get("result")
                 
                 # Check for errors in tool execution
                 errors = [r for r in tool_results if r.get("error")]
@@ -338,16 +360,13 @@ class AgentOrchestrator:
                         "message": f"I encountered errors while processing your request:\n{error_messages}"
                     }
                     
-                # If tools were executed, format results directly without second API call
-                if tool_results:
-                    final_message = self._format_tool_results_for_user(tool_results, command)
-                else:
-                    final_message = response.content
-            else:
-                # No tool calls made - try fallback intent detection
-                print(f"[AI Agent] No tool calls made, trying fallback intent detection...")
-                
-                # Also try fallback if the AI response is empty or refused
+                # Format results directly without a second API call so the numbers
+                # shown are exactly what the database returned.
+                final_message = self._format_tool_results_for_user(tool_results, command)
+            
+            if final_message is None:
+                # No real tool data yet - try keyword fallback intent detection.
+                print(f"[AI Agent] No tool results, trying fallback intent detection...")
                 fallback_result = self._fallback_intent_detection(command)
                 if fallback_result:
                     final_message = fallback_result
@@ -355,6 +374,12 @@ class AgentOrchestrator:
                     # Update session context for fallback results
                     if isinstance(fallback_result, dict):
                         self.session_context["last_results"] = fallback_result
+            
+            if final_message is None:
+                if data_query:
+                    # Never expose the model's unverified numbers for data questions.
+                    final_message = ("I couldn't retrieve that data from the database right now. "
+                                     "Please try rephrasing your question.")
                 elif not response.content or response.content.strip() == "":
                     final_message = "I'm here to help with your inventory and procurement tasks. You can ask me to check stock levels, create purchase orders, review suppliers, analyze sales trends, and more!"
                 else:
@@ -512,7 +537,7 @@ class AgentOrchestrator:
                 continue
             
             # Format based on tool type
-            if func_name == "get_inventory_status":
+            if func_name in ("get_inventory_status", "search_products"):
                 total = result_data.get('total_products', 0)
                 inventory = result_data.get('inventory', [])
                 lines.append(f"📦 **Inventory Status** ({total} products)")
@@ -524,12 +549,13 @@ class AgentOrchestrator:
                 
                 lines.append(f"✅ OK: {ok_count} | ⚠️ Low Stock: {len(low_stock)} | ❌ Out of Stock: {len(out_of_stock)}")
                 
-                if out_of_stock:
-                    lines.append("\n**Out of Stock Items:**")
-                    for p in out_of_stock[:5]:
-                        lines.append(f"  • {p['name']}")
-                    if len(out_of_stock) > 5:
-                        lines.append(f"  ... and {len(out_of_stock) - 5} more")
+                # Show the actual per-product numbers so answers are precise and
+                # always reflect exactly what the database returned.
+                for p in inventory[:10]:
+                    status_label = p['status'].replace('_', ' ')
+                    lines.append(f"• **{p['name']}** - {p['current_stock']} units ({status_label})")
+                if len(inventory) > 10:
+                    lines.append(f"  ... and {len(inventory) - 10} more products")
                         
             elif func_name == "get_low_stock_items":
                 items = result_data.get('items', [])
@@ -676,6 +702,126 @@ class AgentOrchestrator:
                     if len(suggestions) > 10:
                         lines.append(f"\n... and {len(suggestions) - 10} more suggestions")
                         
+            elif func_name == "get_sales_summary":
+                period = result_data.get('period_days', 30)
+                total = result_data.get('total_sales', 0)
+                count = result_data.get('transaction_count', 0)
+                lines.append(f"📊 **Sales Summary** (last {period} days)")
+                lines.append(f"Total sales: ${total:,.2f} | Transactions: {count}")
+                methods = result_data.get('payment_method_totals', {}) or {}
+                if methods:
+                    lines.append("Payment methods:")
+                    for method, amount in list(methods.items())[:5]:
+                        lines.append(f"  • {method}: ${amount:,.2f}")
+                recent = result_data.get('recent_sales', []) or []
+                if recent:
+                    lines.append("Recent transactions:")
+                    for s in recent[:5]:
+                        lines.append(f"  • {s.get('transaction_id')} - ${float(s.get('total', 0)):,.2f} ({s.get('payment_method')})")
+                        
+            elif func_name == "get_customer_summary":
+                customers = result_data.get('customers', [])
+                if not customers:
+                    lines.append("👥 No customers found.")
+                else:
+                    lines.append(f"👥 **Customers** ({result_data.get('total_customers', 0)} total)")
+                    for c in customers[:10]:
+                        balance = float(c.get('outstanding_balance', 0) or 0)
+                        balance_text = f" | Outstanding: ${balance:,.2f}" if balance else ""
+                        lines.append(f"• **{c.get('name')}** - {c.get('phone') or 'No phone'}{balance_text}")
+                        
+            elif func_name == "get_debt_summary":
+                debts = result_data.get('debts', [])
+                if not debts:
+                    lines.append("💳 No debts found.")
+                else:
+                    lines.append(f"💳 **Debts** ({len(debts)} total)")
+                    for d in debts[:10]:
+                        lines.append(f"• **{d.get('customer_name')}** - ${float(d.get('balance', 0)):,.2f} ({d.get('status')}, due {d.get('due_date')})")
+                    totals = result_data.get('totals_by_status', {}) or {}
+                    if totals:
+                        lines.append("")
+                        lines.append("Totals by status:")
+                        for key, value in totals.items():
+                            lines.append(f"  • {key}: ${float(value):,.2f}")
+                            
+            elif func_name == "get_promotion_summary":
+                promotions = result_data.get('promotions', [])
+                if not promotions:
+                    lines.append("🎉 No promotions found.")
+                else:
+                    lines.append(f"🎉 **Promotions** ({result_data.get('total_promotions', 0)} total)")
+                    for p in promotions[:10]:
+                        lines.append(f"• **{p.get('product_name')}** - {p.get('discount_type')}: {p.get('discount_value')} ({p.get('status')})")
+                        
+            elif func_name == "get_delivery_summary":
+                deliveries = result_data.get('deliveries', [])
+                if not deliveries:
+                    lines.append("🚚 No deliveries found.")
+                else:
+                    lines.append(f"🚚 **Deliveries** ({len(deliveries)} total)")
+                    stages = result_data.get('stage_counts', {}) or {}
+                    if stages:
+                        lines.append("Stages: " + " | ".join(f"{k}: {v}" for k, v in stages.items()))
+                    for d in deliveries[:10]:
+                        lines.append(f"• **{d.get('delivery_number')}** - {d.get('customer_name') or 'N/A'} | {d.get('stage')} | {d.get('priority')}")
+                        
+            elif func_name == "get_return_exchange_summary":
+                workflows = result_data.get('workflows', [])
+                if not workflows:
+                    lines.append("🔁 No returns/exchanges found.")
+                else:
+                    lines.append(f"🔁 **Returns & Exchanges** ({result_data.get('total_workflows', 0)} total)")
+                    for w in workflows[:10]:
+                        lines.append(f"• {str(w.get('mode', 'unknown')).title()} - refund ${float(w.get('refund_amount', 0) or 0):,.2f} / collected ${float(w.get('collected_amount', 0) or 0):,.2f}")
+                        
+            elif func_name == "get_current_branch_context":
+                branch = result_data.get('name', 'unknown')
+                lines.append(f"🏪 **Current Branch**: {branch}")
+                lines.append(f"Code: {result_data.get('code')} | Default: {'Yes' if result_data.get('is_default') else 'No'}")
+                        
+            elif func_name == "get_category_summary":
+                categories = result_data.get('categories', [])
+                if not categories:
+                    lines.append("🗂️ No categories found.")
+                else:
+                    lines.append(f"🗂️ **Categories** ({result_data.get('total_categories', 0)} total)")
+                    for c in categories[:10]:
+                        lines.append(f"• **{c.get('name')}** - {c.get('product_count', 0)} products, {c.get('supplier_count', 0)} suppliers")
+                        
+            elif func_name == "get_warehouse_transfer_history":
+                transfers = result_data.get('transfers', [])
+                if not transfers:
+                    lines.append("📦 No warehouse transfers found.")
+                else:
+                    lines.append(f"📦 **Warehouse Transfer History** ({result_data.get('total_transfers', 0)} total)")
+                    for t in transfers[:10]:
+                        lines.append(f"• {t.get('product_name')} - Qty: {t.get('quantity')} ({t.get('performed_by') or 'N/A'} at {t.get('created_at')})")
+                        
+            elif func_name == "get_supplier_details":
+                lines.append(f"🏢 **{result_data.get('name')}**")
+                lines.append(f"Contact: {result_data.get('contact_person') or 'N/A'} | {result_data.get('phone') or 'No phone'}")
+                if result_data.get('email'):
+                    lines.append(f"Email: {result_data.get('email')}")
+                if result_data.get('address'):
+                    lines.append(f"Address: {result_data.get('address')}")
+                if result_data.get('payment_terms'):
+                    lines.append(f"Payment terms: {result_data.get('payment_terms')}")
+                lines.append(f"Quality rating: {result_data.get('quality_rating', 0)}/5 | Lead time: {result_data.get('lead_time_days')} days")
+                agreements = result_data.get('price_agreements', []) or []
+                if agreements:
+                    lines.append("Price agreements:")
+                    for pa in agreements[:5]:
+                        lines.append(f"  • {pa.get('product_name', pa.get('product_id'))}: ${float(pa.get('unit_price', 0)):,.2f}")
+                        
+            elif func_name == "get_supplier_price_for_product":
+                if result_data.get('has_agreement'):
+                    lines.append(f"💵 **Price Agreement**")
+                    lines.append(f"Product ID: {result_data.get('product_id')} | Supplier ID: {result_data.get('supplier_id')}")
+                    lines.append(f"Agreed price: ${float(result_data.get('agreed_price', 0)):,.2f}")
+                else:
+                    lines.append(f"ℹ️ {result_data.get('message', 'No price agreement found.')}")
+                        
             else:
                 # Generic formatting for unknown tools
                 lines.append(f"**{func_name}**")
@@ -686,43 +832,45 @@ class AgentOrchestrator:
     def _fallback_intent_detection(self, command: str) -> Optional[str]:
         """
         Fallback intent detection when AI doesn't make tool calls.
-        Detects user intent from command keywords and executes appropriate tool.
+        Detects user intent from command keywords and executes the matching real
+        database tool. Only ever returns real data (or None).
         """
         command_lower = command.lower()
         
         try:
-            # Detect inventory/stock related queries
-            if any(kw in command_lower for kw in ['low stock', 'low stock items', 'items low', 'reorder']):
+            # Detect inventory/stock related queries (most specific first)
+            if self._contains_any(command_lower, ['low stock', 'low stock items', 'items low', 'out of stock', 'out-of-stock', 'reorder']):
                 print("[AI Agent Fallback] Detected: low stock query")
-                if self.app:
-                    with self.app.app_context():
-                        result = self.ai_tools.get_low_stock_items()
-                else:
-                    result = self.ai_tools.get_low_stock_items()
-                return self._format_low_stock_result(result)
+                return self._run_fallback_tool("get_low_stock_items")
                 
+            # Detect current branch context
+            if self._contains_any(command_lower, ['what branch', 'which branch', 'current branch', 'active branch', 'my branch', 'where am i']):
+                print("[AI Agent Fallback] Detected: branch context query")
+                return self._run_fallback_tool("get_current_branch_context")
+            
+            # Detect specific product queries (e.g. "how much stock of Cola")
+            product_name = self._extract_product_name(command)
+            if product_name:
+                print(f"[AI Agent Fallback] Detected: product search for '{product_name}'")
+                return self._run_fallback_tool("search_products", query=product_name)
+                
+            # Detect return/exchange queries (before generic 'product'/'item' checks)
+            if self._contains_any(command_lower, ['return', 'returns', 'refund', 'exchange', 'exchanges']):
+                print("[AI Agent Fallback] Detected: return/exchange query")
+                return self._run_fallback_tool("get_return_exchange_summary")
+            
             # Detect inventory status queries
-            elif any(kw in command_lower for kw in ['inventory', 'stock', 'products', 'all items']):
+            if self._contains_any(command_lower, ['inventory', 'stock', 'products', 'all items', 'catalog', 'prices', 'price list']):
                 print("[AI Agent Fallback] Detected: inventory query")
-                if self.app:
-                    with self.app.app_context():
-                        result = self.ai_tools.get_inventory_status()
-                else:
-                    result = self.ai_tools.get_inventory_status()
-                return self._format_inventory_result(result)
+                return self._run_fallback_tool("get_inventory_status")
                 
             # Detect supplier queries
-            elif any(kw in command_lower for kw in ['supplier', 'vendors', 'vendor']):
+            if self._contains_any(command_lower, ['supplier', 'suppliers', 'vendors', 'vendor']):
                 print("[AI Agent Fallback] Detected: supplier query")
-                if self.app:
-                    with self.app.app_context():
-                        result = self.ai_tools.get_supplier_list()
-                else:
-                    result = self.ai_tools.get_supplier_list()
-                return self._format_supplier_result(result)
+                return self._run_fallback_tool("get_supplier_list")
                 
             # Detect purchase order queries
-            elif any(kw in command_lower for kw in ['purchase order', 'po', 'orders', 'pending order']):
+            if self._contains_any(command_lower, ['purchase order', 'purchase orders', 'po', 'orders', 'pending order', 'approved order', 'draft order']):
                 print("[AI Agent Fallback] Detected: purchase order query")
                 status = None
                 if 'pending' in command_lower:
@@ -731,42 +879,57 @@ class AgentOrchestrator:
                     status = 'approved'
                 elif 'draft' in command_lower:
                     status = 'draft'
-                if self.app:
-                    with self.app.app_context():
-                        result = self.ai_tools.get_purchase_orders(status=status)
-                else:
-                    result = self.ai_tools.get_purchase_orders(status=status)
-                return self._format_po_result(result)
+                return self._run_fallback_tool("get_purchase_orders", status=status)
                 
             # Detect warehouse queries
-            elif any(kw in command_lower for kw in ['warehouse', 'unstocked', 'not stocked']):
+            if self._contains_any(command_lower, ['warehouse', 'unstocked', 'not stocked', 'warehouse stock']):
                 print("[AI Agent Fallback] Detected: warehouse query")
-                if self.app:
-                    with self.app.app_context():
-                        result = self.ai_tools.get_warehouse_inventory()
-                else:
-                    result = self.ai_tools.get_warehouse_inventory()
-                return self._format_warehouse_result(result)
+                return self._run_fallback_tool("get_warehouse_inventory")
                 
             # Detect sales trend queries
-            elif any(kw in command_lower for kw in ['sales trend', 'best seller', 'top selling', 'sales analysis']):
+            if self._contains_any(command_lower, ['sales trend', 'best seller', 'top selling', 'sales analysis', 'best selling']):
                 print("[AI Agent Fallback] Detected: sales trend query")
-                if self.app:
-                    with self.app.app_context():
-                        result = self.ai_tools.get_sales_trends()
-                else:
-                    result = self.ai_tools.get_sales_trends()
-                return self._format_sales_trend_result(result)
+                return self._run_fallback_tool("get_sales_trends")
+                
+            # Detect sales summary queries
+            if self._contains_any(command_lower, ['total sales', 'sales summary', 'revenue', 'income', 'sales today', 'today sales', 'how much did we sell']):
+                print("[AI Agent Fallback] Detected: sales summary query")
+                return self._run_fallback_tool("get_sales_summary")
                 
             # Detect reorder suggestions
-            elif any(kw in command_lower for kw in ['suggest reorder', 'reorder suggestion', 'how much to order']):
+            if self._contains_any(command_lower, ['suggest reorder', 'reorder suggestion', 'how much to order', 'what to reorder']):
                 print("[AI Agent Fallback] Detected: reorder suggestion query")
-                if self.app:
-                    with self.app.app_context():
-                        result = self.ai_tools.suggest_reorder_quantities()
-                else:
-                    result = self.ai_tools.suggest_reorder_quantities()
-                return self._format_reorder_suggestion_result(result)
+                return self._run_fallback_tool("suggest_reorder_quantities")
+                
+            # Detect customer queries
+            if self._contains_any(command_lower, ['customer', 'customers', 'client', 'clients']):
+                print("[AI Agent Fallback] Detected: customer query")
+                return self._run_fallback_tool("get_customer_summary")
+                
+            # Detect debt queries
+            if self._contains_any(command_lower, ['debt', 'debts', 'overdue', 'balance owed', 'who owes', 'credit balance', 'owe']):
+                print("[AI Agent Fallback] Detected: debt query")
+                return self._run_fallback_tool("get_debt_summary")
+                
+            # Detect promotion queries
+            if self._contains_any(command_lower, ['promotion', 'promotions', 'discount', 'offer', 'campaign', 'deals', 'on sale']):
+                print("[AI Agent Fallback] Detected: promotion query")
+                return self._run_fallback_tool("get_promotion_summary")
+                
+            # Detect delivery queries
+            if self._contains_any(command_lower, ['delivery', 'deliveries', 'courier', 'dispatch', 'tracking', 'shipping']):
+                print("[AI Agent Fallback] Detected: delivery query")
+                return self._run_fallback_tool("get_delivery_summary")
+                
+            # Detect category queries
+            if self._contains_any(command_lower, ['category', 'categories', 'product categories']):
+                print("[AI Agent Fallback] Detected: category query")
+                return self._run_fallback_tool("get_category_summary")
+                
+            # Detect warehouse transfer history queries
+            if self._contains_any(command_lower, ['transfer history', 'warehouse transfer', 'restock history', 'recent transfers', 'transfer log']):
+                print("[AI Agent Fallback] Detected: warehouse transfer history query")
+                return self._run_fallback_tool("get_warehouse_transfer_history")
             
             # No matching intent found
             return None
@@ -776,6 +939,57 @@ class AgentOrchestrator:
             import traceback
             traceback.print_exc()
             return None
+    
+    @staticmethod
+    def _contains_any(text: str, keywords) -> bool:
+        """Case-insensitive keyword check; short tokens (e.g. 'po') must match whole words."""
+        for keyword in keywords:
+            if len(keyword) <= 2:
+                if re.search(rf"\b{re.escape(keyword)}\b", text):
+                    return True
+            elif keyword in text:
+                return True
+        return False
+    
+    def _run_fallback_tool(self, func_name: str, **kwargs) -> Optional[str]:
+        """Run a read-only tool and format its real result for the user."""
+        try:
+            if self.app:
+                with self.app.app_context():
+                    result = getattr(self.ai_tools, func_name)(**kwargs)
+            else:
+                result = getattr(self.ai_tools, func_name)(**kwargs)
+            return self._format_tool_results_for_user(
+                [{"function_name": func_name, "result": result, "error": None}], ""
+            )
+        except Exception as e:
+            print(f"[AI Agent Fallback Error] {func_name}: {e}")
+            return None
+    
+    def _extract_product_name(self, command: str) -> Optional[str]:
+        """Return the name of a product the user is clearly asking about, if any."""
+        command_lower = command.lower()
+        Product = (self.ai_tools.models or {}).get('Product')
+        if not Product:
+            return None
+        try:
+            if self.app:
+                with self.app.app_context():
+                    products = Product.query.all()
+            else:
+                products = Product.query.all()
+        except Exception:
+            return None
+        for product in products:
+            name = (product.name or '').strip()
+            if len(name) < 3:
+                continue
+            if name.lower() in command_lower:
+                return name
+            words = [w for w in name.lower().split() if len(w) >= 4]
+            if words and any(w in command_lower for w in words):
+                return name
+        return None
     
     def _format_low_stock_result(self, result: Dict) -> str:
         """Format low stock items result"""

@@ -130,6 +130,7 @@ The AI assistant can help with:
 
 - **Smart Tool Selection**: Automatically selects the right tools based on your query
 - **Multi-step Tasks**: Handles complex workflows like "check low stock and create purchase orders"
+- **No Invented Data**: Data questions are always answered from live database results. If the AI does not call a tool, Loli retries with forced tool calling and falls back to built-in real-data lookups before answering — it never shows guessed figures.
 - **Fallback Handling**: Even if the AI service is unavailable, built-in fallback logic ensures core queries still work
 - **Conversation History**: Maintains context across multiple questions
 - **Real-time Data**: Always works with live database information
