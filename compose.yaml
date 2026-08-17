@@ -14,6 +14,10 @@ services:
       SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY in .env before starting the service}"
       AI_MAX_ACTIVE_SESSIONS: "${AI_MAX_ACTIVE_SESSIONS:-16}"
       AI_MAX_HISTORY_MESSAGES: "${AI_MAX_HISTORY_MESSAGES:-30}"
+      AI_MEMORY_ENABLED: "${AI_MEMORY_ENABLED:-false}"
+      AI_MEMORY_MAX_RESULTS: "${AI_MEMORY_MAX_RESULTS:-5}"
+      AI_MEMORY_MAX_CONTEXT_CHARS: "${AI_MEMORY_MAX_CONTEXT_CHARS:-1500}"
+      AI_MEMORY_MEM0_CONFIG: "${AI_MEMORY_MEM0_CONFIG:-}"
     volumes:
       - type: volume
         source: pos_instance
@@ -34,6 +38,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     logging:
       driver: json-file
       options:

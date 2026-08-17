@@ -146,6 +146,12 @@ The AI agent uses APIFree.ai (Gemini 2.5 Flash Lite) for natural language proces
 
 > **Note**: The AI agent works with real database data and can perform actual operations like creating purchase orders. Always verify important actions.
 
+### Optional Loli long-term memory
+
+Loli can use embedded [Mem0 OSS](https://github.com/mem0ai/mem0) long-term memory for approved user preferences and branch-specific aliases. Memory is disabled by default. It is private by user and branch, auditable, and never stores passwords, API keys, payment data, customer contact data, or raw business results.
+
+To enable it, run a local Ollama instance with `llama3.2` and `nomic-embed-text`, then configure `AI_MEMORY_ENABLED=true` and the local-only `AI_MEMORY_MEM0_CONFIG` example in `.env.example`. The memory vector data persists under the existing `/app/instance` volume. If Mem0 or the local models are unavailable, normal Loli chat continues without persistent recall.
+
 ---
 
 ## 🏢 Multi-Branch Support

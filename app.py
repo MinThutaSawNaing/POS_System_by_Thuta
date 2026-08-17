@@ -8,7 +8,7 @@ import uuid
 import io
 import json
 import time
-from sqlalchemy import inspect, text, func, event
+from sqlalchemy import inspect, text, func, event, or_
 from sqlalchemy.exc import OperationalError
 from decimal import Decimal, ROUND_HALF_UP
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -646,6 +646,59 @@ class Branch(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
+
+
+class MemoryRegistry(db.Model):
+    """Local, queryable registry of records accepted by the memory backend.
+
+    The memory content remains owned by the configured embedded backend.  This
+    table intentionally stores only a short, validated display summary so the
+    management API can enforce ownership even when a backend uses opaque IDs.
+    """
+    __tablename__ = 'memory_registry'
+
+    id = db.Column(db.Integer, primary_key=True)
+    memory_id = db.Column(db.String(191), unique=True, nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'), nullable=False, index=True)
+    scope = db.Column(db.String(20), nullable=False, default='private')
+    summary = db.Column(db.String(500), nullable=False)
+    source = db.Column(db.String(50), nullable=False, default='manual')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.CheckConstraint("scope IN ('private', 'branch_shared')", name='ck_memory_registry_scope'),
+        db.Index('idx_memory_registry_owner', 'user_id', 'branch_id', 'scope'),
+    )
+
+    def to_dict(self):
+        return {
+            'id': self.memory_id,
+            'scope': self.scope,
+            'summary': self.summary,
+            'source': self.source,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class MemoryAudit(db.Model):
+    """Append-only local audit trail; never persist raw submitted memory text."""
+    __tablename__ = 'memory_audit'
+
+    id = db.Column(db.Integer, primary_key=True)
+    actor_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'), nullable=True, index=True)
+    memory_id = db.Column(db.String(191), nullable=True, index=True)
+    action = db.Column(db.String(30), nullable=False)
+    scope = db.Column(db.String(20), nullable=True)
+    details = db.Column(db.String(500), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    __table_args__ = (
+        db.Index('idx_memory_audit_actor_branch', 'actor_user_id', 'branch_id', 'created_at'),
+    )
 
 class Category(db.Model):
     """Centralized category management for products and suppliers"""
@@ -1577,7 +1630,11 @@ with app.app_context():
         'CREATE INDEX IF NOT EXISTS idx_purchase_order_status_created ON purchase_order(status, created_at)',
         'CREATE INDEX IF NOT EXISTS idx_delivery_stage_priority ON delivery(stage, priority)',
         'CREATE INDEX IF NOT EXISTS idx_delivery_created_at ON delivery(created_at)',
-        'CREATE INDEX IF NOT EXISTS idx_warehouse_product_qty ON warehouse_inventory(product_id, quantity)'
+        'CREATE INDEX IF NOT EXISTS idx_warehouse_product_qty ON warehouse_inventory(product_id, quantity)',
+        # Keep these explicit for databases created before the memory models
+        # existed.  IF NOT EXISTS makes startup safe and idempotent on SQLite.
+        'CREATE INDEX IF NOT EXISTS idx_memory_registry_owner ON memory_registry(user_id, branch_id, scope)',
+        'CREATE INDEX IF NOT EXISTS idx_memory_audit_actor_branch ON memory_audit(actor_user_id, branch_id, created_at)'
     ]
     for index_sql in performance_indexes:
         try:
@@ -5639,6 +5696,206 @@ def get_ai_orchestrator():
     return orchestrator
 
 
+MEMORY_SCOPES = {'private', 'branch_shared'}
+
+
+def get_persistent_memory_service():
+    """Load the optional local-memory integration without making app startup depend on it."""
+    try:
+        from ai_memory_service import get_memory_service
+        service = get_memory_service(
+            db=db, registry_model=MemoryRegistry, audit_model=MemoryAudit
+        )
+        if service is None or getattr(service, 'enabled', True) is False:
+            return None
+        return service
+    except (ImportError, ModuleNotFoundError) as exc:
+        app.logger.info('Persistent memory is unavailable: %s', exc)
+    except Exception as exc:
+        app.logger.warning('Persistent memory failed to initialize: %s', exc)
+    return None
+
+
+def memory_scope_from_request(data=None):
+    value = ((data or {}).get('scope') or request.args.get('scope') or 'private').strip().lower()
+    return value if value in MEMORY_SCOPES else None
+
+
+def may_manage_memory_scope(scope):
+    return scope != 'branch_shared' or session.get('role') in ('manager', 'boss')
+
+
+def record_memory_audit(action, memory_id=None, scope=None, details=None):
+    """Audit metadata only; submitted and recalled memory text must not enter this log."""
+    db.session.add(MemoryAudit(
+        actor_user_id=session.get('user_id'),
+        branch_id=get_current_branch_id(),
+        memory_id=str(memory_id)[:191] if memory_id else None,
+        action=action[:30],
+        scope=scope,
+        details=(details or '')[:500] or None,
+    ))
+
+
+def visible_memory_registry_query(scope=None):
+    branch_id = get_current_branch_id()
+    user_id = session.get('user_id')
+    query = MemoryRegistry.query.filter_by(branch_id=branch_id)
+    if scope == 'private':
+        return query.filter_by(user_id=user_id, scope='private')
+    if scope == 'branch_shared':
+        return query.filter_by(scope='branch_shared')
+    return query.filter(or_(MemoryRegistry.user_id == user_id, MemoryRegistry.scope == 'branch_shared'))
+
+
+def capture_low_risk_memory(command):
+    """Allow Loli to learn only explicit, preference-like statements after a successful turn."""
+    service = get_persistent_memory_service()
+    if not service or not getattr(service, 'should_auto_save', lambda _: False)(command):
+        return
+    try:
+        result = service.remember(
+            content=command, user_id=session['user_id'], branch_id=get_current_branch_id(),
+            scope='private', source='automatic', explicit=False, allow_auto=True,
+            db=db, registry_model=MemoryRegistry, audit_model=MemoryAudit,
+        )
+        if isinstance(result, dict) and result.get('saved'):
+            db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.info('Optional low-risk AI memory was not saved: %s', exc)
+
+
+@app.route('/api/agent/memories', methods=['GET', 'POST'])
+@login_required
+def api_agent_memories():
+    """List or explicitly save memory, bounded to the active user and branch."""
+    # Authorization must precede optional-backend availability so a disabled
+    # feature cannot reveal whether a caller was permitted to share memory.
+    if request.method == 'POST':
+        requested_scope = memory_scope_from_request(request.get_json(silent=True) or {})
+        if requested_scope == 'branch_shared' and not may_manage_memory_scope(requested_scope):
+            return jsonify({'success': False, 'error': 'Manager access required for branch-shared memory'}), 403
+    service = get_persistent_memory_service()
+    if not service:
+        return jsonify({'success': False, 'error': 'Memory service is unavailable'}), 503
+
+    if request.method == 'GET':
+        scope = memory_scope_from_request()
+        if not scope and request.args.get('scope'):
+            return jsonify({'success': False, 'error': 'Invalid memory scope'}), 400
+        limit = min(max(request.args.get('limit', 50, type=int) or 50, 1), 100)
+        memories = [entry.to_dict() for entry in visible_memory_registry_query(scope)
+                    .order_by(MemoryRegistry.updated_at.desc()).limit(limit).all()]
+        return jsonify({'success': True, 'memories': memories})
+
+    data = request.get_json(silent=True) or {}
+    content = data.get('content')
+    scope = memory_scope_from_request(data)
+    if not scope:
+        return jsonify({'success': False, 'error': 'Invalid memory scope'}), 400
+    if not isinstance(content, str) or not content.strip():
+        return jsonify({'success': False, 'error': 'Memory content is required'}), 400
+    if len(content) > 4000:
+        return jsonify({'success': False, 'error': 'Memory content is too long'}), 400
+    if not may_manage_memory_scope(scope):
+        return jsonify({'success': False, 'error': 'Manager access required for branch-shared memory'}), 403
+
+    try:
+        result = service.remember(
+            content=content.strip(), user_id=session['user_id'], branch_id=get_current_branch_id(),
+            scope=scope, source='manual', db=db,
+            registry_model=MemoryRegistry, audit_model=MemoryAudit,
+        )
+        if result is False or result is None:
+            return jsonify({'success': False, 'error': 'Memory service did not save the memory'}), 503
+        memory_id = str((result.get('id') or result.get('memory_id')) if isinstance(result, dict) else result)
+        if not memory_id or memory_id == 'None':
+            return jsonify({'success': False, 'error': 'Memory service returned no memory identifier'}), 502
+        entry = MemoryRegistry.query.filter_by(memory_id=memory_id).first()
+        if not entry:
+            # Do not duplicate raw user input in the SQL registry.  A service
+            # may return a separately sanitized label after its validation.
+            safe_summary = (result.get('summary') if isinstance(result, dict) else None) or 'Manual memory'
+            entry = MemoryRegistry(memory_id=memory_id, user_id=session['user_id'],
+                                   branch_id=get_current_branch_id(), scope=scope,
+                                   summary=str(safe_summary)[:500], source='manual')
+            db.session.add(entry)
+        record_memory_audit('created', memory_id, scope)
+        db.session.commit()
+        return jsonify({'success': True, 'memory': entry.to_dict()}), 201
+    except ValueError as exc:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.warning('Memory save failed: %s', exc)
+        return jsonify({'success': False, 'error': 'Unable to save memory'}), 503
+
+
+@app.route('/api/agent/memories/<string:memory_id>', methods=['DELETE'])
+@login_required
+def api_delete_agent_memory(memory_id):
+    entry = visible_memory_registry_query().filter_by(memory_id=memory_id).first()
+    if not entry:
+        return jsonify({'success': False, 'error': 'Memory not found'}), 404
+    if entry.scope == 'branch_shared' and not may_manage_memory_scope(entry.scope):
+        return jsonify({'success': False, 'error': 'Manager access required for branch-shared memory'}), 403
+    service = get_persistent_memory_service()
+    if not service:
+        return jsonify({'success': False, 'error': 'Memory service is unavailable'}), 503
+    try:
+        result = service.forget(memory_id=entry.memory_id, user_id=session['user_id'],
+                                branch_id=entry.branch_id, scope=entry.scope, db=db,
+                                registry_model=MemoryRegistry, audit_model=MemoryAudit)
+        if result is False or (isinstance(result, dict) and not result.get('deleted', False)):
+            return jsonify({'success': False, 'error': 'Memory service did not remove the memory'}), 503
+        db.session.delete(entry)
+        record_memory_audit('deleted', memory_id, entry.scope)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Memory deleted'})
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.warning('Memory deletion failed: %s', exc)
+        return jsonify({'success': False, 'error': 'Unable to delete memory'}), 503
+
+
+@app.route('/api/agent/memories/forget', methods=['POST'])
+@login_required
+def api_forget_agent_memory():
+    """Compatibility endpoint for a UI forget action; delegates to the same guarded delete path."""
+    memory_id = (request.get_json(silent=True) or {}).get('memory_id')
+    if not isinstance(memory_id, str) or not memory_id.strip():
+        return jsonify({'success': False, 'error': 'memory_id is required'}), 400
+    return api_delete_agent_memory(memory_id.strip())
+
+
+@app.route('/api/agent/memories/forget-all', methods=['POST'])
+@login_required
+def api_forget_all_agent_memories():
+    """Forget only the current user's private memories in the active branch."""
+    entries = visible_memory_registry_query('private').all()
+    service = get_persistent_memory_service()
+    if not service:
+        return jsonify({'success': False, 'error': 'Memory service is unavailable'}), 503
+    try:
+        for entry in entries:
+            result = service.forget(
+                memory_id=entry.memory_id, user_id=session['user_id'], branch_id=entry.branch_id,
+                scope='private', db=db, registry_model=MemoryRegistry, audit_model=MemoryAudit,
+            )
+            if not isinstance(result, dict) or not result.get('deleted'):
+                raise RuntimeError('Memory service did not remove a private memory')
+            db.session.delete(entry)
+            record_memory_audit('deleted', entry.memory_id, 'private', 'bulk forget')
+        db.session.commit()
+        return jsonify({'success': True, 'message': f'Forgot {len(entries)} private memories'})
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.warning('Bulk memory deletion failed: %s', exc)
+        return jsonify({'success': False, 'error': 'Unable to forget private memories'}), 503
+
+
 @app.route('/api/agent/chat', methods=['POST'])
 @login_required
 def agent_chat():
@@ -5664,6 +5921,8 @@ def agent_chat():
         # Process the command through the agent
         orchestrator = get_ai_orchestrator()
         result = orchestrator.process_command(command, session.get('user_id'))
+        if result.get('success'):
+            capture_low_risk_memory(command)
 
         return jsonify(result)
 

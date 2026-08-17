@@ -8,3 +8,6 @@ pytz
 requests
 numpy==1.26.4
 waitress==3.0.2
+# Optional embedded Loli long-term memory. It is inactive until local-only
+# AI_MEMORY_* configuration is supplied; see .env.example.
+mem0ai
