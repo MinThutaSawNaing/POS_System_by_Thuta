@@ -33,6 +33,9 @@ from reportlab.graphics.shapes import Drawing
 import pytz
 from functools import wraps
 from reportlab.graphics.barcode import createBarcodeDrawing
+import base64
+import hashlib
+from cryptography.fernet import Fernet, InvalidToken
 
 # Import AI Agent modules
 from agent_orchestrator import get_orchestrator
@@ -111,11 +114,62 @@ def json_default(o):
         return float(o)
     raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
+# Settings whose values are credentials are encrypted at rest with a key derived
+# from SECRET_KEY, so secrets are never stored in plaintext in the database.
+_SECRET_SETTING_KEYS = {'ai_api_key'}
+
+
+def _fernet():
+    """Build a Fernet cipher derived from the application SECRET_KEY."""
+    secret = os.environ.get('SECRET_KEY') or app.secret_key or 'your_super_secret_key_here'
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode('utf-8')).digest())
+    return Fernet(key)
+
+
+def encrypt_secret(plain_value):
+    """Encrypt a credential value for storage at rest. Empty values stay empty."""
+    if not plain_value:
+        return plain_value
+    return _fernet().encrypt(plain_value.encode('utf-8')).decode('utf-8')
+
+
+def decrypt_secret(stored_value):
+    """Decrypt a credential value read from storage.
+
+    Legacy plaintext values (pre-encryption) are returned unchanged so existing
+    installs keep working until the startup migration re-encrypts them. Ciphertext
+    that cannot be decrypted (for example after a SECRET_KEY change) is treated as
+    unset so a stale secret is never used.
+    """
+    if not stored_value:
+        return stored_value
+    try:
+        return _fernet().decrypt(stored_value.encode('utf-8')).decode('utf-8')
+    except (InvalidToken, ValueError, UnicodeDecodeError):
+        if stored_value.startswith('gAAAA'):
+            app.logger.warning('Stored AI API key could not be decrypted; SECRET_KEY may have changed.')
+            return ''
+        return stored_value
+
+
+def migrate_legacy_secrets():
+    """Re-encrypt any legacy plaintext AI API key so it is not stored in the clear."""
+    stored_api_key = AppSetting.query.filter_by(key='ai_api_key').first()
+    if stored_api_key and stored_api_key.value and decrypt_secret(stored_api_key.value) == stored_api_key.value:
+        stored_api_key.value = encrypt_secret(stored_api_key.value)
+        db.session.commit()
+
+
 def get_setting(key, default=None):
     setting = AppSetting.query.filter_by(key=key).first()
-    return setting.value if setting else default
+    value = setting.value if setting else default
+    if key in _SECRET_SETTING_KEYS and value:
+        value = decrypt_secret(value)
+    return value
 
 def set_setting(key, value):
+    if key in _SECRET_SETTING_KEYS:
+        value = encrypt_secret(value)
     setting = AppSetting.query.filter_by(key=key).first()
     if setting:
         setting.value = value
@@ -1616,6 +1670,9 @@ with app.app_context():
     if not AppSetting.query.filter_by(key='receipt_paper_size').first():
         db.session.add(AppSetting(key='receipt_paper_size', value=DEFAULT_RECEIPT_PAPER_SIZE))
         db.session.commit()
+
+    # Encrypt any legacy plaintext AI API key so it is never stored in the clear.
+    migrate_legacy_secrets()
 
     # Performance indexes (safe for repeated startup)
     performance_indexes = [

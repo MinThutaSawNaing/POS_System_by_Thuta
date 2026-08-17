@@ -6,6 +6,7 @@ pandas
 XlsxWriter
 pytz
 requests
+cryptography
 numpy==1.26.4
 waitress==3.0.2
 # Optional embedded Loli long-term memory. It is inactive until local-only

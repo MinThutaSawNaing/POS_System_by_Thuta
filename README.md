@@ -147,6 +147,8 @@ The AI agent uses APIFree.ai (Gemini 2.5 Flash Lite) for natural language proces
 
 > **Note**: The AI agent works with real database data and can perform actual operations like creating purchase orders. Always verify important actions.
 
+> **Security**: The API key is encrypted at rest using your `SECRET_KEY` before it is stored in the database — it is never saved in plaintext. On startup any legacy plaintext key is automatically re-encrypted. If you suspect your key was exposed (for example in a repository or backup), rotate it in your APIFree.ai account and re-enter the new key in Settings. If `SECRET_KEY` ever changes, stored credentials become undecryptable and must be re-entered.
+
 ### Optional Loli long-term memory
 
 Loli can use embedded [Mem0 OSS](https://github.com/mem0ai/mem0) long-term memory for approved user preferences and branch-specific aliases. Memory is disabled by default. It is private by user and branch, auditable, and never stores passwords, API keys, payment data, customer contact data, or raw business results.
