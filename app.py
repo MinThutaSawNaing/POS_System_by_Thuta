@@ -178,6 +178,17 @@ def set_setting(key, value):
         db.session.add(setting)
     db.session.commit()
 
+def get_agent_autonomy_enabled():
+    """Kill switch for AI agent autonomy. Default is OFF."""
+    try:
+        value = get_setting('agent_autonomy_enabled')
+        if value is None:
+            return False
+        return str(value).strip().lower() in {'true', '1', 'on', 'yes'}
+    except Exception:
+        return False
+
+
 def get_currency_code():
     code = get_setting('currency_code', 'USD')
     return code if code in CURRENCY_OPTIONS else 'USD'
@@ -6204,6 +6215,28 @@ def api_agent_get_task(task_id):
         if sr.get('status') == 'proposal' and not sr.get('approved')
     ]
     return jsonify(data)
+
+@app.route('/api/agent/autonomy', methods=['GET'])
+@login_required
+def api_agent_autonomy_get():
+    """Report whether agent autonomy (kill switch) is enabled."""
+    return jsonify({'success': True, 'enabled': get_agent_autonomy_enabled()})
+
+
+@app.route('/api/agent/autonomy', methods=['POST'])
+@manager_required
+def api_agent_autonomy_set():
+    """Enable/disable the agent autonomy kill switch (manager only)."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get('enabled'), bool):
+        return jsonify({'success': False,
+                        'error': "Request body must be JSON with a boolean 'enabled' field"}), 400
+    enabled = payload['enabled']
+    try:
+        set_setting('agent_autonomy_enabled', 'true' if enabled else 'false')
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    return jsonify({'success': True, 'enabled': enabled})
 
 
 @manager_required

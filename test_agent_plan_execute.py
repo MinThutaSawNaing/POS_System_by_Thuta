@@ -9,7 +9,9 @@ Contract under test (see docs/AGENT_EXTENSION.md):
   * "$from": "stepN.path" argument references are resolved between steps.
   * Execution fails fast: after a failed step every later step is "skipped".
   * Mutating tools produce "proposal" step results + pending_approvals and
-    never touch the database directly from the agent loop.
+    never touch the database directly from the agent loop — EXCEPT tools
+    with autonomy=="auto" when _autonomy_allowed() passes (kill-switch on
+    + manager user); those run immediately tagged "executed_by": "agent-auto"
   * The final summary chat call receives truncated (compacted) results and
     must report an incomplete task when any step failed.
 
@@ -43,6 +45,12 @@ RESOLVER_NAME = next(
     None,
 )
 HAS_RESOLVER = RESOLVER_NAME is not None                 # TODO: remove gate
+HAS_AUTONOMY = (
+    "_autonomy_allowed" in ORCH_SRC
+    and hasattr(ai_tools, "_AUTO_EXECUTE_TOOLS")
+    and bool(getattr(ai_tools, "TOOL_METADATA", {}))
+    and all("autonomy" in m for m in getattr(ai_tools, "TOOL_METADATA", {}).values())
+)  # TODO: remove gate once smart-autonomy merges
 
 PENDING = "pending core-loop implementation"
 
@@ -308,6 +316,185 @@ class WriteAsProposalTests(PlanExecuteTestBase):
         self.assertTrue(result["pending_approvals"])
         # The mutating tool must never have been invoked by the agent loop.
         po_mock.assert_not_called()
+
+
+class _FakeUserQuery:
+    """Flask-SQLAlchemy query stand-in returning one scripted user."""
+
+    def __init__(self, user):
+        self._user = user
+
+    def filter_by(self, **kwargs):
+        return self
+
+    def first(self):
+        return self._user
+
+
+class AutonomyTests(PlanExecuteTestBase):
+    """Smart autonomy: 'auto' tools may execute for managers when the
+    agent_autonomy_enabled kill-switch is on; everything else — and every
+    path with the gate closed — stays a proposal."""
+
+    @unittest.skipUnless(HAS_PLAN_LOOP and HAS_AUTONOMY, PENDING)
+    # TODO(agent-team): delete skipUnless once smart-autonomy merges.
+    def test_auto_tool_executes_with_executed_by_agent_auto_when_gate_open(self):
+        steps = [{
+            "step": "register customer",
+            "tool": "register_customer",
+            "args": {"name": "U Aung", "phone": "0977000000"},
+        }]
+        ok_summary = api_response(content="Customer registered.")
+        tool_mock = mock.Mock(name="register_customer",
+                              return_value={"success": True, "customer_id": 42})
+
+        with self.script(plan_response("add a customer", steps), ok_summary), \
+             mock.patch.object(self.orchestrator, "_autonomy_allowed",
+                               return_value=True), \
+             mock.patch.dict(self.orchestrator.agent.tool_functions,
+                             {"register_customer": tool_mock}):
+            result = self.orchestrator.process_command(
+                "register customer U Aung", user_id=1)
+
+        self.assertTrue(result["success"])
+        step_results = result["step_results"]
+        self.assertEqual(len(step_results), 1)
+        self.assertEqual(step_results[0]["status"], "ok")
+        self.assertEqual(step_results[0].get("executed_by"), "agent-auto")
+        self.assertEqual(result.get("pending_approvals"), [])
+        # The tool WAS actually invoked through the real execution path.
+        tool_mock.assert_called_once()
+        self.assertEqual(tool_mock.call_args.kwargs.get("name"), "U Aung")
+
+    @unittest.skipUnless(HAS_PLAN_LOOP and HAS_AUTONOMY, PENDING)
+    # TODO(agent-team): delete skipUnless once smart-autonomy merges.
+    def test_gate_closed_same_auto_tool_stays_proposal(self):
+        steps = [{
+            "step": "register customer",
+            "tool": "register_customer",
+            "args": {"name": "U Bala", "phone": "0988000000"},
+        }]
+        proposal_summary = api_response(
+            content="Customer registration is awaiting your approval.")
+        tool_mock = mock.Mock(name="register_customer",
+                              return_value={"success": True, "customer_id": 43})
+
+        with self.script(plan_response("add a customer", steps),
+                         proposal_summary), \
+             mock.patch.object(self.orchestrator, "_autonomy_allowed",
+                               return_value=False), \
+             mock.patch.dict(self.orchestrator.agent.tool_functions,
+                             {"register_customer": tool_mock}):
+            result = self.orchestrator.process_command(
+                "register customer U Bala", user_id=1)
+
+        self.assertTrue(result["success"])
+        step_results = result["step_results"]
+        self.assertEqual(len(step_results), 1)
+        self.assertEqual(step_results[0]["status"], "proposal")
+        self.assertTrue(result["pending_approvals"])
+        self.assertNotIn("executed_by", step_results[0])
+        # Kill switch off => the mutating tool is never invoked.
+        tool_mock.assert_not_called()
+
+    @unittest.skipUnless(HAS_PLAN_LOOP and HAS_AUTONOMY, PENDING)
+    # TODO(agent-team): delete skipUnless once smart-autonomy merges.
+    def test_approval_tier_tool_never_auto_executes_even_when_gate_open(self):
+        steps = [{
+            "step": "delete product",
+            "tool": "delete_product",
+            "args": {"product_id": 7},
+        }]
+        proposal_summary = api_response(
+            content="Product deletion requires your approval.")
+        tool_mock = mock.Mock(name="delete_product",
+                              return_value={"success": True})
+
+        with self.script(plan_response("remove stale product", steps),
+                         proposal_summary), \
+             mock.patch.object(self.orchestrator, "_autonomy_allowed",
+                               return_value=True), \
+             mock.patch.dict(self.orchestrator.agent.tool_functions,
+                             {"delete_product": tool_mock}):
+            result = self.orchestrator.process_command(
+                "do delete product 7 now", user_id=1)
+
+        self.assertTrue(result["success"])
+        step_results = result["step_results"]
+        self.assertEqual(len(step_results), 1)
+        self.assertEqual(step_results[0]["status"], "proposal")
+        self.assertTrue(result["pending_approvals"])
+        # autonomy=="approval" tools never run even with the gate wide open.
+        tool_mock.assert_not_called()
+
+    @unittest.skipUnless(HAS_AUTONOMY, PENDING)
+    # TODO(agent-team): delete skipUnless once smart-autonomy merges.
+    def test_autonomy_allowed_denies_non_manager_roles(self):
+        class FakeUser:
+            def __init__(self, role):
+                self.role = role
+
+        cases = [
+            (FakeUser("cashier"), False),
+            (FakeUser("admin"), False),
+            (FakeUser(None), False),
+            (FakeUser("manager"), True),
+        ]
+        for user, expected in cases:
+            with self.subTest(role=getattr(user, "role", None)):
+                orch = AgentOrchestrator(None, {})
+                orch.set_request_context({"branch_id": 1, "user_id": 1})
+                orch.ai_tools.models["User"] = mock.Mock(
+                    query=_FakeUserQuery(user))
+                orch.get_setting_func = lambda key: "true"
+                self.assertIs(orch._autonomy_allowed(), expected)
+
+    @unittest.skipUnless(HAS_AUTONOMY, PENDING)
+    # TODO(agent-team): delete skipUnless once smart-autonomy merges.
+    def test_autonomy_allowed_parses_kill_switch_truthy_values(self):
+        """Unit-test the orchestrator-side truthy check ('true'/'1'/'on'/'yes',
+        case-insensitive) directly on _autonomy_allowed — no app.py import."""
+        truthy = ["true", "TRUE", "True", "1", "on", "ON", "yes", "YES"]
+        falsy = ["false", "0", "off", "no", "", None, "enabled-ish", "2"]
+
+        class ManagerUser:
+            role = "manager"
+
+        for raw, expected in ([(v, True) for v in truthy]
+                              + [(v, False) for v in falsy]):
+            with self.subTest(raw=raw):
+                orch = AgentOrchestrator(None, {})
+                orch.set_request_context({"user_id": 1})
+                orch.ai_tools.models["User"] = mock.Mock(
+                    query=_FakeUserQuery(ManagerUser()))
+                orch.get_setting_func = lambda key, _raw=raw: _raw
+                self.assertIs(orch._autonomy_allowed(), bool(expected))
+
+    @unittest.skipUnless(HAS_AUTONOMY, PENDING)
+    # TODO(agent-team): delete skipUnless once smart-autonomy merges.
+    def test_registry_contract_for_autonomy_fields(self):
+        valid = {"auto", "approval"}
+        approval_required = {
+            "delete_product", "delete_supplier", "delete_customer",
+            "update_product_price", "write_off_debt",
+        }
+        metadata = ai_tools.TOOL_METADATA
+        for name, meta in metadata.items():
+            with self.subTest(tool=name):
+                self.assertIn(meta.get("autonomy"), valid,
+                              f"{name} has invalid/missing autonomy tier")
+        for name in ai_tools._AUTO_EXECUTE_TOOLS:
+            with self.subTest(auto_tool=name):
+                self.assertIn(name, metadata,
+                              f"{name} in _AUTO_EXECUTE_TOOLS but not TOOL_METADATA")
+                meta = metadata[name]
+                self.assertTrue(meta.get("mutates"))
+                self.assertTrue(meta.get("requires_role"))
+                self.assertEqual(meta["autonomy"], "auto")
+        for name in approval_required:
+            with self.subTest(approval_tool=name):
+                self.assertIn(name, metadata)
+                self.assertEqual(metadata[name]["autonomy"], "approval")
 
 
 class AntiHallucinationSummaryTests(PlanExecuteTestBase):

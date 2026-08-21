@@ -28,6 +28,7 @@
   .loli-plan__detail.is-error { color:var(--loli-danger); white-space:normal; }
   .loli-plan__actions { margin-top:5px; display:flex; gap:6px; }
   .loli-plan__button { border:1px solid var(--loli-border); border-radius:8px; background:var(--loli-surface); color:var(--loli-ink); padding:4px 10px; font-size:12px; font-weight:600; cursor:pointer; }
+  .loli-plan__badge { margin-left:6px; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:700; white-space:nowrap; vertical-align:middle; }.loli-plan__badge--auto { border:1px solid #9adbb8; background:#e7f8ef; color:#0e7a45; }.loli-plan__badge--pending { border:1px solid #ffe08a; background:#fff8e1; color:#8a6100; }
   .loli-plan__button:hover { background:var(--loli-primary-soft); border-color:var(--loli-primary); color:var(--loli-primary); }
   .loli-plan__button.is-rejected { opacity:.55; cursor:default; text-decoration:line-through; }
   .loli-plan__banner { margin-top:8px; border:1px solid var(--loli-danger); border-radius:10px; background:#fdf0f1; color:var(--loli-danger); padding:8px 10px; font-size:12.5px; font-weight:600; }
@@ -84,6 +85,8 @@
       const tool = document.createElement('span'); tool.className = 'loli-plan__tool'; tool.textContent = step.tool || `step ${index + 1}`;
       line.appendChild(tool);
       if (step.step) { const reason = document.createElement('span'); reason.className = 'loli-plan__reason'; reason.textContent = ` — ${step.step}`; line.appendChild(reason); }
+      if (step.status === 'ok' && step.executed_by === 'agent-auto') { const autoBadge = document.createElement('span'); autoBadge.className = 'loli-plan__badge loli-plan__badge--auto'; autoBadge.textContent = '⚡ Auto-executed'; autoBadge.title = 'Loli applied this change automatically (autonomy enabled).'; line.appendChild(autoBadge); }
+      if (step.status === 'proposal') { const pendingBadge = document.createElement('span'); pendingBadge.className = 'loli-plan__badge loli-plan__badge--pending'; pendingBadge.textContent = '⏳ Awaiting approval'; pendingBadge.title = 'This change needs your approval before it is applied.'; line.appendChild(pendingBadge); }
       body.appendChild(line);
       const detailText = step.status === 'proposal' ? argsSummary(step.args ?? step.result) : resultSummary(step);
       if (detailText) { const detail = document.createElement('div'); detail.className = `loli-plan__detail${step.error ? ' is-error' : ''}`; detail.textContent = detailText; detail.title = detailText; body.appendChild(detail); }

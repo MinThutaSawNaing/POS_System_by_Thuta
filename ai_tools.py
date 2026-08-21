@@ -10,8 +10,13 @@ feature requires exactly TWO changes:
 
     1. Add ONE entry to TOOL_METADATA below (name, description, parameters,
        category, mutates, requires_role, description_one_line,
-       result_size_hint).
+       result_size_hint, autonomy).
     2. Add ONE method with the same name on the AITools class.
+
+The ``autonomy`` field controls smart autonomy:
+    - "auto": the tool may execute immediately for managers when the global
+      autonomy switch is on (no human approval round-trip needed).
+    - "approval": always requires human approval before execution.
 
 TOOL_SCHEMAS (the legacy format consumed by agent callers/tests) is DERIVED
 from TOOL_METADATA, so old imports keep working unchanged. Read-only callers
@@ -462,8 +467,133 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
             },
             "required": ["delivery_id", "stage"]
         }
+    },
+    # --- smart-autonomy write tools ---
+    "create_supplier": {
+        "name": "create_supplier",
+        "description": "Create a new supplier in the active branch with optional contact details and category. Refuses duplicate supplier names.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Supplier name (required, unique per branch)."},
+                "contact_person": {"type": "string", "description": "Optional contact person name."},
+                "phone": {"type": "string", "description": "Optional phone number."},
+                "email": {"type": "string", "description": "Optional email address."},
+                "address": {"type": "string", "description": "Optional address."},
+                "category": {"type": "string", "description": "Optional legacy supplier category label."}
+            },
+            "required": ["name"]
+        }
+    },
+    "update_supplier": {
+        "name": "update_supplier",
+        "description": "Partially update an existing supplier in the active branch; only provided fields are changed.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "supplier_id": {"type": "integer", "description": "The supplier to update."},
+                "contact_person": {"type": "string", "description": "New contact person name."},
+                "phone": {"type": "string", "description": "New phone number."},
+                "email": {"type": "string", "description": "New email address."},
+                "address": {"type": "string", "description": "New address."},
+                "category": {"type": "string", "description": "New legacy supplier category label."},
+                "active": {"type": "boolean", "description": "Set the supplier active/inactive (is_active)."}
+            },
+            "required": ["supplier_id"]
+        }
+    },
+    "update_customer": {
+        "name": "update_customer",
+        "description": "Partially update an existing customer in the active branch; only provided fields are changed.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customer_id": {"type": "integer", "description": "The customer to update."},
+                "name": {"type": "string", "description": "New customer name."},
+                "phone": {"type": "string", "description": "New phone number."},
+                "email": {"type": "string", "description": "New email address."},
+                "address": {"type": "string", "description": "New address."}
+            },
+            "required": ["customer_id"]
+        }
+    },
+    "create_category": {
+        "name": "create_category",
+        "description": "Create a new product/supplier category in the active branch. Refuses duplicate category names.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Category name (required, unique per branch)."},
+                "description": {"type": "string", "description": "Optional description."},
+                "color": {"type": "string", "description": "Optional hex color for UI display (e.g. '#6c757d')."},
+                "sort_order": {"type": "integer", "description": "Optional sort order for UI listing."}
+            },
+            "required": ["name"]
+        }
+    },
+    "delete_product": {
+        "name": "delete_product",
+        "description": "Permanently delete a product from the active branch. Refuses if the product has sales history, purchase order items, warehouse stock, or a currently active promotion.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_id": {"type": "integer", "description": "The product to delete."}
+            },
+            "required": ["product_id"]
+        }
+    },
+    "delete_supplier": {
+        "name": "delete_supplier",
+        "description": "Permanently delete a supplier from the active branch. Refuses if any non-terminal purchase order exists for the supplier.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "supplier_id": {"type": "integer", "description": "The supplier to delete."}
+            },
+            "required": ["supplier_id"]
+        }
+    },
+    "delete_customer": {
+        "name": "delete_customer",
+        "description": "Permanently delete a customer from the active branch. Refuses if the customer still has debt with a positive balance.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "customer_id": {"type": "integer", "description": "The customer to delete."}
+            },
+            "required": ["customer_id"]
+        }
+    },
+    "update_product_price": {
+        "name": "update_product_price",
+        "description": "Update a product's selling price with exact decimal math and an optional audit reason.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_id": {"type": "integer", "description": "The product to reprice."},
+                "price": {"type": "number", "description": "New price, must be >= 0."},
+                "reason": {"type": "string", "description": "Optional reason for the price change (audit trail)."}
+            },
+            "required": ["product_id", "price"]
+        }
+    },
+    "write_off_debt": {
+        "name": "write_off_debt",
+        "description": "Write off a customer debt: zero the balance, mark it written-off, and append a timestamped audit note. Requires a mandatory reason.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "debt_id": {"type": "integer", "description": "The debt to write off."},
+                "reason": {"type": "string", "description": "Mandatory non-empty reason for the write-off."}
+            },
+            "required": ["debt_id", "reason"]
+        }
     }
 }
+
+# Smart autonomy: tools that may execute immediately for managers when the
+# global autonomy switch is on. All other write tools require approval.
+_AUTO_EXECUTE_TOOLS = {"register_customer", "create_supplier", "update_supplier", "update_customer", "create_category"}
 
 # ==============================================================================
 # TOOL_METADATA -- the single source of truth for every tool.
@@ -507,6 +637,16 @@ _TOOL_META = {
     "register_customer":               ("customers",   True,  'staff',   "Register a new customer in the active branch with optional contact details.", "small"),
     "record_debt_payment":             ("debts",       True,  'staff',   "Record a payment against a customer debt using exact decimal math; marks paid at zero balance.", "small"),
     "update_delivery_stage":           ("deliveries",  True,  'staff',   "Advance a delivery to its next valid stage (to_deliver -> packaged -> delivering -> delivered/cancelled).", "small"),
+    # --- smart-autonomy write tools ---
+    "create_supplier":                 ("purchasing",  True,  'manager', "Create a new supplier in the active branch with contact details and category.", "small"),
+    "update_supplier":                 ("purchasing",  True,  'manager', "Partially update a supplier's contact details, category, or active status.", "small"),
+    "update_customer":                 ("customers",   True,  'manager', "Partially update a customer's name/phone/email/address in the active branch.", "small"),
+    "create_category":                 ("inventory",   True,  'manager', "Create a new category with optional description/color/sort order.", "small"),
+    "delete_product":                  ("inventory",   True,  'manager', "Delete a product; refuses when sales/PO/warehouse/promotion references exist.", "small"),
+    "delete_supplier":                 ("purchasing",  True,  'manager', "Delete a supplier; refuses when non-terminal purchase orders exist.", "small"),
+    "delete_customer":                 ("customers",   True,  'manager', "Delete a customer; refuses when outstanding debt balances exist.", "small"),
+    "update_product_price":            ("inventory",   True,  'manager', "Update a product's price with exact decimal math and an optional audit reason.", "small"),
+    "write_off_debt":                  ("debts",       True,  'manager', "Write off a debt with a mandatory reason; zeroes balance and appends an audit note.", "small"),
 }
 
 TOOL_METADATA: Dict[str, Dict[str, Any]] = {}
@@ -519,6 +659,7 @@ for _name, _schema in _BASE_TOOL_PARAMETER_SCHEMAS.items():
         "requires_role": _role,
         "description_one_line": _one_line,
         "result_size_hint": _size,
+        "autonomy": "auto" if _name in _AUTO_EXECUTE_TOOLS else "approval",
     }
 
 # Backward-compatible legacy schema view, derived from the registry.
@@ -1521,6 +1662,84 @@ class AITools:
 
     def update_delivery_stage(self, delivery_id: int, stage: str) -> Dict[str, Any]:
         """Move a delivery to its next valid stage (any role)."""
+    # ------------------------------------------------------------------
+    # Smart-autonomy write tools (Phase A)
+    # ------------------------------------------------------------------
+
+    def create_supplier(self, name: str, contact_person: str = None, phone: str = None,
+                        email: str = None, address: str = None,
+                        category: str = None) -> Dict[str, Any]:
+        """Create a new supplier in the active branch (manager only)."""
+        Supplier = self._get_model('Supplier')
+        if not isinstance(name, str) or not name.strip():
+            return {"error": "Supplier name is required"}
+        name = name.strip()
+        duplicate = self._branch_filter(Supplier.query.filter_by(name=name), Supplier).first()
+        if duplicate:
+            return {"error": f"A supplier named '{name}' already exists in the active branch (ID {duplicate.id})"}
+        if email is not None:
+            email = str(email).strip() or None
+            if email and '@' not in email:
+                return {"error": "email must be a valid email address"}
+        supplier = Supplier(
+            name=name,
+            contact_person=str(contact_person).strip() if contact_person else None,
+            phone=str(phone).strip() if phone else None,
+            email=email,
+            address=str(address).strip() if address else None,
+            category=str(category).strip() if category else None,
+            branch_id=self._branch_id()
+        )
+        self.db.session.add(supplier)
+        self.db.session.commit()
+        return {
+            "success": True,
+            "supplier_id": supplier.id,
+            "supplier_name": supplier.name,
+            "changed_fields": ["name", "contact_person", "phone", "email", "address", "category"],
+            "branch_id": self._branch_id()
+        }
+
+    def update_supplier(self, supplier_id: int, contact_person: str = None, phone: str = None,
+                        email: str = None, address: str = None, category: str = None,
+                        active: bool = None) -> Dict[str, Any]:
+        """Partially update a supplier; only provided fields change (manager only)."""
+        Supplier = self._get_model('Supplier')
+        supplier = self._branch_filter(Supplier.query.filter_by(id=supplier_id), Supplier).first()
+        if not supplier:
+            return {"error": f"Supplier with ID {supplier_id} not found in the active branch"}
+        changed_fields = []
+        if contact_person is not None:
+            supplier.contact_person = str(contact_person).strip() or None
+            changed_fields.append("contact_person")
+        if phone is not None:
+            supplier.phone = str(phone).strip() or None
+            changed_fields.append("phone")
+        if email is not None:
+            email_val = str(email).strip() or None
+            if email_val and '@' not in email_val:
+                return {"error": "email must be a valid email address"}
+            supplier.email = email_val
+            changed_fields.append("email")
+        if address is not None:
+            supplier.address = str(address).strip() or None
+            changed_fields.append("address")
+        if category is not None:
+            supplier.category = str(category).strip() or None
+            changed_fields.append("category")
+        if active is not None:
+            supplier.is_active = bool(active)
+            changed_fields.append("is_active")
+        if not changed_fields:
+            return {"error": "No fields provided to update"}
+        self.db.session.commit()
+        return {
+            "success": True,
+            "supplier_id": supplier.id,
+            "supplier_name": supplier.name,
+            "changed_fields": changed_fields
+        }
+
         Delivery = self._get_model('Delivery')
         if stage not in DELIVERY_STAGES:
             return {"error": f"Invalid stage '{stage}'. Valid stages: {sorted(DELIVERY_STAGES)}"}
@@ -1552,6 +1771,224 @@ class AITools:
             "new_stage": stage,
             "updated_at": now.isoformat()
         }
+
+    def update_customer(self, customer_id: int, name: str = None, phone: str = None,
+                        email: str = None, address: str = None) -> Dict[str, Any]:
+        """Partially update a customer; only provided fields change (manager only)."""
+        Customer = self._get_model('Customer')
+        customer = self._branch_filter(Customer.query.filter_by(id=customer_id), Customer).first()
+        if not customer:
+            return {"error": f"Customer with ID {customer_id} not found in the active branch"}
+        changed_fields = []
+        if name is not None:
+            if not str(name).strip():
+                return {"error": "Customer name cannot be empty"}
+            customer.name = str(name).strip()
+            changed_fields.append("name")
+        if phone is not None:
+            customer.phone = str(phone).strip() or None
+            changed_fields.append("phone")
+        if email is not None:
+            email_val = str(email).strip() or None
+            if email_val and '@' not in email_val:
+                return {"error": "email must be a valid email address"}
+            customer.email = email_val
+            changed_fields.append("email")
+        if address is not None:
+            customer.address = str(address).strip() or None
+            changed_fields.append("address")
+        if not changed_fields:
+            return {"error": "No fields provided to update"}
+        self.db.session.commit()
+        return {
+            "success": True,
+            "customer_id": customer.id,
+            "customer_name": customer.name,
+            "changed_fields": changed_fields
+        }
+
+    def create_category(self, name: str, description: str = None, color: str = None,
+                        sort_order: int = 0) -> Dict[str, Any]:
+        """Create a new category in the active branch (manager only).
+
+        Note: app.py's Category model has no type/kind column, so optional
+        description/color/sort_order are supported instead."""
+        Category = self._get_model('Category')
+        if not isinstance(name, str) or not name.strip():
+            return {"error": "Category name is required"}
+        name = name.strip()
+        duplicate = self._branch_filter(Category.query.filter_by(name=name), Category).first()
+        if duplicate:
+            return {"error": f"A category named '{name}' already exists in the active branch (ID {duplicate.id})"}
+        try:
+            sort_order_val = int(sort_order)
+        except (TypeError, ValueError):
+            return {"error": "sort_order must be an integer"}
+        category = Category(
+            name=name,
+            description=str(description).strip() if description else None,
+            color=color,
+            sort_order=sort_order_val,
+            branch_id=self._branch_id()
+        )
+        self.db.session.add(category)
+        self.db.session.commit()
+        return {
+            "success": True,
+            "category_id": category.id,
+            "category_name": category.name,
+            "changed_fields": ["name", "description", "color", "sort_order"],
+            "branch_id": self._branch_id()
+        }
+
+    def delete_product(self, product_id: int) -> Dict[str, Any]:
+        """Delete a product unless it still has references (manager only)."""
+        Product = self._get_model('Product')
+        SaleItem = self._get_model('SaleItem')
+        PurchaseOrderItem = self._get_model('PurchaseOrderItem')
+        WarehouseInventory = self._get_model('WarehouseInventory')
+        Promotion = self._get_model('Promotion')
+        product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
+        if not product:
+            return {"error": f"Product with ID {product_id} not found in the active branch"}
+        if SaleItem.query.filter_by(product_id=product.id).first():
+            return {"error": f"Cannot delete product '{product.name}' (ID {product.id}): it has sales history"}
+        if PurchaseOrderItem.query.filter_by(product_id=product.id).first():
+            return {"error": f"Cannot delete product '{product.name}' (ID {product.id}): it appears on purchase orders"}
+        warehouse_stock = WarehouseInventory.query.filter(
+            WarehouseInventory.product_id == product.id,
+            WarehouseInventory.quantity > 0
+        ).first()
+        if warehouse_stock:
+            return {"error": f"Cannot delete product '{product.name}' (ID {product.id}): {warehouse_stock.quantity} units remain in the warehouse"}
+        now = datetime.utcnow()
+        active_promotion = Promotion.query.filter(
+            Promotion.product_id == product.id,
+            Promotion.start_date <= now,
+            Promotion.end_date >= now
+        ).first()
+        if active_promotion:
+            return {"error": f"Cannot delete product '{product.name}' (ID {product.id}): an active promotion covers it until {active_promotion.end_date.date().isoformat()}"}
+        product_name = product.name
+        self.db.session.delete(product)
+        self.db.session.commit()
+        return {
+            "success": True,
+            "deleted_product_id": product_id,
+            "deleted_product_name": product_name,
+            "changed_fields": ["deleted"]
+        }
+
+    def delete_supplier(self, supplier_id: int) -> Dict[str, Any]:
+        """Delete a supplier unless non-terminal purchase orders exist (manager only)."""
+        Supplier = self._get_model('Supplier')
+        PurchaseOrder = self._get_model('PurchaseOrder')
+        supplier = self._branch_filter(Supplier.query.filter_by(id=supplier_id), Supplier).first()
+        if not supplier:
+            return {"error": f"Supplier with ID {supplier_id} not found in the active branch"}
+        # Only fully closed/cancelled/delivered POs are terminal.
+        TERMINAL_PO_STATUSES = {'cancelled', 'received'}
+        open_pos = PurchaseOrder.query.filter(
+            PurchaseOrder.supplier_id == supplier.id,
+            ~PurchaseOrder.status.in_(TERMINAL_PO_STATUSES)
+        ).all()
+        if open_pos:
+            po_numbers = ", ".join(po.po_number for po in open_pos[:5])
+            return {"error": f"Cannot delete supplier '{supplier.name}' (ID {supplier.id}): non-terminal purchase orders exist ({po_numbers})"}
+        supplier_name = supplier.name
+        self.db.session.delete(supplier)
+        self.db.session.commit()
+        return {
+            "success": True,
+            "deleted_supplier_id": supplier_id,
+            "deleted_supplier_name": supplier_name,
+            "changed_fields": ["deleted"]
+        }
+
+    def delete_customer(self, customer_id: int) -> Dict[str, Any]:
+        """Delete a customer unless outstanding debt remains (manager only)."""
+        Customer = self._get_model('Customer')
+        Debt = self._get_model('Debt')
+        customer = self._branch_filter(Customer.query.filter_by(id=customer_id), Customer).first()
+        if not customer:
+            return {"error": f"Customer with ID {customer_id} not found in the active branch"}
+        outstanding = Debt.query.filter(
+            Debt.customer_id == customer.id,
+            Debt.balance > 0
+        ).count()
+        if outstanding:
+            return {"error": f"Cannot delete customer '{customer.name}' (ID {customer.id}): {outstanding} debt(s) with positive balance exist"}
+        customer_name = customer.name
+        self.db.session.delete(customer)
+        self.db.session.commit()
+        return {
+            "success": True,
+            "deleted_customer_id": customer_id,
+            "deleted_customer_name": customer_name,
+            "changed_fields": ["deleted"]
+        }
+
+    def update_product_price(self, product_id: int, price, reason: str = None) -> Dict[str, Any]:
+        """Update a product's selling price with exact decimal math (manager only)."""
+        Product = self._get_model('Product')
+        product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
+        if not product:
+            return {"error": f"Product with ID {product_id} not found in the active branch"}
+        price_dec = money_dec(price).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+        if price_dec < 0:
+            return {"error": "Price must be >= 0"}
+        old_price = money_dec(product.price).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+        product.price = float(price_dec)
+        self.db.session.commit()
+        result = {
+            "success": True,
+            "product_id": product.id,
+            "product_name": product.name,
+            "old_price": money_plain(old_price),
+            "new_price": money_plain(price_dec),
+            "changed_fields": ["price"]
+        }
+        if reason:
+            result["reason"] = str(reason).strip()
+        return result
+
+    def write_off_debt(self, debt_id: int, reason: str) -> Dict[str, Any]:
+        """Write off a debt: zero balance, mark written-off, audit note (manager only)."""
+        Debt = self._get_model('Debt')
+        if not isinstance(reason, str) or not reason.strip():
+            return {"error": "A non-empty reason is required to write off a debt"}
+        reason = reason.strip()
+        debt = self._branch_filter(Debt.query.filter_by(id=debt_id), Debt).first()
+        if not debt:
+            return {"error": f"Debt with ID {debt_id} not found in the active branch"}
+        current_balance = money_dec(debt.balance).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+        if current_balance <= 0:
+            return {"error": "This debt is already fully paid and cannot be written off"}
+
+        written_off_amount = current_balance
+        debt.balance = 0.0
+        debt.status = 'written_off'
+
+        # Append a timestamped audit note like record_debt_payment does.
+        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
+        note = f"Debt written off {money_plain(written_off_amount)} (AI agent) - {reason}"
+        existing_notes = debt.notes or ''
+        debt.notes = (
+            f"{existing_notes}\n[{timestamp}] {note}" if existing_notes
+            else f"[{timestamp}] {note}"
+        )
+        self.db.session.commit()
+
+        return {
+            "success": True,
+            "debt_id": debt.id,
+            "customer_id": debt.customer_id,
+            "written_off_amount": money_plain(written_off_amount),
+            "remaining_balance": money_plain(debt.balance),
+            "debt_status": debt.status,
+            "changed_fields": ["balance", "status", "notes"]
+        }
+
 
     def _generate_random_suffix(self) -> str:
         """Generate a random suffix for PO numbers"""

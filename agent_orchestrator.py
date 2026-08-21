@@ -122,7 +122,7 @@ SYSTEM_PROMPT = """You are Loli, the current-data assistant for Parrot POS, crea
 All operational answers are scoped to the active branch supplied by trusted context. Use tools for live facts. Never invent counts, prices, stock, balances, dates, customers, suppliers, or branch data. If you cannot obtain the data through a tool, say you could not retrieve it instead of guessing. State the branch when it helps the user understand the result. If a record is absent, say so plainly.
 
 ## Safe operations
-Your registered tools are read-only. Do not claim you created, approved, cancelled, transferred, or modified any business record. For action requests, explain the relevant POS workflow and ask the user to use the appropriate screen.
+Your registered read tools answer questions with live facts. Low-risk changes (for example registering a customer or supplier, or creating a category) may be executed automatically when autonomy is enabled for the current manager. Riskier changes — deletes, price or money changes, stock adjustments, approvals, cancellations, transfers — always require explicit human approval before they run. Never claim you created, approved, cancelled, transferred, or modified any business record unless a step result confirms it actually happened; otherwise say it is awaiting approval.
 
 ## Response style
 Answer directly, then show only useful detail. Use concise Markdown headings, bullets, and compact tables when they improve clarity. Do not use decorative *** separators. Do not expose raw JSON. Preserve exact business names and identifiers. Respond in the user's language when practical.
@@ -254,8 +254,14 @@ class AgentOrchestrator:
         return base_prompt
     
     def _register_all_tools(self):
-        """Register all available tools"""
-        tools = get_all_tools(read_only=True)
+        """Register all available tools (read AND write).
+
+        Registration only makes a tool executable inside the deterministic plan
+        loop. The LLM-facing tool list stays read-only: every chat call passes
+        an explicit tools_override built by _filter_tools_for_query, which
+        strips mutating tools, so write schemas are never sent to the model.
+        """
+        tools = get_all_tools()
         for tool_name, tool_schema in tools.items():
             tool_func = getattr(self.ai_tools, tool_name, None)
             if tool_func:
@@ -291,21 +297,64 @@ class AgentOrchestrator:
         return tools
     
     def _filter_tools_for_query(self, command: str) -> List[Dict]:
-        """Filter tools based on the user's query to reduce API load"""
+        """Filter tools based on the user's query to reduce API load.
+
+        The result is also the ONLY thing ever passed as tools_override to the
+        LLM, so mutating tools are always stripped here: the model must never
+        see write-tool schemas in the single-shot chat path.
+        """
+        def _read_only(tool_schemas: List[Dict]) -> List[Dict]:
+            return [
+                t for t in tool_schemas
+                if not _TOOL_METADATA.get(t["function"]["name"], {}).get("mutates")
+            ]
+
         categories = self._detect_relevant_categories(command)
-        
+
         if not categories:
             # Complex query - use all tools
             print(f"[AI Agent] Complex query detected, using all {len(self.agent.tools)} tools")
-            return self.agent.tools
-        
+            return _read_only(self.agent.tools)
+
         relevant_tools = self._get_tools_for_categories(categories)
-        
+
         # Filter agent's tools
         filtered = [t for t in self.agent.tools if t["function"]["name"] in relevant_tools]
-        
+        filtered = _read_only(filtered)
+
         print(f"[AI Agent] Filtered to {len(filtered)} relevant tools for categories: {categories}")
         return filtered
+
+    def _autonomy_allowed(self) -> bool:
+        """Autonomy gate for auto-executing low-risk write tools.
+
+        True only when ALL hold: (a) the 'agent_autonomy_enabled' kill-switch
+        setting is truthy; (b) the current user exists and their role is
+        exactly 'manager'. Any failure resolving either side denies autonomy.
+        """
+        try:
+            raw = self.get_setting_func("agent_autonomy_enabled")
+        except Exception:
+            return False
+        if str(raw or "").strip().lower() not in {"true", "1", "on", "yes"}:
+            return False
+
+        user_id = self.request_context.get("user_id")
+        if user_id is None:
+            return False
+        try:
+            User = self.ai_tools._get_model("User") or self.ai_tools.models.get("User")
+        except Exception:
+            return False
+        if User is None:
+            return False
+        try:
+            user = User.query.filter_by(id=user_id).first()
+        except Exception:
+            return False
+        if user is None:
+            return False
+        return getattr(user, "role", None) == "manager"
                 
     def process_command(self, command: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -550,7 +599,11 @@ class AgentOrchestrator:
         """Compact one-line-per-tool catalog for the planning prompt."""
         lines = []
         for name, meta in sorted(registry.items()):
-            flag = " [write - requires approval]" if meta["mutates"] else ""
+            if meta["mutates"]:
+                auto = _TOOL_METADATA.get(name, {}).get("autonomy") == "auto"
+                flag = " [write - auto]" if auto else " [write - requires approval]"
+            else:
+                flag = ""
             arg_names = ", ".join((meta["params"].get("properties") or {}).keys())
             lines.append(f"- {name}{flag}: {meta['one_line']} | args: {{{arg_names}}}")
         return "\n".join(lines)
@@ -838,9 +891,14 @@ class AgentOrchestrator:
         """PHASE B: pure-Python sequential execution. Zero LLM calls.
 
         Fail-stop: the first failed step aborts all later ones (marked
-        'skipped'). Mutating tools never execute here — they become proposals.
+        'skipped'). Read tools execute directly. Mutating tools execute ONLY
+        when TOOL_METADATA marks them autonomy=="auto" AND _autonomy_allowed()
+        (kill-switch on + manager user); such runs are tagged
+        'executed_by': 'agent-auto' with status 'ok'. Every other mutating
+        tool becomes an approval proposal and never touches the database here.
         """
         registry = self._get_tool_registry()
+        autonomy_ok = self._autonomy_allowed()  # once per plan, not per step
         step_results: List[Dict[str, Any]] = []
         pending_approvals: List[Dict[str, Any]] = []
         step_outputs: Dict[int, Any] = {}
@@ -863,8 +921,16 @@ class AgentOrchestrator:
                 aborted = True
                 continue
 
-            # Write tools become approval proposals; they NEVER run here.
-            if registry.get(tool, {}).get("mutates"):
+            mutates = registry.get(tool, {}).get("mutates")
+            auto_allowed = (
+                mutates
+                and _TOOL_METADATA.get(tool, {}).get("autonomy") == "auto"
+                and autonomy_ok
+            )
+
+            # Write tools default to approval proposals; they never run unless
+            # explicitly marked autonomous AND the manager gate passes.
+            if mutates and not auto_allowed:
                 proposal = {
                     "step": step_no,
                     "tool": tool,
@@ -892,7 +958,12 @@ class AgentOrchestrator:
                     raise RuntimeError(str(outcome["error"]))
                 result = outcome.get("result")
                 step_outputs[step_no] = result
-                step_results.append({**base, "status": "ok", "result": result})
+                if auto_allowed:
+                    step_results.append({**base, "status": "ok",
+                                         "result": result,
+                                         "executed_by": "agent-auto"})
+                else:
+                    step_results.append({**base, "status": "ok", "result": result})
                 self.session_context["last_tool_used"] = tool
                 self.session_context["last_results"] = result
             except Exception as exc:
