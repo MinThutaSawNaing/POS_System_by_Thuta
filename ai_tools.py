@@ -1,14 +1,49 @@
 """
 AI Tools Module for POS System
 Defines all tools the AI Agent can use for inventory and procurement tasks
+
+================================================================================
+EXTENSIBILITY PATTERN ("trainable" backbone)
+================================================================================
+Every tool is registered exactly once in TOOL_METADATA. Adding a future
+feature requires exactly TWO changes:
+
+    1. Add ONE entry to TOOL_METADATA below (name, description, parameters,
+       category, mutates, requires_role, description_one_line,
+       result_size_hint).
+    2. Add ONE method with the same name on the AITools class.
+
+TOOL_SCHEMAS (the legacy format consumed by agent callers/tests) is DERIVED
+from TOOL_METADATA, so old imports keep working unchanged. Read-only callers
+get write tools filtered out automatically via the ``mutates`` flag
+(see ``get_all_tools``).
+
+Safety rails every WRITE tool (mutates=True) must follow:
+    - Validate ALL inputs (types, ranges, referenced ids exist within the
+      current branch scope via self._branch_filter / self._branch_id()).
+    - Return {"success": True, ...} or {"error": "..."} dicts.
+    - Include audit-trail info: entity id + changed fields.
+    - Serialize money as plain 2-decimal STRINGS (e.g. "12.34") using
+      money_plain(); never return raw floats for money in NEW tools.
 """
 
 import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 MONEY_QUANT = Decimal('0.01')
+
+# Delivery stages mirror app.py's DELIVERY_STAGE_FLOW keys (app.py cannot be
+# imported here without the Flask app context, so the valid set is mirrored).
+DELIVERY_STAGES = {'to_deliver', 'packaged', 'delivering', 'delivered', 'cancelled'}
+DELIVERY_STAGE_FLOW = {
+    'to_deliver': ['packaged', 'cancelled'],
+    'packaged': ['delivering', 'cancelled'],
+    'delivering': ['delivered', 'cancelled'],
+    'delivered': [],
+    'cancelled': []
+}
 
 def money_dec(value):
     """Convert a value to a finite Decimal, defaulting to 0 for None/NaN/inf/unparseable input."""
@@ -26,9 +61,15 @@ def money_str(value):
     """Format a money value as a quantized 2-decimal string (e.g. '1,234.50')."""
     return f"{money_dec(value).quantize(MONEY_QUANT):,.2f}"
 
+def money_plain(value):
+    """Format a money value as a plain 2-decimal string WITHOUT thousands separators (e.g. '1234.50').
 
-# Tool schema definitions for the AI
-TOOL_SCHEMAS = {
+    Used by NEW tools so downstream consumers can parse amounts numerically."""
+    return f"{money_dec(value).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)}"
+
+# Tool schema definitions for the AI (parameter schemas only; enriched into
+# TOOL_METADATA right below -- do not add metadata fields here).
+_BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     "get_inventory_status": {
         "name": "get_inventory_status",
         "description": "Get the current inventory status for all products or a specific product. Returns stock levels, reorder points, and stock status.",
@@ -334,7 +375,156 @@ TOOL_SCHEMAS = {
         "name": "get_sales_summary",
         "description": "Summarize active-branch sales totals, transaction count, payment methods, and recent sales for a period.",
         "parameters": {"type": "object", "properties": {"days": {"type": "integer", "description": "Days to summarize, 1 to 365. Default 30."}, "limit": {"type": "integer", "description": "Maximum recent sales, 1 to 100."}}}
+    },
+    "upsert_product": {
+        "name": "upsert_product",
+        "description": "Create a product or update an existing product's price, cost, tax rate, stock, category, and reorder settings. Requires manager role.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Product name (required)."},
+                "price": {"type": "number", "description": "Selling price, >= 0 (required)."},
+                "cost": {"type": "number", "description": "Unit cost, >= 0. Optional."},
+                "tax_rate": {"type": "number", "description": "Tax rate percent between 0 and 100. Default 0."},
+                "stock": {"type": "integer", "description": "Initial/updated stock level, >= 0. Default 0."},
+                "category": {"type": "string", "description": "Optional category name."},
+                "reorder_point": {"type": "integer", "description": "Reorder point, >= 0. Default 10."},
+                "reorder_quantity": {"type": "integer", "description": "Reorder quantity, >= 0. Default 50."},
+                "barcode": {"type": "string", "description": "Optional barcode."},
+                "product_id": {"type": "integer", "description": "Provide to update an existing product instead of creating one."}
+            },
+            "required": ["name", "price"]
+        }
+    },
+    "adjust_product_stock": {
+        "name": "adjust_product_stock",
+        "description": "Apply a signed stock delta (positive or negative) to a product with a mandatory reason. Resulting stock must stay >= 0. Requires manager role.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_id": {"type": "integer", "description": "The product to adjust."},
+                "delta": {"type": "integer", "description": "Signed quantity change; must not be zero."},
+                "reason": {"type": "string", "description": "Mandatory audit reason for the adjustment."}
+            },
+            "required": ["product_id", "delta", "reason"]
+        }
+    },
+    "create_promotion": {
+        "name": "create_promotion",
+        "description": "Create a percent or fixed-amount discount promotion for a product over a date range. Requires manager role.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_id": {"type": "integer", "description": "The product to promote."},
+                "discount_type": {"type": "string", "description": "'percent' or 'fixed'."},
+                "discount_value": {"type": "number", "description": "Percent (0 < v <= 100) for 'percent', positive amount for 'fixed'."},
+                "start_date": {"type": "string", "description": "Start date YYYY-MM-DD."},
+                "end_date": {"type": "string", "description": "End date YYYY-MM-DD, must be on or after start_date."}
+            },
+            "required": ["product_id", "discount_type", "discount_value", "start_date", "end_date"]
+        }
+    },
+    "register_customer": {
+        "name": "register_customer",
+        "description": "Register a new customer in the active branch with optional phone, email, and address.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Customer name (required)."},
+                "phone": {"type": "string", "description": "Optional phone number."},
+                "email": {"type": "string", "description": "Optional email address."},
+                "address": {"type": "string", "description": "Optional address."}
+            },
+            "required": ["name"]
+        }
+    },
+    "record_debt_payment": {
+        "name": "record_debt_payment",
+        "description": "Record a payment against a customer debt. Uses exact decimal math; rejects amounts <= 0 or exceeding balance; marks debt paid at zero balance.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "debt_id": {"type": "integer", "description": "The debt record to pay."},
+                "amount": {"type": "number", "description": "Payment amount, > 0 and <= remaining balance."},
+                "notes": {"type": "string", "description": "Optional payment notes."}
+            },
+            "required": ["debt_id", "amount"]
+        }
+    },
+    "update_delivery_stage": {
+        "name": "update_delivery_stage",
+        "description": "Move a delivery to its next valid stage: to_deliver -> packaged -> delivering -> delivered, with cancelled allowed until delivered.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "delivery_id": {"type": "integer", "description": "The delivery to update."},
+                "stage": {"type": "string", "description": "One of: to_deliver, packaged, delivering, delivered, cancelled."}
+            },
+            "required": ["delivery_id", "stage"]
+        }
     }
+}
+
+# ==============================================================================
+# TOOL_METADATA -- the single source of truth for every tool.
+# Each entry: name, description, parameters, category
+# (inventory|sales|purchasing|customers|debts|deliveries|promotions|system),
+# mutates (bool), requires_role (None|'manager'|'boss'),
+# description_one_line (token-cheap planning prompts), result_size_hint
+# ('small'|'medium'|'large').
+# Adding a tool = ONE entry here + ONE method on AITools. See module docstring.
+# ==============================================================================
+_TOOL_META = {
+    # --- read tools ---
+    "get_inventory_status":            ("inventory",   False, None,     "Current stock levels and reorder status for all or one product.", "medium"),
+    "get_low_stock_items":             ("inventory",   False, None,     "Products at or below reorder point with suggested reorder quantities.", "medium"),
+    "search_products":                 ("inventory",   False, None,     "Search active-branch products by name; returns stock, price, cost.", "small"),
+    "get_supplier_list":               ("purchasing",  False, None,     "List suppliers with contact info, ratings, and performance.", "medium"),
+    "get_supplier_details":            ("purchasing",  False, None,     "Detailed supplier info including price agreements and recent POs.", "large"),
+    "get_purchase_orders":             ("purchasing",  False, None,     "List purchase orders filtered by status, supplier, or date.", "medium"),
+    "get_warehouse_inventory":         ("inventory",   False, None,     "Warehouse stock received but not yet transferred to main stock.", "medium"),
+    "get_sales_trends":                ("sales",       False, None,     "Sales trend analysis per product over a period for reorder decisions.", "large"),
+    "get_product_details":             ("inventory",   False, None,     "Full product detail: stock, pricing, tax, supplier agreements.", "small"),
+    "suggest_reorder_quantities":      ("inventory",   False, None,     "Suggested reorder quantities from 30-day sales velocity analysis.", "medium"),
+    "get_supplier_price_for_product":  ("purchasing",  False, None,     "Agreed supplier price for a product, if an agreement exists.", "small"),
+    "get_current_branch_context":      ("system",      False, None,     "Active POS branch that scopes all assistant results.", "small"),
+    "get_category_summary":            ("inventory",   False, None,     "Categories with active-branch product and supplier counts.", "small"),
+    "get_promotion_summary":           ("promotions",  False, None,     "Active-branch promotions filtered by active/upcoming/expired.", "medium"),
+    "get_customer_summary":            ("customers",   False, None,     "Find active-branch customers and outstanding debt balances.", "medium"),
+    "get_debt_summary":                ("debts",       False, None,     "Summarize customer debts, overdue balances, and aging status.", "medium"),
+    "get_delivery_summary":            ("deliveries",  False, None,     "Deliveries by stage plus open delivery work for the branch.", "medium"),
+    "get_return_exchange_summary":     ("sales",       False, None,     "Recent returns/exchanges with refund and collection totals.", "medium"),
+    "get_warehouse_transfer_history":  ("inventory",   False, None,     "Recent warehouse-to-stock transfers.", "small"),
+    "get_sales_summary":               ("sales",       False, None,     "Sales totals, transaction count, payment methods for a period.", "medium"),
+    # --- write tools ---
+    "create_purchase_order":           ("purchasing",  True,  'manager', "Create a draft purchase order for one or more products from a supplier.", "small"),
+    "approve_purchase_order":          ("purchasing",  True,  'manager', "Approve a pending purchase order (pending -> approved).", "small"),
+    "cancel_purchase_order":           ("purchasing",  True,  'manager', "Cancel a draft/pending/approved purchase order with a reason.", "small"),
+    "create_warehouse_transfer":       ("inventory",   True,  'manager', "Move warehouse stock into main product stock (FIFO deduction).", "small"),
+    "upsert_product":                  ("inventory",   True,  'manager', "Create a product or update an existing one's price/cost/stock/reorder settings.", "small"),
+    "adjust_product_stock":            ("inventory",   True,  'manager', "Apply a signed stock delta to a product with a mandatory reason; result must stay >= 0.", "small"),
+    "create_promotion":                ("promotions",  True,  'manager', "Create a percent or fixed discount promotion for a product over a date range.", "small"),
+    "register_customer":               ("customers",   True,  'staff',   "Register a new customer in the active branch with optional contact details.", "small"),
+    "record_debt_payment":             ("debts",       True,  'staff',   "Record a payment against a customer debt using exact decimal math; marks paid at zero balance.", "small"),
+    "update_delivery_stage":           ("deliveries",  True,  'staff',   "Advance a delivery to its next valid stage (to_deliver -> packaged -> delivering -> delivered/cancelled).", "small"),
+}
+
+TOOL_METADATA: Dict[str, Dict[str, Any]] = {}
+for _name, _schema in _BASE_TOOL_PARAMETER_SCHEMAS.items():
+    _category, _mutates, _role, _one_line, _size = _TOOL_META[_name]
+    TOOL_METADATA[_name] = {
+        **_schema,
+        "category": _category,
+        "mutates": _mutates,
+        "requires_role": _role,
+        "description_one_line": _one_line,
+        "result_size_hint": _size,
+    }
+
+# Backward-compatible legacy schema view, derived from the registry.
+TOOL_SCHEMAS: Dict[str, Dict] = {
+    name: {"name": meta["name"], "description": meta["description"], "parameters": meta["parameters"]}
+    for name, meta in TOOL_METADATA.items()
 }
 
 
@@ -1077,6 +1267,292 @@ class AITools:
         recent = [{"transaction_id": s.transaction_id, "total": money_str(s.total or 0), "payment_method": s.payment_method, "date": s.date.isoformat() if s.date else None} for s in sales[:self._limit(limit, 10)]]
         return self._scope({"period_days": days, "transaction_count": len(sales), "total_sales": money_str(sum((money_dec(s.total or 0) for s in sales), Decimal('0'))), "payment_method_totals": {key: money_str(value) for key, value in methods.items()}, "recent_sales": recent})
         
+    # ==================================================================
+    # WRITE TOOLS (mutates=True). Pattern: validate all inputs, scope
+    # lookups to the active branch via self._branch_filter, return
+    # {"success": True, ...} or {"error": ...} with audit info, and
+    # serialize money as plain 2-decimal strings via money_plain().
+    # ==================================================================
+
+    def upsert_product(self, name: str, price, cost=None, tax_rate=0.0, stock: int = 0,
+                       category: str = None, reorder_point: int = 10,
+                       reorder_quantity: int = 50, barcode: str = None,
+                       product_id: int = None) -> Dict[str, Any]:
+        """Create a product or update an existing one (manager only)."""
+        Product = self._get_model('Product')
+        if not isinstance(name, str) or not name.strip():
+            return {"error": "Product name is required"}
+        name = name.strip()
+        price_dec = money_dec(price)
+        if price_dec < 0:
+            return {"error": "Price must be >= 0"}
+        cost_dec = money_dec(cost) if cost is not None else None
+        if cost_dec is not None and cost_dec < 0:
+            return {"error": "Cost must be >= 0"}
+        try:
+            tax_rate_val = float(tax_rate)
+        except (TypeError, ValueError):
+            return {"error": "tax_rate must be a number between 0 and 100"}
+        if not (0 <= tax_rate_val <= 100):
+            return {"error": "tax_rate must be between 0 and 100"}
+        try:
+            stock_val = int(stock)
+            reorder_point_val = int(reorder_point)
+            reorder_quantity_val = int(reorder_quantity)
+        except (TypeError, ValueError):
+            return {"error": "stock, reorder_point and reorder_quantity must be integers"}
+        if stock_val < 0 or reorder_point_val < 0 or reorder_quantity_val < 0:
+            return {"error": "stock, reorder_point and reorder_quantity must be >= 0"}
+
+        changed_fields = ["name", "price", "cost", "tax_rate", "stock", "category",
+                          "reorder_point", "reorder_quantity", "barcode"]
+        if product_id is not None:
+            product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
+            if not product:
+                return {"error": f"Product with ID {product_id} not found in the active branch"}
+            product.name = name
+            product.price = float(price_dec)
+            product.cost = float(cost_dec) if cost_dec is not None else product.cost
+            product.tax_rate = tax_rate_val
+            product.stock = stock_val
+            product.category = category if category is not None else product.category
+            product.reorder_point = reorder_point_val
+            product.reorder_quantity = reorder_quantity_val
+            product.barcode = barcode if barcode is not None else product.barcode
+            created = False
+        else:
+            duplicate = self._branch_filter(Product.query.filter_by(name=name), Product).first()
+            if duplicate:
+                return {"error": f"A product named '{name}' already exists in the active branch (ID {duplicate.id})"}
+            product = Product(
+                name=name,
+                price=float(price_dec),
+                cost=float(cost_dec) if cost_dec is not None else None,
+                tax_rate=tax_rate_val,
+                stock=stock_val,
+                category=category,
+                reorder_point=reorder_point_val,
+                reorder_quantity=reorder_quantity_val,
+                barcode=barcode,
+                branch_id=self._branch_id()
+            )
+            self.db.session.add(product)
+            created = True
+        self.db.session.commit()
+        return {
+            "success": True,
+            "created": created,
+            "product_id": product.id,
+            "product_name": product.name,
+            "changed_fields": changed_fields,
+            "price": money_plain(product.price),
+            "cost": money_plain(product.cost or 0),
+            "stock": int(product.stock or 0),
+            "reorder_point": int(product.reorder_point or 0),
+            "reorder_quantity": int(product.reorder_quantity or 0)
+        }
+
+    def adjust_product_stock(self, product_id: int, delta: int, reason: str) -> Dict[str, Any]:
+        """Apply a signed stock delta with a mandatory audit reason (manager only)."""
+        Product = self._get_model('Product')
+        try:
+            delta_val = int(delta)
+        except (TypeError, ValueError):
+            return {"error": "delta must be a non-zero integer"}
+        if delta_val == 0:
+            return {"error": "delta must be a non-zero integer"}
+        if not isinstance(reason, str) or not reason.strip():
+            return {"error": "A reason for the adjustment is required"}
+        product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
+        if not product:
+            return {"error": f"Product with ID {product_id} not found in the active branch"}
+        old_stock = int(product.stock or 0)
+        new_stock = old_stock + delta_val
+        if new_stock < 0:
+            return {"error": f"Adjustment would result in negative stock ({new_stock}). Current stock: {old_stock}, delta: {delta_val}"}
+        product.stock = new_stock
+        self.db.session.commit()
+        return {
+            "success": True,
+            "product_id": product.id,
+            "product_name": product.name,
+            "previous_stock": old_stock,
+            "delta": delta_val,
+            "new_stock": new_stock,
+            "reason": reason.strip()
+        }
+
+    def create_promotion(self, product_id: int, discount_type: str, discount_value,
+                         start_date: str, end_date: str) -> Dict[str, Any]:
+        """Create a percent or fixed discount promotion (manager only)."""
+        Promotion = self._get_model('Promotion')
+        Product = self._get_model('Product')
+        if discount_type not in ('percent', 'fixed'):
+            return {"error": "discount_type must be 'percent' or 'fixed'"}
+        value_dec = money_dec(discount_value)
+        if value_dec <= 0:
+            return {"error": "discount_value must be greater than 0"}
+        if discount_type == 'percent' and value_dec > 100:
+            return {"error": "percent discount_value must be between 0 and 100"}
+        try:
+            start_dt = datetime.strptime(str(start_date).strip(), '%Y-%m-%d')
+            end_dt = datetime.strptime(str(end_date).strip(), '%Y-%m-%d')
+        except (TypeError, ValueError):
+            return {"error": "start_date and end_date must be in YYYY-MM-DD format"}
+        if end_dt < start_dt:
+            return {"error": "end_date must be on or after start_date"}
+        product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
+        if not product:
+            return {"error": f"Product with ID {product_id} not found in the active branch"}
+        promotion = Promotion(
+            product_id=product.id,
+            discount_type=discount_type,
+            discount_value=float(value_dec),
+            start_date=start_dt,
+            end_date=end_dt
+        )
+        self.db.session.add(promotion)
+        self.db.session.commit()
+        return {
+            "success": True,
+            "promotion_id": promotion.id,
+            "product_id": product.id,
+            "product_name": product.name,
+            "discount_type": discount_type,
+            "discount_value": money_plain(value_dec),
+            "start_date": start_dt.date().isoformat(),
+            "end_date": end_dt.date().isoformat()
+        }
+
+    def register_customer(self, name: str, phone: str = None, email: str = None,
+                          address: str = None) -> Dict[str, Any]:
+        """Register a new customer in the active branch."""
+        Customer = self._get_model('Customer')
+        if not isinstance(name, str) or not name.strip():
+            return {"error": "Customer name is required"}
+        name = name.strip()
+        if email is not None:
+            email = str(email).strip() or None
+            if email and '@' not in email:
+                return {"error": "email must be a valid email address"}
+        customer = Customer(
+            name=name,
+            phone=str(phone).strip() if phone else None,
+            email=email,
+            address=str(address).strip() if address else None,
+            branch_id=self._branch_id()
+        )
+        self.db.session.add(customer)
+        self.db.session.commit()
+        return {
+            "success": True,
+            "customer_id": customer.id,
+            "customer_name": customer.name,
+            "phone": customer.phone,
+            "email": customer.email,
+            "branch_id": self._branch_id()
+        }
+
+    def record_debt_payment(self, debt_id: int, amount, notes: str = None) -> Dict[str, Any]:
+        """Record a payment against a debt using Decimal-safe math (any role).
+
+        Mirrors app.py's /api/debts/<id>/payment route: validates amount > 0
+        and <= balance, creates a DebtPayment record, updates balance and
+        status, and appends a communication note."""
+        Debt = self._get_model('Debt')
+        DebtPayment = self._get_model('DebtPayment')
+        payment_amount = money_dec(amount).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+        if payment_amount <= 0:
+            return {"error": "Payment amount must be greater than 0"}
+        debt = self._branch_filter(Debt.query.filter_by(id=debt_id), Debt).first()
+        if not debt:
+            return {"error": f"Debt with ID {debt_id} not found in the active branch"}
+        current_balance = money_dec(debt.balance).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+        if current_balance <= 0:
+            return {"error": "This debt is already fully paid"}
+        if payment_amount > current_balance:
+            return {"error": f"Payment amount {money_plain(payment_amount)} exceeds remaining balance {money_plain(current_balance)}"}
+
+        remaining_balance = (current_balance - payment_amount).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+        payment_notes = str(notes).strip() if notes is not None else None
+
+        payment = DebtPayment(
+            debt_id=debt.id,
+            customer_id=debt.customer_id,
+            amount=float(payment_amount),
+            notes=payment_notes,
+            branch_id=debt.branch_id
+        )
+        self.db.session.add(payment)
+
+        # Update balance and status (mirrors calculate_debt_status in app.py)
+        debt.balance = float(remaining_balance)
+        if remaining_balance <= 0:
+            debt.status = 'paid'
+        elif debt.due_date and datetime.utcnow() > debt.due_date:
+            debt.status = 'overdue'
+        elif remaining_balance < money_dec(debt.amount):
+            debt.status = 'partial'
+        else:
+            debt.status = 'pending'
+
+        # Track payment in communication notes like app.py does
+        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
+        payment_note = f"Payment of {money_plain(payment_amount)} received (AI agent)"
+        if payment_notes:
+            payment_note += f" - {payment_notes}"
+        existing_notes = debt.communication_notes or ''
+        debt.communication_notes = (
+            f"{existing_notes}\n[{timestamp}] {payment_note}" if existing_notes
+            else f"[{timestamp}] {payment_note}"
+        )
+        self.db.session.commit()
+
+        return {
+            "success": True,
+            "debt_id": debt.id,
+            "customer_id": debt.customer_id,
+            "payment_id": payment.id,
+            "amount_paid": money_plain(payment_amount),
+            "remaining_balance": money_plain(debt.balance),
+            "debt_status": debt.status,
+            "changed_fields": ["balance", "status", "communication_notes"]
+        }
+
+    def update_delivery_stage(self, delivery_id: int, stage: str) -> Dict[str, Any]:
+        """Move a delivery to its next valid stage (any role)."""
+        Delivery = self._get_model('Delivery')
+        if stage not in DELIVERY_STAGES:
+            return {"error": f"Invalid stage '{stage}'. Valid stages: {sorted(DELIVERY_STAGES)}"}
+        delivery = self._branch_filter(Delivery.query.filter_by(id=delivery_id), Delivery).first()
+        if not delivery:
+            return {"error": f"Delivery with ID {delivery_id} not found in the active branch"}
+        current_stage = delivery.stage
+        if stage == current_stage:
+            return {"error": f"Delivery is already in stage '{current_stage}'"}
+        if stage not in DELIVERY_STAGE_FLOW.get(current_stage, []):
+            return {"error": f"Cannot move delivery from '{current_stage}' to '{stage}'. Allowed next stages: {DELIVERY_STAGE_FLOW.get(current_stage, [])}"}
+
+        now = datetime.utcnow()
+        delivery.stage = stage
+        if stage == 'packaged' and not delivery.packaged_at:
+            delivery.packaged_at = now
+        elif stage == 'delivering' and not delivery.out_for_delivery_at:
+            delivery.out_for_delivery_at = now
+        elif stage == 'delivered':
+            delivery.delivered_at = now
+        elif stage == 'cancelled':
+            delivery.cancelled_at = now
+        self.db.session.commit()
+        return {
+            "success": True,
+            "delivery_id": delivery.id,
+            "delivery_number": delivery.delivery_number,
+            "previous_stage": current_stage,
+            "new_stage": stage,
+            "updated_at": now.isoformat()
+        }
+
     def _generate_random_suffix(self) -> str:
         """Generate a random suffix for PO numbers"""
         import uuid
@@ -1084,14 +1560,16 @@ class AITools:
 
 
 def get_all_tools(read_only: bool = False) -> Dict[str, Dict]:
-    """Get tool schemas; agent callers receive only safe read-only tools."""
+    """Get tool schemas; agent callers receive only safe read-only tools.
+
+    The legacy TOOL_SCHEMAS format is derived from TOOL_METADATA; write tools
+    are filtered out via their ``mutates`` flag."""
     if not read_only:
         return TOOL_SCHEMAS
-    mutation_tools = {
-        'create_purchase_order', 'approve_purchase_order',
-        'cancel_purchase_order', 'create_warehouse_transfer'
+    return {
+        name: schema for name, schema in TOOL_SCHEMAS.items()
+        if not TOOL_METADATA[name]['mutates']
     }
-    return {name: schema for name, schema in TOOL_SCHEMAS.items() if name not in mutation_tools}
 
 
 def create_tools_instance(db, models: Dict) -> AITools:

@@ -164,10 +164,12 @@ class AIAgent:
             ChatResponse object containing the AI's response
         """
         if not self.api_key:
-            return ChatResponse(
-                content="",
-                error="API key not configured. Please set APIFREE_API_KEY environment variable."
-            )
+            # Don't hard-fail here: let the request go out (with an empty
+            # Bearer token) so the upstream auth failure surfaces through the
+            # normal response.error path, and offline/test harnesses that stub
+            # requests.post keep working.
+            print("[AI Agent] WARNING: API key not configured; "
+                  "request will likely fail authentication.")
             
         if message:
             self.add_user_message(message)

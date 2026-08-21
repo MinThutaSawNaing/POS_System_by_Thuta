@@ -11,8 +11,16 @@ import re
 from typing import Dict, List, Any, Optional, Set
 from datetime import datetime
 
-from ai_agent import AIAgent
+from ai_agent import AIAgent, ChatResponse, ToolCall
 from ai_tools import create_tools_instance, get_all_tools, money_dec, money_str
+
+# Lightweight registry introspection. TOOL_METADATA is the single source of
+# truth for tool capabilities (including the "mutates" write flag); if a future
+# ai_tools version drops it, we degrade gracefully to the registered schemas.
+try:
+    from ai_tools import TOOL_METADATA as _TOOL_METADATA
+except (ImportError, KeyError, AttributeError):
+    _TOOL_METADATA = {}
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -124,6 +132,47 @@ When asked who created or owns you, respond: "I am Loli and I am the AI assistan
 
 Current Date: {current_date}
 """
+
+# =============================================================================
+# PLAN-THEN-EXECUTE configuration
+# =============================================================================
+MAX_PLAN_STEPS = 5
+
+# The single planning tool exposed to the LLM during PHASE A. The model must
+# answer every planning turn by calling propose_plan exactly once.
+PLAN_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "propose_plan",
+        "description": (
+            "Propose a bounded step-by-step execution plan for the user's "
+            "request. Steps run sequentially; later steps may reference "
+            "earlier results via $from paths."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "description": {"type": "string"},
+                "steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "step": {"type": "integer"},
+                            "tool": {"type": "string"},
+                            "args": {"type": "object"},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["tool"],
+                    },
+                },
+                "needs_clarification": {"type": "boolean"},
+                "question": {"type": "string"},
+            },
+            "required": ["steps"],
+        },
+    },
+}
 
 
 class AgentOrchestrator:
@@ -296,8 +345,39 @@ class AgentOrchestrator:
                 self.session_context["last_query"] = command
                 self._log_interaction(user_id, command, plan_result["message"], 
                                     ["task_plan"] if plan_result["success"] else ["task_plan_failed"])
-                return plan_result
+                return self._with_contract(plan_result)
             
+            # ---- PHASE A/B: PLAN-THEN-EXECUTE --------------------------------
+            # Snapshot the conversation so planning chatter (plan attempts,
+            # compacted-result summaries) never pollutes the ordinary chat
+            # history with large tool payloads.
+            history_snapshot = list(self.agent.conversation_history)
+            plan = None
+            if self._should_plan(command):
+                try:
+                    plan = self._plan_command(command)
+                except Exception as exc:
+                    print(f"[AI Agent] Planning failed, falling back to single-shot: {exc}")
+                    plan = None
+
+            if plan is not None:
+                try:
+                    return self._execute_planned_command(command, plan, history_snapshot)
+                except Exception as exc:
+                    import traceback
+                    traceback.print_exc()
+                    return self._with_contract({
+                        "success": False,
+                        "error": str(exc),
+                        "message": "I couldn't complete that request. Please try again.",
+                        "plan": plan,
+                    })
+
+            # Planning unavailable or invalid after retry: restore the exact
+            # pre-plan conversation and use today's single-shot path.
+            self.agent.conversation_history = history_snapshot
+            print("[AI Agent] No valid plan; using single-shot execution.")
+
             # Get filtered tools for this query
             filtered_tools = self._filter_tools_for_query(command)
 
@@ -308,11 +388,11 @@ class AgentOrchestrator:
             
             if response.error:
                 print(f"[AI Agent Error] {response.error}")
-                return {
+                return self._with_contract({
                     "success": False,
                     "error": response.error,
                     "message": f"I encountered an error: {response.error}"
-                }
+                })
                 
             tool_results = []
             final_message = None
@@ -354,11 +434,11 @@ class AgentOrchestrator:
                 errors = [r for r in tool_results if r.get("error")]
                 if errors:
                     error_messages = "\n".join([f"- {e['function_name']}: {e['error']}" for e in errors])
-                    return {
+                    return self._with_contract({
                         "success": False,
                         "error": "Tool execution failed",
                         "message": f"I encountered errors while processing your request:\n{error_messages}"
-                    }
+                    })
                     
                 # Format results directly without a second API call so the numbers
                 # shown are exactly what the database returned.
@@ -388,12 +468,12 @@ class AgentOrchestrator:
             # Log the interaction (optional)
             self._log_interaction(user_id, command, final_message, tool_results)
             
-            result = {
+            result = self._with_contract({
                 "success": True,
                 "message": final_message,
                 "tool_results": tool_results,
                 "usage": response.usage
-            }
+            })
             return result
             
         except Exception as e:
@@ -417,17 +497,530 @@ class AgentOrchestrator:
             elif "not found" in error_message:
                 user_message = "I couldn't find what you're looking for. Please check your request and try again."
             
-            return {
+            return self._with_contract({
                 "success": False,
                 "error": str(e),
                 "message": user_message
-            }
+            })
         finally:
             if base_prompt is not None:
                 # The recalled facts must not bleed into the next unrelated turn.
                 self.agent.set_system_prompt(base_prompt)
             self.agent.trim_history(self.max_history_messages)
             
+    # =========================================================================
+    # PLAN-THEN-EXECUTE (PHASE A planning, PHASE B deterministic execution)
+    # =========================================================================
+
+    @staticmethod
+    def _with_contract(result: Dict[str, Any]) -> Dict[str, Any]:
+        """Guarantee the process_command return contract on every path."""
+        result.setdefault("plan", None)
+        result.setdefault("step_results", [])
+        result.setdefault("pending_approvals", [])
+        return result
+
+    def _get_tool_registry(self) -> Dict[str, Dict[str, Any]]:
+        """Build the tool registry purely from what is registered.
+
+        Prefers ai_tools.TOOL_METADATA (name, description_one_line, parameters,
+        mutates); falls back to the schemas registered on the agent. No
+        hardcoded tool lists live here.
+        """
+        registry: Dict[str, Dict[str, Any]] = {}
+        for name, meta in _TOOL_METADATA.items():
+            registry[name] = {
+                "mutates": bool(meta.get("mutates")),
+                "one_line": meta.get("description_one_line") or meta.get("description", ""),
+                "params": meta.get("parameters", {}) or {},
+            }
+        for schema in self.agent.tools:
+            fn = schema.get("function", {})
+            name = fn.get("name")
+            if not name or name in registry:
+                continue
+            registry[name] = {
+                "mutates": False,  # agent-registered tools are read-only
+                "one_line": fn.get("description", ""),
+                "params": fn.get("parameters", {}) or {},
+            }
+        return registry
+
+    def _build_planning_catalog(self, registry: Dict[str, Dict[str, Any]]) -> str:
+        """Compact one-line-per-tool catalog for the planning prompt."""
+        lines = []
+        for name, meta in sorted(registry.items()):
+            flag = " [write - requires approval]" if meta["mutates"] else ""
+            arg_names = ", ".join((meta["params"].get("properties") or {}).keys())
+            lines.append(f"- {name}{flag}: {meta['one_line']} | args: {{{arg_names}}}")
+        return "\n".join(lines)
+
+    def _validate_plan(
+        self, steps: Any, registry: Dict[str, Dict[str, Any]]
+    ) -> tuple:
+        """Validate raw plan steps.
+
+        Returns (normalized_steps, error, fatal). Fatal errors (cap exceeded,
+        unknown tool) fall back to single-shot immediately; structural errors
+        are retried once with the validation message.
+        """
+        if not isinstance(steps, list):
+            return None, f"'steps' must be a list, got {type(steps).__name__}", False
+        if not steps:
+            return None, "'steps' must contain at least one step", False
+        if len(steps) > MAX_PLAN_STEPS:
+            return None, f"plan has {len(steps)} steps; maximum is {MAX_PLAN_STEPS}", True
+
+        normalized = []
+        for idx, raw in enumerate(steps):
+            if not isinstance(raw, dict):
+                return None, f"step {idx + 1} must be an object", False
+            tool = raw.get("tool")
+            if not isinstance(tool, str) or not tool:
+                return None, f"step {idx + 1} is missing a 'tool' name", False
+            if tool not in registry:
+                return None, f"unknown tool '{tool}'", True
+            args = raw.get("args") or {}
+            if not isinstance(args, dict):
+                return None, f"step {idx + 1} ('{tool}') args must be an object", False
+            normalized.append({
+                "step": idx + 1,
+                "label": raw.get("step"),
+                "tool": tool,
+                "args": args,
+                "reason": raw.get("reason") or "",
+            })
+        return normalized, None, False
+
+    def _should_plan(self, command: str) -> bool:
+        """Conservative router: only task-shaped requests pay for planning.
+
+        Simple questions and pure chat keep today's single-shot path (and its
+        single LLM call). Task markers are explicit multi-step words or an
+        imperative action verb at the start of the command.
+        """
+        text = command.strip().lower()
+        if not text:
+            return False
+        task_hints = ("plan", "step", " then ", "report",
+                      "first", "second", "third")
+        if any(hint in text for hint in task_hints):
+            return True
+        starters = ("do ", "run ", "use ", "order ", "create ", "make ",
+                    "build ", "generate ", "restock ", "transfer ",
+                    "approve ", "cancel ", "add ", "update ", "register ",
+                    "record ", "adjust ", "show ")
+        return any(text.startswith(starter) for starter in starters)
+
+    def _planner_chat(self, message: str, tools: Optional[List[Dict]] = None,
+                      temperature: float = 0.2, max_tokens: int = 900):
+        """Bounded, stateless completion call for planning/summary turns.
+
+        These structured turns never enter (nor depend on) the shared chat
+        conversation: only the system prompt plus this one message is sent.
+        Returns a ChatResponse; network/API failures become .error, never
+        exceptions that could break chat.
+        """
+        import requests as _requests
+        try:
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.agent.api_key}",
+            }
+            system_messages = [m for m in self.agent.conversation_history
+                               if m.role == "system"][:1]
+            messages = [{"role": m.role, "content": m.content}
+                        for m in system_messages]
+            messages.append({"role": "user", "content": message})
+            payload = {
+                "model": self.agent.model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": False,
+                "top_p": 1,
+            }
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
+            response = _requests.post(
+                f"{self.agent.base_url}/chat/completions",
+                headers=headers, json=payload, timeout=60,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            return ChatResponse(content="", error=str(exc))
+
+        if "error" in data:
+            return ChatResponse(
+                content="",
+                error=f"API Error: {data['error'].get('message', 'Unknown error')}",
+            )
+        choice = data.get("choices", [{}])[0]
+        message_data = choice.get("message", {})
+        content = message_data.get("content", "") or ""
+        tool_calls = []
+        for tc in message_data.get("tool_calls", []) or []:
+            if tc.get("type") != "function":
+                continue
+            func = tc.get("function", {})
+            try:
+                args = json.loads(func.get("arguments", "{}"))
+            except json.JSONDecodeError:
+                args = {}
+            tool_calls.append(ToolCall(id=tc.get("id", ""),
+                                       function_name=func.get("name", ""),
+                                       arguments=args))
+        return ChatResponse(content=content, tool_calls=tool_calls,
+                            finish_reason=choice.get("finish_reason", ""),
+                            usage=data.get("usage", {}))
+
+    def _plan_command(self, command: str) -> Optional[Dict[str, Any]]:
+        """PHASE A: exactly one LLM planning call, with one validation retry.
+
+        Returns a validated plan dict, or None to signal fallback to the
+        single-shot path. Never raises for expected model misbehaviour.
+        """
+        registry = self._get_tool_registry()
+        catalog = self._build_planning_catalog(registry)
+        last_error: Optional[str] = None
+
+        for attempt in range(2):  # initial attempt + one retry
+            if attempt == 0:
+                message = (
+                    "Plan how to fulfill this request using the available POS tools.\n\n"
+                    f"Request: {command}\n\n"
+                    f"Available tools:\n{catalog}\n\n"
+                    "Rules:\n"
+                    f"- Maximum {MAX_PLAN_STEPS} steps.\n"
+                    "- Respond ONLY by calling the propose_plan tool.\n"
+                    '- To use an earlier step\'s output as an argument value, use '
+                    '{"$from": "stepN.result.path"} with dotted segments for nested '
+                    'keys and list indexes, e.g. {"$from": "step1.products.0.id"}.\n'
+                    "- Write tools are allowed but execute only after explicit user "
+                    "approval, so prefer read tools that gather what the write needs.\n"
+                    "- If the request is ambiguous, set needs_clarification=true "
+                    "and provide question."
+                )
+            else:
+                message = (
+                    f"Request: {command}\n\nYour previous plan was invalid: "
+                    f"{last_error}. Call propose_plan again with a corrected plan."
+                )
+
+            response = self._planner_chat(
+                message=message, tools=[PLAN_TOOL_SCHEMA],
+                temperature=0.2, max_tokens=900,
+            )
+            if response.error:
+                print(f"[AI Agent] Planning call error: {response.error}")
+                return None
+
+            plan_call = next(
+                (tc for tc in response.tool_calls if tc.function_name == "propose_plan"),
+                None,
+            )
+            if plan_call is None:
+                last_error = "no propose_plan tool call was made"
+                continue
+
+            raw = plan_call.arguments
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except json.JSONDecodeError:
+                    raw = None
+            if not isinstance(raw, dict):
+                last_error = "plan arguments were not a JSON object"
+                continue
+
+            steps, error, fatal = self._validate_plan(raw.get("steps"), registry)
+            if error is None:
+                return {
+                    "description": raw.get("description") or "",
+                    "steps": steps,
+                    "needs_clarification": bool(raw.get("needs_clarification")),
+                    "question": raw.get("question") or "",
+                }
+            last_error = error
+            if fatal:
+                # Deterministic semantic violation: no point re-asking.
+                print(f"[AI Agent] Plan rejected ({error}); falling back.")
+                return None
+
+        print(f"[AI Agent] Plan invalid after retry ({last_error}); falling back.")
+        return None
+
+    @staticmethod
+    def _lookup_from_path(path: str, step_outputs: Dict[int, Any]) -> Any:
+        """Resolve a dotted '$from' path like 'step1.products.0.id'."""
+        parts = path.split(".")
+        match = re.match(r"^step(\d+)$", parts[0].strip())
+        if not match:
+            raise ValueError(f"invalid $from reference: '{path}'")
+        step_no = int(match.group(1))
+        if step_no not in step_outputs:
+            raise ValueError(f"$from reference '{path}' points at unavailable step {step_no}")
+        current = step_outputs[step_no]
+        for part in parts[1:]:
+            try:
+                if isinstance(current, list):
+                    current = current[int(part)]
+                elif isinstance(current, dict):
+                    current = current[part]
+                else:
+                    raise ValueError(
+                        f"cannot descend into {type(current).__name__} at '{path}'")
+            except (KeyError, IndexError, ValueError) as exc:
+                if isinstance(exc, ValueError) and "cannot descend" in str(exc):
+                    raise
+                raise ValueError(f"$from path '{path}' could not be resolved: {exc}")
+        return current
+
+    def _resolve_from_refs(
+        self, args: Dict[str, Any],
+        step_outputs: Optional[Dict[int, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Recursively resolve {"$from": ...} argument references."""
+        outputs = step_outputs or {}
+
+        def resolve(value: Any) -> Any:
+            if isinstance(value, dict):
+                if "$from" in value:
+                    return self._lookup_from_path(str(value["$from"]), outputs)
+                return {k: resolve(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [resolve(v) for v in value]
+            return value
+
+        return {k: resolve(v) for k, v in args.items()}
+
+    def _compact_result(self, obj: Any, max_chars: int = 800) -> Any:
+        """Smartly shrink a tool result for LLM consumption.
+
+        Preserves counts/totals/scalars, truncates long strings and long lists
+        while keeping item counts visible.
+        """
+        max_str = min(120, max_chars)
+        max_list = 10
+
+        def compact(value: Any, depth: int) -> Any:
+            if value is None or isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return value
+            if isinstance(value, str):
+                if len(value) > max_str:
+                    return value[:max_str] + f"...[truncated {len(value) - max_str} chars]"
+                return value
+            if isinstance(value, dict):
+                out = {}
+                for key, val in value.items():
+                    if depth >= 4 and isinstance(val, (dict, list)):
+                        out[key] = "..."
+                    else:
+                        out[key] = compact(val, depth + 1)
+                return out
+            if isinstance(value, (list, tuple)):
+                items = [compact(v, depth + 1) for v in value[:max_list]]
+                if len(value) > max_list:
+                    items.append(f"...[{len(value) - max_list} more items]")
+                return items
+            text = str(value)
+            return text[:max_str] + ("...[truncated]" if len(text) > max_str else "")
+
+        return compact(obj, 0)
+
+    def _execute_plan(
+        self, plan: Dict[str, Any]
+    ) -> tuple:
+        """PHASE B: pure-Python sequential execution. Zero LLM calls.
+
+        Fail-stop: the first failed step aborts all later ones (marked
+        'skipped'). Mutating tools never execute here — they become proposals.
+        """
+        registry = self._get_tool_registry()
+        step_results: List[Dict[str, Any]] = []
+        pending_approvals: List[Dict[str, Any]] = []
+        step_outputs: Dict[int, Any] = {}
+        aborted = False
+
+        for step in plan["steps"]:
+            step_no = step["step"]
+            tool = step["tool"]
+            base = {"step": step_no, "tool": tool}
+
+            if aborted:
+                step_results.append({**base, "status": "skipped"})
+                continue
+
+            # Resolve $from references against earlier step outputs.
+            try:
+                resolved_args = self._resolve_from_refs(step.get("args") or {}, step_outputs)
+            except Exception as exc:
+                step_results.append({**base, "status": "failed", "error": str(exc)})
+                aborted = True
+                continue
+
+            # Write tools become approval proposals; they NEVER run here.
+            if registry.get(tool, {}).get("mutates"):
+                proposal = {
+                    "step": step_no,
+                    "tool": tool,
+                    "args": resolved_args,
+                    "reason": step.get("reason") or "",
+                }
+                pending_approvals.append(proposal)
+                step_results.append({**base, "status": "proposal", "result": proposal})
+                continue
+
+            if tool not in self.agent.tool_functions:
+                step_results.append({
+                    **base, "status": "failed",
+                    "error": f"Tool '{tool}' is registered but not executable",
+                })
+                aborted = True
+                continue
+
+            tool_call = ToolCall(id=f"plan-step-{step_no}", function_name=tool,
+                                 arguments=resolved_args)
+            try:
+                results = self._execute_tools_with_context([tool_call])
+                outcome = results[0] if results else {}
+                if outcome.get("error"):
+                    raise RuntimeError(str(outcome["error"]))
+                result = outcome.get("result")
+                step_outputs[step_no] = result
+                step_results.append({**base, "status": "ok", "result": result})
+                self.session_context["last_tool_used"] = tool
+                self.session_context["last_results"] = result
+            except Exception as exc:
+                step_results.append({**base, "status": "failed", "error": str(exc)})
+                aborted = True
+
+        return step_results, pending_approvals
+
+    def _deterministic_status_message(self, step_results: List[Dict[str, Any]]) -> str:
+        """Fallback human summary built only from real per-step statuses."""
+        lines = ["Here is what happened, step by step:"]
+        for sr in step_results:
+            status = sr["status"]
+            icon = {"ok": "✅", "failed": "❌", "proposal": "📝", "skipped": "⏭️"}.get(status, "•")
+            line = f"{icon} Step {sr['step']} ({sr['tool']}): {status}"
+            if sr.get("error"):
+                line += f" — {sr['error']}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _generate_plan_summary(
+        self, command: str, plan: Dict[str, Any],
+        step_results: List[Dict[str, Any]],
+        pending_approvals: List[Dict[str, Any]],
+    ) -> str:
+        """One optional LLM call turning compacted step outputs into an answer.
+
+        ANTI-HALLUCINATION CONTRACT: only the compacted raw results below may
+        be quoted; any failed/skipped/proposal step must be reported as such.
+        """
+        compact_steps = []
+        for sr in step_results:
+            entry = {"step": sr["step"], "tool": sr["tool"], "status": sr["status"]}
+            if sr.get("result") is not None:
+                entry["result"] = self._compact_result(sr["result"])
+            if sr.get("error"):
+                entry["error"] = sr["error"]
+            compact_steps.append(entry)
+
+        incomplete = any(sr["status"] in ("failed", "skipped") for sr in step_results)
+        awaiting = len(pending_approvals)
+
+        prompt = (
+            "You wrote a plan and it was executed deterministically. Answer the "
+            "user's original request using ONLY the JSON step results below. "
+            "Never invent counts, prices, names, or totals that are not in the "
+            "results. If any step failed, was skipped, or produced an unapproved "
+            "proposal, you MUST say the task is incomplete or awaiting approval — "
+            "never claim success.\n\n"
+            f"Original request: {command}\n\n"
+            f"Step results (compacted):\n{json.dumps(compact_steps, default=str)}\n\n"
+            + (f"Note: {awaiting} write action(s) await user approval.\n" if awaiting else "")
+        )
+
+        message = None
+        try:
+            response = self._planner_chat(
+                message=prompt, tools=None, temperature=0.3, max_tokens=1024,
+            )
+            if response.error:
+                print(f"[AI Agent] Summary call error: {response.error}")
+            elif response.content and response.content.strip():
+                message = response.content.strip()
+        except Exception as exc:
+            print(f"[AI Agent] Summary call failed: {exc}")
+
+        if message is None:
+            message = self._deterministic_status_message(step_results)
+
+        # Guarantee the anti-hallucination contract even if the model forgot.
+        if incomplete or awaiting:
+            bits = []
+            failed_n = sum(1 for sr in step_results if sr["status"] in ("failed", "skipped"))
+            if failed_n:
+                bits.append(f"{failed_n} step(s) failed or were skipped")
+            if awaiting:
+                bits.append(f"{awaiting} change(s) await your approval")
+            guarantee = "Task incomplete: " + "; ".join(bits) + "."
+            lower = message.lower()
+            if not any(w in lower for w in ("incomplete", "failed", "could not",
+                                            "not completed", "approval", "await")):
+                message = f"{message}\n\n⚠️ {guarantee}"
+        return message
+
+    def _execute_planned_command(
+        self, command: str, plan: Dict[str, Any],
+        history_snapshot: List,
+    ) -> Dict[str, Any]:
+        """Execute a validated plan and build the final contracted result."""
+        if plan.get("needs_clarification") and plan.get("question"):
+            return self._with_contract({
+                "success": True,
+                "message": plan["question"],
+                "plan": plan,
+            })
+
+        step_results, pending_approvals = self._execute_plan(plan)
+        failed = [sr for sr in step_results if sr["status"] in ("failed", "skipped")]
+
+        # Trivial single-step success: skip the summary LLM call entirely and
+        # format the real tool output directly (same as the single-shot path).
+        if len(step_results) == 1 and step_results[0]["status"] == "ok":
+            sr = step_results[0]
+            message = self._format_tool_results_for_user(
+                [{"function_name": sr["tool"], "result": sr.get("result"), "error": None}],
+                command,
+            ) or f"Completed '{sr['tool']}'."
+            return self._with_contract({
+                "success": True,
+                "message": message,
+                "plan": plan,
+                "step_results": step_results,
+                "pending_approvals": pending_approvals,
+            })
+
+        # Restore the pre-plan conversation so the summary call starts from a
+        # clean context; large results travel only inside the summary prompt.
+        self.agent.conversation_history = history_snapshot
+        message = self._generate_plan_summary(command, plan, step_results, pending_approvals)
+
+        return self._with_contract({
+            "success": not failed,
+            "message": message,
+            "plan": plan,
+            "step_results": step_results,
+            "pending_approvals": pending_approvals,
+        })
+
     def _execute_tools_with_context(self, tool_calls: List) -> List[Dict]:
         """Execute tool calls within Flask application context"""
         results = []

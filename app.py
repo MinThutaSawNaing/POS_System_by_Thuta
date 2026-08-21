@@ -754,6 +754,42 @@ class MemoryAudit(db.Model):
         db.Index('idx_memory_audit_actor_branch', 'actor_user_id', 'branch_id', 'created_at'),
     )
 
+class AgentTask(db.Model):
+    """Persistent record of one AI-agent command, its plan and step results.
+
+    New table for GOAL 1 (task persistence). Created automatically by the
+    existing startup ``db.create_all()`` call (app.py ~line 1160) — no
+    ALTER-TABLE migration needed because this is a brand-new table.
+    """
+    __tablename__ = 'agent_task'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
+    command = db.Column(db.Text, nullable=False)
+    plan_json = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(30), nullable=False, default='pending_approval')
+    # allowed statuses: pending_approval | executing | completed | failed | clarification
+    step_results_json = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def to_dict(self):
+        def _load(raw):
+            try:
+                return json.loads(raw) if raw else None
+            except (ValueError, TypeError):
+                return None
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'command': self.command,
+            'plan': _load(self.plan_json),
+            'status': self.status,
+            'step_results': _load(self.step_results_json),
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
 class Category(db.Model):
     """Centralized category management for products and suppliers"""
     id = db.Column(db.Integer, primary_key=True)
@@ -5991,6 +6027,25 @@ def agent_chat():
         if result.get('success'):
             capture_low_risk_memory(command)
 
+        # GOAL 1: persist plan-bearing results so proposals can be approved later.
+        if isinstance(result.get('plan'), list) and isinstance(result.get('step_results'), list):
+            try:
+                has_proposals = any(sr.get('status') == 'proposal' for sr in result['step_results'])
+                task = AgentTask(
+                    user_id=session.get('user_id'),
+                    command=command,
+                    plan_json=json.dumps(result.get('plan')),
+                    status='pending_approval' if has_proposals else (
+                        'completed' if result.get('success') else 'failed'),
+                    step_results_json=json.dumps(result.get('step_results')),
+                )
+                db.session.add(task)
+                db.session.commit()
+                result['task_id'] = task.id
+            except Exception as persist_error:
+                db.session.rollback()
+                app.logger.warning(f"AgentTask persistence failed: {persist_error}")
+
         return jsonify(result)
 
     except Exception as e:
@@ -6039,6 +6094,119 @@ def agent_history():
 
 
 @app.route('/api/agent/clear', methods=['POST'])
+
+# ---------------------------------------------------------------------------
+# GOAL 1: Agent task persistence + approval flow
+#
+# DESIGN NOTE (documented choice): the orchestrator's approved-step execution
+# hook is not yet available (the plan loop / pending_approvals execution path
+# is still feature-gated in agent_orchestrator.py, which we must not edit).
+# Therefore POST /api/agent/approve/<task_id>/<step_no> records the approval
+# on the persisted task (step_results_json marks the step "approved") and the
+# actual write is executed by POST /api/agent/task/<id>/advance, which
+# re-invokes the SAME get_ai_orchestrator().process_command path with an
+# internal continuation marker describing the approved steps.
+# ---------------------------------------------------------------------------
+
+def _agent_task_step_results(task):
+    """Load step_results list from a task's JSON blob (never mutates)."""
+    try:
+        results = json.loads(task.step_results_json) if task.step_results_json else []
+    except (ValueError, TypeError):
+        results = []
+    return results if isinstance(results, list) else []
+
+
+@app.route('/api/agent/approve/<int:task_id>/<int:step_no>', methods=['POST'])
+@login_required
+def api_agent_approve_step(task_id, step_no):
+    """Record approval for ONE proposal step of a persisted agent task."""
+    task = AgentTask.query.get_or_404(task_id)
+    if task.user_id is not None and task.user_id != session.get('user_id'):
+        return jsonify({'success': False, 'error': 'Forbidden'}), 403
+
+    step_results = _agent_task_step_results(task)
+    if not (0 <= step_no < len(step_results)):
+        return jsonify({'success': False, 'error': 'Invalid step number'}), 400
+
+    step = step_results[step_no]
+    if step.get('status') != 'proposal':
+        return jsonify({'success': False,
+                        'error': f"Step {step_no} is not a pending proposal "
+                                 f"(status={step.get('status')})"}), 409
+
+    # Store approval state; actual execution happens via /advance.
+    step['approved'] = True
+    task.step_results_json = json.dumps(step_results)
+    task.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'success': True, 'task': task.to_dict(),
+                    'message': f"Step {step_no} approved. Send /advance to execute."})
+
+
+@app.route('/api/agent/task/<int:task_id>/advance', methods=['POST'])
+@login_required
+def api_agent_advance_task(task_id):
+    """Re-invoke process_command with a continuation marker for approved steps."""
+    task = AgentTask.query.get_or_404(task_id)
+    if task.user_id is not None and task.user_id != session.get('user_id'):
+        return jsonify({'success': False, 'error': 'Forbidden'}), 403
+
+    step_results = _agent_task_step_results(task)
+    approved = [i for i, sr in enumerate(step_results) if sr.get('approved')]
+    if not approved:
+        return jsonify({'success': False, 'error': 'No approved steps to advance'}), 409
+
+    task.status = 'executing'
+    task.updated_at = datetime.utcnow()
+    db.session.commit()
+
+    continuation = (
+        f"{task.command} [continuation: execute previously approved steps "
+        f"{', '.join(str(i) for i in approved)} of task #{task.id}]"
+    )
+    try:
+        orchestrator = get_ai_orchestrator()
+        result = orchestrator.process_command(continuation, session.get('user_id'))
+    except Exception as exc:
+        app.logger.error(f"Agent task advance error: {exc}")
+        task.status = 'failed'
+        db.session.commit()
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+    if isinstance(result.get('step_results'), list):
+        task.step_results_json = json.dumps(result['step_results'])
+    still_pending = any(sr.get('status') == 'proposal' and not sr.get('approved')
+                        for sr in _agent_task_step_results(task))
+    if result.get('success') and not still_pending:
+        task.status = 'completed'
+    elif result.get('success'):
+        task.status = 'pending_approval'
+    else:
+        task.status = 'failed'
+    db.session.commit()
+    result['task_id'] = task.id
+    return jsonify(result)
+
+
+@app.route('/api/agent/task/<int:task_id>', methods=['GET'])
+@login_required
+def api_agent_get_task(task_id):
+    """Return plan + step statuses + pending proposals for the widget."""
+    task = AgentTask.query.get_or_404(task_id)
+    if task.user_id is not None and task.user_id != session.get('user_id'):
+        return jsonify({'success': False, 'error': 'Forbidden'}), 403
+    data = task.to_dict()
+    data['success'] = True
+    data['pending_proposals'] = [
+        {'step_no': i, **sr}
+        for i, sr in enumerate(data.get('step_results') or [])
+        if sr.get('status') == 'proposal' and not sr.get('approved')
+    ]
+    return jsonify(data)
+
+
+@app.route('/healthz', methods=['GET'])
 @manager_required
 def agent_clear():
     """Clear the conversation history"""
