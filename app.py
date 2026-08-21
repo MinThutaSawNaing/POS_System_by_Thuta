@@ -6206,7 +6206,6 @@ def api_agent_get_task(task_id):
     return jsonify(data)
 
 
-@app.route('/healthz', methods=['GET'])
 @manager_required
 def agent_clear():
     """Clear the conversation history"""

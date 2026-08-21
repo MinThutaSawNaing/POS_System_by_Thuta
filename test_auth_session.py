@@ -27,6 +27,13 @@ class AuthenticationSessionTests(unittest.TestCase):
             with client.session_transaction() as current_session:
                 self.assertNotIn('user_id', current_session)
 
+    def test_healthcheck_is_public_and_returns_ok(self):
+        """Docker and the deployment gateway must reach this without a session."""
+        with app.test_client() as client:
+            response = client.get('/healthz')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json(), {'status': 'ok'})
+
 
 if __name__ == '__main__':
     unittest.main()
