@@ -4841,6 +4841,32 @@
       let pendingReceiptLogoObjectUrl = null;
       const CURRENT_USER_ROLE = "{{ session.role }}";
 
+      // ---- Shared money utilities (integer-cent arithmetic) ----
+      // All monetary math goes through integer cents to eliminate binary-float drift.
+      function toCents(v) {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return 0;
+        return Math.round(n * 100);
+      }
+      function centsToNumber(c) {
+        const n = Number(c);
+        if (!Number.isFinite(n)) return 0;
+        return n / 100;
+      }
+      function addMoney(a, b) {
+        return toCents(a) + toCents(b);
+      }
+      function subMoney(a, b) {
+        return toCents(a) - toCents(b);
+      }
+      function mulMoney(a, qtyInt) {
+        return toCents(a) * Math.trunc(Number(qtyInt) || 0);
+      }
+      function formatMoney(cents) {
+        return centsToNumber(cents).toFixed(2);
+      }
+      // -----------------------------------------------------------
+
       function hasManagerOrBossAccess() {
         const role = String(CURRENT_USER_ROLE || "").toLowerCase();
         return role === "manager" || role === "boss";
@@ -7344,7 +7370,7 @@
         )
           .then((response) => response.json())
           .then((data) => {
-            const todaySales = data.reduce((sum, sale) => sum + sale.total, 0);
+            const todaySales = centsToNumber(data.reduce((sum, sale) => sum + toCents(sale.total), 0));
             document.getElementById("today-sales").textContent = formatCurrency(todaySales);
 
             // Calculate change from yesterday
@@ -7357,9 +7383,11 @@
             )
               .then((response) => response.json())
               .then((yesterdayData) => {
-                const yesterdaySales = yesterdayData.reduce(
-                  (sum, sale) => sum + sale.total,
-                  0
+                const yesterdaySales = centsToNumber(
+                  yesterdayData.reduce(
+                    (sum, sale) => sum + toCents(sale.total),
+                    0
+                  )
                 );
                 const change =
                   yesterdaySales > 0
@@ -7831,14 +7859,15 @@
           });
 
           if (activePromo) {
+            // Match server algorithm: per-item discount computed in integer cents.
+            const priceCents = toCents(product.price);
             if (activePromo.discount_type === "percent") {
-              const discountAmount =
-                product.price * (activePromo.discount_value / 100);
-              finalPrice = Math.max(0, product.price - discountAmount);
+              const finalCents =
+                priceCents - Math.round((priceCents * Number(activePromo.discount_value)) / 100);
+              finalPrice = centsToNumber(Math.max(0, finalCents));
             } else if (activePromo.discount_type === "fixed") {
-              finalPrice = Math.max(
-                0,
-                product.price - activePromo.discount_value
+              finalPrice = centsToNumber(
+                Math.max(0, subMoney(priceCents, activePromo.discount_value))
               );
             }
             showToast(
@@ -7953,12 +7982,11 @@
         // per-item tax = ROUND_HALF_UP(item_total_cents * tax_rate / 100).
         return (
           cart.reduce((sum, item) => {
-            const priceCents = Math.round(Number(item.price) * 100);
-            const itemTotalCents = priceCents * Number(item.quantity);
+            const itemTotalCents = mulMoney(item.price, item.quantity);
             const itemTaxCents = Math.round(
               (itemTotalCents * Number(item.tax_rate || 0)) / 100
             );
-            return sum + itemTotalCents + itemTaxCents;
+            return sum + addMoney(itemTotalCents, itemTaxCents);
           }, 0) / 100
         );
       }
@@ -7981,11 +8009,11 @@
           return;
         }
 
-        const total = getCurrentCartTotal();
-        const cashReceived = parseFloat(cashInput?.value || "0") || 0;
-        const refund = cashReceived - total;
-        refundElement.textContent = formatCurrency(Math.max(refund, 0));
-        refundElement.className = `fw-bold ${refund < 0 ? "text-danger" : "text-success"}`;
+        const totalCents = toCents(getCurrentCartTotal());
+        const cashReceivedCents = toCents(cashInput?.value || "0");
+        const refundCents = cashReceivedCents - totalCents;
+        refundElement.textContent = formatCurrency(formatMoney(Math.max(refundCents, 0)));
+        refundElement.className = `fw-bold ${refundCents < 0 ? "text-danger" : "text-success"}`;
       }
 
       function adjustQuantity(index, change) {
@@ -8060,13 +8088,13 @@
         }
 
         if (paymentMethod === "cash") {
-          const cashReceived = parseFloat(document.getElementById("cash-received").value || "0");
-          const total = getCurrentCartTotal();
-          if (isNaN(cashReceived) || cashReceived < total) {
+          const cashReceivedCents = toCents(document.getElementById("cash-received").value || "0");
+          const totalCents = toCents(getCurrentCartTotal());
+          if (cashReceivedCents < totalCents) {
             showToast(t("cashReceivedMustBeGreater"), "warning");
             return;
           }
-          saleData.cash_received = Number(cashReceived.toFixed(2));
+          saleData.cash_received = centsToNumber(cashReceivedCents);
         }
 
         // Include customer_id if a customer is selected
@@ -9290,32 +9318,32 @@
         const { returnItems, exchangeItems } = collectReturnExchangePayload();
         const saleItemMap = new Map((returnExchangeSaleData.items || []).map((x) => [x.sale_item_id, x]));
 
-        let returnTotal = 0;
+        let returnTotalCents = 0;
         returnItems.forEach((r) => {
           const item = saleItemMap.get(r.sale_item_id);
           if (!item) return;
-          const base = Number(item.price) * Number(r.quantity);
-          const tax = base * (Number(item.tax_rate || 0) / 100);
-          returnTotal += base + tax;
+          const baseCents = mulMoney(item.price, r.quantity);
+          const taxCents = Math.round((baseCents * Number(item.tax_rate || 0)) / 100);
+          returnTotalCents += baseCents + taxCents;
         });
 
-        let exchangeTotal = 0;
+        let exchangeTotalCents = 0;
         exchangeItems.forEach((e) => {
           const selectedOption = Array.from(document.querySelectorAll('.exchange-item-select')).flatMap((sel) => Array.from(sel.selectedOptions)).find((opt) => Number(opt.value) === Number(e.product_id));
           const taxRate = Number(selectedOption?.dataset?.taxRate || 0);
-          const base = Number(e.price) * Number(e.quantity);
-          const tax = base * (taxRate / 100);
-          exchangeTotal += base + tax;
+          const baseCents = mulMoney(e.price, e.quantity);
+          const taxCents = Math.round((baseCents * taxRate) / 100);
+          exchangeTotalCents += baseCents + taxCents;
         });
 
-        const net = exchangeTotal - returnTotal;
-        document.getElementById("summary-return-total").textContent = formatCurrency(returnTotal);
-        document.getElementById("summary-exchange-total").textContent = formatCurrency(exchangeTotal);
-        document.getElementById("summary-net-total").textContent = formatCurrency(net);
-        document.getElementById("summary-settlement-hint").textContent = net > 0
-          ? `(Collect ${formatCurrency(net)})`
-          : net < 0
-          ? `(Refund ${formatCurrency(Math.abs(net))})`
+        const netCents = exchangeTotalCents - returnTotalCents;
+        document.getElementById("summary-return-total").textContent = formatCurrency(formatMoney(returnTotalCents));
+        document.getElementById("summary-exchange-total").textContent = formatCurrency(formatMoney(exchangeTotalCents));
+        document.getElementById("summary-net-total").textContent = formatCurrency(formatMoney(netCents));
+        document.getElementById("summary-settlement-hint").textContent = netCents > 0
+          ? `(Collect ${formatCurrency(formatMoney(netCents))})`
+          : netCents < 0
+          ? `(Refund ${formatCurrency(formatMoney(-netCents))})`
           : "(No settlement)";
       }
 
@@ -9545,9 +9573,9 @@
         fetch(`/api/reports/sales?${query}`)
           .then((response) => response.json())
           .then((data) => {
-            const totalSales = data.reduce((sum, sale) => sum + sale.total, 0);
-            const totalTax = data.reduce((sum, sale) => sum + sale.tax, 0);
-            const totalRefunds = data.reduce((sum, sale) => sum + (sale.refund_amount || 0), 0);
+            const totalSales = centsToNumber(data.reduce((sum, sale) => sum + toCents(sale.total), 0));
+            const totalTax = centsToNumber(data.reduce((sum, sale) => sum + toCents(sale.tax), 0));
+            const totalRefunds = centsToNumber(data.reduce((sum, sale) => sum + toCents(sale.refund_amount || 0), 0));
             const refundTransactions = data.filter((sale) => (sale.refund_amount || 0) > 0).length;
             const totalTransactions = data.length;
 
@@ -10931,14 +10959,14 @@
         const dueDate = document.getElementById("debt-due-date").value;
         const notes = document.getElementById("debt-notes").value.trim();
 
-        if (!customerId || isNaN(amount) || amount <= 0) {
+        if (!customerId || toCents(amount) <= 0) {
           showToast("Please fill in all required fields with valid values", "warning");
           return;
         }
 
         const debtData = {
           customer_id: parseInt(customerId),
-          amount: amount,
+          amount: centsToNumber(toCents(amount)),
           notes: notes || null,
         };
         
@@ -11027,13 +11055,13 @@
         const amount = parseFloat(document.getElementById("payment-amount").value);
         const notes = document.getElementById("payment-notes").value.trim();
 
-        if (!debtId || isNaN(amount) || amount <= 0) {
+        if (!debtId || toCents(amount) <= 0) {
           showToast("Please enter a valid payment amount", "warning");
           return;
         }
 
         const paymentData = {
-          amount: amount,
+          amount: centsToNumber(toCents(amount)),
           notes: notes || null,
         };
 
@@ -12036,7 +12064,7 @@
             showToast("Each item must have a product and quantity greater than 0.", "warning");
             return;
           }
-          items.push({ product_id: productId, ordered_qty: orderedQty, unit_cost: Number.isFinite(unitCost) ? unitCost : 0 });
+          items.push({ product_id: productId, ordered_qty: orderedQty, unit_cost: centsToNumber(toCents(unitCost)) });
         }
 
         const payload = { supplier_id: supplierId, notes, items };

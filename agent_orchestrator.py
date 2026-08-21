@@ -12,7 +12,7 @@ from typing import Dict, List, Any, Optional, Set
 from datetime import datetime
 
 from ai_agent import AIAgent
-from ai_tools import create_tools_instance, get_all_tools
+from ai_tools import create_tools_instance, get_all_tools, money_dec, money_str
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -707,17 +707,17 @@ class AgentOrchestrator:
                 total = result_data.get('total_sales', 0)
                 count = result_data.get('transaction_count', 0)
                 lines.append(f"📊 **Sales Summary** (last {period} days)")
-                lines.append(f"Total sales: ${total:,.2f} | Transactions: {count}")
+                lines.append(f"Total sales: ${money_str(total)} | Transactions: {count}")
                 methods = result_data.get('payment_method_totals', {}) or {}
                 if methods:
                     lines.append("Payment methods:")
                     for method, amount in list(methods.items())[:5]:
-                        lines.append(f"  • {method}: ${amount:,.2f}")
+                        lines.append(f"  • {method}: ${money_str(amount)}")
                 recent = result_data.get('recent_sales', []) or []
                 if recent:
                     lines.append("Recent transactions:")
                     for s in recent[:5]:
-                        lines.append(f"  • {s.get('transaction_id')} - ${float(s.get('total', 0)):,.2f} ({s.get('payment_method')})")
+                        lines.append(f"  • {s.get('transaction_id')} - ${money_str(s.get('total', 0))} ({s.get('payment_method')})")
                         
             elif func_name == "get_customer_summary":
                 customers = result_data.get('customers', [])
@@ -726,8 +726,8 @@ class AgentOrchestrator:
                 else:
                     lines.append(f"👥 **Customers** ({result_data.get('total_customers', 0)} total)")
                     for c in customers[:10]:
-                        balance = float(c.get('outstanding_balance', 0) or 0)
-                        balance_text = f" | Outstanding: ${balance:,.2f}" if balance else ""
+                        balance = money_dec(c.get('outstanding_balance', 0) or 0)
+                        balance_text = f" | Outstanding: ${money_str(balance)}" if balance else ""
                         lines.append(f"• **{c.get('name')}** - {c.get('phone') or 'No phone'}{balance_text}")
                         
             elif func_name == "get_debt_summary":
@@ -737,13 +737,13 @@ class AgentOrchestrator:
                 else:
                     lines.append(f"💳 **Debts** ({len(debts)} total)")
                     for d in debts[:10]:
-                        lines.append(f"• **{d.get('customer_name')}** - ${float(d.get('balance', 0)):,.2f} ({d.get('status')}, due {d.get('due_date')})")
+                        lines.append(f"• **{d.get('customer_name')}** - ${money_str(d.get('balance', 0))} ({d.get('status')}, due {d.get('due_date')})")
                     totals = result_data.get('totals_by_status', {}) or {}
                     if totals:
                         lines.append("")
                         lines.append("Totals by status:")
                         for key, value in totals.items():
-                            lines.append(f"  • {key}: ${float(value):,.2f}")
+                            lines.append(f"  • {key}: ${money_str(value)}")
                             
             elif func_name == "get_promotion_summary":
                 promotions = result_data.get('promotions', [])
@@ -773,7 +773,7 @@ class AgentOrchestrator:
                 else:
                     lines.append(f"🔁 **Returns & Exchanges** ({result_data.get('total_workflows', 0)} total)")
                     for w in workflows[:10]:
-                        lines.append(f"• {str(w.get('mode', 'unknown')).title()} - refund ${float(w.get('refund_amount', 0) or 0):,.2f} / collected ${float(w.get('collected_amount', 0) or 0):,.2f}")
+                        lines.append(f"• {str(w.get('mode', 'unknown')).title()} - refund ${money_str(w.get('refund_amount', 0) or 0)} / collected ${money_str(w.get('collected_amount', 0) or 0)}")
                         
             elif func_name == "get_current_branch_context":
                 branch = result_data.get('name', 'unknown')
@@ -812,13 +812,13 @@ class AgentOrchestrator:
                 if agreements:
                     lines.append("Price agreements:")
                     for pa in agreements[:5]:
-                        lines.append(f"  • {pa.get('product_name', pa.get('product_id'))}: ${float(pa.get('unit_price', 0)):,.2f}")
+                        lines.append(f"  • {pa.get('product_name', pa.get('product_id'))}: ${money_str(pa.get('unit_price', 0))}")
                         
             elif func_name == "get_supplier_price_for_product":
                 if result_data.get('has_agreement'):
                     lines.append(f"💵 **Price Agreement**")
                     lines.append(f"Product ID: {result_data.get('product_id')} | Supplier ID: {result_data.get('supplier_id')}")
-                    lines.append(f"Agreed price: ${float(result_data.get('agreed_price', 0)):,.2f}")
+                    lines.append(f"Agreed price: ${money_str(result_data.get('agreed_price', 0))}")
                 else:
                     lines.append(f"ℹ️ {result_data.get('message', 'No price agreement found.')}")
                         

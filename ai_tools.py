@@ -8,6 +8,24 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from decimal import Decimal
 
+MONEY_QUANT = Decimal('0.01')
+
+def money_dec(value):
+    """Convert a value to a finite Decimal, defaulting to 0 for None/NaN/inf/unparseable input."""
+    if value is None:
+        return Decimal('0')
+    try:
+        result = Decimal(str(value).replace(',', ''))
+    except (TypeError, ValueError, ArithmeticError):
+        return Decimal('0')
+    if not result.is_finite():
+        return Decimal('0')
+    return result
+
+def money_str(value):
+    """Format a money value as a quantized 2-decimal string (e.g. '1,234.50')."""
+    return f"{money_dec(value).quantize(MONEY_QUANT):,.2f}"
+
 
 # Tool schema definitions for the AI
 TOOL_SCHEMAS = {
@@ -388,8 +406,8 @@ class AITools:
                 "reorder_quantity": max(int(product.reorder_quantity or 0), 0),
                 "reorder_enabled": reorder_enabled,
                 "status": "out_of_stock" if is_out else ("low_stock" if is_low else "ok"),
-                "price": float(product.price or 0),
-                "cost": float(product.cost or 0)
+                "price": money_str(product.price or 0),
+                "cost": money_str(product.cost or 0)
             })
             
         return self._scope({
@@ -423,8 +441,8 @@ class AITools:
                     "current_stock": current_stock,
                     "reorder_point": reorder_point,
                     "suggested_reorder_qty": suggested_qty,
-                    "unit_cost": float(product.cost or 0),
-                    "estimated_cost": round(suggested_qty * float(product.cost or 0), 2)
+                    "unit_cost": money_str(product.cost or 0),
+                    "estimated_cost": money_str(suggested_qty * money_dec(product.cost or 0))
                 })
                 
         return self._scope({
@@ -458,8 +476,8 @@ class AITools:
                 "reorder_point": reorder_point,
                 "reorder_enabled": bool(product.reorder_enabled),
                 "status": "out_of_stock" if current_stock <= 0 else ("low_stock" if is_low else "ok"),
-                "price": float(product.price or 0),
-                "cost": float(product.cost or 0)
+                "price": money_str(product.price or 0),
+                "cost": money_str(product.cost or 0)
             })
         return self._scope({"total_products": len(result), "inventory": result})
         
@@ -513,7 +531,7 @@ class AITools:
             price_agreements.append({
                 "product_id": pa.product_id,
                 "product_name": pa.product.name if pa.product else None,
-                "agreed_price": float(pa.agreed_price),
+                "agreed_price": money_str(pa.agreed_price),
                 "valid_from": pa.valid_from.isoformat() if pa.valid_from else None,
                 "valid_to": pa.valid_to.isoformat() if pa.valid_to else None
             })
@@ -525,7 +543,7 @@ class AITools:
                 "po_id": po.id,
                 "po_number": po.po_number,
                 "status": po.status,
-                "total_amount": float(po.total_amount or 0),
+                "total_amount": money_str(po.total_amount or 0),
                 "created_at": po.created_at.isoformat() if po.created_at else None
             })
             
@@ -571,16 +589,16 @@ class AITools:
                     "product_name": item.product.name if item.product else None,
                     "ordered_qty": item.ordered_qty,
                     "received_qty": item.received_qty,
-                    "unit_cost": float(item.unit_cost or 0)
+                    "unit_cost": money_str(item.unit_cost or 0)
                 })
-                
+
             result.append({
                 "po_id": po.id,
                 "po_number": po.po_number,
                 "supplier_id": po.supplier_id,
                 "supplier_name": po.supplier.name if po.supplier else None,
                 "status": po.status,
-                "total_amount": float(po.total_amount or 0),
+                "total_amount": money_str(po.total_amount or 0),
                 "expected_delivery_date": po.expected_delivery_date.isoformat() if po.expected_delivery_date else None,
                 "created_at": po.created_at.isoformat() if po.created_at else None,
                 "items": items
@@ -618,7 +636,7 @@ class AITools:
         self.db.session.add(po)
         self.db.session.flush()  # Get PO ID
         
-        total_amount = 0
+        total_amount = Decimal('0')
         created_items = []
         
         for item_data in items:
@@ -642,13 +660,13 @@ class AITools:
                 unit_cost=unit_cost
             )
             self.db.session.add(po_item)
-            total_amount += quantity * unit_cost
+            total_amount += money_dec(quantity) * money_dec(unit_cost)
             
             created_items.append({
                 "product_id": product_id,
                 "product_name": product.name,
                 "quantity": quantity,
-                "unit_cost": float(unit_cost)
+                "unit_cost": money_str(unit_cost)
             })
             
         po.total_amount = total_amount
@@ -659,7 +677,7 @@ class AITools:
             "po_id": po.id,
             "po_number": po_number,
             "supplier_name": supplier.name,
-            "total_amount": round(total_amount, 2),
+            "total_amount": money_str(total_amount),
             "status": "draft",
             "items_count": len(created_items),
             "items": created_items
@@ -735,7 +753,7 @@ class AITools:
                     "location": item.location,
                     "batch_number": item.batch_number,
                     "received_date": item.received_date.isoformat() if item.received_date else None,
-                    "unit_cost": float(item.unit_cost or 0)
+                    "unit_cost": money_str(item.unit_cost or 0)
                 })
                 
         return {
@@ -863,7 +881,7 @@ class AITools:
             supplier_prices.append({
                 "supplier_id": sp.supplier_id,
                 "supplier_name": sp.supplier.name if sp.supplier else None,
-                "agreed_price": float(sp.agreed_price),
+                "agreed_price": money_str(sp.agreed_price),
                 "valid_to": sp.valid_to.isoformat() if sp.valid_to else None
             })
             
@@ -872,8 +890,8 @@ class AITools:
             "name": product.name,
             "barcode": product.barcode,
             "category": product.category,
-            "price": float(product.price or 0),
-            "cost": float(product.cost or 0),
+            "price": money_str(product.price or 0),
+            "cost": money_str(product.cost or 0),
             "stock": product.stock or 0,
             "reorder_point": product.reorder_point or 0,
             "reorder_quantity": product.reorder_quantity or 0,
@@ -924,13 +942,13 @@ class AITools:
                 "daily_sales_velocity": round(daily_velocity, 2),
                 "suggested_reorder_qty": suggested_qty,
                 "unit_cost": item['unit_cost'],
-                "estimated_cost": round(suggested_qty * item['unit_cost'], 2)
+                "estimated_cost": money_str(suggested_qty * money_dec(item['unit_cost']))
             })
             
         return {
             "analysis_period_days": 30,
             "suggestions": suggestions,
-            "total_estimated_cost": round(sum(s['estimated_cost'] for s in suggestions), 2)
+            "total_estimated_cost": money_str(sum((money_dec(s['estimated_cost']) for s in suggestions), Decimal('0')))
         }
         
     def get_supplier_price_for_product(self, product_id: int, supplier_id: int) -> Dict[str, Any]:
@@ -955,7 +973,7 @@ class AITools:
             "has_agreement": True,
             "product_id": product_id,
             "supplier_id": supplier_id,
-            "agreed_price": float(agreement.agreed_price),
+            "agreed_price": money_str(agreement.agreed_price),
             "valid_from": agreement.valid_from.isoformat() if agreement.valid_from else None,
             "valid_to": agreement.valid_to.isoformat() if agreement.valid_to else None
         }
@@ -992,7 +1010,7 @@ class AITools:
             if status and status.lower() not in ('all', state):
                 continue
             rows.append({"id": promo.id, "product_id": promo.product_id, "product_name": promo.product.name if promo.product else None,
-                         "discount_type": promo.discount_type, "discount_value": float(promo.discount_value or 0), "status": state,
+                         "discount_type": promo.discount_type, "discount_value": money_str(promo.discount_value or 0), "status": state,
                          "start_date": promo.start_date.isoformat() if promo.start_date else None, "end_date": promo.end_date.isoformat() if promo.end_date else None})
         return self._scope({"total_promotions": len(rows), "promotions": rows})
 
@@ -1004,23 +1022,24 @@ class AITools:
             customers = customers.filter((Customer.name.ilike(pattern)) | (Customer.phone.ilike(pattern)) | (Customer.email.ilike(pattern)))
         rows = []
         for customer in customers.order_by(Customer.name.asc()).limit(self._limit(limit)).all():
-            balance = sum(float(debt.balance or 0) for debt in Debt.query.filter_by(customer_id=customer.id, branch_id=self._branch_id()).all())
-            rows.append({"id": customer.id, "name": customer.name, "phone": customer.phone, "email": customer.email, "outstanding_balance": round(balance, 2)})
+            balance = sum((money_dec(debt.balance or 0) for debt in Debt.query.filter_by(customer_id=customer.id, branch_id=self._branch_id()).all()), Decimal('0'))
+            rows.append({"id": customer.id, "name": customer.name, "phone": customer.phone, "email": customer.email, "outstanding_balance": money_str(balance)})
         return self._scope({"total_customers": len(rows), "customers": rows})
 
     def get_debt_summary(self, status: str = "all", limit: int = 20) -> Dict[str, Any]:
         Debt = self._get_model('Debt')
         debts = self._branch_filter(Debt.query, Debt).order_by(Debt.due_date.asc()).all()
-        rows, totals = [], {"pending": 0.0, "partial": 0.0, "overdue": 0.0, "paid": 0.0}
+        rows, totals = [], {"pending": Decimal('0'), "partial": Decimal('0'), "overdue": Decimal('0'), "paid": Decimal('0')}
         now = datetime.utcnow()
         for debt in debts:
-            state = 'paid' if float(debt.balance or 0) <= 0 else ('overdue' if debt.due_date and debt.due_date < now else ('partial' if float(debt.balance or 0) < float(debt.amount or 0) else 'pending'))
-            totals[state] += float(debt.balance or 0)
+            debt_balance = money_dec(debt.balance or 0)
+            state = 'paid' if debt_balance <= 0 else ('overdue' if debt.due_date and debt.due_date < now else ('partial' if debt_balance < money_dec(debt.amount or 0) else 'pending'))
+            totals[state] += debt_balance
             if status and status.lower() not in ('all', state):
                 continue
             if len(rows) < self._limit(limit):
-                rows.append({"id": debt.id, "customer_name": debt.customer.name if debt.customer else 'Unknown', "balance": float(debt.balance or 0), "amount": float(debt.amount or 0), "status": state, "due_date": debt.due_date.isoformat() if debt.due_date else None})
-        return self._scope({"totals_by_status": {key: round(value, 2) for key, value in totals.items()}, "debts": rows})
+                rows.append({"id": debt.id, "customer_name": debt.customer.name if debt.customer else 'Unknown', "balance": money_str(debt_balance), "amount": money_str(debt.amount or 0), "status": state, "due_date": debt.due_date.isoformat() if debt.due_date else None})
+        return self._scope({"totals_by_status": {key: money_str(value) for key, value in totals.items()}, "debts": rows})
 
     def get_delivery_summary(self, stage: str = None, priority: str = None, limit: int = 20) -> Dict[str, Any]:
         Delivery = self._get_model('Delivery')
@@ -1038,7 +1057,7 @@ class AITools:
         query = ReturnExchange.query.join(Sale, ReturnExchange.original_sale_id == Sale.id).filter(Sale.branch_id == self._branch_id())
         if mode: query = query.filter(ReturnExchange.mode == mode)
         workflows = query.order_by(ReturnExchange.created_at.desc()).limit(self._limit(limit)).all()
-        rows = [{"workflow_id": w.workflow_id, "mode": w.mode, "return_total": float(w.return_total or 0), "exchange_total": float(w.exchange_total or 0), "refund_amount": float(w.refund_amount or 0), "collected_amount": float(w.collected_amount or 0), "created_at": w.created_at.isoformat() if w.created_at else None} for w in workflows]
+        rows = [{"workflow_id": w.workflow_id, "mode": w.mode, "return_total": money_str(w.return_total or 0), "exchange_total": money_str(w.exchange_total or 0), "refund_amount": money_str(w.refund_amount or 0), "collected_amount": money_str(w.collected_amount or 0), "created_at": w.created_at.isoformat() if w.created_at else None} for w in workflows]
         return self._scope({"total_workflows": len(rows), "workflows": rows})
 
     def get_warehouse_transfer_history(self, limit: int = 20) -> Dict[str, Any]:
@@ -1054,9 +1073,9 @@ class AITools:
         since = datetime.utcnow() - timedelta(days=days)
         sales = self._branch_filter(Sale.query.filter(Sale.date >= since), Sale).order_by(Sale.date.desc()).all()
         methods = {}
-        for sale in sales: methods[sale.payment_method or 'unknown'] = methods.get(sale.payment_method or 'unknown', 0) + float(sale.total or 0)
-        recent = [{"transaction_id": s.transaction_id, "total": float(s.total or 0), "payment_method": s.payment_method, "date": s.date.isoformat() if s.date else None} for s in sales[:self._limit(limit, 10)]]
-        return self._scope({"period_days": days, "transaction_count": len(sales), "total_sales": round(sum(float(s.total or 0) for s in sales), 2), "payment_method_totals": {key: round(value, 2) for key, value in methods.items()}, "recent_sales": recent})
+        for sale in sales: methods[sale.payment_method or 'unknown'] = methods.get(sale.payment_method or 'unknown', Decimal('0')) + money_dec(sale.total or 0)
+        recent = [{"transaction_id": s.transaction_id, "total": money_str(s.total or 0), "payment_method": s.payment_method, "date": s.date.isoformat() if s.date else None} for s in sales[:self._limit(limit, 10)]]
+        return self._scope({"period_days": days, "transaction_count": len(sales), "total_sales": money_str(sum((money_dec(s.total or 0) for s in sales), Decimal('0'))), "payment_method_totals": {key: money_str(value) for key, value in methods.items()}, "recent_sales": recent})
         
     def _generate_random_suffix(self) -> str:
         """Generate a random suffix for PO numbers"""

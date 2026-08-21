@@ -2436,18 +2436,18 @@ def api_products():
             return jsonify({'success': False, 'message': 'Missing required fields'}), 400
 
         try:
-            price = float(price)
+            price = safe_to_decimal(price, default=None)
             stock = int(stock)
-            cost = float(data.get('cost', 0) or 0)
-            tax_rate = float(data.get('tax_rate', 0) or 0)
+            cost = safe_to_decimal(data.get('cost', 0) or 0)
+            tax_rate = safe_to_decimal(data.get('tax_rate', 0) or 0)
             reorder_point = max(int(data.get('reorder_point', 10) or 0), 0)
             reorder_quantity = max(int(data.get('reorder_quantity', 50) or 0), 0)
         except (ValueError, TypeError):
             return jsonify({'success': False, 'message': 'Invalid numeric values'}), 400
 
-        if price < 0:
+        if price is None or price.is_nan() or price < 0:
             return jsonify({'success': False, 'message': 'Price cannot be negative'}), 400
-        if cost < 0:
+        if cost < 0 or tax_rate < 0:
             return jsonify({'success': False, 'message': 'Cost cannot be negative'}), 400
 
         reorder_enabled = to_bool(data.get('reorder_enabled'), True)
@@ -2553,15 +2553,15 @@ def api_single_product(product_id):
             product.name = data.get('name', product.name)
         if 'price' in data:
             try:
-                new_price = float(data.get('price'))
+                new_price = safe_to_decimal(data.get('price'), default=None)
             except (ValueError, TypeError):
                 return jsonify({'success': False, 'message': 'Invalid price value'}), 400
-            if new_price < 0:
+            if new_price is None or new_price < 0:
                 return jsonify({'success': False, 'message': 'Price cannot be negative'}), 400
             product.price = new_price
         if 'cost' in data:
             try:
-                new_cost = float(data.get('cost') or 0)
+                new_cost = safe_to_decimal(data.get('cost') or 0, default=Decimal('-1'))
             except (ValueError, TypeError):
                 return jsonify({'success': False, 'message': 'Invalid cost value'}), 400
             if new_cost < 0:
@@ -2590,9 +2590,12 @@ def api_single_product(product_id):
             product.category = data.get('category', product.category)
         if 'tax_rate' in data:
             try:
-                product.tax_rate = float(data.get('tax_rate') or 0)
+                new_tax_rate = safe_to_decimal(data.get('tax_rate') or 0, default=Decimal('-1'))
             except (ValueError, TypeError):
                 return jsonify({'success': False, 'message': 'Invalid tax rate value'}), 400
+            if new_tax_rate < 0:
+                return jsonify({'success': False, 'message': 'Invalid tax rate value'}), 400
+            product.tax_rate = new_tax_rate
         if 'reorder_point' in data:
             try:
                 product.reorder_point = max(int(data.get('reorder_point') or 0), 0)
@@ -3667,10 +3670,10 @@ def export_sales_report():
         data.append({
             'Transaction ID': sale.transaction_id,
             'Date': sale.date.strftime('%Y-%m-%d %H:%M:%S'),
-            'Total': sale.total,
-            'Tax': sale.tax,
-            'Cash Received': sale.cash_received,
-            'Refund Given': sale.refund_amount or 0,
+            'Total': money_float(sale.total),
+            'Tax': money_float(sale.tax),
+            'Cash Received': money_float(sale.cash_received),
+            'Refund Given': money_float(sale.refund_amount or 0),
             'Payment Method': sale.payment_method,
             'User ID': sale.user_id
         })
@@ -3737,10 +3740,10 @@ def api_report_sales():
                 'id': s.id,
                 'transaction_id': s.transaction_id,
                 'date': s.date.isoformat(),
-                'total': s.total,
-                'tax': s.tax,
-                'cash_received': s.cash_received,
-                'refund_amount': s.refund_amount or 0,
+                'total': money_float(s.total),
+                'tax': money_float(s.tax),
+                'cash_received': money_float(s.cash_received),
+                'refund_amount': money_float(s.refund_amount or 0),
                 'payment_method': s.payment_method,
                 'user_id': s.user_id,
                 'username': s.user.username if s.user else 'Unknown',
@@ -3789,8 +3792,8 @@ def api_dashboard_sales_data():
     for sale in sales:
         sale_date = sale.date.strftime('%Y-%m-%d')
         if sale_date not in sales_by_day:
-            sales_by_day[sale_date] = 0
-        sales_by_day[sale_date] += sale.total
+            sales_by_day[sale_date] = Decimal('0')
+        sales_by_day[sale_date] += safe_to_decimal(sale.total)
 
     # Fill in missing days with 0
     result = []
@@ -3799,7 +3802,7 @@ def api_dashboard_sales_data():
         date_str = current_date.strftime('%Y-%m-%d')
         result.append({
             'date': date_str,
-            'total': sales_by_day.get(date_str, 0)
+            'total': money_float(sales_by_day.get(date_str, Decimal('0')))
         })
         current_date += timedelta(days=1)
 
@@ -4961,7 +4964,7 @@ def api_warehouse_inventory():
             'location': item.location,
             'batch_number': item.batch_number,
             'unit_cost': item.unit_cost,
-            'total_value': item.quantity * (item.unit_cost or 0),
+            'total_value': money_float(safe_to_decimal(item.quantity) * safe_to_decimal(item.unit_cost or 0)),
             'received_date': item.received_date.isoformat() if item.received_date else None,
             'expiry_date': item.expiry_date.isoformat() if item.expiry_date else None,
             'notes': item.notes,
@@ -4983,7 +4986,11 @@ def api_warehouse_summary():
     
     total_skus = len(set(item.product_id for item in inventory))
     total_units = sum(item.quantity for item in inventory)
-    total_value = sum(item.quantity * (item.unit_cost or 0) for item in inventory)
+    total_value = sum(
+        (round_money(safe_to_decimal(item.quantity) * safe_to_decimal(item.unit_cost or 0))
+         for item in inventory),
+        Decimal('0')
+    )
     
     # Get recent transfers count (last 7 days)
     week_ago = datetime.utcnow() - timedelta(days=7)
