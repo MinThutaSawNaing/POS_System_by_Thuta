@@ -1,6 +1,7 @@
 """
 AI Agent Module for POS System
-Handles communication with APIFree.ai (Gemini 2.5 Flash Lite)
+Handles communication with APIFree.ai (DeepSeek V4 Flash by default;
+override with the AI_MODEL environment variable)
 """
 
 import os
@@ -11,7 +12,7 @@ from dataclasses import dataclass, field
 
 
 APIFREE_BASE_URL = "https://api.apifree.ai/v1"
-DEFAULT_MODEL = "google/gemini-2.5-flash-lite"
+DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
 
 
 @dataclass
@@ -41,7 +42,7 @@ class ChatResponse:
 class AIAgent:
     """Core AI Agent for handling chat completions with tool calling"""
     
-    def __init__(self, api_key: Optional[str] = None, model: str = DEFAULT_MODEL, db_get_setting=None):
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None, db_get_setting=None):
         self.api_key = api_key or os.environ.get("APIFREE_API_KEY", "")
         # If no API key from env, try to get from database via callback
         if not self.api_key and db_get_setting:
@@ -58,7 +59,7 @@ class AIAgent:
             print(f"[AI Agent] API key is configured: {masked}")
         else:
             print(f"[AI Agent] WARNING: No API key configured")
-        self.model = model
+        self.model = model or os.environ.get("AI_MODEL", DEFAULT_MODEL)
         self.base_url = APIFREE_BASE_URL
         self.conversation_history: List[Message] = []
         self.tools: List[Dict] = []

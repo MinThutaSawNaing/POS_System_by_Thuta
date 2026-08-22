@@ -62,11 +62,12 @@ class TaskPlan:
 TOOL_CATEGORIES = {
     "inventory": {
         "tools": ["get_inventory_status", "get_low_stock_items", "get_product_details", "search_products", "suggest_reorder_quantities"],
-        "keywords": ["stock", "inventory", "product", "item", "reorder", "quantity", "available", "how many", "how much", "barcode", "prices"]
+        "keywords": ["stock", "inventory", "product", "item", "reorder", "quantity", "available", "how many", "how much", "barcode", "prices",
+                     "in stock", "out of stock", "remaining", "left", "run out"]
     },
     "supplier": {
         "tools": ["get_supplier_list", "get_supplier_details", "get_supplier_price_for_product"],
-        "keywords": ["supplier", "vendor", "supply", "contact", "price agreement"]
+        "keywords": ["supplier", "vendor", "supply", "contact", "price agreement", "distributor", "who supplies"]
     },
     "purchase_order": {
         "tools": ["get_purchase_orders", "create_purchase_order", "approve_purchase_order", "cancel_purchase_order"],
@@ -78,7 +79,7 @@ TOOL_CATEGORIES = {
     },
     "sales": {
         "tools": ["get_sales_trends", "get_sales_summary"],
-        "keywords": ["sales", "trend", "best seller", "top selling", "revenue", "sold", "performance"]
+        "keywords": ["sales", "trend", "best seller", "top selling", "revenue", "sold", "performance", "daily sales", "monthly sales"]
     },
     "branch": {
         "tools": ["get_current_branch_context"],
@@ -98,7 +99,7 @@ TOOL_CATEGORIES = {
     },
     "debt": {
         "tools": ["get_debt_summary"],
-        "keywords": ["debt", "debts", "overdue", "credit", "aging", "balance", "payment"]
+        "keywords": ["debt", "debts", "overdue", "credit", "aging", "balance", "payment", "owe", "owes", "unpaid", "receivable"]
     },
     "delivery": {
         "tools": ["get_delivery_summary"],
@@ -114,12 +115,33 @@ TOOL_CATEGORIES = {
     }
 }
 
+# Tools that must ALWAYS stay visible to the model, even when category keyword
+# filtering narrows the toolset. Keyword filtering is only a token-saving
+# heuristic; when it guessed wrong the model could see no tool capable of
+# answering the question ("had all the tools but never used one"). These core
+# lookup tools are cheap to advertise and let the model always find a path to
+# real data. Mutating tools are never on this list.
+CORE_TOOL_NAMES = (
+    "get_current_branch_context",
+    "search_products",
+    "get_product_details",
+    "get_inventory_status",
+)
+
 
 # System prompt for the AI Agent
 SYSTEM_PROMPT = """You are Loli, the current-data assistant for Parrot POS, created by Min Thuta Saw Naing and owned by WinterArc Myanmar. You help with the active branch's inventory, categories, suppliers, purchase orders, warehouse activity, sales, promotions, customers, debts, deliveries, and returns/exchanges.
 
 ## Truth and branch scope
 All operational answers are scoped to the active branch supplied by trusted context. Use tools for live facts. Never invent counts, prices, stock, balances, dates, customers, suppliers, or branch data. If you cannot obtain the data through a tool, say you could not retrieve it instead of guessing. State the branch when it helps the user understand the result. If a record is absent, say so plainly.
+
+## Tool use policy
+You own live database tools. Any question about stock, products, prices, sales, suppliers, purchase orders, warehouse activity, customers, debts, deliveries, promotions, categories, or returns MUST be answered by calling at least one registered tool in this turn — never from memory.
+- Choose the narrowest tool that answers the question.
+- Fill arguments from the user's words: product names into name/search arguments, statuses into status filters, and date ranges computed from the Current Date above (for example "yesterday", "this month", or a number of days).
+- Chain tools when one result feeds the next: search_products to identify an item, then get_product_details or get_supplier_price_for_product with its id; get_low_stock_items before suggesting reorders.
+- If a tool returns empty results or fails, say so plainly and try at most one plausible alternative tool. Never substitute invented numbers for missing data.
+- Greetings, identity, capability, and small-talk questions need no tool call.
 
 ## Safe operations
 Your registered read tools answer questions with live facts. Low-risk changes (for example registering a customer or supplier, or creating a category) may be executed automatically when autonomy is enabled for the current manager. Riskier changes — deletes, price or money changes, stock adjustments, approvals, cancellations, transfers — always require explicit human approval before they run. Never claim you created, approved, cancelled, transferred, or modified any business record unless a step result confirms it actually happened; otherwise say it is awaiting approval.
@@ -276,13 +298,13 @@ class AgentOrchestrator:
         """Detect which tool categories are relevant to the user's command"""
         command_lower = command.lower()
         relevant_categories = set()
-        
+
         for category, config in TOOL_CATEGORIES.items():
-            for keyword in config["keywords"]:
-                if keyword in command_lower:
-                    relevant_categories.add(category)
-                    break
-        
+            # _contains_any enforces word boundaries for short keywords, so
+            # e.g. 'po' no longer false-matches inside 'suppose'.
+            if self._contains_any(command_lower, config["keywords"]):
+                relevant_categories.add(category)
+
         return relevant_categories
     
     def _get_tools_for_categories(self, categories: Set[str]) -> List[str]:
@@ -317,9 +339,11 @@ class AgentOrchestrator:
             return _read_only(self.agent.tools)
 
         relevant_tools = self._get_tools_for_categories(categories)
+        relevant_tool_names = set(relevant_tools) | set(CORE_TOOL_NAMES)
 
-        # Filter agent's tools
-        filtered = [t for t in self.agent.tools if t["function"]["name"] in relevant_tools]
+        # Filter agent's tools, keeping the always-visible core lookup tools so
+        # the model is never left without a tool that can reach the data.
+        filtered = [t for t in self.agent.tools if t["function"]["name"] in relevant_tool_names]
         filtered = _read_only(filtered)
 
         print(f"[AI Agent] Filtered to {len(filtered)} relevant tools for categories: {categories}")
@@ -430,8 +454,19 @@ class AgentOrchestrator:
             # Get filtered tools for this query
             filtered_tools = self._filter_tools_for_query(command)
 
+            # A data query asks about business records (inventory, sales, suppliers,
+            # orders, customers, ...). For those, every answer must be built from real
+            # database results, never from the model's unverified guesses.
+            data_query = bool(self._detect_relevant_categories(command))
+
+            # Deterministic decoding for data turns: low temperature measurably
+            # improves tool selection on small models. Pure chat keeps the
+            # friendlier default temperature.
+            temperature = 0.2 if data_query else 0.7
+
             # First chat completion to get tool calls
-            response = self.agent.chat(message=command, tools_override=filtered_tools)
+            response = self.agent.chat(message=command, tools_override=filtered_tools,
+                                       temperature=temperature)
             
             print(f"[AI Agent] Response received. Content length: {len(response.content)}, Tool calls: {len(response.tool_calls)}")
             
@@ -446,11 +481,6 @@ class AgentOrchestrator:
             tool_results = []
             final_message = None
             
-            # A data query asks about business records (inventory, sales, suppliers,
-            # orders, customers, ...). For those, every answer must be built from real
-            # database results, never from the model's unverified guesses.
-            data_query = bool(self._detect_relevant_categories(command))
-            
             # Execute any tool calls with Flask app context
             if response.tool_calls:
                 print(f"[AI Agent] Executing {len(response.tool_calls)} tool calls...")
@@ -464,7 +494,8 @@ class AgentOrchestrator:
                 if history and history[-1].role == "assistant" and not history[-1].tool_calls:
                     history.pop()
                 print("[AI Agent] Data query answered without a tool call; retrying with forced tool use...")
-                response = self.agent.chat(message=None, tools_override=filtered_tools, force_tool_call=True)
+                response = self.agent.chat(message=None, tools_override=filtered_tools,
+                                           force_tool_call=True, temperature=0.2)
                 if response.error:
                     print(f"[AI Agent Error] Forced tool-call retry failed: {response.error}")
                 elif response.tool_calls:
@@ -650,20 +681,26 @@ class AgentOrchestrator:
 
         Simple questions and pure chat keep today's single-shot path (and its
         single LLM call). Task markers are explicit multi-step words or an
-        imperative action verb at the start of the command.
+        imperative action verb at the start of the command. Requests that span
+        two or more tool categories (for example "which supplier has the best
+        price for the low-stock items") usually need chained tools, so they are
+        routed through plan-then-execute too.
         """
         text = command.strip().lower()
         if not text:
             return False
         task_hints = ("plan", "step", " then ", "report",
-                      "first", "second", "third")
+                      "first", "second", "third",
+                      "compare", " vs ", "versus")
         if any(hint in text for hint in task_hints):
             return True
         starters = ("do ", "run ", "use ", "order ", "create ", "make ",
                     "build ", "generate ", "restock ", "transfer ",
                     "approve ", "cancel ", "add ", "update ", "register ",
                     "record ", "adjust ", "show ")
-        return any(text.startswith(starter) for starter in starters)
+        if any(text.startswith(starter) for starter in starters):
+            return True
+        return len(self._detect_relevant_categories(command)) >= 2
 
     def _planner_chat(self, message: str, tools: Optional[List[Dict]] = None,
                       temperature: float = 0.2, max_tokens: int = 900):
