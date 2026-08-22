@@ -6109,14 +6109,14 @@ def agent_history():
 # ---------------------------------------------------------------------------
 # GOAL 1: Agent task persistence + approval flow
 #
-# DESIGN NOTE (documented choice): the orchestrator's approved-step execution
-# hook is not yet available (the plan loop / pending_approvals execution path
-# is still feature-gated in agent_orchestrator.py, which we must not edit).
-# Therefore POST /api/agent/approve/<task_id>/<step_no> records the approval
-# on the persisted task (step_results_json marks the step "approved") and the
-# actual write is executed by POST /api/agent/task/<id>/advance, which
-# re-invokes the SAME get_ai_orchestrator().process_command path with an
-# internal continuation marker describing the approved steps.
+# APPROVAL EXECUTION (implemented): POST /api/agent/approve/<task_id>/<step_no>
+# records the approval on the persisted task (step_results_json marks the step
+# "approved"). POST /api/agent/task/<id>/advance then calls
+# orchestrator.run_approved_plan() with the persisted plan and the approved
+# step numbers: the plan is re-run deterministically (fresh read data, zero
+# LLM calls) and ONLY the approved mutating steps touch the database, tagged
+# "executed_by": "approved". Unapproved proposals stay proposals; proposals
+# expire after AI_APPROVAL_TTL_HOURS (default 24h).
 # ---------------------------------------------------------------------------
 
 def _agent_task_step_results(task):
@@ -6155,30 +6155,97 @@ def api_agent_approve_step(task_id, step_no):
                     'message': f"Step {step_no} approved. Send /advance to execute."})
 
 
-@app.route('/api/agent/task/<int:task_id>/advance', methods=['POST'])
+def _agent_approval_ttl_hours():
+    """Proposal expiry window in hours (AI_APPROVAL_TTL_HOURS env, default 24).
+
+    A value <= 0 disables expiry entirely.
+    """
+    try:
+        return float(os.environ.get('AI_APPROVAL_TTL_HOURS', '24'))
+    except (TypeError, ValueError):
+        return 24.0
+
+
+@app.route('/api/agent/reject/<int:task_id>/<int:step_no>', methods=['POST'])
 @login_required
-def api_agent_advance_task(task_id):
-    """Re-invoke process_command with a continuation marker for approved steps."""
+def api_agent_reject_step(task_id, step_no):
+    """Record rejection for ONE proposal step of a persisted agent task."""
     task = AgentTask.query.get_or_404(task_id)
     if task.user_id is not None and task.user_id != session.get('user_id'):
         return jsonify({'success': False, 'error': 'Forbidden'}), 403
 
     step_results = _agent_task_step_results(task)
-    approved = [i for i, sr in enumerate(step_results) if sr.get('approved')]
-    if not approved:
+    if not (0 <= step_no < len(step_results)):
+        return jsonify({'success': False, 'error': 'Invalid step number'}), 400
+
+    step = step_results[step_no]
+    if step.get('status') != 'proposal':
+        return jsonify({'success': False,
+                        'error': f"Step {step_no} is not a pending proposal "
+                                 f"(status={step.get('status')})"}), 409
+
+    step['rejected'] = True
+    task.step_results_json = json.dumps(step_results)
+    approved_left = any(sr.get('approved') for sr in step_results
+                        if sr.get('status') == 'proposal')
+    undecided_left = any(not sr.get('approved') and not sr.get('rejected')
+                         for sr in step_results
+                         if sr.get('status') == 'proposal')
+    if not approved_left and not undecided_left:
+        task.status = 'rejected'
+    task.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({'success': True, 'task': task.to_dict(),
+                    'message': f"Step {step_no} rejected."})
+
+
+@app.route('/api/agent/task/<int:task_id>/advance', methods=['POST'])
+@login_required
+def api_agent_advance_task(task_id):
+    """Deterministically execute the approved proposal steps of a stored plan.
+
+    Zero LLM involvement: the persisted plan's own arguments are re-run with
+    fresh read data; only the human-approved mutating steps execute.
+    """
+    task = AgentTask.query.get_or_404(task_id)
+    if task.user_id is not None and task.user_id != session.get('user_id'):
+        return jsonify({'success': False, 'error': 'Forbidden'}), 403
+    if task.status == 'executing':
+        return jsonify({'success': False, 'error': 'Task is already executing'}), 409
+
+    step_results = _agent_task_step_results(task)
+    approved_nos = sorted({sr.get('step') for sr in step_results
+                           if sr.get('status') == 'proposal' and sr.get('approved')
+                           and isinstance(sr.get('step'), int)})
+    if not approved_nos:
         return jsonify({'success': False, 'error': 'No approved steps to advance'}), 409
+
+    # Safety rail: stale proposals must not run against changed data.
+    ttl_hours = _agent_approval_ttl_hours()
+    age_hours = (datetime.utcnow() - (task.created_at or datetime.utcnow())
+                 ).total_seconds() / 3600.0
+    if ttl_hours > 0 and age_hours > ttl_hours:
+        task.status = 'expired'
+        task.updated_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify({
+            'success': False,
+            'error': (f'This proposal expired after {int(ttl_hours)}h. '
+                      'Ask Loli again and approve the fresh plan.'),
+        }), 410
+
+    try:
+        plan = json.loads(task.plan_json) if task.plan_json else None
+    except (ValueError, TypeError):
+        plan = None
 
     task.status = 'executing'
     task.updated_at = datetime.utcnow()
     db.session.commit()
 
-    continuation = (
-        f"{task.command} [continuation: execute previously approved steps "
-        f"{', '.join(str(i) for i in approved)} of task #{task.id}]"
-    )
     try:
         orchestrator = get_ai_orchestrator()
-        result = orchestrator.process_command(continuation, session.get('user_id'))
+        result = orchestrator.run_approved_plan(task.command, plan or {}, approved_nos)
     except Exception as exc:
         app.logger.error(f"Agent task advance error: {exc}")
         task.status = 'failed'
@@ -6187,7 +6254,7 @@ def api_agent_advance_task(task_id):
 
     if isinstance(result.get('step_results'), list):
         task.step_results_json = json.dumps(result['step_results'])
-    still_pending = any(sr.get('status') == 'proposal' and not sr.get('approved')
+    still_pending = any(sr.get('status') == 'proposal'
                         for sr in _agent_task_step_results(task))
     if result.get('success') and not still_pending:
         task.status = 'completed'

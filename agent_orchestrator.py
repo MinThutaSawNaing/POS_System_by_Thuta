@@ -923,19 +923,24 @@ class AgentOrchestrator:
         return compact(obj, 0)
 
     def _execute_plan(
-        self, plan: Dict[str, Any]
+        self, plan: Dict[str, Any],
+        approved_steps: Optional[Set[int]] = None,
     ) -> tuple:
         """PHASE B: pure-Python sequential execution. Zero LLM calls.
 
         Fail-stop: the first failed step aborts all later ones (marked
         'skipped'). Read tools execute directly. Mutating tools execute ONLY
         when TOOL_METADATA marks them autonomy=="auto" AND _autonomy_allowed()
-        (kill-switch on + manager user); such runs are tagged
-        'executed_by': 'agent-auto' with status 'ok'. Every other mutating
-        tool becomes an approval proposal and never touches the database here.
+        (kill-switch on + manager user; such runs are tagged
+        'executed_by': 'agent-auto'), OR when their step number is listed in
+        approved_steps — a human explicitly approved that exact persisted step
+        via the approval flow (tagged 'executed_by': 'approved'). Every other
+        mutating tool becomes an approval proposal and never touches the
+        database here.
         """
         registry = self._get_tool_registry()
         autonomy_ok = self._autonomy_allowed()  # once per plan, not per step
+        approved = {int(n) for n in (approved_steps or ())}
         step_results: List[Dict[str, Any]] = []
         pending_approvals: List[Dict[str, Any]] = []
         step_outputs: Dict[int, Any] = {}
@@ -964,10 +969,12 @@ class AgentOrchestrator:
                 and _TOOL_METADATA.get(tool, {}).get("autonomy") == "auto"
                 and autonomy_ok
             )
+            human_approved = bool(mutates and step_no in approved)
 
             # Write tools default to approval proposals; they never run unless
-            # explicitly marked autonomous AND the manager gate passes.
-            if mutates and not auto_allowed:
+            # explicitly marked autonomous AND the manager gate passes, or the
+            # user approved this exact persisted step.
+            if mutates and not auto_allowed and not human_approved:
                 proposal = {
                     "step": step_no,
                     "tool": tool,
@@ -999,6 +1006,10 @@ class AgentOrchestrator:
                     step_results.append({**base, "status": "ok",
                                          "result": result,
                                          "executed_by": "agent-auto"})
+                elif human_approved:
+                    step_results.append({**base, "status": "ok",
+                                         "result": result,
+                                         "executed_by": "approved"})
                 else:
                     step_results.append({**base, "status": "ok", "result": result})
                 self.session_context["last_tool_used"] = tool
@@ -1120,6 +1131,86 @@ class AgentOrchestrator:
         # clean context; large results travel only inside the summary prompt.
         self.agent.conversation_history = history_snapshot
         message = self._generate_plan_summary(command, plan, step_results, pending_approvals)
+
+        return self._with_contract({
+            "success": not failed,
+            "message": message,
+            "plan": plan,
+            "step_results": step_results,
+            "pending_approvals": pending_approvals,
+        })
+
+    def run_approved_plan(
+        self, command: str, plan: Dict[str, Any],
+        approved_step_nos: Any,
+    ) -> Dict[str, Any]:
+        """Execute a persisted plan, running ONLY the human-approved steps.
+
+        This is the execution half of the approval flow: the user approved
+        specific proposal steps of a previously persisted AgentTask. The plan
+        is re-run deterministically (read steps fetch fresh data, approved
+        mutating steps execute, every other mutating step stays a proposal).
+        No LLM call participates in execution and the arguments come only from
+        the persisted plan — never from the caller.
+        """
+        steps = plan.get("steps") if isinstance(plan, dict) else None
+        if not isinstance(steps, list) or not steps:
+            return self._with_contract({
+                "success": False,
+                "message": ("No stored plan was found for this task, so no "
+                            "approved change can be executed. Please ask again "
+                            "and approve the new plan."),
+                "plan": plan if isinstance(plan, dict) else None,
+            })
+
+        try:
+            approved = {int(n) for n in (approved_step_nos or [])}
+        except (TypeError, ValueError):
+            return self._with_contract({
+                "success": False,
+                "message": "Invalid approved step list; nothing was executed.",
+                "plan": plan,
+            })
+
+        registry = self._get_tool_registry()
+        plan_step_nos = {step.get("step") for step in steps}
+        unknown = approved - plan_step_nos
+        if unknown:
+            return self._with_contract({
+                "success": False,
+                "message": (f"Approved step(s) {sorted(unknown)} do not exist "
+                            "in the stored plan; nothing was executed."),
+                "plan": plan,
+            })
+
+        # Only mutating tools can be "approved"; approving a read step is a
+        # harmless no-op because read steps run anyway.
+        mutating_nos = {
+            step.get("step") for step in steps
+            if registry.get(step.get("tool"), {}).get("mutates")
+        }
+        approved_mutating = approved & mutating_nos
+
+        step_results, pending_approvals = self._execute_plan(
+            plan, approved_steps=approved_mutating)
+        failed = [sr for sr in step_results if sr["status"] in ("failed", "skipped")]
+        executed = [sr for sr in step_results if sr.get("executed_by") == "approved"]
+        awaiting = len(pending_approvals)
+
+        if len(step_results) == 1 and step_results[0]["status"] == "ok":
+            sr = step_results[0]
+            message = self._format_tool_results_for_user(
+                [{"function_name": sr["tool"], "result": sr.get("result"), "error": None}],
+                command,
+            ) or f"Completed '{sr['tool']}'."
+        else:
+            bits = [f"{len(executed)} approved change(s) applied"] if executed else []
+            if failed:
+                bits.append(f"{len(failed)} step(s) failed or were skipped")
+            if awaiting:
+                bits.append(f"{awaiting} change(s) still await approval")
+            message = ("Done: " + "; ".join(bits) + ".") if bits else \
+                self._deterministic_status_message(step_results)
 
         return self._with_contract({
             "success": not failed,

@@ -86,6 +86,7 @@
       line.appendChild(tool);
       if (step.step) { const reason = document.createElement('span'); reason.className = 'loli-plan__reason'; reason.textContent = ` — ${step.step}`; line.appendChild(reason); }
       if (step.status === 'ok' && step.executed_by === 'agent-auto') { const autoBadge = document.createElement('span'); autoBadge.className = 'loli-plan__badge loli-plan__badge--auto'; autoBadge.textContent = '⚡ Auto-executed'; autoBadge.title = 'Loli applied this change automatically (autonomy enabled).'; line.appendChild(autoBadge); }
+      if (step.status === 'ok' && step.executed_by === 'approved') { const okBadge = document.createElement('span'); okBadge.className = 'loli-plan__badge loli-plan__badge--auto'; okBadge.textContent = '✅ Approved & applied'; okBadge.title = 'You approved this change and it has been applied.'; line.appendChild(okBadge); }
       if (step.status === 'proposal') { const pendingBadge = document.createElement('span'); pendingBadge.className = 'loli-plan__badge loli-plan__badge--pending'; pendingBadge.textContent = '⏳ Awaiting approval'; pendingBadge.title = 'This change needs your approval before it is applied.'; line.appendChild(pendingBadge); }
       body.appendChild(line);
       const detailText = step.status === 'proposal' ? argsSummary(step.args ?? step.result) : resultSummary(step);
@@ -95,7 +96,7 @@
         const approve = document.createElement('button'); approve.type = 'button'; approve.className = 'loli-plan__button'; approve.textContent = 'Approve';
         const reject = document.createElement('button'); reject.type = 'button'; reject.className = 'loli-plan__button'; reject.textContent = 'Reject';
         approve.addEventListener('click',() => approveStep(data.task_id,index,approve,reject));
-        reject.addEventListener('click',() => { approve.disabled = true; reject.disabled = true; reject.classList.add('is-rejected'); reject.textContent = 'Rejected'; icon.textContent = '⏭'; });
+        reject.addEventListener('click',async()=>{approve.disabled=true;reject.disabled=true;reject.classList.add('is-rejected');reject.textContent='Rejecting…';try{if(data.task_id){const r=await fetch(`/api/agent/reject/${data.task_id}/${index}`,{method:'POST'});const rd=await r.json().catch(()=>({}));if(!r.ok||!rd.success)throw new Error(rd.error||'Rejection failed.');}reject.textContent='Rejected';icon.textContent='⏭';}catch(rejectError){showError(rejectError.message||'Could not reject step.');reject.textContent='Reject';reject.disabled=false;approve.disabled=false;}});
         actions.append(approve,reject); body.appendChild(actions);
       }
       row.append(icon,body); view.appendChild(row);

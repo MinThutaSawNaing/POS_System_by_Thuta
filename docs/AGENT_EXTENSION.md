@@ -68,6 +68,28 @@ per plan via `AgentOrchestrator._autonomy_allowed()`:
 If any condition fails, the same step becomes a proposal and the tool function
 is never invoked.
 
+### Approval execution (human-approved proposals)
+
+A proposal becomes a real database write ONLY after a human approves that
+exact persisted step:
+
+1. `POST /api/agent/approve/<task_id>/<step_no>` records `approved: true` on
+   the proposal inside the task's persisted `step_results_json`.
+2. `POST /api/agent/task/<task_id>/advance` calls
+   `AgentOrchestrator.run_approved_plan(command, plan, approved_step_nos)`:
+   the persisted plan is re-run deterministically (fresh read data, ZERO LLM
+   calls) and approved mutating steps execute tagged
+   `"executed_by": "approved"`. Arguments come only from the persisted plan —
+   never from the request.
+3. Proposals expire: `/advance` refuses tasks older than
+   `AI_APPROVAL_TTL_HOURS` (default 24; `<= 0` disables expiry) and marks
+   them `expired`.
+4. `POST /api/agent/reject/<task_id>/<step_no>` records rejection; when every
+   proposal is decided and none are approved, the task status becomes
+   `rejected`. The widget's Reject button is wired to this endpoint.
+
+Contracts live in `test_agent_approval.py`.
+
 ### Kill switch endpoints (`app.py`)
 
 - `GET /api/agent/autonomy` — `{success, enabled}`; backed by
