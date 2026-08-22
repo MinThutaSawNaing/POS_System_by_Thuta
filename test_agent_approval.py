@@ -21,6 +21,8 @@ import unittest
 from datetime import datetime, timedelta
 from unittest import mock
 
+_UNSET = object()
+
 import agent_orchestrator
 from agent_orchestrator import AgentOrchestrator
 from ai_agent import ToolCall
@@ -153,6 +155,7 @@ def _task_payload(status="pending_approval"):
 class AgentApprovalEndpointTests(unittest.TestCase):
     def setUp(self):
         app.config.update(TESTING=True)
+        self._created_task_ids = []
         with app.app_context():
             self.user_id = User.query.filter_by(username='admin').first().id
             self.branch_id = Branch.query.filter_by(is_active=True).first().id
@@ -160,11 +163,26 @@ class AgentApprovalEndpointTests(unittest.TestCase):
             db.session.add(task)
             db.session.commit()
             self.task_id = task.id
+            self._created_task_ids.append(task.id)
 
     def tearDown(self):
+        # Delete ONLY the rows this test created — never wipe shared tables.
+        if not self._created_task_ids:
+            return
         with app.app_context():
-            AgentTask.query.delete()
+            AgentTask.query.filter(AgentTask.id.in_(self._created_task_ids)).delete(
+                synchronize_session=False)
             db.session.commit()
+
+    def _make_task(self, user_id=_UNSET):
+        with app.app_context():
+            task = AgentTask(
+                user_id=self.user_id if user_id is _UNSET else user_id,
+                **_task_payload())
+            db.session.add(task)
+            db.session.commit()
+            self._created_task_ids.append(task.id)
+            return task.id
 
     def _client(self):
         client = app.test_client()
@@ -217,9 +235,12 @@ class AgentApprovalEndpointTests(unittest.TestCase):
             task.created_at = datetime.utcnow() - timedelta(hours=25)
             db.session.commit()
         client = self._client()
-        client.post(f'/api/agent/approve/{self.task_id}/0')
+        # Approving a stale proposal is refused outright...
+        approve_resp = client.post(f'/api/agent/approve/{self.task_id}/0')
+        self.assertEqual(approve_resp.status_code, 410)
+        # ...and advancing it is impossible too.
         response = client.post(f'/api/agent/task/{self.task_id}/advance')
-        self.assertEqual(response.status_code, 410)
+        self.assertEqual(response.status_code, 409)
         with app.app_context():
             self.assertEqual(db.session.get(AgentTask, self.task_id).status, 'expired')
 
@@ -250,13 +271,16 @@ class AgentApprovalEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
 
     def test_other_users_task_is_forbidden(self):
-        with app.app_context():
-            other = AgentTask(user_id=self.user_id + 99999, **_task_payload())
-            db.session.add(other)
-            db.session.commit()
-            other_id = other.id
+        other_id = self._make_task(user_id=self.user_id + 99999)
         response = self._client().post(f'/api/agent/reject/{other_id}/0')
         self.assertEqual(response.status_code, 403)
+
+    def test_null_user_task_is_forbidden_fail_closed(self):
+        # A task with no owner must never be usable by any authenticated user.
+        null_id = self._make_task(user_id=None)
+        client = self._client()
+        self.assertEqual(client.post(f'/api/agent/approve/{null_id}/0').status_code, 403)
+        self.assertEqual(client.get(f'/api/agent/task/{null_id}').status_code, 403)
 
 
 if __name__ == "__main__":

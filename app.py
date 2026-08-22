@@ -6133,7 +6133,7 @@ def _agent_task_step_results(task):
 def api_agent_approve_step(task_id, step_no):
     """Record approval for ONE proposal step of a persisted agent task."""
     task = AgentTask.query.get_or_404(task_id)
-    if task.user_id is not None and task.user_id != session.get('user_id'):
+    if task.user_id != session.get('user_id'):
         return jsonify({'success': False, 'error': 'Forbidden'}), 403
 
     step_results = _agent_task_step_results(task)
@@ -6145,6 +6145,21 @@ def api_agent_approve_step(task_id, step_no):
         return jsonify({'success': False,
                         'error': f"Step {step_no} is not a pending proposal "
                                  f"(status={step.get('status')})"}), 409
+
+    # Safety rail: do not accept approvals for expired proposals.
+    ttl_hours = _agent_approval_ttl_hours()
+    if ttl_hours > 0:
+        age_hours = (datetime.utcnow() - (task.created_at or datetime.utcnow())
+                     ).total_seconds() / 3600.0
+        if age_hours > ttl_hours:
+            task.status = 'expired'
+            task.updated_at = datetime.utcnow()
+            db.session.commit()
+            return jsonify({
+                'success': False,
+                'error': (f'This proposal expired after {int(ttl_hours)}h. '
+                          'Ask Loli again and approve the fresh plan.'),
+            }), 410
 
     # Store approval state; actual execution happens via /advance.
     step['approved'] = True
@@ -6171,7 +6186,7 @@ def _agent_approval_ttl_hours():
 def api_agent_reject_step(task_id, step_no):
     """Record rejection for ONE proposal step of a persisted agent task."""
     task = AgentTask.query.get_or_404(task_id)
-    if task.user_id is not None and task.user_id != session.get('user_id'):
+    if task.user_id != session.get('user_id'):
         return jsonify({'success': False, 'error': 'Forbidden'}), 403
 
     step_results = _agent_task_step_results(task)
@@ -6208,10 +6223,9 @@ def api_agent_advance_task(task_id):
     fresh read data; only the human-approved mutating steps execute.
     """
     task = AgentTask.query.get_or_404(task_id)
-    if task.user_id is not None and task.user_id != session.get('user_id'):
+    if task.user_id != session.get('user_id'):
+        # Fail closed: a missing user_id must never open access to a task.
         return jsonify({'success': False, 'error': 'Forbidden'}), 403
-    if task.status == 'executing':
-        return jsonify({'success': False, 'error': 'Task is already executing'}), 409
 
     step_results = _agent_task_step_results(task)
     approved_nos = sorted({sr.get('step') for sr in step_results
@@ -6239,30 +6253,41 @@ def api_agent_advance_task(task_id):
     except (ValueError, TypeError):
         plan = None
 
-    task.status = 'executing'
-    task.updated_at = datetime.utcnow()
+    # Atomic claim: only one concurrent request may flip this task into
+    # 'executing' — prevents double execution of approved writes.
+    claimed = AgentTask.query.filter(
+        AgentTask.id == task.id,
+        AgentTask.status != 'executing',
+    ).update({'status': 'executing', 'updated_at': datetime.utcnow()})
     db.session.commit()
+    if not claimed:
+        return jsonify({'success': False, 'error': 'Task is already executing'}), 409
 
     try:
         orchestrator = get_ai_orchestrator()
         result = orchestrator.run_approved_plan(task.command, plan or {}, approved_nos)
+
+        if isinstance(result.get('step_results'), list):
+            task.step_results_json = json.dumps(result['step_results'])
+        still_pending = any(sr.get('status') == 'proposal'
+                            for sr in _agent_task_step_results(task))
+        if result.get('success') and not still_pending:
+            task.status = 'completed'
+        elif result.get('success'):
+            task.status = 'pending_approval'
+        else:
+            task.status = 'failed'
+        db.session.commit()
     except Exception as exc:
         app.logger.error(f"Agent task advance error: {exc}")
+        # Never leave the task bricked in 'executing'.
         task.status = 'failed'
-        db.session.commit()
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
         return jsonify({'success': False, 'error': str(exc)}), 500
 
-    if isinstance(result.get('step_results'), list):
-        task.step_results_json = json.dumps(result['step_results'])
-    still_pending = any(sr.get('status') == 'proposal'
-                        for sr in _agent_task_step_results(task))
-    if result.get('success') and not still_pending:
-        task.status = 'completed'
-    elif result.get('success'):
-        task.status = 'pending_approval'
-    else:
-        task.status = 'failed'
-    db.session.commit()
     result['task_id'] = task.id
     return jsonify(result)
 
@@ -6272,7 +6297,7 @@ def api_agent_advance_task(task_id):
 def api_agent_get_task(task_id):
     """Return plan + step statuses + pending proposals for the widget."""
     task = AgentTask.query.get_or_404(task_id)
-    if task.user_id is not None and task.user_id != session.get('user_id'):
+    if task.user_id != session.get('user_id'):
         return jsonify({'success': False, 'error': 'Forbidden'}), 403
     data = task.to_dict()
     data['success'] = True

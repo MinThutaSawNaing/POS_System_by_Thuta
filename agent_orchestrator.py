@@ -30,6 +30,12 @@ except (ImportError, ModuleNotFoundError):
     get_memory_service = None
 
 
+# Role hierarchy for tool-level authorization. 'staff' means any logged-in
+# user (metadata uses it for low-risk writes like register_customer);
+# cashiers rank at staff level, managers above, boss highest.
+_ROLE_LEVELS = {"staff": 1, "cashier": 1, "manager": 2, "boss": 3}
+
+
 class TaskType(Enum):
     """Types of tasks the AI can plan"""
     SINGLE = "single"           # Single tool execution
@@ -1002,14 +1008,15 @@ class AgentOrchestrator:
                     raise RuntimeError(str(outcome["error"]))
                 result = outcome.get("result")
                 step_outputs[step_no] = result
-                if auto_allowed:
-                    step_results.append({**base, "status": "ok",
-                                         "result": result,
-                                         "executed_by": "agent-auto"})
-                elif human_approved:
+                if human_approved:
+                    # Human provenance outranks the machine gate in the audit trail.
                     step_results.append({**base, "status": "ok",
                                          "result": result,
                                          "executed_by": "approved"})
+                elif auto_allowed:
+                    step_results.append({**base, "status": "ok",
+                                         "result": result,
+                                         "executed_by": "agent-auto"})
                 else:
                     step_results.append({**base, "status": "ok", "result": result})
                 self.session_context["last_tool_used"] = tool
@@ -1233,7 +1240,24 @@ class AgentOrchestrator:
                     "error": f"Tool '{tc.function_name}' not found"
                 })
                 continue
-                
+
+            # Defence-in-depth: enforce the registry's requires_role gate at
+            # execution time (approval alone must never grant a low-role user
+            # a manager-only mutation).
+            required_role = _TOOL_METADATA.get(tc.function_name, {}).get("requires_role")
+            if required_role:
+                acting_level = _ROLE_LEVELS.get(self.request_context.get('role'), 0)
+                needed_level = _ROLE_LEVELS.get(required_role, 1)
+                if acting_level < needed_level:
+                    results.append({
+                        "tool_call_id": tc.id,
+                        "function_name": tc.function_name,
+                        "result": None,
+                        "error": (f"Tool '{tc.function_name}' requires the "
+                                  f"'{required_role}' role")
+                    })
+                    continue
+
             try:
                 func = self.agent.tool_functions[tc.function_name]
                 

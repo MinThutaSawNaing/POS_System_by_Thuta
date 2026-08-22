@@ -1163,10 +1163,13 @@ class AITools:
         PurchaseOrder = self._get_model('PurchaseOrder')
         PurchaseOrderItem = self._get_model('PurchaseOrderItem')
         
-        # Validate supplier
-        supplier = Supplier.query.get(supplier_id)
+        # Validate supplier (branch-scoped)
+        supplier = self._branch_filter(Supplier.query.filter_by(id=supplier_id), Supplier).first()
         if not supplier:
-            return {"error": f"Supplier with ID {supplier_id} not found"}
+            return {"error": f"Supplier with ID {supplier_id} not found in the active branch"}
+
+        if not isinstance(items, list) or not items:
+            return {"error": "At least one order item is required"}
             
         # Generate PO number
         po_number = f"PO-{datetime.now().strftime('%Y%m%d')}-{self._generate_random_suffix()}"
@@ -1177,7 +1180,8 @@ class AITools:
             supplier_id=supplier_id,
             status='draft',
             notes=notes or '',
-            expected_delivery_date=datetime.strptime(expected_delivery_date, '%Y-%m-%d') if expected_delivery_date else None
+            expected_delivery_date=datetime.strptime(expected_delivery_date, '%Y-%m-%d') if expected_delivery_date else None,
+            branch_id=self._branch_id(),
         )
         self.db.session.add(po)
         self.db.session.flush()  # Get PO ID
@@ -1187,17 +1191,23 @@ class AITools:
         
         for item_data in items:
             product_id = item_data.get('product_id')
-            quantity = item_data.get('quantity')
+            quantity = int(item_data.get('quantity', 0) or 0)
             unit_cost = item_data.get('unit_cost')
+            if quantity <= 0:
+                self.db.session.rollback()
+                return {"error": f"Quantity must be a positive whole number (got {quantity})"}
             
-            product = Product.query.get(product_id)
+            product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
             if not product:
                 self.db.session.rollback()
-                return {"error": f"Product with ID {product_id} not found"}
+                return {"error": f"Product with ID {product_id} not found in the active branch"}
                 
             # Use product cost if unit_cost not provided
             if unit_cost is None:
                 unit_cost = product.cost or 0
+            if money_dec(unit_cost) < 0:
+                self.db.session.rollback()
+                return {"error": f"Unit cost cannot be negative for product {product.name}"}
                 
             po_item = PurchaseOrderItem(
                 purchase_order_id=po.id,
@@ -1215,8 +1225,12 @@ class AITools:
                 "unit_cost": money_str(unit_cost)
             })
             
-        po.total_amount = total_amount
-        self.db.session.commit()
+        po.total_amount = float(total_amount.quantize(MONEY_QUANT, rounding=ROUND_HALF_UP))
+        try:
+            self.db.session.commit()
+        except Exception as exc:
+            self.db.session.rollback()
+            return {"error": f"Failed to create purchase order: {exc}"}
         
         return {
             "success": True,
@@ -1233,9 +1247,9 @@ class AITools:
         """Approve a purchase order"""
         PurchaseOrder = self._get_model('PurchaseOrder')
         
-        po = PurchaseOrder.query.get(po_id)
+        po = self._branch_filter(PurchaseOrder.query.filter_by(id=po_id), PurchaseOrder).first()
         if not po:
-            return {"error": f"Purchase order with ID {po_id} not found"}
+            return {"error": f"Purchase order with ID {po_id} not found in the active branch"}
             
         if po.status != 'pending':
             return {"error": f"Cannot approve purchase order with status '{po.status}'. Only 'pending' orders can be approved."}
@@ -1256,9 +1270,9 @@ class AITools:
         """Cancel a purchase order"""
         PurchaseOrder = self._get_model('PurchaseOrder')
         
-        po = PurchaseOrder.query.get(po_id)
+        po = self._branch_filter(PurchaseOrder.query.filter_by(id=po_id), PurchaseOrder).first()
         if not po:
-            return {"error": f"Purchase order with ID {po_id} not found"}
+            return {"error": f"Purchase order with ID {po_id} not found in the active branch"}
             
         if po.status in ['received', 'cancelled']:
             return {"error": f"Cannot cancel purchase order with status '{po.status}'."}
@@ -1313,12 +1327,14 @@ class AITools:
         WarehouseTransfer = self._get_model('WarehouseTransfer')
         Product = self._get_model('Product')
         
-        product = Product.query.get(product_id)
+        product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
         if not product:
-            return {"error": f"Product with ID {product_id} not found"}
+            return {"error": f"Product with ID {product_id} not found in the active branch"}
             
-        # Find warehouse items for this product
-        warehouse_items = WarehouseInventory.query.filter_by(product_id=product_id).all()
+        # Find warehouse items for this product (branch-scoped)
+        warehouse_items = self._branch_filter(
+            WarehouseInventory.query.filter_by(product_id=product_id),
+            WarehouseInventory).all()
         total_available = sum(item.quantity for item in warehouse_items)
         
         if total_available < quantity:
@@ -1877,6 +1893,37 @@ class AITools:
 
     def update_delivery_stage(self, delivery_id: int, stage: str) -> Dict[str, Any]:
         """Move a delivery to its next valid stage (any role)."""
+        Delivery = self._get_model('Delivery')
+        if stage not in DELIVERY_STAGES:
+            return {"error": f"Invalid stage '{stage}'. Valid stages: {sorted(DELIVERY_STAGES)}"}
+        delivery = self._branch_filter(Delivery.query.filter_by(id=delivery_id), Delivery).first()
+        if not delivery:
+            return {"error": f"Delivery with ID {delivery_id} not found in the active branch"}
+        current_stage = delivery.stage
+        if stage == current_stage:
+            return {"error": f"Delivery is already in stage '{current_stage}'"}
+        if stage not in DELIVERY_STAGE_FLOW.get(current_stage, []):
+            return {"error": f"Cannot move delivery from '{current_stage}' to '{stage}'. Allowed next stages: {DELIVERY_STAGE_FLOW.get(current_stage, [])}"}
+
+        now = datetime.utcnow()
+        delivery.stage = stage
+        if stage == 'packaged' and not delivery.packaged_at:
+            delivery.packaged_at = now
+        elif stage == 'delivering' and not delivery.out_for_delivery_at:
+            delivery.out_for_delivery_at = now
+        elif stage == 'delivered':
+            delivery.delivered_at = now
+        elif stage == 'cancelled':
+            delivery.cancelled_at = now
+        self.db.session.commit()
+        return {
+            "success": True,
+            "delivery_id": delivery.id,
+            "delivery_number": delivery.delivery_number,
+            "previous_stage": current_stage,
+            "new_stage": stage,
+            "updated_at": now.isoformat()
+        }
     # ------------------------------------------------------------------
     # Smart-autonomy write tools (Phase A)
     # ------------------------------------------------------------------
@@ -1953,38 +2000,6 @@ class AITools:
             "supplier_id": supplier.id,
             "supplier_name": supplier.name,
             "changed_fields": changed_fields
-        }
-
-        Delivery = self._get_model('Delivery')
-        if stage not in DELIVERY_STAGES:
-            return {"error": f"Invalid stage '{stage}'. Valid stages: {sorted(DELIVERY_STAGES)}"}
-        delivery = self._branch_filter(Delivery.query.filter_by(id=delivery_id), Delivery).first()
-        if not delivery:
-            return {"error": f"Delivery with ID {delivery_id} not found in the active branch"}
-        current_stage = delivery.stage
-        if stage == current_stage:
-            return {"error": f"Delivery is already in stage '{current_stage}'"}
-        if stage not in DELIVERY_STAGE_FLOW.get(current_stage, []):
-            return {"error": f"Cannot move delivery from '{current_stage}' to '{stage}'. Allowed next stages: {DELIVERY_STAGE_FLOW.get(current_stage, [])}"}
-
-        now = datetime.utcnow()
-        delivery.stage = stage
-        if stage == 'packaged' and not delivery.packaged_at:
-            delivery.packaged_at = now
-        elif stage == 'delivering' and not delivery.out_for_delivery_at:
-            delivery.out_for_delivery_at = now
-        elif stage == 'delivered':
-            delivery.delivered_at = now
-        elif stage == 'cancelled':
-            delivery.cancelled_at = now
-        self.db.session.commit()
-        return {
-            "success": True,
-            "delivery_id": delivery.id,
-            "delivery_number": delivery.delivery_number,
-            "previous_stage": current_stage,
-            "new_stage": stage,
-            "updated_at": now.isoformat()
         }
 
     def update_customer(self, customer_id: int, name: str = None, phone: str = None,
@@ -2221,7 +2236,7 @@ class AITools:
         po = PurchaseOrder.query.get(po_id)
         if not po:
             return {"error": f"Purchase order with ID {po_id} not found"}
-        if self._branch_id() is not None and po.branch_id not in (None, self._branch_id()):
+        if self._branch_id() is not None and po.branch_id != self._branch_id():
             return {"error": "This purchase order belongs to a different branch"}
         if po.status in ('received', 'cancelled'):
             return {"error": f"Cannot receive items for a '{po.status}' purchase order"}
@@ -2277,7 +2292,7 @@ class AITools:
                 po.status = 'received'
             elif any_received:
                 po.status = 'partially_received'
-            if po.supplier:
+            if po.supplier and received_lines:
                 po.supplier.total_orders = (po.supplier.total_orders or 0) + 1
 
             self.db.session.commit()
@@ -2424,6 +2439,7 @@ class AITools:
                     refund_amount=0.0,
                     payment_method='exchange',
                     user_id=self.context.get('user_id'),
+                    branch_id=getattr(sale, 'branch_id', None) or self._branch_id(),
                 )
                 self.db.session.add(adjustment_sale)
                 self.db.session.flush()
@@ -2584,6 +2600,9 @@ class AITools:
         promo = Promotion.query.get(promo_id)
         if not promo:
             return {"error": f"Promotion with ID {promo_id} not found"}
+        scope_error = self._promotion_branch_check(promo)
+        if scope_error:
+            return scope_error
         myanmar_tz = pytz.timezone('Asia/Yangon')
         changed = []
         try:
@@ -2613,12 +2632,24 @@ class AITools:
         return {"success": True, "promo_id": promo.id, "changed_fields": changed,
                 "message": "Promotion updated."}
 
+    def _promotion_branch_check(self, promo):
+        """Promotions have no branch column; scope through the product."""
+        branch_id = self._branch_id()
+        if branch_id is not None:
+            product_branch = getattr(promo.product, 'branch_id', None) if promo.product else None
+            if product_branch not in (None, branch_id):
+                return {"error": "This promotion belongs to a different branch"}
+        return None
+
     def cancel_promotion(self, promo_id: int) -> Dict[str, Any]:
         """Cancel (permanently delete) a promotion."""
         Promotion = self._get_model('Promotion')
         promo = Promotion.query.get(promo_id)
         if not promo:
             return {"error": f"Promotion with ID {promo_id} not found"}
+        scope_error = self._promotion_branch_check(promo)
+        if scope_error:
+            return scope_error
         product_name = promo.product.name if promo.product else f"product #{promo.product_id}"
         self.db.session.delete(promo)
         self.db.session.commit()
@@ -2643,6 +2674,8 @@ class AITools:
         sale = Sale.query.filter_by(transaction_id=transaction_id).first()
         if not sale:
             return {"error": f"Sale '{transaction_id}' not found"}
+        if self._branch_id() is not None and getattr(sale, 'branch_id', None) not in (None, self._branch_id()):
+            return {"error": "This sale belongs to a different branch"}
         if getattr(sale, 'delivery', None):
             return {"error": "A delivery already exists for this sale"}
 
@@ -2794,8 +2827,15 @@ class AITools:
                     "message": f"Branch '{branch.name}' deactivated (it has associated data)."}
 
         name = branch.name
-        self.db.session.delete(branch)
-        self.db.session.commit()
+        try:
+            self.db.session.delete(branch)
+            self.db.session.commit()
+        except Exception as exc:
+            self.db.session.rollback()
+            branch.is_active = False
+            self.db.session.commit()
+            return {"success": True, "branch_id": branch_id, "deactivated": True,
+                    "message": f"Branch '{name}' deactivated (delete failed: {exc})."}
         return {"success": True, "deleted_branch": name,
                 "message": f"Empty branch '{name}' deleted."}
 

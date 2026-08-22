@@ -14,6 +14,7 @@ from unittest import mock
 from app import (AI_MODELS, app, db, Branch, Category, Product,
                  PurchaseOrder, PurchaseOrderItem, Sale, SaleItem, Supplier,
                  User, WarehouseInventory)
+from agent_orchestrator import AgentOrchestrator
 from ai_tools import AITools
 
 
@@ -32,9 +33,16 @@ class FullCoverageToolsTestBase(unittest.TestCase):
         db.session.add(self.branch)
         db.session.commit()
         self.branch_id = self.branch.id
+        self._extra_branch_ids = []  # branches created via tools during a test
 
         self.tools = AITools(db, AI_MODELS)
         self.tools.set_context({"branch_id": self.branch_id, "user_id": self.admin_id})
+
+    def _track_tool_branch(self, result):
+        """Remember branches created via create_branch so tearDown can remove them."""
+        if isinstance(result, dict) and result.get("success") and result.get("branch_id"):
+            self._extra_branch_ids.append(result["branch_id"])
+        return result
 
     def tearDown(self):
         try:
@@ -45,11 +53,61 @@ class FullCoverageToolsTestBase(unittest.TestCase):
                 if row:
                     row.is_default = True
                 db.session.commit()
-            # Remove the throwaway test branch.
-            branch = db.session.get(Branch, self.branch_id)
-            if branch:
-                db.session.delete(branch)
-                db.session.commit()
+
+            # Remove fixtures created inside the throwaway branch(es).
+            from app import (Promotion, ReturnExchange, ReturnExchangeItem,
+                             Sale as SaleModel)
+            branch_ids = [self.branch_id] + [
+                bid for bid in self._extra_branch_ids if bid != self.branch_id]
+            products = Product.query.filter(Product.branch_id.in_(branch_ids)).all()
+            product_ids = [p.id for p in products]
+            sales = SaleModel.query.filter(SaleModel.branch_id.in_(branch_ids)).all()
+            sale_ids = [s.id for s in sales]
+
+            workflows = ReturnExchange.query.filter(
+                ReturnExchange.original_sale_id.in_(sale_ids or [0])).all()
+            for wf in workflows:
+                ReturnExchangeItem.query.filter_by(
+                    return_exchange_id=wf.id).delete(synchronize_session=False)
+            for wf in workflows:
+                if wf.adjustment_sale_id:
+                    db.session.delete(db.session.get(SaleModel, wf.adjustment_sale_id))
+                db.session.delete(wf)
+            from app import Delivery
+            Delivery.query.filter(db.or_(
+                Delivery.branch_id.in_(branch_ids),
+                Delivery.sale_id.in_(sale_ids or [0]))).delete(synchronize_session=False)
+            if sale_ids:
+                SaleItem.query.filter(SaleItem.sale_id.in_(sale_ids)).delete(
+                    synchronize_session=False)
+            if product_ids:
+                Promotion.query.filter(Promotion.product_id.in_(product_ids)).delete(
+                    synchronize_session=False)
+            PurchaseOrderItem.query.filter(
+                PurchaseOrderItem.purchase_order_id.in_(
+                    [po.id for po in PurchaseOrder.query.filter(
+                        PurchaseOrder.branch_id.in_(branch_ids)).all()] or [0])
+            ).delete(synchronize_session=False)
+            PurchaseOrder.query.filter(PurchaseOrder.branch_id.in_(branch_ids)).delete(
+                synchronize_session=False)
+            WarehouseInventory.query.filter(WarehouseInventory.branch_id.in_(branch_ids)).delete(
+                synchronize_session=False)
+            if product_ids:
+                Product.query.filter(Product.id.in_(product_ids)).delete(
+                    synchronize_session=False)
+            Category.query.filter(Category.branch_id.in_(branch_ids)).delete(
+                synchronize_session=False)
+            Supplier.query.filter(Supplier.branch_id.in_(branch_ids)).delete(
+                synchronize_session=False)
+            SaleModel.query.filter(SaleModel.branch_id.in_(branch_ids)).delete(
+                synchronize_session=False)
+            db.session.commit()
+
+            for bid in branch_ids:
+                branch = db.session.get(Branch, bid)
+                if branch:
+                    db.session.delete(branch)
+            db.session.commit()
         except Exception:
             db.session.rollback()
         finally:
@@ -66,7 +124,8 @@ class FullCoverageToolsTestBase(unittest.TestCase):
 
 class BranchToolTests(FullCoverageToolsTestBase):
     def test_branch_lifecycle(self):
-        result = self.tools.create_branch("Temp Shop", f"TMP{uuid.uuid4().hex[:4]}")
+        result = self._track_tool_branch(
+            self.tools.create_branch("Temp Shop", f"TMP{uuid.uuid4().hex[:4]}"))
         self.assertTrue(result["success"])
         temp_id = result["branch_id"]
 
@@ -226,7 +285,78 @@ class ReturnExchangeToolTests(FullCoverageToolsTestBase):
             self.assertEqual(db.session.get(Product, swap_id).stock, 9)
 
 
-class PromotionToolTests(FullCoverageToolsTestBase):
+class DeliveryStageAndRoleTests(FullCoverageToolsTestBase):
+    def _delivery(self):
+        from app import Delivery
+        with app.app_context():
+            product = self._product("Delivery Item", stock=1)
+            sale = Sale(transaction_id=f"TX-{uuid.uuid4().hex[:10]}", total=10.0,
+                        tax=0.0, refund_amount=0.0, payment_method='cash',
+                        user_id=self.admin_id, branch_id=self.branch_id)
+            db.session.add(sale)
+            db.session.flush()
+            delivery = Delivery(delivery_number=f"DLV-{uuid.uuid4().hex[:8].upper()}",
+                                sale_id=sale.id, stage='to_deliver', priority='normal',
+                                recipient_name="Test Recipient", recipient_phone="099",
+                                delivery_address="Test Address",
+                                created_by=self.admin_id, branch_id=self.branch_id)
+            db.session.add(delivery)
+            db.session.commit()
+            return delivery.id
+
+    def test_update_delivery_stage_advances_and_stamps_time(self):
+        delivery_id = self._delivery()
+        result = self.tools.update_delivery_stage(delivery_id, 'packaged')
+        self.assertTrue(result.get("success"), msg=result)
+        self.assertEqual(result["previous_stage"], "to_deliver")
+        self.assertEqual(result["new_stage"], "packaged")
+
+        invalid = self.tools.update_delivery_stage(delivery_id, 'delivered')
+        # packaged -> delivered is not a valid jump (must pass through delivering)
+        self.assertIn("Cannot move", invalid.get("error", ""))
+
+
+class RoleEnforcementTests(FullCoverageToolsTestBase):
+    """requires_role must be enforced at execution time (defence-in-depth)."""
+
+    def _orchestrator_with_role(self, role):
+        import agent_orchestrator as ao
+        ao.reset_orchestrator()
+        orch = AgentOrchestrator(None, {})
+        orch.set_request_context({"branch_id": self.branch_id,
+                                  "user_id": self.admin_id, "role": role})
+        return orch
+
+    def test_manager_only_tool_rejected_for_cashier_role(self):
+        import agent_orchestrator as ao
+        from ai_agent import ToolCall
+        orch = self._orchestrator_with_role('cashier')
+        calls = []
+        with mock.patch.dict(orch.agent.tool_functions,
+                             {"create_purchase_order":
+                                  lambda **kw: calls.append(kw) or {}}):
+            results = orch._execute_tools_with_context([
+                ToolCall(id="r1", function_name="create_purchase_order",
+                         arguments={"supplier_id": 1})])
+
+        self.assertIn("requires the 'manager' role", results[0]["error"])
+        self.assertEqual(calls, [])  # the tool body never ran
+
+    def test_manager_role_passes_the_gate(self):
+        from ai_agent import ToolCall
+        orch = self._orchestrator_with_role('manager')
+        calls = []
+        with mock.patch.dict(orch.agent.tool_functions,
+                             {"create_purchase_order":
+                                  lambda **kw: calls.append(kw) or {"success": True}}):
+            results = orch._execute_tools_with_context([
+                ToolCall(id="r2", function_name="create_purchase_order",
+                         arguments={"supplier_id": 1})])
+
+        self.assertIsNone(results[0]["error"])
+        self.assertEqual(len(calls), 1)
+
+
     def _promotion(self):
         with app.app_context():
             product = self._product("Promo Item", stock=3)
