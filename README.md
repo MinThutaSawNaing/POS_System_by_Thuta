@@ -139,13 +139,13 @@ The AI assistant can help with:
 
 ### AI Agent Configuration
 
-The AI agent uses APIFree.ai (DeepSeek V4 Flash by default) for natural language processing. To configure:
+The AI agent uses APIFree.ai (DeepSeek V4 Pro by default) for natural language processing. To configure:
 
 1. Go to **Settings** in the dashboard
 2. Enter your API key in the AI Agent section
 3. Save settings
 
-> **Model override**: Set the `AI_MODEL` environment variable to any model id your APIFree.ai account supports (for example `AI_MODEL=google/gemini-2.5-flash-lite`). The default is `deepseek/deepseek-v4-flash`.
+> **Model override**: Set the `AI_MODEL` environment variable to any model id your APIFree.ai account supports, in `vendor/model` format (for example `AI_MODEL=deepseek-ai/deepseek-v3.2` for a cheaper tier, or `AI_MODEL=google/gemini-2.5-flash-lite`). The full catalog lives at apifree.ai/explore; the default is `deepseek-ai/deepseek-v4-pro-stable`.
 
 > **Note**: The AI agent works with real database data and can perform actual operations like creating purchase orders. Always verify important actions.
 

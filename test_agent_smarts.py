@@ -134,10 +134,10 @@ class RouterTests(SmartsTestBase):
 
 
 class ModelConfigTests(unittest.TestCase):
-    def test_default_model_is_deepseek_v4_flash(self):
-        self.assertEqual(ai_agent.DEFAULT_MODEL, "deepseek/deepseek-v4-flash")
+    def test_default_model_is_deepseek_v4_pro_stable(self):
+        self.assertEqual(ai_agent.DEFAULT_MODEL, "deepseek-ai/deepseek-v4-pro-stable")
         agent = AIAgent(api_key="test-key")
-        self.assertEqual(agent.model, "deepseek/deepseek-v4-flash")
+        self.assertEqual(agent.model, "deepseek-ai/deepseek-v4-pro-stable")
 
     def test_ai_model_env_var_overrides_default(self):
         with mock.patch.dict("os.environ", {"AI_MODEL": "google/gemini-2.5-flash-lite"}):

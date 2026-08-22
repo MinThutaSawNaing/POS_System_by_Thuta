@@ -1,6 +1,6 @@
 """
 AI Agent Module for POS System
-Handles communication with APIFree.ai (DeepSeek V4 Flash by default;
+Handles communication with APIFree.ai (DeepSeek V4 Pro by default;
 override with the AI_MODEL environment variable)
 """
 
@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 
 APIFREE_BASE_URL = "https://api.apifree.ai/v1"
-DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+DEFAULT_MODEL = "deepseek-ai/deepseek-v4-pro-stable"
 
 
 @dataclass
