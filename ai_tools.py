@@ -33,9 +33,12 @@ Safety rails every WRITE tool (mutates=True) must follow:
 """
 
 import json
+import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from decimal import Decimal, ROUND_HALF_UP
+
+import pytz
 
 MONEY_QUANT = Decimal('0.01')
 
@@ -71,6 +74,10 @@ def money_plain(value):
 
     Used by NEW tools so downstream consumers can parse amounts numerically."""
     return f"{money_dec(value).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)}"
+
+def round_money(value):
+    """Quantize a money value to 2 decimals with ROUND_HALF_UP."""
+    return money_dec(value).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
 
 # Tool schema definitions for the AI (parameter schemas only; enriched into
 # TOOL_METADATA right below -- do not add metadata fields here).
@@ -588,6 +595,201 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
             },
             "required": ["debt_id", "reason"]
         }
+    },
+    "receive_purchase_order": {
+        "name": "receive_purchase_order",
+        "description": "Record received quantities against a purchase order. Goods go to warehouse stock; defaults to receiving everything still outstanding.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "po_id": {"type": "integer", "description": "The purchase order to receive."},
+                "items": {
+                    "type": "array",
+                    "description": "Optional per-line received quantities. Omit to receive all remaining quantities.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "purchase_order_item_id": {"type": "integer", "description": "The PO line item."},
+                            "received_qty": {"type": "integer", "description": "Quantity received on this line."}
+                        },
+                        "required": ["purchase_order_item_id", "received_qty"]
+                    }
+                }
+            },
+            "required": ["po_id"]
+        }
+    },
+    "process_return_exchange": {
+        "name": "process_return_exchange",
+        "description": "Process a return (refund) or exchange against an original sale transaction. Returned items restock automatically; exchanges create an adjustment sale.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "original_transaction_id": {"type": "string", "description": "Transaction ID of the original sale."},
+                "return_items": {
+                    "type": "array",
+                    "description": "Items being returned from the original sale.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "sale_item_id": {"type": "integer", "description": "SaleItem id within the original sale."},
+                            "quantity": {"type": "integer", "description": "Quantity being returned."}
+                        },
+                        "required": ["sale_item_id", "quantity"]
+                    }
+                },
+                "exchange_items": {
+                    "type": "array",
+                    "description": "Optional replacement items leaving stock in exchange.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "product_id": {"type": "integer", "description": "Replacement product."},
+                            "quantity": {"type": "integer", "description": "Quantity given to the customer."},
+                            "price": {"type": "number", "description": "Optional unit price; defaults to the product's current price."}
+                        },
+                        "required": ["product_id", "quantity"]
+                    }
+                },
+                "settlement_method": {"type": "string", "description": "How the difference settles: cash, bank, etc. Default cash."},
+                "notes": {"type": "string", "description": "Optional notes recorded on the workflow."}
+            },
+            "required": ["original_transaction_id", "return_items"]
+        }
+    },
+    "update_category": {
+        "name": "update_category",
+        "description": "Rename or edit a category in the active branch; propagates a renamed legacy category name to products and suppliers.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "category_id": {"type": "integer", "description": "The category to update."},
+                "name": {"type": "string", "description": "New unique category name."},
+                "description": {"type": "string", "description": "Optional description."},
+                "color": {"type": "string", "description": "Optional display color."},
+                "sort_order": {"type": "integer", "description": "Optional display sort order."}
+            },
+            "required": ["category_id", "name"]
+        }
+    },
+    "delete_category": {
+        "name": "delete_category",
+        "description": "Delete a category. Refuses while any product or supplier still uses it.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "category_id": {"type": "integer", "description": "The category to delete."}
+            },
+            "required": ["category_id"]
+        }
+    },
+    "update_promotion": {
+        "name": "update_promotion",
+        "description": "Update a promotion's start/end dates, discount type, or discount value.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "promo_id": {"type": "integer", "description": "The promotion to update."},
+                "start_date": {"type": "string", "description": "ISO datetime when the promotion starts."},
+                "end_date": {"type": "string", "description": "ISO datetime when the promotion ends (must be after start)."},
+                "discount_type": {"type": "string", "description": "'percent' or 'fixed'."},
+                "discount_value": {"type": "number", "description": "Discount amount."}
+            },
+            "required": ["promo_id"]
+        }
+    },
+    "cancel_promotion": {
+        "name": "cancel_promotion",
+        "description": "Cancel (permanently delete) a promotion.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "promo_id": {"type": "integer", "description": "The promotion to cancel."}
+            },
+            "required": ["promo_id"]
+        }
+    },
+    "create_delivery": {
+        "name": "create_delivery",
+        "description": "Create a delivery record for an existing sale with recipient, address, and optional courier details.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "sale_transaction_id": {"type": "string", "description": "Transaction ID of the sale to deliver."},
+                "recipient_name": {"type": "string", "description": "Who receives the delivery."},
+                "recipient_phone": {"type": "string", "description": "Recipient phone."},
+                "delivery_address": {"type": "string", "description": "Delivery address."},
+                "customer_id": {"type": "integer", "description": "Optional customer link."},
+                "priority": {"type": "string", "description": "low, normal, high, or urgent."},
+                "township": {"type": "string", "description": "Optional township."},
+                "instructions": {"type": "string", "description": "Optional delivery instructions."},
+                "courier_name": {"type": "string", "description": "Optional courier name."},
+                "courier_phone": {"type": "string", "description": "Optional courier phone."},
+                "tracking_code": {"type": "string", "description": "Optional tracking code."},
+                "delivery_fee": {"type": "number", "description": "Optional delivery fee."},
+                "scheduled_at": {"type": "string", "description": "Optional ISO datetime schedule."}
+            },
+            "required": ["sale_transaction_id", "recipient_name", "recipient_phone", "delivery_address"]
+        }
+    },
+    "get_branch_list": {
+        "name": "get_branch_list",
+        "description": "List all branches with active/default status.",
+        "parameters": {"type": "object", "properties": {}}
+    },
+    "create_branch": {
+        "name": "create_branch",
+        "description": "Create a new branch with a unique code.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Branch name."},
+                "code": {"type": "string", "description": "Unique branch code."},
+                "address": {"type": "string", "description": "Optional address."},
+                "phone": {"type": "string", "description": "Optional phone."},
+                "email": {"type": "string", "description": "Optional email."}
+            },
+            "required": ["name", "code"]
+        }
+    },
+    "update_branch": {
+        "name": "update_branch",
+        "description": "Update a branch's name, code, contact details, or active status.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "branch_id": {"type": "integer", "description": "The branch to update."},
+                "name": {"type": "string", "description": "New name."},
+                "code": {"type": "string", "description": "New unique code."},
+                "address": {"type": "string", "description": "Address."},
+                "phone": {"type": "string", "description": "Phone."},
+                "email": {"type": "string", "description": "Email."},
+                "is_active": {"type": "boolean", "description": "Active flag."}
+            },
+            "required": ["branch_id"]
+        }
+    },
+    "set_default_branch": {
+        "name": "set_default_branch",
+        "description": "Make a branch the company-wide default branch.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "branch_id": {"type": "integer", "description": "The branch to make default."}
+            },
+            "required": ["branch_id"]
+        }
+    },
+    "deactivate_branch": {
+        "name": "deactivate_branch",
+        "description": "Deactivate a branch (soft delete when it has data); refuses the default branch.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "branch_id": {"type": "integer", "description": "The branch to deactivate."}
+            },
+            "required": ["branch_id"]
+        }
     }
 }
 
@@ -647,6 +849,19 @@ _TOOL_META = {
     "delete_customer":                 ("customers",   True,  'manager', "Delete a customer; refuses when outstanding debt balances exist.", "small"),
     "update_product_price":            ("inventory",   True,  'manager', "Update a product's price with exact decimal math and an optional audit reason.", "small"),
     "write_off_debt":                  ("debts",       True,  'manager', "Write off a debt with a mandatory reason; zeroes balance and appends an audit note.", "small"),
+    # --- full-feature coverage tools (all remaining tabs) ---
+    "receive_purchase_order":          ("purchasing",  True,  'manager', "Record received quantities against a purchase order into warehouse stock.", "small"),
+    "process_return_exchange":         ("sales",       True,  'manager', "Process a return/refund or exchange against an original sale transaction.", "small"),
+    "update_category":                 ("inventory",   True,  'manager', "Rename or edit a category; propagates renames to products/suppliers.", "small"),
+    "delete_category":                 ("inventory",   True,  'manager', "Delete an unused category; refuses when products or suppliers use it.", "small"),
+    "update_promotion":                ("promotions",  True,  'manager', "Update a promotion's dates, discount type, or value.", "small"),
+    "cancel_promotion":                ("promotions",  True,  'manager', "Cancel (delete) a promotion entirely.", "small"),
+    "create_delivery":                 ("deliveries",  True,  'manager', "Create a delivery record for a sale with recipient and courier details.", "small"),
+    "get_branch_list":                 ("system",      False, None,      "List all branches with active/default status.", "small"),
+    "create_branch":                   ("system",      True,  'manager', "Create a new branch with a unique code.", "small"),
+    "update_branch":                   ("system",      True,  'manager', "Update a branch's details or active status.", "small"),
+    "set_default_branch":              ("system",      True,  'manager', "Make a branch the company-wide default.", "small"),
+    "deactivate_branch":               ("system",      True,  'manager', "Deactivate a branch; refuses the default branch.", "small"),
 }
 
 TOOL_METADATA: Dict[str, Dict[str, Any]] = {}
@@ -1992,8 +2207,600 @@ class AITools:
 
     def _generate_random_suffix(self) -> str:
         """Generate a random suffix for PO numbers"""
-        import uuid
         return uuid.uuid4().hex[:6].upper()
+
+    # ==================================================================
+    # Full-feature coverage tools
+    # ==================================================================
+
+    def receive_purchase_order(self, po_id: int, items: List[Dict] = None) -> Dict[str, Any]:
+        """Record received quantities against a PO; goods land in warehouse stock."""
+        PurchaseOrder = self._get_model('PurchaseOrder')
+        WarehouseInventory = self._get_model('WarehouseInventory')
+
+        po = PurchaseOrder.query.get(po_id)
+        if not po:
+            return {"error": f"Purchase order with ID {po_id} not found"}
+        if self._branch_id() is not None and po.branch_id not in (None, self._branch_id()):
+            return {"error": "This purchase order belongs to a different branch"}
+        if po.status in ('received', 'cancelled'):
+            return {"error": f"Cannot receive items for a '{po.status}' purchase order"}
+
+        item_map = {item.id: item for item in po.items}
+        if not item_map:
+            return {"error": "This purchase order has no line items"}
+
+        try:
+            requested = []
+            for row in (items or []):
+                po_item_id = int(row.get('purchase_order_item_id', 0) or 0)
+                qty = int(row.get('received_qty', 0) or 0)
+                if qty < 0:
+                    return {"error": "Received quantities cannot be negative"}
+                if po_item_id not in item_map:
+                    return {"error": f"Invalid PO item: {po_item_id}"}
+                requested.append((po_item_id, qty))
+        except (TypeError, ValueError):
+            return {"error": "Invalid receiving items payload"}
+
+        if items is None:
+            requested = [(item_id, max(item.ordered_qty - item.received_qty, 0))
+                         for item_id, item in item_map.items()]
+
+        received_lines = []
+        try:
+            for po_item_id, qty in requested:
+                if qty <= 0:
+                    continue
+                po_item = item_map[po_item_id]
+                remaining = int(po_item.ordered_qty or 0) - int(po_item.received_qty or 0)
+                if qty > remaining:
+                    name = po_item.product.name if po_item.product else f"item #{po_item_id}"
+                    return {"error": f"Receive qty exceeds remaining for {name}. Remaining: {remaining}"}
+
+                po_item.received_qty += qty
+                self.db.session.add(WarehouseInventory(
+                    product_id=po_item.product_id,
+                    quantity=qty,
+                    batch_number=po.po_number,
+                    received_date=datetime.utcnow(),
+                    unit_cost=po_item.unit_cost,
+                    branch_id=po.branch_id,
+                ))
+                if po_item.unit_cost and po_item.unit_cost > 0 and po_item.product:
+                    po_item.product.cost = po_item.unit_cost
+                received_lines.append({"purchase_order_item_id": po_item_id, "received_qty": qty})
+
+            all_received = all(i.received_qty >= i.ordered_qty for i in po.items)
+            any_received = any(i.received_qty > 0 for i in po.items)
+            if all_received:
+                po.status = 'received'
+            elif any_received:
+                po.status = 'partially_received'
+            if po.supplier:
+                po.supplier.total_orders = (po.supplier.total_orders or 0) + 1
+
+            self.db.session.commit()
+            return {
+                "success": True,
+                "po_id": po.id,
+                "po_number": po.po_number,
+                "status": po.status,
+                "received_lines": received_lines,
+                "message": f"Receiving recorded for {po.po_number}; status is now '{po.status}'. Goods are in warehouse stock.",
+            }
+        except Exception as exc:
+            self.db.session.rollback()
+            self.db.session.expire_all()
+            return {"error": f"Failed to record receiving: {exc}"}
+
+    def _returned_qty_map(self, sale_id):
+        """Quantities already returned per sale_item_id across all workflows."""
+        ReturnExchange = self._get_model('ReturnExchange')
+        ReturnExchangeItem = self._get_model('ReturnExchangeItem')
+        rows = (self.db.session.query(
+                    ReturnExchangeItem.original_sale_item_id,
+                    self.db.func.sum(ReturnExchangeItem.quantity))
+                .join(ReturnExchange, ReturnExchange.id == ReturnExchangeItem.return_exchange_id)
+                .filter(ReturnExchange.original_sale_id == sale_id,
+                        ReturnExchangeItem.movement == 'return',
+                        ReturnExchangeItem.original_sale_item_id.isnot(None))
+                .group_by(ReturnExchangeItem.original_sale_item_id).all())
+        return {row[0]: int(row[1] or 0) for row in rows}
+
+    def process_return_exchange(self, original_transaction_id: str, return_items: List[Dict],
+                                exchange_items: List[Dict] = None,
+                                settlement_method: str = 'cash',
+                                notes: str = None) -> Dict[str, Any]:
+        """Process a return/refund or exchange against an original sale."""
+        Sale = self._get_model('Sale')
+        SaleItem = self._get_model('SaleItem')
+        Product = self._get_model('Product')
+
+        transaction_id = str(original_transaction_id or '').strip()
+        if not transaction_id:
+            return {"error": "Original transaction ID is required"}
+        sale = Sale.query.filter_by(transaction_id=transaction_id).first()
+        if not sale:
+            return {"error": f"Original sale '{transaction_id}' not found"}
+        if self._branch_id() is not None and getattr(sale, 'branch_id', None) not in (None, self._branch_id()):
+            return {"error": "This sale belongs to a different branch"}
+        if not isinstance(return_items, list) or not return_items:
+            return {"error": "At least one return item is required"}
+
+        sale_items = SaleItem.query.filter_by(sale_id=sale.id).all()
+        sale_item_map = {item.id: item for item in sale_items}
+        returned_qty_map = self._returned_qty_map(sale.id)
+
+        def _unit_tax(item):
+            qty = int(item.quantity or 0)
+            if qty <= 0:
+                return Decimal('0.00')
+            return (money_dec(item.tax or 0) / Decimal(qty)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+
+        try:
+            return_lines, return_total = [], Decimal('0.00')
+            for row in return_items:
+                sale_item_id = int(row.get('sale_item_id', 0) or 0)
+                quantity = int(row.get('quantity', 0) or 0)
+                if sale_item_id <= 0 or quantity <= 0:
+                    return {"error": "Invalid return item values"}
+                sale_item = sale_item_map.get(sale_item_id)
+                if not sale_item:
+                    return {"error": f"Return item {sale_item_id} not found in original sale"}
+                available = max(int(sale_item.quantity or 0) - returned_qty_map.get(sale_item_id, 0), 0)
+                if quantity > available:
+                    return {"error": f"Return qty exceeds available qty for item #{sale_item_id}. Available: {available}"}
+                product = Product.query.get(sale_item.product_id)
+                if not product:
+                    return {"error": "Product not found for return item"}
+
+                unit_price = money_dec(sale_item.price)
+                line_total = (unit_price * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+                line_tax = (_unit_tax(sale_item) * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+                return_total += line_total + line_tax
+                return_lines.append({'sale_item': sale_item, 'product': product,
+                                     'quantity': quantity, 'unit_price': unit_price,
+                                     'tax_rate': float(product.tax_rate or 0),
+                                     'line_total': line_total, 'line_tax': line_tax})
+
+            exchange_lines, exchange_total = [], Decimal('0.00')
+            for row in (exchange_items or []):
+                product_id = int(row.get('product_id', 0) or 0)
+                quantity = int(row.get('quantity', 0) or 0)
+                if product_id <= 0 or quantity <= 0:
+                    return {"error": "Invalid exchange item values"}
+                product = Product.query.get(product_id)
+                if not product:
+                    return {"error": f"Exchange product {product_id} not found"}
+                if self._branch_id() is not None and product.branch_id not in (None, self._branch_id()):
+                    return {"error": f"Exchange product {product.name} belongs to a different branch"}
+                if quantity > int(product.stock or 0):
+                    return {"error": f"Insufficient stock for exchange product {product.name}. Available: {product.stock}"}
+
+                unit_price = money_dec(row.get('price', product.price))
+                if unit_price < 0:
+                    return {"error": "Exchange item price cannot be negative"}
+                line_total = (unit_price * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+                line_tax = (line_total * money_dec(product.tax_rate or 0) / Decimal('100')).quantize(
+                    MONEY_QUANT, rounding=ROUND_HALF_UP)
+                exchange_total += line_total + line_tax
+                exchange_lines.append({'product': product, 'quantity': quantity,
+                                       'unit_price': unit_price,
+                                       'tax_rate': float(product.tax_rate or 0),
+                                       'line_total': line_total, 'line_tax': line_tax})
+        except (TypeError, ValueError):
+            return {"error": "Invalid return/exchange item values"}
+
+        mode = 'exchange' if exchange_lines else 'return'
+        net_total = (exchange_total - return_total).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+        refund_amount = abs(net_total) if net_total < 0 else Decimal('0.00')
+        collected_amount = net_total if net_total > 0 else Decimal('0.00')
+        method = str(settlement_method or 'cash').strip().lower()
+        return self._commit_return_exchange(
+            mode, sale, transaction_id, return_lines, exchange_lines,
+            return_total, exchange_total, net_total, refund_amount,
+            collected_amount, method, notes)
+
+    def _commit_return_exchange(self, mode, sale, transaction_id, return_lines,
+                                exchange_lines, return_total, exchange_total,
+                                net_total, refund_amount, collected_amount,
+                                method, notes):
+        """Persist a validated return/exchange workflow atomically."""
+        ReturnExchange = self._get_model('ReturnExchange')
+        ReturnExchangeItem = self._get_model('ReturnExchangeItem')
+        Sale = self._get_model('Sale')
+        SaleItem = self._get_model('SaleItem')
+        myanmar_tz = pytz.timezone('Asia/Yangon')
+        try:
+            adjustment_sale = None
+            if exchange_lines:
+                adjustment_sale = Sale(
+                    transaction_id=str(uuid.uuid4()),
+                    date=datetime.now(myanmar_tz),
+                    total=float(round_money(exchange_total)),
+                    tax=float(round_money(sum(l['line_tax'] for l in exchange_lines))),
+                    cash_received=float(round_money(collected_amount)) if collected_amount > 0 else None,
+                    refund_amount=0.0,
+                    payment_method='exchange',
+                    user_id=self.context.get('user_id'),
+                )
+                self.db.session.add(adjustment_sale)
+                self.db.session.flush()
+                for line in exchange_lines:
+                    self.db.session.add(SaleItem(
+                        sale_id=adjustment_sale.id,
+                        product_id=line['product'].id,
+                        quantity=line['quantity'],
+                        price=float(round_money(line['unit_price'])),
+                        tax=float(round_money(line['line_tax'])),
+                    ))
+                    line['product'].stock -= line['quantity']
+
+            workflow = ReturnExchange(
+                workflow_id=str(uuid.uuid4()),
+                mode=mode,
+                original_sale_id=sale.id,
+                adjustment_sale_id=adjustment_sale.id if adjustment_sale else None,
+                return_total=float(round_money(return_total)),
+                exchange_total=float(round_money(exchange_total)),
+                net_total=float(round_money(net_total)),
+                refund_amount=float(round_money(refund_amount)),
+                collected_amount=float(round_money(collected_amount)),
+                settlement_method=method,
+                notes=(notes or '').strip() or None,
+                user_id=self.context.get('user_id'),
+            )
+            self.db.session.add(workflow)
+            self.db.session.flush()
+
+            for line in return_lines:
+                line['product'].stock += line['quantity']
+                self.db.session.add(ReturnExchangeItem(
+                    return_exchange_id=workflow.id,
+                    original_sale_item_id=line['sale_item'].id,
+                    product_id=line['product'].id,
+                    movement='return',
+                    quantity=line['quantity'],
+                    unit_price=float(round_money(line['unit_price'])),
+                    tax_rate=line['tax_rate'],
+                    line_total=float(round_money(line['line_total'])),
+                    line_tax=float(round_money(line['line_tax'])),
+                ))
+            for line in exchange_lines:
+                self.db.session.add(ReturnExchangeItem(
+                    return_exchange_id=workflow.id,
+                    original_sale_item_id=None,
+                    product_id=line['product'].id,
+                    movement='exchange',
+                    quantity=line['quantity'],
+                    unit_price=float(round_money(line['unit_price'])),
+                    tax_rate=line['tax_rate'],
+                    line_total=float(round_money(line['line_total'])),
+                    line_tax=float(round_money(line['line_tax'])),
+                ))
+
+            self.db.session.commit()
+            result = {
+                "success": True,
+                "workflow_id": workflow.workflow_id,
+                "mode": mode,
+                "original_transaction_id": transaction_id,
+                "return_total": money_plain(return_total),
+                "exchange_total": money_plain(exchange_total),
+                "net_total": money_plain(net_total),
+                "refund_amount": money_plain(refund_amount),
+                "collected_amount": money_plain(collected_amount),
+                "settlement_method": method,
+            }
+            if refund_amount > 0:
+                result["message"] = f"{mode.capitalize()} processed. Refund due: {money_plain(refund_amount)}."
+            elif collected_amount > 0:
+                result["message"] = f"{mode.capitalize()} processed. Amount to collect: {money_plain(collected_amount)}."
+            else:
+                result["message"] = f"{mode.capitalize()} processed. Even exchange - nothing to settle."
+            if adjustment_sale:
+                result["adjustment_transaction_id"] = adjustment_sale.transaction_id
+            return result
+        except Exception as exc:
+            self.db.session.rollback()
+            self.db.session.expire_all()
+            return {"error": f"Failed to process return/exchange: {exc}"}
+
+    def update_category(self, category_id: int, name: str, description: str = None,
+                        color: str = None, sort_order: int = None) -> Dict[str, Any]:
+        """Rename or edit a category; propagates renames to products/suppliers."""
+        Category = self._get_model('Category')
+        Product = self._get_model('Product')
+        Supplier = self._get_model('Supplier')
+
+        category = self._branch_filter(
+            Category.query.filter_by(id=category_id), Category).first()
+        if not category:
+            return {"error": f"Category with ID {category_id} not found in the active branch"}
+
+        name = str(name or '').strip()
+        if not name:
+            return {"error": "Category name is required"}
+
+        existing = Category.query.filter(
+            self.db.func.lower(Category.name) == name.lower(),
+            Category.id != category_id,
+            Category.branch_id == category.branch_id,
+        ).first()
+        if existing:
+            return {"error": f"Category \"{name}\" already exists"}
+
+        changed = ["name"]
+        category.name = name
+        if description is not None:
+            category.description = str(description).strip()
+            changed.append("description")
+        if color is not None:
+            category.color = color
+            changed.append("color")
+        if sort_order is not None:
+            category.sort_order = sort_order
+            changed.append("sort_order")
+
+        # Keep the denormalized legacy category strings in sync with the
+        # canonical category record (by foreign key).
+        Product.query.filter_by(category_id=category.id).update({'category': name})
+        Supplier.query.filter_by(category_id=category.id).update({'category': name})
+        changed.append("product_supplier_names")
+        self.db.session.commit()
+
+        return {"success": True, "category_id": category.id, "name": category.name,
+                "changed_fields": changed,
+                "message": f"Category updated to '{category.name}'."}
+
+    def delete_category(self, category_id: int) -> Dict[str, Any]:
+        """Delete a category; refuses while products or suppliers still use it."""
+        Category = self._get_model('Category')
+        Product = self._get_model('Product')
+        Supplier = self._get_model('Supplier')
+
+        category = self._branch_filter(
+            Category.query.filter_by(id=category_id), Category).first()
+        if not category:
+            return {"error": f"Category with ID {category_id} not found in the active branch"}
+
+        product_count = Product.query.filter_by(category_id=category_id).count()
+        supplier_count = Supplier.query.filter_by(category_id=category_id).count()
+        if product_count > 0 or supplier_count > 0:
+            return {"error": (f"Cannot delete category '{category.name}'. It is used by "
+                              f"{product_count} product(s) and {supplier_count} supplier(s).")}
+
+        name = category.name
+        self.db.session.delete(category)
+        self.db.session.commit()
+        return {"success": True, "deleted_category": name,
+                "message": f"Category '{name}' deleted."}
+
+    def update_promotion(self, promo_id: int, start_date: str = None, end_date: str = None,
+                         discount_type: str = None, discount_value=None) -> Dict[str, Any]:
+        """Update a promotion's dates, discount type, or value."""
+        Promotion = self._get_model('Promotion')
+        promo = Promotion.query.get(promo_id)
+        if not promo:
+            return {"error": f"Promotion with ID {promo_id} not found"}
+        myanmar_tz = pytz.timezone('Asia/Yangon')
+        changed = []
+        try:
+            if start_date is not None:
+                promo.start_date = myanmar_tz.localize(datetime.fromisoformat(str(start_date)))
+                changed.append("start_date")
+            if end_date is not None:
+                promo.end_date = myanmar_tz.localize(datetime.fromisoformat(str(end_date)))
+                changed.append("end_date")
+            if discount_type is not None:
+                dtype = str(discount_type).strip().lower()
+                if dtype not in ('percent', 'fixed'):
+                    return {"error": "discount_type must be 'percent' or 'fixed'"}
+                promo.discount_type = dtype
+                changed.append("discount_type")
+            if discount_value is not None:
+                promo.discount_value = money_dec(discount_value)
+                changed.append("discount_value")
+            if promo.end_date <= promo.start_date:
+                self.db.session.rollback()
+                return {"error": "End date must be after start date"}
+            self.db.session.commit()
+        except ValueError as exc:
+            self.db.session.rollback()
+            return {"error": f"Invalid date format (use ISO 8601): {exc}"}
+
+        return {"success": True, "promo_id": promo.id, "changed_fields": changed,
+                "message": "Promotion updated."}
+
+    def cancel_promotion(self, promo_id: int) -> Dict[str, Any]:
+        """Cancel (permanently delete) a promotion."""
+        Promotion = self._get_model('Promotion')
+        promo = Promotion.query.get(promo_id)
+        if not promo:
+            return {"error": f"Promotion with ID {promo_id} not found"}
+        product_name = promo.product.name if promo.product else f"product #{promo.product_id}"
+        self.db.session.delete(promo)
+        self.db.session.commit()
+        return {"success": True, "cancelled_promotion_id": promo_id,
+                "product": product_name,
+                "message": f"Promotion on {product_name} cancelled."}
+
+    def create_delivery(self, sale_transaction_id: str, recipient_name: str,
+                        recipient_phone: str, delivery_address: str,
+                        customer_id: int = None, priority: str = 'normal',
+                        township: str = None, instructions: str = None,
+                        courier_name: str = None, courier_phone: str = None,
+                        tracking_code: str = None, delivery_fee=None,
+                        scheduled_at: str = None) -> Dict[str, Any]:
+        """Create a delivery record for an existing sale."""
+        Sale = self._get_model('Sale')
+        Delivery = self._get_model('Delivery')
+
+        transaction_id = str(sale_transaction_id or '').strip()
+        if not transaction_id:
+            return {"error": "Sale transaction ID is required"}
+        sale = Sale.query.filter_by(transaction_id=transaction_id).first()
+        if not sale:
+            return {"error": f"Sale '{transaction_id}' not found"}
+        if getattr(sale, 'delivery', None):
+            return {"error": "A delivery already exists for this sale"}
+
+        recipient_name = str(recipient_name or '').strip()
+        recipient_phone = str(recipient_phone or '').strip()
+        delivery_address = str(delivery_address or '').strip()
+        if not recipient_name or not recipient_phone or not delivery_address:
+            return {"error": "Recipient name, phone and address are required"}
+
+        prio = str(priority or 'normal').strip().lower()
+        if prio not in ('low', 'normal', 'high', 'urgent'):
+            prio = 'normal'
+
+        scheduled = None
+        if scheduled_at:
+            try:
+                scheduled = datetime.fromisoformat(str(scheduled_at))
+            except ValueError:
+                return {"error": "scheduled_at must be an ISO 8601 datetime"}
+
+        delivery = Delivery(
+            delivery_number=f"DLV-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}",
+            sale_id=sale.id,
+            customer_id=customer_id or None,
+            stage='to_deliver',
+            priority=prio,
+            recipient_name=recipient_name,
+            recipient_phone=recipient_phone,
+            delivery_address=delivery_address,
+            township=(township or '').strip() or None,
+            instructions=(instructions or '').strip() or None,
+            courier_name=(courier_name or '').strip() or None,
+            courier_phone=(courier_phone or '').strip() or None,
+            tracking_code=(tracking_code or '').strip() or None,
+            delivery_fee=float(money_dec(delivery_fee).quantize(MONEY_QUANT)),
+            scheduled_at=scheduled,
+            created_by=self.context.get('user_id'),
+            branch_id=self._branch_id(),
+        )
+        self.db.session.add(delivery)
+        self.db.session.commit()
+        return {"success": True, "delivery_id": delivery.id,
+                "delivery_number": delivery.delivery_number,
+                "sale_transaction_id": transaction_id,
+                "stage": delivery.stage, "priority": delivery.priority,
+                "message": f"Delivery {delivery.delivery_number} created for sale {transaction_id}."}
+
+    # --- Branch management (global scope, manager only) ---
+
+    def get_branch_list(self) -> Dict[str, Any]:
+        """List all branches with active/default status."""
+        Branch = self._get_model('Branch')
+        branches = Branch.query.order_by(Branch.is_default.desc(), Branch.name.asc()).all()
+        return {"total_branches": len(branches), "branches": [{
+            "branch_id": b.id, "name": b.name, "code": b.code,
+            "is_default": bool(b.is_default), "is_active": bool(b.is_active),
+            "address": b.address, "phone": b.phone,
+        } for b in branches]}
+
+    def create_branch(self, name: str, code: str, address: str = None,
+                      phone: str = None, email: str = None) -> Dict[str, Any]:
+        """Create a new branch with a unique code."""
+        Branch = self._get_model('Branch')
+        name = str(name or '').strip()
+        code = str(code or '').strip().upper()
+        if not name:
+            return {"error": "Branch name is required"}
+        if not code:
+            return {"error": "Branch code is required"}
+        if Branch.query.filter_by(code=code).first():
+            return {"error": f"Branch code '{code}' already exists"}
+
+        branch = Branch(name=name, code=code,
+                        address=(address or '').strip() or None,
+                        phone=(phone or '').strip() or None,
+                        email=(email or '').strip() or None,
+                        is_default=False, is_active=True)
+        self.db.session.add(branch)
+        self.db.session.commit()
+        return {"success": True, "branch_id": branch.id, "name": branch.name,
+                "code": branch.code,
+                "message": f"Branch '{branch.name}' ({branch.code}) created."}
+
+    def update_branch(self, branch_id: int, name: str = None, code: str = None,
+                      address: str = None, phone: str = None, email: str = None,
+                      is_active: bool = None) -> Dict[str, Any]:
+        """Update a branch's details or active status."""
+        Branch = self._get_model('Branch')
+        branch = Branch.query.get(branch_id)
+        if not branch:
+            return {"error": f"Branch with ID {branch_id} not found"}
+
+        changed = []
+        if name:
+            branch.name = str(name).strip()
+            changed.append("name")
+        if code:
+            new_code = str(code).strip().upper()
+            existing = Branch.query.filter(Branch.code == new_code, Branch.id != branch_id).first()
+            if existing:
+                return {"error": f"Branch code '{new_code}' already exists"}
+            branch.code = new_code
+            changed.append("code")
+        for field, value in (("address", address), ("phone", phone), ("email", email)):
+            if value is not None:
+                setattr(branch, field, str(value).strip() or None)
+                changed.append(field)
+        if is_active is not None:
+            branch.is_active = bool(is_active)
+            changed.append("is_active")
+
+        self.db.session.commit()
+        return {"success": True, "branch_id": branch.id, "changed_fields": changed,
+                "message": f"Branch '{branch.name}' updated."}
+
+    def set_default_branch(self, branch_id: int) -> Dict[str, Any]:
+        """Make a branch the company-wide default."""
+        Branch = self._get_model('Branch')
+        branch = Branch.query.get(branch_id)
+        if not branch:
+            return {"error": f"Branch with ID {branch_id} not found"}
+        if not branch.is_active:
+            return {"error": "Cannot make an inactive branch the default"}
+
+        Branch.query.update({'is_default': False})
+        branch.is_default = True
+        self.db.session.commit()
+        return {"success": True, "branch_id": branch.id, "name": branch.name,
+                "message": f"Branch '{branch.name}' is now the default branch."}
+
+    def deactivate_branch(self, branch_id: int) -> Dict[str, Any]:
+        """Deactivate a branch; hard-deletes only when it has no data."""
+        Branch = self._get_model('Branch')
+        Product = self._get_model('Product')
+        Sale = self._get_model('Sale')
+
+        branch = Branch.query.get(branch_id)
+        if not branch:
+            return {"error": f"Branch with ID {branch_id} not found"}
+        if branch.is_default:
+            return {"error": "Cannot deactivate the default branch. Set another branch as default first."}
+
+        has_products = Product.query.filter_by(branch_id=branch_id).count() > 0
+        has_sales = Sale.query.filter_by(branch_id=branch_id).count() > 0
+        if has_products or has_sales:
+            branch.is_active = False
+            self.db.session.commit()
+            return {"success": True, "branch_id": branch.id, "deactivated": True,
+                    "message": f"Branch '{branch.name}' deactivated (it has associated data)."}
+
+        name = branch.name
+        self.db.session.delete(branch)
+        self.db.session.commit()
+        return {"success": True, "deleted_branch": name,
+                "message": f"Empty branch '{name}' deleted."}
+
+
+
 
 
 def get_all_tools(read_only: bool = False) -> Dict[str, Dict]:

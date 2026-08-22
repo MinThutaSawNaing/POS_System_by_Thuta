@@ -70,8 +70,8 @@ TOOL_CATEGORIES = {
         "keywords": ["supplier", "vendor", "supply", "contact", "price agreement", "distributor", "who supplies"]
     },
     "purchase_order": {
-        "tools": ["get_purchase_orders", "create_purchase_order", "approve_purchase_order", "cancel_purchase_order"],
-        "keywords": ["purchase order", "po", "order", "approve", "cancel", "create order", "buy", "procurement"]
+        "tools": ["get_purchase_orders", "create_purchase_order", "approve_purchase_order", "cancel_purchase_order", "receive_purchase_order"],
+        "keywords": ["purchase order", "po", "order", "approve", "cancel", "create order", "buy", "procurement", "receive"]
     },
     "warehouse": {
         "tools": ["get_warehouse_inventory", "create_warehouse_transfer"],
@@ -82,15 +82,15 @@ TOOL_CATEGORIES = {
         "keywords": ["sales", "trend", "best seller", "top selling", "revenue", "sold", "performance", "daily sales", "monthly sales"]
     },
     "branch": {
-        "tools": ["get_current_branch_context"],
-        "keywords": ["branch", "store", "location", "current branch"]
+        "tools": ["get_current_branch_context", "get_branch_list", "create_branch", "update_branch", "set_default_branch", "deactivate_branch"],
+        "keywords": ["branch", "branches", "store", "location", "current branch", "default branch"]
     },
     "category": {
-        "tools": ["get_category_summary"],
+        "tools": ["get_category_summary", "create_category", "update_category", "delete_category"],
         "keywords": ["category", "categories"]
     },
     "promotion": {
-        "tools": ["get_promotion_summary"],
+        "tools": ["get_promotion_summary", "create_promotion", "update_promotion", "cancel_promotion"],
         "keywords": ["promotion", "promotions", "discount", "offer", "campaign"]
     },
     "customer": {
@@ -102,11 +102,11 @@ TOOL_CATEGORIES = {
         "keywords": ["debt", "debts", "overdue", "credit", "aging", "balance", "payment", "owe", "owes", "unpaid", "receivable"]
     },
     "delivery": {
-        "tools": ["get_delivery_summary"],
+        "tools": ["get_delivery_summary", "update_delivery_stage", "create_delivery"],
         "keywords": ["delivery", "deliveries", "courier", "dispatch", "tracking"]
     },
     "return_exchange": {
-        "tools": ["get_return_exchange_summary"],
+        "tools": ["get_return_exchange_summary", "process_return_exchange"],
         "keywords": ["return", "returns", "refund", "exchange"]
     },
     "transfer_history": {

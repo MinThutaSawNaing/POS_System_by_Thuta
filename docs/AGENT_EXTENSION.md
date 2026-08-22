@@ -110,7 +110,13 @@ these tests free of Flask/app-import side effects.
   `delete_product`, `delete_supplier`, `delete_customer`,
   `update_product_price`, `write_off_debt`, `create_purchase_order`,
   `adjust_product_stock`, `create_promotion`, `record_debt_payment`,
-  `update_delivery_stage`.
+  `update_delivery_stage`, plus the full-feature coverage tools
+  (`receive_purchase_order`, `process_return_exchange`, `update_category`,
+  `delete_category`, `update_promotion`, `cancel_promotion`,
+  `create_delivery`, `create_branch`, `update_branch`,
+  `set_default_branch`, `deactivate_branch`).
+  User accounts and system settings are deliberately NOT exposed as agent
+  tools.
 
 ### Delete guards
 
