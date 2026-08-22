@@ -134,6 +134,25 @@ CORE_TOOL_NAMES = (
     "get_inventory_status",
 )
 
+# Action verbs/phrases that signal the user wants a CHANGE, not a lookup.
+# Matched anywhere in the sentence (word-boundary aware via _contains_any)
+# so phrasings like "can you add a new product?" route to plan-then-execute,
+# where write tools are proposable. Deliberately conservative: bare "new",
+# "return" and "change" are excluded because they appear mostly in questions
+# ("any new products?", "show returns"). A false positive here costs one
+# extra LLM call; a false negative leaves the user with a dead end.
+_WRITE_INTENT_KEYWORDS = (
+    "add", "create", "register", "make a", "make me", "build", "generate",
+    "restock", "reorder it", "reorder them", "transfer", "approve",
+    "cancel", "delete", "remove", "write off", "write-off",
+    "record payment", "record a payment", "pay off",
+    "receive the po", "receive purchase order", "receive delivery",
+    "refund", "process a return", "process an exchange", "exchange it",
+    "set price", "change price", "update price", "price update",
+    "adjust stock", "update stock", "stock adjustment",
+    "rename", "deactivate", "mark as delivered", "mark as paid",
+)
+
 
 # System prompt for the AI Agent
 SYSTEM_PROMPT = """You are Loli, the current-data assistant for Parrot POS, created by Min Thuta Saw Naing and owned by WinterArc Myanmar. You help with the active branch's inventory, categories, suppliers, purchase orders, warehouse activity, sales, promotions, customers, debts, deliveries, and returns/exchanges.
@@ -544,8 +563,11 @@ class AgentOrchestrator:
             if final_message is None:
                 if data_query:
                     # Never expose the model's unverified numbers for data questions.
-                    final_message = ("I couldn't retrieve that data from the database right now. "
-                                     "Please try rephrasing your question.")
+                    final_message = ("I couldn't retrieve that from the database with the tools "
+                                     "available right now. If you'd like me to change something, "
+                                     "tell me the details (for example: \"add a product called "
+                                     "Sprite, price 1500\") and I'll prepare the action for "
+                                     "your approval.")
                 elif not response.content or response.content.strip() == "":
                     final_message = "I'm here to help with your inventory and procurement tasks. You can ask me to check stock levels, create purchase orders, review suppliers, analyze sales trends, and more!"
                 else:
@@ -686,11 +708,11 @@ class AgentOrchestrator:
         """Conservative router: only task-shaped requests pay for planning.
 
         Simple questions and pure chat keep today's single-shot path (and its
-        single LLM call). Task markers are explicit multi-step words or an
-        imperative action verb at the start of the command. Requests that span
-        two or more tool categories (for example "which supplier has the best
-        price for the low-stock items") usually need chained tools, so they are
-        routed through plan-then-execute too.
+        single LLM call). Task markers are explicit multi-step words, an
+        imperative action verb at the start of the command, write intent
+        anywhere in the sentence ("can you add a new product?"), or requests
+        spanning two or more tool categories — those need the plan-then-execute
+        path because single-shot chat only exposes read-only tools.
         """
         text = command.strip().lower()
         if not text:
@@ -706,7 +728,20 @@ class AgentOrchestrator:
                     "record ", "adjust ", "show ")
         if any(text.startswith(starter) for starter in starters):
             return True
+        # Write-intent detection: action verbs anywhere in the sentence mean
+        # the user wants a change, not a lookup. Single-shot chat strips every
+        # mutating tool schema, so these MUST go through plan-then-execute.
+        if self._contains_write_intent(text):
+            return True
         return len(self._detect_relevant_categories(command)) >= 2
+
+    @staticmethod
+    def _contains_write_intent(text_lower: str) -> bool:
+        """Whole-word match for action verbs ('create' must not hit 'created')."""
+        for keyword in _WRITE_INTENT_KEYWORDS:
+            if re.search(r"\b" + re.escape(keyword) + r"\b", text_lower):
+                return True
+        return False
 
     def _planner_chat(self, message: str, tools: Optional[List[Dict]] = None,
                       temperature: float = 0.2, max_tokens: int = 900):

@@ -133,6 +133,78 @@ class RouterTests(SmartsTestBase):
         self.assertFalse(self.orchestrator._should_plan("   "))
 
 
+class WriteIntentRoutingTests(SmartsTestBase):
+    """Action verbs ANYWHERE in the sentence must route to plan-then-execute,
+    because single-shot chat strips every write-tool schema."""
+
+    def test_polite_action_phrasing_routes_to_planning(self):
+        for command in ("Can you add a new product?",
+                        "please register a customer for me",
+                        "can you cancel order PO-123",
+                        "I want to write off debt 4",
+                        "could you adjust stock for cola?"):
+            self.assertTrue(self.orchestrator._should_plan(command), msg=command)
+
+    def test_conservative_keywords_do_not_trap_questions(self):
+        # Bare "new"/"return"/"change" are deliberately NOT write-intent
+        # keywords: they appear mostly in lookup questions. Past-tense verbs
+        # ("created") must not match either.
+        for command in ("any new products lately?",
+                        "what did we sell today?",
+                        "who created you?",
+                        "which orders were created yesterday?"):
+            self.assertFalse(self.orchestrator._should_plan(command), msg=command)
+
+
+class AddProductEndToEndTests(SmartsTestBase):
+    """The exact user report: 'Can you add a new product?' must produce a real
+    upsert_product proposal via plan-then-execute, not a dead-end message."""
+
+    def test_add_product_question_yields_upsert_proposal(self):
+        import json as _json
+
+        plan = {"description": "Add product Sprite",
+                "steps": [{"step": "s1", "tool": "upsert_product",
+                           "args": {"name": "Sprite", "price": 1500},
+                           "reason": "user asked to add a new product"}]}
+        bodies = [
+            # 1st call: the planner proposes the write.
+            {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "p1", "type": "function",
+                 "function": {"name": "propose_plan",
+                              "arguments": _json.dumps(plan)}}]},
+                "finish_reason": "tool_calls"}], "usage": {}},
+            # 2nd call: the summary turn reports the pending approval.
+            {"choices": [{"message": {"role": "assistant", "content":
+                "Ready to add Sprite - awaiting your approval."},
+                "finish_reason": "stop"}], "usage": {}},
+        ]
+
+        class FakeBody:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return bodies.pop(0)
+
+        with mock.patch("ai_agent.requests.post",
+                        side_effect=lambda *a, **k: FakeBody()), \
+             mock.patch.object(self.orchestrator, "_autonomy_allowed",
+                               return_value=False):
+            result = self.orchestrator.process_command(
+                "Can you add a new product?", user_id=1)
+
+        self.assertTrue(result["success"], msg=result.get("message"))
+        proposals = [sr for sr in result.get("step_results", [])
+                     if sr.get("status") == "proposal"]
+        self.assertEqual(len(proposals), 1)
+        self.assertEqual(proposals[0]["tool"], "upsert_product")
+        self.assertEqual(proposals[0]["result"]["args"]["name"], "Sprite")
+        self.assertTrue(result.get("pending_approvals"))
+
+
 class ModelConfigTests(unittest.TestCase):
     def test_default_model_is_deepseek_v4_pro_stable(self):
         self.assertEqual(ai_agent.DEFAULT_MODEL, "deepseek-ai/deepseek-v4-pro-stable")
