@@ -8127,7 +8127,7 @@
         });
         setPendingSales(pending);
         updatePendingSalesBadge();
-        showToast("Sale saved offline — will sync automatically", "warning");
+        showToast(`Sale saved offline — will sync automatically (ID: ${saleData.transaction_id.slice(0,8)})`, "warning");
       }
 
       function updatePendingSalesBadge() {
@@ -8142,77 +8142,72 @@
         }
       }
 
-      function syncPendingSales() {
+      async function syncPendingSales() {
         if (isSyncingPendingSales) return;
         const pending = getPendingSales();
         if (pending.length === 0) return;
         isSyncingPendingSales = true;
-        let warnedOnce = false;
-        const queue = pending.slice();
-        let chain = Promise.resolve();
-        queue.forEach((entry, index) => {
-          chain = chain.then(() => {
-            return fetch("/api/sales", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(entry.saleData),
-            })
-              .then((response) => {
-                const contentType = response.headers.get("content-type") || "";
-                if (response.ok && contentType.includes("application/json")) {
-                  return response.json().then((data) => {
-                    if (data.success) {
-                      const current = getPendingSales();
-                      setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id));
-                    } else {
-                      if (!warnedOnce) {
-                        warnedOnce = true;
-                        showToast("Offline sale sync failed: " + (data.message || "Unknown error"), "error");
-                      }
-                    }
-                  });
-                }
-                if (contentType.includes("application/json")) {
-                  // Server rejected but is reachable — keep queued, warn once
-                  return response.json().then((data) => {
-                    if (!warnedOnce) {
-                      warnedOnce = true;
-                      showToast("Offline sale sync failed: " + (data.message || "Unknown error"), "error");
-                    }
-                  });
-                }
-                // HTML/login response — stop silently and retry later
-                throw { stopSync: true };
-              })
-              .catch((err) => {
-                if (!err || !err.stopSync) throw err;
+        let stopSync = false;
+        try {
+          for (const entry of pending.slice()) {
+            if (stopSync) break;
+            try {
+              const response = await fetch("/api/sales", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(entry.saleData),
               });
-          });
-        });
-        chain
-          .catch((error) => {
-            // Network or unexpected failure — retry later silently
-          })
-          .finally(() => {
-            isSyncingPendingSales = false;
-            updatePendingSalesBadge();
-          });
+              const contentType = response.headers.get("content-type") || "";
+              if (!contentType.includes("application/json")) {
+                // HTML/login page returned — stop syncing, retry later
+                stopSync = true;
+                return;
+              }
+              const data = await response.json();
+              if (data.success) {
+                const current = getPendingSales();
+                setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id));
+                showSaleSuccessModal(entry.saleData.transaction_id, null, false);
+                updatePendingSalesBadge();
+              } else if (response.status >= 400 && response.status < 500) {
+                // Server explicitly rejected — drop the sale and warn prominently
+                const current = getPendingSales();
+                setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id));
+                showToast("Offline sale rejected: " + (data.message || "Unknown error"), "error");
+                updatePendingSalesBadge();
+              } else {
+                // Other failure — keep queued, retry later
+                console.warn("Offline sale sync failed:", data.message || response.status);
+              }
+            } catch (err) {
+              // Network error — keep queued, retry later silently
+              console.warn("Offline sale sync network error:", err);
+            }
+          }
+        } finally {
+          isSyncingPendingSales = false;
+          updatePendingSalesBadge();
+        }
       }
 
       window.addEventListener("online", syncPendingSales);
       setInterval(function () {
         if (getPendingSales().length) syncPendingSales();
-      }, 60000);
+      }, 20000);
 
       // Shared offline-queue + post-sale cleanup for completeSale()
       function finishOfflineSale(saleData) {
+        isSaleProcessing = true;
+        setCompleteSaleButtonState(true);
         queueOfflineSale(saleData);
         cart = [];
         updateCartDisplay();
         const cashReceived = document.getElementById("cash-received");
         if (cashReceived) cashReceived.value = "";
-        isSaleProcessing = false;
-        setCompleteSaleButtonState(false);
+        setTimeout(() => {
+          isSaleProcessing = false;
+          setCompleteSaleButtonState(false);
+        }, SALE_COOLDOWN_MS);
       }
 
       function completeSale() {

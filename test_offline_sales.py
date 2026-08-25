@@ -97,6 +97,45 @@ class OfflineSaleTests(unittest.TestCase):
             self.assertEqual(
                 Sale.query.filter_by(transaction_id=self.client_txn_id).count(), 0)
 
+    def test_sale_replay_response_has_created_at_iso(self):
+        # First POST creates the sale; capture the original created_at from the
+        # persisted row. The replay response must echo back the same timestamp
+        # so clients can rely on idempotent timestamps across retries.
+        client = self._client()
+        first = client.post('/api/sales', json=self._sale_payload(self.client_txn_id))
+        self.assertEqual(first.status_code, 201)
+        with app.app_context():
+            original_sale = Sale.query.filter_by(transaction_id=self.client_txn_id).first()
+            self.assertIsNotNone(original_sale)
+            self.assertIsNotNone(original_sale.date)
+            original_created_at = original_sale.date.isoformat()
+
+        replay = client.post('/api/sales', json=self._sale_payload(self.client_txn_id))
+        self.assertEqual(replay.status_code, 200)
+        replay_data = replay.get_json()
+        self.assertIn('created_at', replay_data)
+        self.assertIsInstance(replay_data['created_at'], str)
+        self.assertTrue(replay_data['created_at'],
+                        'replay response created_at must be a non-empty string')
+        # Idempotency: the replay must report the SAME created_at as the
+        # original sale (not a fresh "now"), so a retried client never sees
+        # the sale's timestamp move forward.
+        self.assertEqual(replay_data['created_at'], original_created_at)
+
+    def test_sale_replay_message_indicates_already_synced(self):
+        # The replay response's message must indicate the sale was already
+        # synced, so the client can recognise the duplicate without parsing
+        # the duplicate flag.
+        client = self._client()
+        first = client.post('/api/sales', json=self._sale_payload(self.client_txn_id))
+        self.assertEqual(first.status_code, 201)
+        replay = client.post('/api/sales', json=self._sale_payload(self.client_txn_id))
+        self.assertEqual(replay.status_code, 200)
+        replay_data = replay.get_json()
+        self.assertIn('message', replay_data)
+        self.assertIsInstance(replay_data['message'], str)
+        self.assertIn('sync', replay_data['message'].lower())
+
 
 if __name__ == '__main__':
     unittest.main()

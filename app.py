@@ -2876,15 +2876,19 @@ def _create_sale_transaction(data):
         if client_txn_id:
             existing = Sale.query.filter_by(transaction_id=client_txn_id, branch_id=get_current_branch_id()).first()
             if existing:
-                return jsonify({
+                response = {
                     'success': True,
-                    'message': 'Sale already exists',
+                    'message': 'Sale already synced',
                     'transaction_id': existing.transaction_id,
                     'total': money_float(existing.total),
                     'refund_amount': money_float(existing.refund_amount),
                     'payment_method': existing.payment_method,
                     'duplicate': True
-                }), 200
+                }
+                existing_date = getattr(existing, 'date', None)
+                if existing_date is not None:
+                    response['created_at'] = existing_date.isoformat()
+                return jsonify(response), 200
 
         # Calculate totals
         subtotal = Decimal('0.00')
