@@ -7922,7 +7922,7 @@
               finalPrice = centsToNumber(Math.max(0, finalCents));
             } else if (activePromo.discount_type === "fixed") {
               finalPrice = centsToNumber(
-                Math.max(0, subMoney(priceCents, activePromo.discount_value))
+                Math.max(0, priceCents - toCents(activePromo.discount_value))
               );
             }
             showToast(
@@ -8041,7 +8041,9 @@
             const itemTaxCents = Math.round(
               (itemTotalCents * Number(item.tax_rate || 0)) / 100
             );
-            return sum + addMoney(itemTotalCents, itemTaxCents);
+            // Both values are already integer cents; converting them again would
+            // inflate the cart total by 100 and break the cash-change calculation.
+            return sum + itemTotalCents + itemTaxCents;
           }, 0) / 100
         );
       }
