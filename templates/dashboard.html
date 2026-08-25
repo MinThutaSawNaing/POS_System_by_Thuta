@@ -8148,6 +8148,8 @@
         if (pending.length === 0) return;
         isSyncingPendingSales = true;
         let stopSync = false;
+        let syncedCount = 0;
+        let syncedIds = [];
         try {
           for (const entry of pending.slice()) {
             if (stopSync) break;
@@ -8167,10 +8169,11 @@
               if (data.success) {
                 const current = getPendingSales();
                 setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id));
-                showSaleSuccessModal(entry.saleData.transaction_id, null, false);
+                syncedCount++;
+                syncedIds.push(entry.saleData.transaction_id);
                 updatePendingSalesBadge();
-              } else if (response.status >= 400 && response.status < 500) {
-                // Server explicitly rejected — drop the sale and warn prominently
+              } else if (!response.ok) {
+                // Server explicitly rejected (4xx or 5xx) — drop the sale and warn prominently
                 const current = getPendingSales();
                 setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id));
                 showToast("Offline sale rejected: " + (data.message || "Unknown error"), "error");
@@ -8183,6 +8186,11 @@
               // Network error — keep queued, retry later silently
               console.warn("Offline sale sync network error:", err);
             }
+          }
+          if (syncedCount === 1) {
+            showSaleSuccessModal(syncedIds[0], null, false);
+          } else if (syncedCount > 1) {
+            showToast(`Offline sales synced: ${syncedCount} (latest ID: ${syncedIds[syncedIds.length - 1].slice(0, 8)})`, "success");
           }
         } finally {
           isSyncingPendingSales = false;
