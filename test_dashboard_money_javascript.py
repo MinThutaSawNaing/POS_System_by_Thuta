@@ -81,3 +81,10 @@ def test_fixed_promotion_keeps_price_and_discount_in_cents():
 
     assert "priceCents - toCents(activePromo.discount_value)" in source
     assert "subMoney(priceCents, activePromo.discount_value)" not in source
+
+
+def test_ambiguous_money_helpers_cannot_reintroduce_double_conversion():
+    source = DASHBOARD.read_text(encoding="utf-8")
+
+    ambiguous_helper = re.search(r"\b(?:addMoney|subMoney)\s*(?:=|\()", source)
+    assert ambiguous_helper is None

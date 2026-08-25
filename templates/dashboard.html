@@ -4866,12 +4866,6 @@
         if (!Number.isFinite(n)) return 0;
         return n / 100;
       }
-      function addMoney(a, b) {
-        return toCents(a) + toCents(b);
-      }
-      function subMoney(a, b) {
-        return toCents(a) - toCents(b);
-      }
       function mulMoney(a, qtyInt) {
         return toCents(a) * Math.trunc(Number(qtyInt) || 0);
       }
