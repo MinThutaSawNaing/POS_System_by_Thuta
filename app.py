@@ -9,7 +9,7 @@ import io
 import json
 import time
 from sqlalchemy import inspect, text, func, event, or_
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from decimal import Decimal, ROUND_HALF_UP
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -2862,8 +2862,47 @@ def api_create_sale():
                 continue
             app.logger.error(f"Error creating sale: {str(exc)}")
             return jsonify({'success': False, 'message': f'Error creating sale: {str(exc)}'}), 500
+        except IntegrityError:
+            # Two concurrent requests raced on the same client transaction_id:
+            # both passed the "does it exist" check, then one hit the UNIQUE
+            # constraint on insert. The winner may not have committed yet, so
+            # re-run the whole transaction — the pre-check will find the sale
+            # and reply as an idempotent replay instead of an error.
+            db.session.rollback()
+            client_txn_id = str(data.get('transaction_id') or '').strip()
+            if not client_txn_id:
+                app.logger.error("IntegrityError creating sale")
+                return jsonify({'success': False, 'message': 'Error creating sale'}), 500
+            existing = Sale.query.filter_by(
+                transaction_id=client_txn_id,
+                branch_id=get_current_branch_id(),
+            ).first()
+            if existing:
+                return _sale_replay_response(existing)
+            if attempt < max_attempts - 1:
+                time.sleep(0.2)
+                continue
+            app.logger.error("IntegrityError creating sale; replay not found after retries")
+            return jsonify({'success': False, 'message': 'Error creating sale'}), 500
 
     return jsonify({'success': False, 'message': 'Error creating sale'}), 500
+
+
+def _sale_replay_response(existing):
+    """Idempotent replay response for a sale that already exists."""
+    response = {
+        'success': True,
+        'message': 'Sale already synced',
+        'transaction_id': existing.transaction_id,
+        'total': money_float(existing.total),
+        'refund_amount': money_float(existing.refund_amount),
+        'payment_method': existing.payment_method,
+        'duplicate': True,
+    }
+    existing_date = getattr(existing, 'date', None)
+    if existing_date is not None:
+        response['created_at'] = existing_date.isoformat()
+    return jsonify(response), 200
 
 
 def _create_sale_transaction(data):
@@ -2876,19 +2915,7 @@ def _create_sale_transaction(data):
         if client_txn_id:
             existing = Sale.query.filter_by(transaction_id=client_txn_id, branch_id=get_current_branch_id()).first()
             if existing:
-                response = {
-                    'success': True,
-                    'message': 'Sale already synced',
-                    'transaction_id': existing.transaction_id,
-                    'total': money_float(existing.total),
-                    'refund_amount': money_float(existing.refund_amount),
-                    'payment_method': existing.payment_method,
-                    'duplicate': True
-                }
-                existing_date = getattr(existing, 'date', None)
-                if existing_date is not None:
-                    response['created_at'] = existing_date.isoformat()
-                return jsonify(response), 200
+                return _sale_replay_response(existing)
 
         # Calculate totals
         subtotal = Decimal('0.00')
@@ -3092,6 +3119,11 @@ def _create_sale_transaction(data):
         }), 201
 
     except OperationalError:
+        db.session.rollback()
+        raise
+    except IntegrityError:
+        # Let api_create_sale handle the concurrent-replay race (idempotent
+        # replay lookup + retry) instead of turning it into a generic 500.
         db.session.rollback()
         raise
     except Exception as e:
