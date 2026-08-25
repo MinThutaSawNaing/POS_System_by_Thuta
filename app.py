@@ -2869,6 +2869,23 @@ def api_create_sale():
 def _create_sale_transaction(data):
     """Run a single sale transaction. Raises OperationalError on DB lock so the caller can retry."""
     try:
+        # Idempotency guard for offline sales: if the client already sent this
+        # transaction_id (e.g. a retried sync after a lost response), return the
+        # original sale instead of creating a duplicate.
+        client_txn_id = str(data.get('transaction_id') or '').strip()
+        if client_txn_id:
+            existing = Sale.query.filter_by(transaction_id=client_txn_id, branch_id=get_current_branch_id()).first()
+            if existing:
+                return jsonify({
+                    'success': True,
+                    'message': 'Sale already exists',
+                    'transaction_id': existing.transaction_id,
+                    'total': money_float(existing.total),
+                    'refund_amount': money_float(existing.refund_amount),
+                    'payment_method': existing.payment_method,
+                    'duplicate': True
+                }), 200
+
         # Calculate totals
         subtotal = Decimal('0.00')
         tax_total = Decimal('0.00')
@@ -2942,7 +2959,7 @@ def _create_sale_transaction(data):
 
         # Create sale record
         sale = Sale(
-            transaction_id=str(uuid.uuid4()),
+            transaction_id=client_txn_id or str(uuid.uuid4()),
             date=sale_time,
             total=total_rounded,
             tax=round_money(tax_total),

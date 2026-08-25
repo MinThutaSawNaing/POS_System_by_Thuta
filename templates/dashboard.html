@@ -1228,6 +1228,7 @@
                     <small class="fw-bold" id="refund-amount">$0.00</small>
                   </div>
                 </div>
+                <div id="pending-sales-badge" class="text-center small text-warning mb-1" style="display: none"></div>
                 <button
                   id="complete-sale-btn"
                   class="btn btn-success w-100"
@@ -6240,6 +6241,8 @@
         loadDashboardStats();
         loadProducts();
         loadSales();
+        updatePendingSalesBadge();
+        syncPendingSales();
         initAutoBarcodeScannerToggle();
         restoreActiveSection();
 
@@ -8091,6 +8094,127 @@
         }
       }
 
+      // ============================================
+      // Offline Sale Support
+      // ============================================
+      let isSyncingPendingSales = false;
+
+      function getPendingSales() {
+        try {
+          const raw = localStorage.getItem("pos_pending_sales");
+          const list = raw ? JSON.parse(raw) : [];
+          return Array.isArray(list) ? list : [];
+        } catch (e) {
+          return [];
+        }
+      }
+
+      function setPendingSales(list) {
+        try {
+          localStorage.setItem("pos_pending_sales", JSON.stringify(list));
+        } catch (e) {
+          console.error("Failed to save pending sales:", e);
+        }
+      }
+
+      function queueOfflineSale(saleData) {
+        saleData.transaction_id = crypto.randomUUID();
+        const pending = getPendingSales();
+        pending.push({
+          transaction_id: saleData.transaction_id,
+          saleData: saleData,
+          created_at: new Date().toISOString(),
+        });
+        setPendingSales(pending);
+        updatePendingSalesBadge();
+        showToast("Sale saved offline — will sync automatically", "warning");
+      }
+
+      function updatePendingSalesBadge() {
+        const badge = document.getElementById("pending-sales-badge");
+        if (!badge) return;
+        const count = getPendingSales().length;
+        if (count > 0) {
+          badge.textContent = count + (count === 1 ? " sale" : " sales") + " waiting to sync";
+          badge.style.display = "block";
+        } else {
+          badge.style.display = "none";
+        }
+      }
+
+      function syncPendingSales() {
+        if (isSyncingPendingSales) return;
+        const pending = getPendingSales();
+        if (pending.length === 0) return;
+        isSyncingPendingSales = true;
+        let warnedOnce = false;
+        const queue = pending.slice();
+        let chain = Promise.resolve();
+        queue.forEach((entry, index) => {
+          chain = chain.then(() => {
+            return fetch("/api/sales", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(entry.saleData),
+            })
+              .then((response) => {
+                const contentType = response.headers.get("content-type") || "";
+                if (response.ok && contentType.includes("application/json")) {
+                  return response.json().then((data) => {
+                    if (data.success) {
+                      const current = getPendingSales();
+                      setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id));
+                    } else {
+                      if (!warnedOnce) {
+                        warnedOnce = true;
+                        showToast("Offline sale sync failed: " + (data.message || "Unknown error"), "error");
+                      }
+                    }
+                  });
+                }
+                if (contentType.includes("application/json")) {
+                  // Server rejected but is reachable — keep queued, warn once
+                  return response.json().then((data) => {
+                    if (!warnedOnce) {
+                      warnedOnce = true;
+                      showToast("Offline sale sync failed: " + (data.message || "Unknown error"), "error");
+                    }
+                  });
+                }
+                // HTML/login response — stop silently and retry later
+                throw { stopSync: true };
+              })
+              .catch((err) => {
+                if (!err || !err.stopSync) throw err;
+              });
+          });
+        });
+        chain
+          .catch((error) => {
+            // Network or unexpected failure — retry later silently
+          })
+          .finally(() => {
+            isSyncingPendingSales = false;
+            updatePendingSalesBadge();
+          });
+      }
+
+      window.addEventListener("online", syncPendingSales);
+      setInterval(function () {
+        if (getPendingSales().length) syncPendingSales();
+      }, 60000);
+
+      // Shared offline-queue + post-sale cleanup for completeSale()
+      function finishOfflineSale(saleData) {
+        queueOfflineSale(saleData);
+        cart = [];
+        updateCartDisplay();
+        const cashReceived = document.getElementById("cash-received");
+        if (cashReceived) cashReceived.value = "";
+        isSaleProcessing = false;
+        setCompleteSaleButtonState(false);
+      }
+
       function completeSale() {
         // Rate limiting check
         if (isSaleProcessing) {
@@ -8157,6 +8281,12 @@
         isSaleProcessing = true;
         setCompleteSaleButtonState(true);
 
+        // Offline: queue the sale locally instead of fetching
+        if (navigator.onLine === false) {
+          finishOfflineSale(saleData);
+          return;
+        }
+
         fetch("/api/sales", {
           method: "POST",
           headers: {
@@ -8196,7 +8326,8 @@
           })
           .catch((error) => {
             console.error("Error:", error);
-            showToast(t("errorCompletingSale") + ": " + error.message, "error");
+            // Network failure: queue the sale for later sync
+            finishOfflineSale(saleData);
           })
           .finally(() => {
             // Reset processing state after cooldown
@@ -8678,6 +8809,75 @@
       });
 
       // Product management functions
+      // Offline product cache helpers
+      function saveProductsCache(payload) {
+        try {
+          localStorage.setItem("pos_products_cache", JSON.stringify({ cached_at: new Date().toISOString(), data: payload }));
+        } catch (e) {
+          console.error("Failed to cache products:", e);
+        }
+      }
+
+      function getProductsCache() {
+        try {
+          const raw = localStorage.getItem("pos_products_cache");
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          return parsed && parsed.data ? parsed : null;
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function renderProductsResponse(payload) {
+        const productsTable = document.getElementById("products-table");
+        const data = parsePagedResponse(payload);
+        productsTable.innerHTML = "";
+
+        if (!data.items || data.items.length === 0) {
+          productsTable.innerHTML = `
+                                  <tr>
+                                      <td colspan="8" class="text-center py-4 text-muted">No products found.</td>
+                                  </tr>
+                              `;
+          renderPagination("products", "products-pagination", 1, loadProducts);
+          return;
+        }
+
+        data.items.forEach((product) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+                                  <td>${getProductPhotoHtml(product.photo_url, product.name, "product-thumb")}</td>
+                                  <td>${product.barcode || "N/A"}</td>
+                                  <td>${product.name}</td>
+                                  <td>$${product.price.toFixed(2)}</td>
+                                  <td>${product.stock}</td>
+                                  <td>${product.category || "N/A"}</td>
+                                  <td>${product.tax_rate}%</td>
+                                  <td>
+                                      <button class="btn btn-sm btn-primary me-1" onclick="editProduct(${
+                                        product.id
+                                      })">
+                                          <i class="bi bi-pencil"></i>
+                                      </button>
+                                      <button class="btn btn-sm btn-danger" onclick="deleteProduct(${
+                                        product.id
+                                      }, '${escapeHtml(product.name)}')">
+                                          <i class="bi bi-trash"></i>
+                                      </button>
+                                  </td>
+                              `;
+          productsTable.appendChild(row);
+        });
+
+        renderPagination(
+          "products",
+          "products-pagination",
+          data.total_pages || 1,
+          loadProducts
+        );
+      }
+
       function loadProducts() {
         const productsTable = document.getElementById("products-table");
         productsTable.innerHTML = `
@@ -8705,54 +8905,17 @@
             return response.json();
           })
           .then((payload) => {
-            const data = parsePagedResponse(payload);
-            productsTable.innerHTML = "";
-
-            if (!data.items || data.items.length === 0) {
-              productsTable.innerHTML = `
-                                  <tr>
-                                      <td colspan="8" class="text-center py-4 text-muted">No products found.</td>
-                                  </tr>
-                              `;
-              renderPagination("products", "products-pagination", 1, loadProducts);
-              return;
-            }
-
-            data.items.forEach((product) => {
-              const row = document.createElement("tr");
-              row.innerHTML = `
-                                  <td>${getProductPhotoHtml(product.photo_url, product.name, "product-thumb")}</td>
-                                  <td>${product.barcode || "N/A"}</td>
-                                  <td>${product.name}</td>
-                                  <td>$${product.price.toFixed(2)}</td>
-                                  <td>${product.stock}</td>
-                                  <td>${product.category || "N/A"}</td>
-                                  <td>${product.tax_rate}%</td>
-                                  <td>
-                                      <button class="btn btn-sm btn-primary me-1" onclick="editProduct(${
-                                        product.id
-                                      })">
-                                          <i class="bi bi-pencil"></i>
-                                      </button>
-                                      <button class="btn btn-sm btn-danger" onclick="deleteProduct(${
-                                        product.id
-                                      }, '${escapeHtml(product.name)}')">
-                                          <i class="bi bi-trash"></i>
-                                      </button>
-                                  </td>
-                              `;
-              productsTable.appendChild(row);
-            });
-
-            renderPagination(
-              "products",
-              "products-pagination",
-              data.total_pages || 1,
-              loadProducts
-            );
+            saveProductsCache(payload);
+            renderProductsResponse(payload);
           })
           .catch((error) => {
             console.error("Error loading products:", error);
+            const cached = getProductsCache();
+            if (cached) {
+              showToast("Offline — showing cached products", "warning");
+              renderProductsResponse(cached.data);
+              return;
+            }
             productsTable.innerHTML = `
                               <tr>
                                   <td colspan="8" class="text-center py-4 text-danger">Failed to load products.</td>
