@@ -248,3 +248,36 @@ def test_sidebar_nav_keeps_vertical_block_layout():
     assert indicator_rule is not None, ".connection-status-indicator CSS rule not found"
     assert "position: sticky" in indicator_rule.group(1)
     assert "bottom:" in indicator_rule.group(1)
+
+
+def test_offline_pwa_assets_vendored_and_helpers_exist():
+    """Offline PWA guard: UI libraries must be local (not CDN), the Service
+    Worker must be registered, and the persistent offline data-cache helpers
+    must exist so POS can ring sales from cached data without a connection."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+
+    # No CDN references for the four UI libraries anymore.
+    assert "cdn.jsdelivr.net" not in source
+    assert "cdnjs.cloudflare.com" not in source
+    for asset in (
+        "/public/vendor/bootstrap/bootstrap.min.css",
+        "/public/vendor/bootstrap/bootstrap.bundle.min.js",
+        "/public/vendor/bootstrap-icons/bootstrap-icons.css",
+        "/public/vendor/chartjs/chart.umd.min.js",
+    ):
+        assert asset in source
+
+    # Service Worker registration + offline data-cache helpers.
+    assert 'navigator.serviceWorker.register("/sw.js")' in source
+    for helper in (
+        "function offlineCacheSet",
+        "function offlineCacheGet",
+        "function getCachedProducts",
+        "function saveCachedProducts",
+        "function findCachedProduct",
+        "function renderProductsFromCacheForPOS",
+        "function renderCategoriesView",
+        "function fillCategoryDropdowns",
+        "PRODUCT_CACHE_KEY",
+    ):
+        assert helper in source, f"missing helper {helper}"

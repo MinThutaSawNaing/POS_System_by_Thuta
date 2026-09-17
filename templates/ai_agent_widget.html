@@ -49,8 +49,8 @@
   </section>
 </aside>
 
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script src="/public/vendor/marked/marked.min.js"></script>
+<script src="/public/vendor/dompurify/purify.min.js"></script>
 <script>
 (() => {
   const $ = (id) => document.getElementById(id), workspace = $('loliWorkspace'), head = $('loliChatHead'), panel = $('loliPanel'), input = $('loliInput'), messages = $('loliMessages'), send = $('loliSend'), typing = $('loliTyping'), error = $('loliError'), errorText = $('loliErrorText'), unread = $('loliUnread'), menu = $('loliMenu'), menuButton = $('loliMenuButton'), confirm = $('loliConfirm'), clear = $('loliClear'), cancelClear = $('loliCancelClear'), confirmClear = $('loliConfirmClear'), resetPosition = $('loliResetPosition'), memory = $('loliMemory'), manageMemory = $('loliManageMemory'), memoryClose = $('loliMemoryClose'), memoryForm = $('loliMemoryForm'), memoryInput = $('loliMemoryInput'), memoryScope = $('loliMemoryScope'), memoryList = $('loliMemoryList'), memoryStatus = $('loliMemoryStatus');

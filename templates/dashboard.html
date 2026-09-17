@@ -5,13 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{{ pos_name }} Dashboard</title>
     <link rel="icon" href="/public/photos/logo.ico" type="image/x-icon" />
-    <link
-      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
-      rel="stylesheet"
-    />
+    <link href="/public/vendor/bootstrap/bootstrap.min.css" rel="stylesheet" />
     <link
       rel="stylesheet"
-      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css"
+      href="/public/vendor/bootstrap-icons/bootstrap-icons.css"
     />
     <!-- Myanmar Font Support -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -4926,8 +4923,8 @@
       </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/public/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+    <script src="/public/vendor/chartjs/chart.umd.min.js"></script>
     <script>
       // Global variables
       const APP_SETTINGS = {
@@ -5140,10 +5137,26 @@
               ...(data.receipt_customization || {}),
             };
             applySettingsUI();
+            offlineCacheSet(SETTINGS_CACHE_KEY, data);
             loadAISettings();
           })
           .catch((error) => {
             console.error("Error loading settings:", error);
+            // Offline fallback: apply the last cached settings so currency and
+            // receipt formatting still work without a connection.
+            const cached = offlineCacheGet(SETTINGS_CACHE_KEY);
+            if (cached && cached.data) {
+              const data = cached.data;
+              APP_SETTINGS.posName = data.pos_name || APP_SETTINGS.posName;
+              APP_SETTINGS.currencyCode = data.currency_code || APP_SETTINGS.currencyCode;
+              APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(APP_SETTINGS.currencyCode);
+              APP_SETTINGS.receiptPaperSize = data.receipt_paper_size || APP_SETTINGS.receiptPaperSize;
+              APP_SETTINGS.receiptCustomization = {
+                ...APP_SETTINGS.receiptCustomization,
+                ...(data.receipt_customization || {}),
+              };
+              showToast("Offline — using cached settings", "warning");
+            }
             applySettingsUI();
           });
       }
@@ -5598,27 +5611,9 @@
           .then((data) => {
             if (!Array.isArray(data)) throw new Error("Invalid branch list response");
             branchesList = data;
-            const selector = document.getElementById("branch-selector");
-            const reportBranchSelector = document.getElementById("report-branch-selector");
-            if (!selector) return;
-            
-            selector.innerHTML = "";
-            if (reportBranchSelector) {
-              reportBranchSelector.innerHTML = '<option value="">Current branch</option>';
-            }
-            data.filter((branch) => branch.is_active).forEach((branch) => {
-              const option = document.createElement("option");
-              option.value = branch.id;
-              option.textContent = branch.name + (branch.is_default ? " (Default)" : "");
-              selector.appendChild(option);
-              if (reportBranchSelector) {
-                const reportOption = document.createElement("option");
-                reportOption.value = branch.id;
-                reportOption.textContent = branch.name;
-                reportBranchSelector.appendChild(reportOption);
-              }
-            });
-            
+            offlineCacheSet(BRANCHES_CACHE_KEY, data);
+            populateBranchSelectors();
+
             // Set current branch
             fetch("/api/branches/current")
               .then((res) => {
@@ -5627,25 +5622,72 @@
               })
               .then((current) => {
                 currentBranch = current;
-                selector.value = current.id;
-                if (reportBranchSelector) {
-                  reportBranchSelector.value = "";
-                }
-                // Update all branch indicators
-                updateBranchIndicators(current);
-                toggleReportScopeControls();
+                offlineCacheSet(CURRENT_BRANCH_CACHE_KEY, current);
+                bindCurrentBranchUI(current);
               })
               .catch((error) => {
-                currentBranch = null;
-                updateBranchIndicators(null);
+                applyCachedCurrentBranch();
                 console.error("Error loading current branch:", error);
-                showToast("Unable to load the active branch", "error");
               });
           })
           .catch((error) => {
             console.error("Error loading branches:", error);
+            // Offline fallback: restore the cached branch list + current branch.
+            const cached = offlineCacheGet(BRANCHES_CACHE_KEY);
+            if (cached && Array.isArray(cached.data)) {
+              branchesList = cached.data;
+              populateBranchSelectors();
+              applyCachedCurrentBranch();
+              showToast("Offline — using cached branches", "warning");
+              return;
+            }
             showToast("Unable to load branches", "error");
           });
+      }
+
+      function populateBranchSelectors() {
+        const selector = document.getElementById("branch-selector");
+        const reportBranchSelector = document.getElementById("report-branch-selector");
+        if (!selector) return;
+        selector.innerHTML = "";
+        if (reportBranchSelector) {
+          reportBranchSelector.innerHTML = '<option value="">Current branch</option>';
+        }
+        branchesList.filter((branch) => branch.is_active).forEach((branch) => {
+          const option = document.createElement("option");
+          option.value = branch.id;
+          option.textContent = branch.name + (branch.is_default ? " (Default)" : "");
+          selector.appendChild(option);
+          if (reportBranchSelector) {
+            const reportOption = document.createElement("option");
+            reportOption.value = branch.id;
+            reportOption.textContent = branch.name;
+            reportBranchSelector.appendChild(reportOption);
+          }
+        });
+      }
+
+      function bindCurrentBranchUI(current) {
+        const selector = document.getElementById("branch-selector");
+        const reportBranchSelector = document.getElementById("report-branch-selector");
+        if (selector) selector.value = current.id;
+        if (reportBranchSelector) reportBranchSelector.value = "";
+        updateBranchIndicators(current);
+        toggleReportScopeControls();
+      }
+
+      function applyCachedCurrentBranch() {
+        const cached = offlineCacheGet(CURRENT_BRANCH_CACHE_KEY);
+        if (cached && cached.data && cached.data.id !== undefined) {
+          currentBranch = cached.data;
+          const selector = document.getElementById("branch-selector");
+          if (selector) selector.value = currentBranch.id;
+          updateBranchIndicators(currentBranch);
+          toggleReportScopeControls();
+        } else {
+          currentBranch = null;
+          updateBranchIndicators(null);
+        }
       }
 
       // Update all branch indicators across the UI
@@ -6012,10 +6054,16 @@
           cachedProducts = data;
           productsCacheTimestamp = now;
           cachedProductsBranchId = activeBranchId;
+          saveCachedProducts(data);
           return data;
         } catch (error) {
           console.error("Error loading products:", error);
-          // Return cached data even if it's expired, to avoid complete failure
+          // Offline fallback: revive the persistent snapshot so callers still
+          // get a usable product list (the in-memory cache may be empty).
+          if (!cachedProducts.length) {
+            cachedProducts = getCachedProducts();
+            cachedProductsBranchId = activeBranchId;
+          }
           return cachedProducts;
         }
       }
@@ -6025,7 +6073,83 @@
         cachedProducts = [];
         productsCacheTimestamp = 0;
         cachedProductsBranchId = null;
+        // When online, drop the persistent offline product snapshot so the next
+        // load refreshes it; when offline keep it so POS ringing keeps working.
+        if (!isBrowserOffline()) {
+          offlineCacheRemove(cachedProductsKey());
+        }
       }
+
+      // ===== OFFLINE PERSISTENT CACHE HELPERS =====
+      // Small localStorage-backed store that keeps the data the POS needs to
+      // work without a connection: products, categories, settings, branches.
+      // (A Service Worker supplies the app shell; these supply the data.)
+      const PRODUCT_CACHE_KEY = "pos_products_all_cache";
+      const CATEGORY_CACHE_KEY = "pos_categories_cache";
+      const CATEGORY_ACTIVE_CACHE_KEY = "pos_categories_active_cache";
+      const SETTINGS_CACHE_KEY = "pos_settings_cache";
+      const BRANCHES_CACHE_KEY = "pos_branches_cache";
+      const CURRENT_BRANCH_CACHE_KEY = "pos_current_branch_cache";
+
+      function offlineCacheSet(key, data) {
+        try {
+          localStorage.setItem(
+            key,
+            JSON.stringify({ cached_at: new Date().toISOString(), data: data })
+          );
+        } catch (e) {
+          console.error("Failed to save offline cache:", key, e);
+        }
+      }
+
+      function offlineCacheGet(key) {
+        try {
+          const raw = localStorage.getItem(key);
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          return parsed && "data" in parsed ? parsed : null;
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function offlineCacheRemove(key) {
+        try {
+          localStorage.removeItem(key);
+        } catch (e) { /* ignore */ }
+      }
+
+      function cachedProductsKey() {
+        return currentBranch?.id
+          ? PRODUCT_CACHE_KEY + "_" + currentBranch.id
+          : PRODUCT_CACHE_KEY;
+      }
+
+      function getCachedProducts() {
+        const entry = offlineCacheGet(cachedProductsKey());
+        return entry && Array.isArray(entry.data) ? entry.data : [];
+      }
+
+      function saveCachedProducts(products) {
+        if (Array.isArray(products)) {
+          offlineCacheSet(cachedProductsKey(), products);
+        }
+      }
+
+      function findCachedProduct(productId) {
+        const products = getCachedProducts();
+        const p = products.find((prod) => String(prod.id) === String(productId));
+        if (!p) return null;
+        return {
+          id: p.id,
+          name: p.name,
+          price: p.price,
+          stock: p.stock,
+          tax_rate: p.tax_rate || 0,
+          promotions: p.promotions || [],
+        };
+      }
+      // ===== END OFFLINE PERSISTENT CACHE HELPERS =====
       // ===== END CACHING IMPLEMENTATION =====
 
       function parsePagedResponse(payload) {
@@ -6294,6 +6418,13 @@
 
       // Initialize the application when page loads
       document.addEventListener("DOMContentLoaded", function () {
+        // Register the offline Service Worker (caches the app shell + assets so
+        // the POS can be opened after a cold reload without a connection).
+        if ("serviceWorker" in navigator) {
+          navigator.serviceWorker.register("/sw.js").catch(function (err) {
+            console.warn("Service worker registration failed:", err);
+          });
+        }
         initResizableSidebar();
         applySettingsUI();
         loadSettings();
@@ -6809,7 +6940,17 @@
           })
           .catch((error) => {
             console.error("Error processing barcode:", error);
-            showToast("Error scanning barcode. Please try again.", "error");
+            // Offline fallback: look the barcode up in the cached product list.
+            const cachedProduct = getCachedProducts().find((p) => String(p.barcode) === barcode);
+            if (!cachedProduct) {
+              showToast(`Product not found for barcode: ${barcode}`, "error");
+              return;
+            }
+            if (currentSection !== "pos") {
+              showSection("pos");
+            }
+            addToCart(cachedProduct.id, cachedProduct.name, cachedProduct.price, 1, cachedProduct.tax_rate || 0);
+            showToast(`Added ${cachedProduct.name} to cart`, "success");
           });
       }
 
@@ -7882,9 +8023,69 @@
           })
           .catch((error) => {
             console.error("Error loading products:", error);
+            const cached = getCachedProducts();
+            if (cached.length > 0) {
+              renderProductsFromCacheForPOS(cached, resetPage);
+              return;
+            }
             productGrid.innerHTML =
               '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #dc3545;">Failed to load products.</div>';
           });
+      }
+
+      // Offline fallback renderer: show the cached product list, paginated
+      // client-side exactly like the online grid (including "Load More").
+      function renderProductsFromCacheForPOS(products, resetPage) {
+        const productGrid = document.getElementById("product-grid");
+
+        if (resetPage) posProductPage = 1;
+        posProductTotalPages = Math.max(1, Math.ceil(products.length / POS_PER_PAGE));
+        if (posProductPage > posProductTotalPages) posProductPage = posProductTotalPages;
+
+        if (resetPage) {
+          productGrid.innerHTML = "";
+        } else {
+          const loadMoreBtn = productGrid.querySelector(".pos-load-more-cell");
+          if (loadMoreBtn) loadMoreBtn.remove();
+        }
+
+        if (products.length === 0) {
+          productGrid.innerHTML =
+            '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #6c757d;">No products available.</div>';
+          return;
+        }
+
+        const pageProducts = products.slice((posProductPage - 1) * POS_PER_PAGE, posProductPage * POS_PER_PAGE);
+        pageProducts.forEach((product) => {
+          const productCard = document.createElement("div");
+          productCard.className = "pos-product-cell";
+          productCard.innerHTML = `
+          <div class="card product-card" onclick="addToCart(${product.id}, '${escapeHtml(product.name)}', ${product.price}, 1, ${product.tax_rate})">
+            <div class="card-body p-3">
+              ${getProductPhotoHtml(product.photo_url, product.name, "product-card-img")}
+              <h6 class="card-title fw-bold text-success mb-2">${product.name}</h6>
+              <p class="card-text mb-1">${formatCurrency(product.price)}</p>
+              <small class="${Number(product.stock) === 0 ? "text-danger" : "text-muted"}">Stock: ${product.stock}</small>
+            </div>
+          </div>
+        `;
+          productGrid.appendChild(productCard);
+        });
+
+        if (posProductPage < posProductTotalPages) {
+          const loadMoreCell = document.createElement("div");
+          loadMoreCell.className = "pos-load-more-cell";
+          loadMoreCell.style.cssText = "grid-column: 1 / -1; text-align: center; padding: 0.75rem 0;";
+          loadMoreCell.innerHTML = `
+            <button class="btn btn-outline-dark btn-sm" onclick="loadMorePOSProducts()">
+              <i class="bi bi-arrow-down"></i> Load More Products (Page ${posProductPage} of ${posProductTotalPages})
+            </button>
+          `;
+          productGrid.appendChild(loadMoreCell);
+        }
+
+        normalizeCurrencyDisplay(productGrid);
+        showToast("Offline — showing cached products", "warning");
       }
 
       function loadMorePOSProducts() {
@@ -7948,6 +8149,19 @@
           })
           .catch((error) => {
             console.error("Error searching products:", error);
+            const cached = getCachedProducts();
+            if (cached.length > 0) {
+              // Offline fallback: filter the cached catalog client-side.
+              const query = (document.getElementById("product-search").value || "").trim().toLowerCase();
+              const matches = query
+                ? cached.filter((p) =>
+                    String(p.name || "").toLowerCase().includes(query) ||
+                    String(p.barcode || "").toLowerCase().includes(query))
+                : cached;
+              posProductPage = 1;
+              renderProductsFromCacheForPOS(matches, true);
+              return;
+            }
             document.getElementById("product-grid").innerHTML =
               '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #dc3545;">Failed to search products.</div>';
           });
@@ -7990,6 +8204,12 @@
           })
           .catch((err) => {
             console.error("Error adding to cart:", err);
+            // Offline fallback: ring up from the cached product record.
+            const cachedProduct = findCachedProduct(productId);
+            if (cachedProduct) {
+              addToCartToInternal(cachedProduct, quantity);
+              return;
+            }
             showToast("Failed to add product. Check connection.", "error");
           });
       }
@@ -8727,6 +8947,7 @@
           .then((r) => r.json())
           .then((categories) => {
             cachedCategories = categories;
+            offlineCacheSet(CATEGORY_CACHE_KEY, categories);
             table.innerHTML = "";
 
             // Filter categories
@@ -8791,12 +9012,85 @@
           })
           .catch((err) => {
             console.error("Error loading categories:", err);
+            // Offline fallback: re-fill the table from the cached category list.
+            const cached = offlineCacheGet(CATEGORY_CACHE_KEY);
+            if (cached && Array.isArray(cached.data)) {
+              cachedCategories = cached.data;
+              renderCategoriesView(cached.data, search, statusFilter);
+              showToast("Offline — showing cached categories", "warning");
+              return;
+            }
             table.innerHTML = `
               <tr>
                 <td colspan="7" class="text-center py-4 text-danger">Failed to load categories.</td>
               </tr>
             `;
           });
+      }
+
+      function renderCategoriesView(categories, search, statusFilter) {
+        const table = document.getElementById("categories-table");
+        table.innerHTML = "";
+
+        // Filter categories
+        let filtered = categories || [];
+        if (search) {
+          const searchLower = search.toLowerCase();
+          filtered = filtered.filter(c =>
+            c.name.toLowerCase().includes(searchLower) ||
+            (c.description || "").toLowerCase().includes(searchLower)
+          );
+        }
+        if (statusFilter === "active") {
+          filtered = filtered.filter(c => c.is_active);
+        } else if (statusFilter === "inactive") {
+          filtered = filtered.filter(c => !c.is_active);
+        }
+
+        // Update summary cards
+        const totalCats = (categories || []).length;
+        const activeCats = (categories || []).filter(c => c.is_active).length;
+        const totalProducts = (categories || []).reduce((sum, c) => sum + (c.product_count || 0), 0);
+        const totalSuppliers = (categories || []).reduce((sum, c) => sum + (c.supplier_count || 0), 0);
+
+        document.getElementById("cat-total").textContent = totalCats;
+        document.getElementById("cat-active").textContent = activeCats;
+        document.getElementById("cat-products").textContent = totalProducts;
+        document.getElementById("cat-suppliers").textContent = totalSuppliers;
+
+        if (filtered.length === 0) {
+          table.innerHTML = `
+            <tr>
+              <td colspan="7" class="text-center py-4 text-muted">No categories found.</td>
+            </tr>
+          `;
+          return;
+        }
+
+        filtered.forEach((cat) => {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+            <td><span class="badge" style="background-color: ${cat.color || '#6c757d'}; width: 30px; height: 30px; border-radius: 4px; display: inline-block;">&nbsp;</span></td>
+            <td><strong>${escapeHtml(cat.name)}</strong></td>
+            <td class="d-none d-md-table-cell">${escapeHtml(cat.description || '-')}</td>
+            <td class="text-center"><span class="badge bg-primary">${cat.product_count || 0}</span></td>
+            <td class="text-center"><span class="badge bg-info">${cat.supplier_count || 0}</span></td>
+            <td class="text-center">
+              <span class="badge ${cat.is_active ? 'bg-success' : 'bg-secondary'}">${cat.is_active ? 'Active' : 'Inactive'}</span>
+            </td>
+            <td>
+              <div class="btn-group btn-group-sm">
+                <button class="btn btn-outline-primary" onclick="editCategory(${cat.id})" title="Edit">
+                  <i class="bi bi-pencil"></i>
+                </button>
+                <button class="btn btn-outline-danger" onclick="deleteCategory(${cat.id}, '${escapeHtml(cat.name)}')" title="Delete">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </div>
+            </td>
+          `;
+          table.appendChild(row);
+        });
       }
 
       function saveCategory() {
@@ -8966,30 +9260,42 @@
         fetch("/api/categories?active_only=true")
           .then((r) => r.json())
           .then((categories) => {
-            const dropdowns = [
-              "add-category", "edit-product-category", "add-supplier-category", "edit-supplier-category", "supplier-category-filter"
-            ];
-            dropdowns.forEach((id) => {
-              const select = document.getElementById(id);
-              if (select && select.tagName === "SELECT") {
-                const currentValue = select.value;
-                // Use "All Categories" for filter dropdowns, "Select category" for form dropdowns
-                const defaultOption = id.includes("filter") ? "All Categories" : "Select category";
-                select.innerHTML = `<option value="">${defaultOption}</option>`;
-                (categories || []).forEach((cat) => {
-                  const opt = document.createElement("option");
-                  opt.value = cat.id;
-                  opt.textContent = cat.name;
-                  select.appendChild(opt);
-                });
-                // Restore previous value if it exists
-                if (currentValue) {
-                  select.value = currentValue;
-                }
-              }
-            });
+            offlineCacheSet(CATEGORY_ACTIVE_CACHE_KEY, categories);
+            fillCategoryDropdowns(categories);
           })
-          .catch((err) => console.error("Error loading category dropdowns:", err));
+          .catch((err) => {
+            console.error("Error loading category dropdowns:", err);
+            // Offline fallback: use the cached category list to fill dropdowns.
+            const cached = offlineCacheGet(CATEGORY_ACTIVE_CACHE_KEY) || offlineCacheGet(CATEGORY_CACHE_KEY);
+            if (cached && Array.isArray(cached.data)) {
+              fillCategoryDropdowns(cached.data);
+            }
+          });
+      }
+
+      function fillCategoryDropdowns(categories) {
+        const dropdowns = [
+          "add-category", "edit-product-category", "add-supplier-category", "edit-supplier-category", "supplier-category-filter"
+        ];
+        dropdowns.forEach((id) => {
+          const select = document.getElementById(id);
+          if (select && select.tagName === "SELECT") {
+            const currentValue = select.value;
+            // Use "All Categories" for filter dropdowns, "Select category" for form dropdowns
+            const defaultOption = id.includes("filter") ? "All Categories" : "Select category";
+            select.innerHTML = `<option value="">${defaultOption}</option>`;
+            (categories || []).forEach((cat) => {
+              const opt = document.createElement("option");
+              opt.value = cat.id;
+              opt.textContent = cat.name;
+              select.appendChild(opt);
+            });
+            // Restore previous value if it exists
+            if (currentValue) {
+              select.value = currentValue;
+            }
+          }
+        });
       }
 
       // Color picker preview handlers

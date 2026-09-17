@@ -2281,6 +2281,22 @@ def api_receipt_logo():
 def public_file(filename):
     return send_from_directory(os.path.join(app.root_path, 'public'), filename)
 
+
+@app.route('/sw.js')
+def service_worker_js():
+    """Serve the offline Service Worker at root scope so it can control '/'.
+
+    A Service Worker only runs in secure contexts (HTTPS or localhost); on a
+    plain-HTTP LAN the browser ignores it and the localStorage data caches in
+    dashboard.html still provide offline POS data. The 'no-cache' header forces
+    the browser to re-check the worker script on each visit after a deploy.
+    """
+    response = make_response(send_from_directory(os.path.join(app.root_path, 'public'), 'sw.js'))
+    response.headers['Content-Type'] = 'application/javascript'
+    response.headers['Service-Worker-Allowed'] = '/'
+    response.headers['Cache-Control'] = 'no-cache'
+    return response
+
 # Category API Endpoints
 @app.route('/api/categories', methods=['GET', 'POST'])
 def api_categories():
