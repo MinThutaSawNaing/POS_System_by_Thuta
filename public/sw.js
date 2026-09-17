@@ -7,13 +7,16 @@
  * plain-HTTP LAN the browser ignores this file and the localStorage data caches
  * in dashboard.html still provide offline POS data.
  */
-const SW_VERSION = "1.0.0";
+const SW_VERSION = "1.1.0";
 const CACHE_NAME = "parrot-pos-" + SW_VERSION;
 
 const PRECACHE_URLS = [
   "/login",
   "/public/photos/logo.png",
   "/public/photos/logo.ico",
+  "/public/manifest.webmanifest",
+  "/public/pwa/icon-192.png",
+  "/public/pwa/icon-512.png",
   "/public/vendor/bootstrap/bootstrap.min.css",
   "/public/vendor/bootstrap/bootstrap.bundle.min.js",
   "/public/vendor/bootstrap-icons/bootstrap-icons.css",
@@ -22,6 +25,15 @@ const PRECACHE_URLS = [
   "/public/vendor/chartjs/chart.umd.min.js",
   "/public/vendor/marked/marked.min.js",
   "/public/vendor/dompurify/purify.min.js",
+  "/public/vendor/fontawesome/css/all.min.css",
+  "/public/vendor/fontawesome/webfonts/fa-brands-400.woff2",
+  "/public/vendor/fontawesome/webfonts/fa-regular-400.woff2",
+  "/public/vendor/fontawesome/webfonts/fa-solid-900.woff2",
+  "/public/vendor/fontawesome/webfonts/fa-v4compatibility.woff2",
+  "/public/vendor/fontawesome/webfonts/fa-brands-400.ttf",
+  "/public/vendor/fontawesome/webfonts/fa-regular-400.ttf",
+  "/public/vendor/fontawesome/webfonts/fa-solid-900.ttf",
+  "/public/vendor/fontawesome/webfonts/fa-v4compatibility.ttf",
 ];
 
 self.addEventListener("install", (event) => {

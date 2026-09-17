@@ -331,3 +331,34 @@ process.exit(0);
     assert out["branchKey"] == "pos_products_all_cache_7"
     assert out["branchCount"] == 2
     assert out["found"] == "Cola"
+
+
+def test_pwa_manifest_and_install_prompt_are_wired():
+    """Installability guard: dashboard/login must expose the manifest and the
+    dashboard must safely handle Chromium's native install prompt."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+    login_source = (Path(__file__).parent / "templates" / "login.html").read_text(encoding="utf-8")
+    manifest = json.loads((Path(__file__).parent / "public" / "manifest.webmanifest").read_text(encoding="utf-8"))
+
+    assert manifest["id"] == "/"
+    assert manifest["start_url"] == "/"
+    assert manifest["scope"] == "/"
+    assert manifest["display"] == "standalone"
+    assert manifest["theme_color"] == "#343a40"
+    assert {icon["sizes"] for icon in manifest["icons"]} >= {"192x192", "512x512"}
+    assert all("maskable" in icon["purpose"] for icon in manifest["icons"])
+
+    for html in (source, login_source):
+        assert 'rel="manifest" href="/public/manifest.webmanifest"' in html
+        assert 'rel="apple-touch-icon" href="/public/pwa/icon-192.png"' in html
+        assert 'name="theme-color" content="#343a40"' in html
+
+    assert "/public/vendor/fontawesome/css/all.min.css" in login_source
+    assert "cdnjs.cloudflare.com" not in login_source
+
+    assert 'id="install-app-button"' in source
+    assert "function initPwaInstallPrompt" in source
+    assert 'addEventListener("beforeinstallprompt"' in source
+    assert 'addEventListener("appinstalled"' in source
+    assert "await promptEvent.prompt()" in source
+    assert "initPwaInstallPrompt();" in source

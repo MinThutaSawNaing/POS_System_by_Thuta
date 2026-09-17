@@ -1,0 +1,26 @@
+{
+  "id": "/",
+  "name": "Parrot POS",
+  "short_name": "Parrot POS",
+  "description": "Parrot POS point-of-sale application with offline sales support.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f8f9fa",
+  "theme_color": "#343a40",
+  "icons": [
+    {
+      "src": "/public/pwa/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/public/pwa/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

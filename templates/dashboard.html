@@ -3,8 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#343a40" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>{{ pos_name }} Dashboard</title>
     <link rel="icon" href="/public/photos/logo.ico" type="image/x-icon" />
+    <link rel="manifest" href="/public/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/public/pwa/icon-192.png" />
     <link href="/public/vendor/bootstrap/bootstrap.min.css" rel="stylesheet" />
     <link
       rel="stylesheet"
@@ -1096,6 +1102,11 @@
           <a class="nav-link text-danger" href="/logout">
             <i class="bi bi-box-arrow-right"></i>Logout
           </a>
+        </li>
+        <li class="nav-item" id="install-app-nav-item" style="display: none">
+          <button class="nav-link border-0 bg-transparent w-100 text-start" id="install-app-button" type="button">
+            <i class="bi bi-download"></i>Install App
+          </button>
         </li>
       </ul>
         <div
@@ -6439,6 +6450,7 @@
             console.warn("Service worker registration failed:", err);
           });
         }
+        initPwaInstallPrompt();
         initResizableSidebar();
         applySettingsUI();
         loadSettings();
@@ -8539,6 +8551,50 @@
 
       function isBrowserOffline() {
         return typeof navigator !== "undefined" && navigator.onLine === false;
+      }
+
+      // PWA installation is browser-controlled. Chromium emits
+      // beforeinstallprompt only when all installability requirements are met
+      // (HTTPS/localhost, manifest, Service Worker, valid icons, etc.).
+      // Safari/iOS does not emit it; users install there with Share → Add to
+      // Home Screen, so the button intentionally remains hidden.
+      let deferredPwaInstallPrompt = null;
+
+      function initPwaInstallPrompt() {
+        const navItem = document.getElementById("install-app-nav-item");
+        const button = document.getElementById("install-app-button");
+        if (!navItem || !button) return;
+
+        const hideInstallButton = function () {
+          navItem.style.display = "none";
+          deferredPwaInstallPrompt = null;
+        };
+
+        window.addEventListener("beforeinstallprompt", function (event) {
+          event.preventDefault();
+          deferredPwaInstallPrompt = event;
+          navItem.style.display = "block";
+        });
+
+        window.addEventListener("appinstalled", function () {
+          hideInstallButton();
+          showToast("Parrot POS installed successfully", "success");
+        });
+
+        button.addEventListener("click", async function () {
+          if (!deferredPwaInstallPrompt) return;
+          const promptEvent = deferredPwaInstallPrompt;
+          hideInstallButton();
+          try {
+            await promptEvent.prompt();
+            const result = await promptEvent.userChoice;
+            if (result && result.outcome === "dismissed") {
+              showToast("App installation was cancelled", "info");
+            }
+          } catch (error) {
+            console.warn("PWA installation prompt failed:", error);
+          }
+        });
       }
 
       async function syncPendingSales() {
