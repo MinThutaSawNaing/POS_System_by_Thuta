@@ -969,7 +969,7 @@ class WarehouseTransfer(db.Model):
 
 class Sale(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    transaction_id = db.Column(db.String(36), unique=True)
+    transaction_id = db.Column(db.String(128), unique=True)
     date = db.Column(db.DateTime, default=datetime.utcnow)
     total = db.Column(db.Float, nullable=False)
     tax = db.Column(db.Float, nullable=False)

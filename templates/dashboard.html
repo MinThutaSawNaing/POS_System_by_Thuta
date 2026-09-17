@@ -65,6 +65,20 @@
         position: fixed;
         transition: all 0.3s;
         z-index: 1000;
+        display: flex;
+        flex-direction: column;
+        overflow-y: hidden;
+        overflow-x: hidden;
+      }
+
+      .sidebar > div.p-3 {
+        flex-shrink: 0;
+      }
+
+      /* The nav column scrolls internally so the footer status indicator stays pinned at the bottom. */
+      .sidebar > ul.nav {
+        flex: 1 1 auto;
+        min-height: 0;
         overflow-y: auto;
         overflow-x: hidden;
       }
@@ -82,6 +96,91 @@
 
       .sidebar-drag-handle:hover {
         background: rgba(255, 255, 255, 0.12);
+      }
+
+      /* Connection / offline-sync status indicator pinned to the sidebar footer */
+      .connection-status-indicator {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin: 0.5rem 0.75rem 0.75rem;
+        padding: 0.5rem 0.65rem;
+        border-radius: 0.5rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        line-height: 1.2;
+        color: #fff;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        flex-shrink: 0;
+        user-select: none;
+      }
+
+      .connection-status-indicator .status-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        background-color: #adb5bd;
+        transition: background-color 0.3s ease, box-shadow 0.3s ease;
+      }
+
+      .connection-status-indicator .status-icon {
+        font-size: 0.9rem;
+        color: #adb5bd;
+        flex-shrink: 0;
+      }
+
+      .connection-status-indicator .status-text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .connection-status-indicator.status-online .status-dot {
+        background-color: #2ecc71;
+        box-shadow: 0 0 6px rgba(46, 204, 113, 0.9);
+      }
+      .connection-status-indicator.status-online .status-icon {
+        color: #2ecc71;
+      }
+
+      .connection-status-indicator.status-offline .status-dot {
+        background-color: #e74c3c;
+        box-shadow: 0 0 6px rgba(231, 76, 60, 0.9);
+        animation: status-pulse 1.2s ease-in-out infinite;
+      }
+      .connection-status-indicator.status-offline .status-icon {
+        color: #e74c3c;
+      }
+
+      .connection-status-indicator.status-syncing .status-dot {
+        background-color: #f1c40f;
+        box-shadow: 0 0 6px rgba(241, 196, 15, 0.9);
+        animation: status-pulse 0.9s ease-in-out infinite;
+      }
+      .connection-status-indicator.status-syncing .status-icon {
+        display: inline-block;
+        color: #f1c40f;
+        animation: status-spin 1s linear infinite;
+      }
+
+      .connection-status-indicator.status-synced .status-dot {
+        background-color: #2ecc71;
+        box-shadow: 0 0 6px rgba(46, 204, 113, 0.9);
+      }
+      .connection-status-indicator.status-synced .status-icon {
+        color: #2ecc71;
+      }
+
+      @keyframes status-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.35; }
+      }
+
+      @keyframes status-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
       }
 
       .sidebar .nav-link {
@@ -1014,7 +1113,17 @@
           </a>
         </li>
       </ul>
-      <div class="sidebar-drag-handle" id="sidebar-drag-handle" title="Drag to resize sidebar"></div>
+        <div
+          id="connection-status-indicator"
+          class="connection-status-indicator status-online"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="status-dot" id="connection-status-dot"></span>
+          <i class="bi bi-wifi status-icon" id="connection-status-icon"></i>
+          <span class="status-text" id="connection-status-text">Online mode detected</span>
+        </div>
+        <div class="sidebar-drag-handle" id="sidebar-drag-handle" title="Drag to resize sidebar"></div>
     </div>
 
     <!-- Main Content -->
@@ -6242,6 +6351,7 @@
         loadProducts();
         loadSales();
         updatePendingSalesBadge();
+        setConnectionStatus(isBrowserOffline() ? "offline" : "online");
         syncPendingSales();
         initAutoBarcodeScannerToggle();
         restoreActiveSection();
@@ -8117,8 +8227,41 @@
         }
       }
 
+      function generateClientTxnId() {
+        // crypto.randomUUID() is only available in secure contexts (HTTPS or
+        // localhost). On a plain-HTTP LAN deployment, fall back to a v4-style
+        // UUID built from crypto.getRandomValues (available in insecure contexts
+        // too) or Math.random, so offline queueing never throws.
+        try {
+          if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+            return crypto.randomUUID();
+          }
+        } catch (e) { /* fall through to the fallback generator */ }
+        const bytes = new Uint8Array(16);
+        let rngOk = false;
+        if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+          try {
+            crypto.getRandomValues(bytes);
+            rngOk = true;
+          } catch (e) { /* fall back to Math.random below */ }
+        }
+        if (!rngOk) {
+          for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+        }
+        bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+        bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+        const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"));
+        return (
+          hex.slice(0, 4).join("") + "-" +
+          hex.slice(4, 6).join("") + "-" +
+          hex.slice(6, 8).join("") + "-" +
+          hex.slice(8, 10).join("") + "-" +
+          hex.slice(10, 16).join("")
+        );
+      }
+
       function queueOfflineSale(saleData) {
-        saleData.transaction_id = crypto.randomUUID();
+        saleData.transaction_id = generateClientTxnId();
         const pending = getPendingSales();
         pending.push({
           transaction_id: saleData.transaction_id,
@@ -8127,6 +8270,7 @@
         });
         setPendingSales(pending);
         updatePendingSalesBadge();
+        setConnectionStatus("offline");
         showToast(`Sale saved offline — will sync automatically (ID: ${saleData.transaction_id.slice(0,8)})`, "warning");
       }
 
@@ -8142,13 +8286,43 @@
         }
       }
 
+      // Connection / offline-sync status indicator pinned to the sidebar footer.
+      let connectionStatusTimer = null;
+      const CONNECTION_STATUS = {
+        online: { text: "Online mode detected", icon: "bi-wifi" },
+        offline: { text: "Offline mode detected", icon: "bi-wifi-off" },
+        syncing: { text: "Syncing", icon: "bi-arrow-repeat" },
+        synced: { text: "Synced completed", icon: "bi-check-circle" },
+      };
+
+      function setConnectionStatus(status) {
+        const indicator = document.getElementById("connection-status-indicator");
+        if (!indicator) return;
+        if (connectionStatusTimer) {
+          clearTimeout(connectionStatusTimer);
+          connectionStatusTimer = null;
+        }
+        const cfg = CONNECTION_STATUS[status] || CONNECTION_STATUS.online;
+        indicator.className = "connection-status-indicator status-" + status;
+        const textEl = document.getElementById("connection-status-text");
+        if (textEl) textEl.textContent = cfg.text;
+        const iconEl = document.getElementById("connection-status-icon");
+        if (iconEl) iconEl.className = "bi " + cfg.icon + " status-icon";
+      }
+
+      function isBrowserOffline() {
+        return typeof navigator !== "undefined" && navigator.onLine === false;
+      }
+
       async function syncPendingSales() {
         if (isSyncingPendingSales) return;
         const pending = getPendingSales();
         if (pending.length === 0) return;
         isSyncingPendingSales = true;
+        setConnectionStatus("syncing");
         let stopSync = false;
         let syncedCount = 0;
+        let rejectedCount = 0;
         let syncedIds = [];
         try {
           for (const entry of pending.slice()) {
@@ -8165,6 +8339,13 @@
                 stopSync = true;
                 return;
               }
+              if (response.status === 401 || response.status === 403) {
+                // Session expired / not authorized: the server never accepted or
+                // rejected this sale, so keep it queued and retry after login.
+                // Dropping it here would lose money taken at the counter.
+                stopSync = true;
+                return;
+              }
               const data = await response.json();
               if (data.success) {
                 const current = getPendingSales();
@@ -8174,6 +8355,7 @@
                 updatePendingSalesBadge();
               } else if (!response.ok) {
                 // Server explicitly rejected (4xx or 5xx) — drop the sale and warn prominently
+                rejectedCount++;
                 const current = getPendingSales();
                 setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id));
                 showToast("Offline sale rejected: " + (data.message || "Unknown error"), "error");
@@ -8187,18 +8369,49 @@
               console.warn("Offline sale sync network error:", err);
             }
           }
+          if (syncedCount > 0) {
+            // A reconnected sale is now on the server — refresh the same views
+            // the online success path refreshes so it shows up immediately.
+            loadSales();
+            loadDashboardStats();
+            invalidateProductsCache();
+          }
           if (syncedCount === 1) {
             showSaleSuccessModal(syncedIds[0], null, false);
           } else if (syncedCount > 1) {
             showToast(`Offline sales synced: ${syncedCount} (latest ID: ${syncedIds[syncedIds.length - 1].slice(0, 8)})`, "success");
           }
         } finally {
+          if (getPendingSales().length === 0) {
+            // Everything drained. Only celebrate when the sale is actually on the
+            // server; rejected sales just fall back to the plain connection state.
+            if (syncedCount > 0 && rejectedCount === 0) {
+              setConnectionStatus("synced");
+              connectionStatusTimer = setTimeout(function () {
+                setConnectionStatus(isBrowserOffline() ? "offline" : "online");
+              }, 3500);
+            } else {
+              setConnectionStatus(isBrowserOffline() ? "offline" : "online");
+            }
+          } else {
+            // Still offline or blocked (network/auth) — keep the queue visible.
+            setConnectionStatus("offline");
+          }
           isSyncingPendingSales = false;
           updatePendingSalesBadge();
         }
       }
 
-      window.addEventListener("online", syncPendingSales);
+      window.addEventListener("online", function () {
+        if (getPendingSales().length) {
+          syncPendingSales();
+        } else {
+          setConnectionStatus("online");
+        }
+      });
+      window.addEventListener("offline", function () {
+        setConnectionStatus("offline");
+      });
       setInterval(function () {
         if (getPendingSales().length) syncPendingSales();
       }, 20000);

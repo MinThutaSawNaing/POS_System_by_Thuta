@@ -57,6 +57,13 @@ let toastCalls = [];
 function showSaleSuccessModal(id) {{ modalCalls.push(id); }}
 function showToast(msg, kind) {{ toastCalls.push({{ msg, kind }}); }}
 function updatePendingSalesBadge() {{ /* DOM-free no-op */ }}
+function loadSales() {{ /* DOM-free no-op */ }}
+function loadDashboardStats() {{ /* DOM-free no-op */ }}
+function invalidateProductsCache() {{ /* DOM-free no-op */ }}
+let lastStatus = null;
+let connectionStatusTimer = null;
+function setConnectionStatus(status) {{ lastStatus = status; }}
+function isBrowserOffline() {{ return false; }}
 let fetchIndex = 0;
 const scenarios = {json.dumps(scenarios)};
 async function fetch(url, opts) {{
@@ -87,7 +94,7 @@ setPendingSales(seed.map((saleData) => ({{
 (async () => {{
   await syncPendingSales();
   const remaining = getPendingSales().map((p) => p.transaction_id);
-  console.log(JSON.stringify({{ modalCalls, toastCalls, remaining }}));
+  console.log(JSON.stringify({{ modalCalls, toastCalls, remaining, lastStatus }}));
   process.exit(0);
 }})().catch((e) => {{ console.error(e); process.exit(1); }});
 """
@@ -172,3 +179,46 @@ def test_mixed_batch_syncs_and_rejects_correctly():
     assert out["modalCalls"] == []  # mixed batch -> toast, not modal
     assert any("synced: 2" in t["msg"] for t in out["toastCalls"])
     assert any("rejected" in t["msg"] for t in out["toastCalls"])
+
+
+def test_401_stops_sync_and_keeps_queue():
+    """Session-expired JSON responses must NOT drop queued sales."""
+    out = _run_sync([
+        {"status": 401, "content_type": "application/json",
+         "json_body": {"error": "Unauthorized"}, "sale": _sale("h-1")},
+        {"status": 201, "content_type": "application/json",
+         "json_body": {"success": True}, "sale": _sale("h-2")},
+    ])
+    # First entry kept, second never attempted after the 401 stop.
+    assert out["remaining"] == ["h-1", "h-2"]
+    assert out["modalCalls"] == []
+    assert out["toastCalls"] == []
+
+
+def test_403_stops_sync_and_keeps_queue():
+    """Forbidden JSON responses keep the sale queued like 401 does."""
+    out = _run_sync([
+        {"status": 403, "content_type": "application/json",
+         "json_body": {"error": "Forbidden"}, "sale": _sale("i-1")},
+    ])
+    assert out["remaining"] == ["i-1"]
+    assert out["toastCalls"] == []
+
+
+def test_status_shows_synced_after_successful_sync():
+    """A fully-drained queue flips the sidebar indicator to 'Synced completed'."""
+    out = _run_sync([
+        {"status": 201, "content_type": "application/json",
+         "json_body": {"success": True}, "sale": _sale("j-1")},
+    ])
+    assert out["remaining"] == []
+    assert out["lastStatus"] == "synced"
+
+
+def test_status_shows_offline_when_sync_cannot_reach_server():
+    """A network failure leaves the queue intact and reports 'Offline mode detected'."""
+    out = _run_sync([
+        {"network_error": True, "sale": _sale("k-1")},
+    ])
+    assert out["remaining"] == ["k-1"]
+    assert out["lastStatus"] == "offline"
