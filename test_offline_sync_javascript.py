@@ -281,3 +281,53 @@ def test_offline_pwa_assets_vendored_and_helpers_exist():
         "PRODUCT_CACHE_KEY",
     ):
         assert helper in source, f"missing helper {helper}"
+
+
+def test_offline_product_cache_branch_fallback():
+    """The offline product cache must fall back to the generic snapshot when the
+    branch-scoped key is missing (boot order: loadProductsCached runs before the
+    current branch is fetched), so the POS grid/barcode fallbacks still work."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+    helpers = "\n".join(
+        _function(source, name)
+        for name in ("offlineCacheSet", "offlineCacheGet", "cachedProductsKey",
+                     "getCachedProducts", "findCachedProduct")
+    )
+    script = f"""
+globalThis.localStorage = {{
+  getItem: (k) => (k in storage ? storage[k] : null),
+  setItem: (k, v) => {{ storage[k] = String(v); }},
+  removeItem: (k) => {{ delete storage[k]; }},
+}};
+const storage = {{}};
+{helpers}
+const PRODUCT_CACHE_KEY = "pos_products_all_cache";
+const PRODUCTS = [
+  {{ id: 1, name: "Cola", barcode: "111", price: 1.5, stock: 10, tax_rate: 0 }},
+  {{ id: 2, name: "Chips", barcode: "222", price: 2.0, stock: 5, tax_rate: 5 }},
+];
+// Boot: currentBranch not set yet -> snapshot lands on the generic key.
+let currentBranch = null;
+offlineCacheSet(cachedProductsKey(), PRODUCTS);
+// Later: branch selected, branch-scoped key not yet written.
+currentBranch = {{ id: 7 }};
+const fromGenericFallback = getCachedProducts();
+const found = findCachedProduct(1);
+// Now the branch-scoped key is written (refreshPersistentProductCache path).
+offlineCacheSet(cachedProductsKey(), PRODUCTS);
+const branchKey = cachedProductsKey();
+const fromBranch = getCachedProducts();
+console.log(JSON.stringify({{
+  genericFallbackCount: fromGenericFallback.length,
+  branchKey,
+  branchCount: fromBranch.length,
+  found: found ? found.name : null,
+}}));
+process.exit(0);
+"""
+    result = subprocess.run([NODE, "-e", script], check=True, capture_output=True, text=True)
+    out = json.loads(result.stdout)
+    assert out["genericFallbackCount"] == 2, "generic fallback must return cached products"
+    assert out["branchKey"] == "pos_products_all_cache_7"
+    assert out["branchCount"] == 2
+    assert out["found"] == "Cola"

@@ -6126,8 +6126,12 @@
       }
 
       function getCachedProducts() {
+        // Branch-scoped cache first, then the generic snapshot written before a
+        // branch was selected (e.g. during the initial app boot).
         const entry = offlineCacheGet(cachedProductsKey());
-        return entry && Array.isArray(entry.data) ? entry.data : [];
+        if (entry && Array.isArray(entry.data)) return entry.data;
+        const generic = offlineCacheGet(PRODUCT_CACHE_KEY);
+        return generic && Array.isArray(generic.data) ? generic.data : [];
       }
 
       function saveCachedProducts(products) {
@@ -6148,6 +6152,16 @@
           tax_rate: p.tax_rate || 0,
           promotions: p.promotions || [],
         };
+      }
+
+      // Best-effort: keep the full product list for the current branch in the
+      // offline cache (used by the POS grid, search and barcode fallbacks).
+      // Uses the shared in-memory cache when warm to avoid extra fetches.
+      async function refreshPersistentProductCache() {
+        try {
+          const data = await loadProductsCached();
+          if (Array.isArray(data)) saveCachedProducts(data);
+        } catch (e) { /* offline — keep the last snapshot */ }
       }
       // ===== END OFFLINE PERSISTENT CACHE HELPERS =====
       // ===== END CACHING IMPLEMENTATION =====
@@ -8020,6 +8034,11 @@
             }
 
             normalizeCurrencyDisplay(productGrid);
+
+            // Keep the persistent product snapshot fresh for offline POS use.
+            if (resetPage) {
+              refreshPersistentProductCache();
+            }
           })
           .catch((error) => {
             console.error("Error loading products:", error);

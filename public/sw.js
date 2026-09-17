@@ -28,7 +28,20 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE_NAME)
-      .then((cache) => cache.addAll(PRECACHE_URLS))
+      .then((cache) =>
+        // Cache each asset individually so one unreachable URL never aborts
+        // the whole install (cache.addAll would reject the entire list).
+        Promise.allSettled(
+          PRECACHE_URLS.map((url) =>
+            fetch(url, { cache: "reload" })
+              .then((response) => {
+                if (response && response.status === 200) {
+                  return cache.put(url, response.clone());
+                }
+              })
+          )
+        )
+      )
       .then(() => self.skipWaiting())
   );
 });
