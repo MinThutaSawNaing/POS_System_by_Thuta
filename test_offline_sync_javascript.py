@@ -5,9 +5,11 @@ Covers the coding-level contract: single vs batched success notifications,
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,27 @@ import pytest
 DASHBOARD = Path(__file__).parent / "templates" / "dashboard.html"
 NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(NODE is None, reason="Node.js is required")
+
+
+def _run_node_script(script):
+    """Run a Node script from a temp file.
+
+    Large scripts must not be passed via ``node -e``: Windows overflows the
+    process command line and aborts with a stack-buffer-overrun exit code.
+    """
+    handle, path = tempfile.mkstemp(suffix=".js")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as file:
+            file.write(script)
+        result = subprocess.run(
+            [NODE, path], check=True, capture_output=True, text=True, encoding="utf-8"
+        )
+        return json.loads(result.stdout)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def _function(source, name):
@@ -98,9 +121,7 @@ setPendingSales(seed.map((saleData) => ({{
   process.exit(0);
 }})().catch((e) => {{ console.error(e); process.exit(1); }});
 """
-    result = subprocess.run([NODE, "-e", script], check=True, capture_output=True, text=True)
-    return json.loads(result.stdout)
-
+    return _run_node_script(script)
 
 def _sale(txn):
     return {
@@ -325,8 +346,7 @@ console.log(JSON.stringify({{
 }}));
 process.exit(0);
 """
-    result = subprocess.run([NODE, "-e", script], check=True, capture_output=True, text=True)
-    out = json.loads(result.stdout)
+    out = _run_node_script(script)
     assert out["genericFallbackCount"] == 2, "generic fallback must return cached products"
     assert out["branchKey"] == "pos_products_all_cache_7"
     assert out["branchCount"] == 2
@@ -413,8 +433,7 @@ console.log(JSON.stringify({{
   firstTax: stored.items[0].taxAmount,
 }}));
 """
-    result = subprocess.run([NODE, "-e", script], check=True, capture_output=True, text=True)
-    out = json.loads(result.stdout)
+    out = _run_node_script(script)
     # The stored receipt must reference the same client-generated transaction id
     # that was queued, so the Print Receipt action can find it while offline.
     assert isinstance(out["transactionId"], str) and out["transactionId"]
@@ -511,8 +530,7 @@ console.log(JSON.stringify({{
   serverRouteAfterSync: serverReceiptCalls,
 }}));
 """
-    result = subprocess.run([NODE, "-e", script], check=True, capture_output=True, text=True)
-    out = json.loads(result.stdout)
+    out = _run_node_script(script)
     assert out["usedLocalWhileQueued"] is True
     assert out["htmlHasTotal"] is True
     assert out["htmlHasTax"] is True
@@ -521,3 +539,173 @@ console.log(JSON.stringify({{
     assert out["htmlMarksPendingSync"] is True
     assert out["htmlAutoPrints"] is True
     assert out["serverRouteAfterSync"] == ["offline-txn-1"]
+
+
+def test_offline_sale_cycle_queues_receipt_but_posts_only_server_payload():
+    """Full offline cycle guard: completing a sale offline must queue a printable
+    receipt locally while the eventual sync POST carries only the sale payload the
+    server expects — never client-only receipt data."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+    helpers = "\n".join(
+        _function(source, name)
+        for name in (
+            "toCents", "centsToNumber", "getPendingSales", "setPendingSales",
+            "generateClientTxnId", "buildOfflineReceiptSnapshot", "queueOfflineSale",
+            "getPendingOfflineReceipt", "finishOfflineSale", "syncPendingSales",
+        )
+    )
+    script = f"""
+const storage = {{}};
+globalThis.localStorage = {{
+  getItem: (k) => (k in storage ? storage[k] : null),
+  setItem: (k, v) => {{ storage[k] = String(v); }},
+  removeItem: (k) => {{ delete storage[k]; }},
+}};
+globalThis.document = {{
+  getElementById: (id) => (id === "username-display" ? {{ textContent: "Cashier" }} : null),
+}};
+globalThis.navigator = {{ onLine: false }};
+const APP_SETTINGS = {{ posName: "Parrot POS", currencySuffix: "$", receiptPaperSize: "THERMAL_80MM" }};
+let currentBranch = {{ id: 3, name: "Main" }};
+let cart = [{{ product_id: 9, name: "Coffee", price: 100, quantity: 2, tax_rate: 5 }}];
+let isSaleProcessing = false;
+let isSyncingPendingSales = false;
+let connectionStatusTimer = null;
+const SALE_COOLDOWN_MS = 0;
+let posted = [];
+let modalIds = [];
+function setCompleteSaleButtonState() {{}}
+function updateCartDisplay() {{}}
+function showSaleSuccessModal(id) {{ modalIds.push(id); }}
+function showToast() {{}}
+function updatePendingSalesBadge() {{}}
+function setConnectionStatus() {{}}
+function isBrowserOffline() {{ return true; }}
+function loadSales() {{}}
+function loadDashboardStats() {{}}
+function invalidateProductsCache() {{}}
+async function fetch(url, opts) {{
+  posted.push({{ url, body: JSON.parse(opts.body) }});
+  return {{
+    ok: true,
+    status: 201,
+    headers: {{ get: () => "application/json" }},
+    json: async () => ({{ success: true, transaction_id: "server-1" }}),
+  }};
+}}
+{helpers}
+
+(async () => {{
+// 1) Complete the sale while offline.
+const saleData = {{
+  items: [{{ product_id: 9, price: 100, quantity: 2, tax_rate: 5 }}],
+  payment_method: "cash",
+  cash_received: 300,
+}};
+finishOfflineSale(saleData);
+
+const queuedId = saleData.transaction_id;
+const queuedReceipt = getPendingOfflineReceipt(queuedId);
+const cartCleared = cart.length === 0;
+
+// 2) Reconnect and sync.
+await syncPendingSales();
+
+const remaining = getPendingSales().length;
+const postedBody = posted[0] ? posted[0].body : null;
+console.log(JSON.stringify({{
+  queuedIdIsString: typeof queuedId === "string" && queuedId.length > 0,
+  receiptQueued: !!queuedReceipt,
+  receiptTotal: queuedReceipt ? queuedReceipt.total : null,
+  receiptItemName: queuedReceipt ? queuedReceipt.items[0].name : null,
+  cartCleared,
+  modalShownForOfflineSale: modalIds.includes(queuedId),
+  syncUrl: posted[0] ? posted[0].url : null,
+  postedKeys: postedBody ? Object.keys(postedBody).sort() : null,
+  postedLeaksReceipt: postedBody ? Object.keys(postedBody).some((k) => k.toLowerCase().includes("receipt")) : null,
+  remainingAfterSync: remaining,
+}}));
+}})().catch((e) => {{ console.error(e); process.exit(1); }});
+"""
+    out = _run_node_script(script)
+
+    assert out["queuedIdIsString"] is True
+    assert out["receiptQueued"] is True
+    assert out["receiptTotal"] == 210          # 200 subtotal + 10 tax
+    assert out["receiptItemName"] == "Coffee"
+    assert out["cartCleared"] is True
+    assert out["modalShownForOfflineSale"] is True
+
+    # API layer: the sync must hit the sales endpoint with only server fields.
+    assert out["syncUrl"] == "/api/sales"
+    assert out["postedKeys"] == [
+        "cash_received", "items", "payment_method", "transaction_id",
+    ]
+    assert out["postedLeaksReceipt"] is False
+    assert out["remainingAfterSync"] == 0
+
+
+def test_offline_receipt_escapes_hostile_product_names():
+    """The offline receipt writes raw HTML into a new window, so every
+    interpolated value must be escaped to remain inert."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+    helpers = "\n".join(
+        _function(source, name)
+        for name in (
+            "escapeHtml", "getPendingSales", "setPendingSales",
+            "getPendingOfflineReceipt", "formatOfflineReceiptMoney",
+            "openOfflineReceiptWindow", "printReceiptFromSuccessModal",
+        )
+    )
+    script = f"""
+const storage = {{}};
+globalThis.localStorage = {{
+  getItem: (k) => (k in storage ? storage[k] : null),
+  setItem: (k, v) => {{ storage[k] = String(v); }},
+}};
+let printed = "";
+globalThis.window = {{
+  open: () => ({{ opener: null, document: {{ write: (h) => {{ printed += h; }}, close: () => {{}} }}, close: () => {{}} }}),
+}};
+function showToast() {{}}
+function openReceiptWindow() {{ return true; }}
+let currentSaleTransactionId = null;
+{helpers}
+
+const hostile = '<img src=x onerror="alert(1)"><script>alert("xss")<\\/script>';
+const receipt = {{
+  transactionId: "txn-1",
+  createdAt: "now",
+  posName: hostile,
+  currencySuffix: "$",
+  paperWidthMm: 80,
+  branchName: hostile,
+  branchAddress: hostile,
+  branchPhone: "",
+  branchEmail: "",
+  cashierName: hostile,
+  paymentMethod: "cash",
+  cashReceived: 10,
+  change: 0,
+  items: [{{ name: hostile, quantity: 1, unitPrice: 10, lineSubtotal: 10, taxRate: 0, taxAmount: 0 }}],
+  subtotal: 10, tax: 0, total: 10,
+}};
+setPendingSales([{{ transaction_id: "txn-1", saleData: {{}}, receiptSnapshot: receipt, created_at: "" }}]);
+currentSaleTransactionId = "txn-1";
+printReceiptFromSuccessModal();
+
+console.log(JSON.stringify({{
+  wroteHtml: printed.length > 0,
+  hasRawImgTag: printed.includes("<img src=x"),
+  hasRawScriptTag: printed.includes("<script>alert"),
+  escapedAngle: printed.includes("&lt;img"),
+  // Only the receipt's own print script may exist.
+  scriptTagCount: (printed.match(/<script/gi) || []).length,
+}}));
+"""
+    out = _run_node_script(script)
+    assert out["wroteHtml"] is True
+    assert out["escapedAngle"] is True
+    assert out["hasRawImgTag"] is False
+    assert out["hasRawScriptTag"] is False
+    assert out["scriptTagCount"] == 1

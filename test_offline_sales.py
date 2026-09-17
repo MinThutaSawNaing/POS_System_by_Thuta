@@ -157,6 +157,24 @@ class OfflineSaleTests(unittest.TestCase):
         report_sale = next(s for s in report_data if s['transaction_id'] == report_txn_id)
         self.assertEqual(report_sale['cash_received'], 0.0)
 
+    def test_synced_offline_sale_prints_server_receipt(self):
+        """API layer: after an offline sale syncs, the server receipt the client
+        falls back to must render with the real items and total."""
+        client = self._client()
+        created = client.post('/api/sales', json=self._sale_payload(self.client_txn_id))
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.get_json()['transaction_id'], self.client_txn_id)
+
+        receipt = client.get(f'/api/sales/{self.client_txn_id}/print')
+        self.assertEqual(receipt.status_code, 200)
+        self.assertIn('text/html', receipt.headers.get('Content-Type', ''))
+        body = receipt.get_data(as_text=True)
+        self.assertIn('Offline Test Product', body)
+        # Server money formatting includes thousands separators.
+        self.assertIn('1,000.00', body)
+        self.assertIn('TOTAL', body)
+        self.assertNotIn('Sale not found', body)
+
     def test_sale_replay_message_indicates_already_synced(self):
         # The replay response's message must indicate the sale was already
         # synced, so the client can recognise the duplicate without parsing
