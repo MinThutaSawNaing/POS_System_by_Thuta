@@ -7066,6 +7066,13 @@
       // ============================================
       let currentSaleTransactionId = null;
 
+      function getPendingOfflineReceipt(transactionId) {
+        const entry = getPendingSales().find(
+          (pending) => pending.transaction_id === transactionId
+        );
+        return entry?.receiptSnapshot || null;
+      }
+
       function showSaleSuccessModal(transactionId, deliveryNumber, isDebt) {
         currentSaleTransactionId = transactionId;
         document.getElementById("saleTransactionId").textContent = transactionId;
@@ -7084,7 +7091,80 @@
 
       function printReceiptFromSuccessModal() {
         if (currentSaleTransactionId) {
+          const offlineReceipt = getPendingOfflineReceipt(currentSaleTransactionId);
+          if (offlineReceipt) {
+            return openOfflineReceiptWindow(offlineReceipt, true);
+          }
           openReceiptWindow(currentSaleTransactionId, true);
+        }
+      }
+
+      function formatOfflineReceiptMoney(value, suffix) {
+        return `${Number(value || 0).toFixed(2)} ${suffix || "$"}`.trim();
+      }
+
+      function openOfflineReceiptWindow(receipt, autoPrint = false) {
+        const receiptWindow = window.open("about:blank", "_blank");
+        if (!receiptWindow) {
+          showToast("Receipt window was blocked. Allow popups for this POS and try again.", "warning");
+          return false;
+        }
+
+        const escape = escapeHtml;
+        const money = (value) => formatOfflineReceiptMoney(value, receipt.currencySuffix);
+        const itemRows = receipt.items.map((item) => `
+          <section class="item">
+            <div class="item-name">${escape(item.name)}</div>
+            <div class="item-detail"><span>${item.quantity} × ${money(item.unitPrice)}</span><span>${money(item.lineSubtotal)}</span></div>
+            ${Number(item.taxAmount) ? `<div class="item-detail"><span>Tax ${Number(item.taxRate || 0).toFixed(2)}%</span><span>${money(item.taxAmount)}</span></div>` : ""}
+          </section>
+        `).join("");
+        const branch = receipt.branchName ? `<div>${escape(receipt.branchName)}</div>` : "";
+        const contact = [receipt.branchAddress, receipt.branchPhone, receipt.branchEmail]
+          .filter(Boolean).map((value) => `<div>${escape(value)}</div>`).join("");
+        const cashRows = receipt.paymentMethod === "cash" ? `
+          <hr><div class="row"><span>Cash received</span><span>${money(receipt.cashReceived)}</span></div>
+          <div class="row"><span>Change</span><span>${money(receipt.change)}</span></div>
+        ` : "";
+
+        try {
+          receiptWindow.opener = null;
+          receiptWindow.document.write(`<!doctype html>
+            <html><head><meta charset="utf-8"><title>Offline Receipt ${escape(receipt.transactionId)}</title>
+            <style>
+              @page { size: ${receipt.paperWidthMm}mm auto; margin: 0; }
+              * { box-sizing: border-box; } body { margin: 0; background: #eee; color: #111; font: 600 12px/1.35 "Courier New", monospace; }
+              .toolbar { position: sticky; top: 0; padding: 10px; text-align: center; background: #343a40; } button { padding: 8px 14px; border: 0; border-radius: 4px; cursor: pointer; }
+              .receipt { width: ${receipt.paperWidthMm}mm; min-height: 40mm; margin: 12px auto; padding: 4mm; background: #fff; }
+              .center { text-align: center; } h1 { margin: 0; font: 800 18px Arial, sans-serif; } .muted { color: #555; font-size: .9em; }
+              hr { border: 0; border-top: 1px dashed #111; margin: 7px 0; } .item { margin: 0 0 7px; break-inside: avoid; }
+              .item-name { font-weight: 800; overflow-wrap: anywhere; } .item-detail, .row { display: flex; justify-content: space-between; gap: 8px; padding-left: 4px; }
+              .item-detail span:last-child, .row span:last-child { text-align: right; white-space: nowrap; } .grand { font-size: 1.12em; font-weight: 900; }
+              @media print { body { background: #fff; } .toolbar { display: none; } .receipt { margin: 0; box-shadow: none; } }
+            </style></head><body>
+            <div class="toolbar"><button onclick="window.print()">Print Receipt</button></div>
+            <main class="receipt">
+              <header class="center"><h1>${escape(receipt.posName)}</h1>${branch}<div class="muted">${contact}</div></header>
+              <hr><div class="row"><span>Receipt</span><span>${escape(receipt.transactionId)}</span></div>
+              <div class="row"><span>Date</span><span>${escape(receipt.createdAt)}</span></div>
+              <div class="row"><span>Cashier</span><span>${escape(receipt.cashierName)}</span></div>
+              <div class="row"><span>Payment</span><span>${escape(receipt.paymentMethod)}</span></div>
+              <div class="center muted">OFFLINE SALE — pending sync</div><hr>
+              ${itemRows}<hr>
+              <div class="row"><span>Subtotal</span><span>${money(receipt.subtotal)}</span></div>
+              <div class="row"><span>Tax</span><span>${money(receipt.tax)}</span></div><hr>
+              <div class="row grand"><span>TOTAL</span><span>${money(receipt.total)}</span></div>${cashRows}
+              <hr><footer class="center">Thank you for your purchase.<br>Please keep your receipt.</footer>
+            </main>
+            <script>window.addEventListener("load", function () { ${autoPrint ? "window.print();" : ""} });<\/script>
+            </body></html>`);
+          receiptWindow.document.close();
+          return true;
+        } catch (error) {
+          receiptWindow.close();
+          console.error("Failed to create offline receipt:", error);
+          showToast("Failed to create the offline receipt. Please try again.", "error");
+          return false;
         }
       }
 
@@ -8499,12 +8579,63 @@
         );
       }
 
-      function queueOfflineSale(saleData) {
+      function buildOfflineReceiptSnapshot(saleData) {
+        let subtotalCents = 0;
+        let taxCents = 0;
+        const items = cart.map((item) => {
+          const quantity = Number(item.quantity) || 0;
+          const unitPriceCents = toCents(item.price);
+          const lineSubtotalCents = unitPriceCents * quantity;
+          const taxAmountCents = Math.round(
+            (lineSubtotalCents * Number(item.tax_rate || 0)) / 100
+          );
+          subtotalCents += lineSubtotalCents;
+          taxCents += taxAmountCents;
+          return {
+            name: item.name || `Product #${item.product_id}`,
+            quantity: quantity,
+            unitPrice: centsToNumber(unitPriceCents),
+            lineSubtotal: centsToNumber(lineSubtotalCents),
+            taxRate: Number(item.tax_rate || 0),
+            taxAmount: centsToNumber(taxAmountCents),
+          };
+        });
+        const totalCents = subtotalCents + taxCents;
+        const paymentMethod = saleData.payment_method || "cash";
+        const cashReceived = paymentMethod === "cash"
+          ? centsToNumber(toCents(saleData.cash_received))
+          : 0;
+        const branch = currentBranch || {};
+
+        return {
+          transactionId: saleData.transaction_id,
+          createdAt: new Date().toLocaleString(),
+          posName: APP_SETTINGS.posName || "Parrot POS",
+          currencySuffix: APP_SETTINGS.currencySuffix || "$",
+          paperWidthMm: APP_SETTINGS.receiptPaperSize === "THERMAL_58MM" ? 58 : 80,
+          branchName: branch.name || "",
+          branchAddress: branch.address || "",
+          branchPhone: branch.phone || "",
+          branchEmail: branch.email || "",
+          cashierName: document.getElementById("username-display")?.textContent?.trim() || "Unknown",
+          paymentMethod: paymentMethod,
+          cashReceived: cashReceived,
+          change: centsToNumber(Math.max(0, toCents(cashReceived) - totalCents)),
+          items: items,
+          subtotal: centsToNumber(subtotalCents),
+          tax: centsToNumber(taxCents),
+          total: centsToNumber(totalCents),
+        };
+      }
+
+      function queueOfflineSale(saleData, receiptSnapshot) {
         saleData.transaction_id = generateClientTxnId();
+        if (receiptSnapshot) receiptSnapshot.transactionId = saleData.transaction_id;
         const pending = getPendingSales();
         pending.push({
           transaction_id: saleData.transaction_id,
           saleData: saleData,
+          receiptSnapshot: receiptSnapshot || null,
           created_at: new Date().toISOString(),
         });
         setPendingSales(pending);
@@ -8703,7 +8834,9 @@
       function finishOfflineSale(saleData) {
         isSaleProcessing = true;
         setCompleteSaleButtonState(true);
-        queueOfflineSale(saleData);
+        const receiptSnapshot = buildOfflineReceiptSnapshot(saleData);
+        queueOfflineSale(saleData, receiptSnapshot);
+        showSaleSuccessModal(saleData.transaction_id, null, saleData.payment_method === "debt");
         cart = [];
         updateCartDisplay();
         const cashReceived = document.getElementById("cash-received");

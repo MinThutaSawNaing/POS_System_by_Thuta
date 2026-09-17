@@ -362,3 +362,162 @@ def test_pwa_manifest_and_install_prompt_are_wired():
     assert 'addEventListener("appinstalled"' in source
     assert "await promptEvent.prompt()" in source
     assert "initPwaInstallPrompt();" in source
+
+
+def test_offline_sale_keeps_printable_receipt_snapshot():
+    """A queued sale must preserve enough immutable client-side data to print
+    immediately while offline, before the server-side receipt exists."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+    helpers = "\n".join(
+        _function(source, name)
+        for name in (
+            "toCents", "centsToNumber", "getPendingSales", "setPendingSales",
+            "generateClientTxnId", "buildOfflineReceiptSnapshot", "queueOfflineSale",
+            "getPendingOfflineReceipt",
+        )
+    )
+    script = f"""
+const storage = {{}};
+globalThis.localStorage = {{
+  getItem: (k) => (k in storage ? storage[k] : null),
+  setItem: (k, v) => {{ storage[k] = String(v); }},
+}};
+globalThis.document = {{
+  getElementById: (id) => id === "username-display" ? {{ textContent: "Cashier One" }} : null,
+}};
+const APP_SETTINGS = {{ posName: "Parrot POS", currencySuffix: "MMK", receiptPaperSize: "THERMAL_58MM" }};
+let currentBranch = {{ name: "Main", address: "1 Main St", phone: "555", email: "main@example.com" }};
+let cart = [
+  {{ product_id: 1, name: "Coffee", price: 100, quantity: 2, tax_rate: 5 }},
+  {{ product_id: 2, name: "Tea", price: 50, quantity: 1, tax_rate: 0 }},
+];
+function updatePendingSalesBadge() {{}}
+function setConnectionStatus() {{}}
+function showToast() {{}}
+{helpers}
+const sale = {{ items: [], payment_method: "cash", cash_received: 300 }};
+const receipt = buildOfflineReceiptSnapshot(sale);
+queueOfflineSale(sale, receipt);
+const stored = getPendingOfflineReceipt(sale.transaction_id);
+console.log(JSON.stringify({{
+  transactionId: stored.transactionId,
+  saleTransactionId: sale.transaction_id,
+  paperWidthMm: stored.paperWidthMm,
+  cashierName: stored.cashierName,
+  currencySuffix: stored.currencySuffix,
+  itemCount: stored.items.length,
+  subtotal: stored.subtotal,
+  tax: stored.tax,
+  total: stored.total,
+  change: stored.change,
+  firstTax: stored.items[0].taxAmount,
+}}));
+"""
+    result = subprocess.run([NODE, "-e", script], check=True, capture_output=True, text=True)
+    out = json.loads(result.stdout)
+    # The stored receipt must reference the same client-generated transaction id
+    # that was queued, so the Print Receipt action can find it while offline.
+    assert isinstance(out["transactionId"], str) and out["transactionId"]
+    assert out["transactionId"] == out["saleTransactionId"]
+    assert out == {
+        "transactionId": out["transactionId"],
+        "saleTransactionId": out["saleTransactionId"],
+        "paperWidthMm": 58,
+        "cashierName": "Cashier One",
+        "currencySuffix": "MMK",
+        "itemCount": 2,
+        "subtotal": 250,
+        "tax": 10,
+        "total": 260,
+        "change": 40,
+        "firstTax": 10,
+    }
+
+
+def test_offline_print_uses_local_receipt_until_synced():
+    """Print Receipt must render from the local snapshot while a sale is still
+    queued, and fall back to the server receipt route once it has synced."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+    helpers = "\n".join(
+        _function(source, name)
+        for name in (
+            "escapeHtml", "getPendingSales", "setPendingSales",
+            "getPendingOfflineReceipt", "formatOfflineReceiptMoney",
+            "openOfflineReceiptWindow", "printReceiptFromSuccessModal",
+        )
+    )
+    script = f"""
+const storage = {{}};
+globalThis.localStorage = {{
+  getItem: (k) => (k in storage ? storage[k] : null),
+  setItem: (k, v) => {{ storage[k] = String(v); }},
+}};
+let printedHtml = "";
+let serverReceiptCalls = [];
+globalThis.window = {{
+  open: () => ({{
+    opener: null,
+    document: {{ write: (html) => {{ printedHtml += html; }}, close: () => {{}} }},
+    close: () => {{}},
+  }}),
+}};
+function showToast() {{}}
+function openReceiptWindow(id) {{ serverReceiptCalls.push(id); return true; }}
+let currentSaleTransactionId = null;
+{helpers}
+
+const receipt = {{
+  transactionId: "offline-txn-1",
+  createdAt: "1/2/2026, 10:00:00 AM",
+  posName: "Parrot POS",
+  currencySuffix: "MMK",
+  paperWidthMm: 58,
+  branchName: "Main Branch",
+  branchAddress: "1 Main St",
+  branchPhone: "555",
+  branchEmail: "main@example.com",
+  cashierName: "Cashier One",
+  paymentMethod: "cash",
+  cashReceived: 300,
+  change: 40,
+  items: [
+    {{ name: "Coffee", quantity: 2, unitPrice: 100, lineSubtotal: 200, taxRate: 5, taxAmount: 10 }},
+    {{ name: "Tea", quantity: 1, unitPrice: 50, lineSubtotal: 50, taxRate: 0, taxAmount: 0 }},
+  ],
+  subtotal: 250,
+  tax: 10,
+  total: 260,
+}};
+
+setPendingSales([{{ transaction_id: "offline-txn-1", saleData: {{}}, receiptSnapshot: receipt, created_at: "" }}]);
+currentSaleTransactionId = "offline-txn-1";
+printReceiptFromSuccessModal();
+const queuedHtml = printedHtml;
+
+// Once synced the pending entry is gone -> server receipt route is used.
+printedHtml = "";
+setPendingSales([]);
+printReceiptFromSuccessModal();
+
+console.log(JSON.stringify({{
+  usedLocalWhileQueued: queuedHtml.length > 0,
+  htmlHasTotal: queuedHtml.includes("260.00 MMK"),
+  htmlHasTax: queuedHtml.includes("10.00 MMK"),
+  htmlHasItem: queuedHtml.includes("Coffee"),
+  htmlHasBranch: queuedHtml.includes("Main Branch"),
+  htmlMarksPendingSync: queuedHtml.includes("OFFLINE SALE"),
+  htmlAutoPrints: queuedHtml.includes("window.print()"),
+  htmlEscapedQuote: queuedHtml.includes("&quot;") || !queuedHtml.includes("<script>alert"),
+  serverRouteAfterSync: serverReceiptCalls,
+}}));
+"""
+    result = subprocess.run([NODE, "-e", script], check=True, capture_output=True, text=True)
+    out = json.loads(result.stdout)
+    assert out["usedLocalWhileQueued"] is True
+    assert out["htmlHasTotal"] is True
+    assert out["htmlHasTax"] is True
+    assert out["htmlHasItem"] is True
+    assert out["htmlHasBranch"] is True
+    assert out["htmlMarksPendingSync"] is True
+    assert out["htmlAutoPrints"] is True
+    assert out["serverRouteAfterSync"] == ["offline-txn-1"]
