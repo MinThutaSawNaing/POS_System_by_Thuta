@@ -709,3 +709,105 @@ console.log(JSON.stringify({{
     assert out["hasRawImgTag"] is False
     assert out["hasRawScriptTag"] is False
     assert out["scriptTagCount"] == 1
+
+
+def test_offline_sale_aborts_cleanly_when_storage_write_fails():
+    """If the device refuses the local write (quota full / storage disabled) the
+    sale must NOT be reported as completed: no success modal, no data-loss toast,
+    and the cart survives so the cashier can retry."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+    helpers = "\n".join(
+        _function(source, name)
+        for name in (
+            "toCents", "centsToNumber", "getPendingSales", "setPendingSales",
+            "generateClientTxnId", "buildOfflineReceiptSnapshot", "queueOfflineSale",
+            "getPendingOfflineReceipt", "finishOfflineSale",
+        )
+    )
+    script = f"""
+// Storage that always rejects writes, like a full or disabled localStorage.
+globalThis.localStorage = {{
+  getItem: () => null,
+  setItem: () => {{ const err = new Error("QuotaExceededError"); err.name = "QuotaExceededError"; throw err; }},
+}};
+globalThis.document = {{ getElementById: () => null }};
+const APP_SETTINGS = {{ posName: "Parrot POS", currencySuffix: "$", receiptPaperSize: "THERMAL_80MM" }};
+let currentBranch = {{ id: 1, name: "Main" }};
+let cart = [{{ product_id: 1, name: "Coffee", price: 100, quantity: 1, tax_rate: 0 }}];
+let isSaleProcessing = false;
+const SALE_COOLDOWN_MS = 0;
+let toasts = [];
+let modalIds = [];
+let buttonStates = [];
+function showToast(msg, kind) {{ toasts.push({{ msg, kind }}); }}
+function showSaleSuccessModal(id) {{ modalIds.push(id); }}
+function setCompleteSaleButtonState(value) {{ buttonStates.push(value); }}
+function updateCartDisplay() {{}}
+function updatePendingSalesBadge() {{}}
+function setConnectionStatus() {{}}
+{helpers}
+
+const directWrite = setPendingSales([{{ transaction_id: "x" }}]);
+const saleData = {{
+  items: [{{ product_id: 1, price: 100, quantity: 1, tax_rate: 0 }}],
+  payment_method: "cash",
+  cash_received: 100,
+}};
+finishOfflineSale(saleData);
+
+console.log(JSON.stringify({{
+  setPendingSalesIsFalse: directWrite === false,
+  nothingQueued: getPendingSales().length,
+  cartStillHasItems: cart.length,
+  successModalShown: modalIds.length,
+  isSaleProcessing: isSaleProcessing,
+  lastButtonState: buttonStates[buttonStates.length - 1],
+  errorToastShown: toasts.some((entry) => entry.kind === "error"),
+  claimedSaved: toasts.some((entry) => entry.msg.indexOf("saved offline") !== -1),
+}}));
+"""
+    out = _run_node_script(script)
+    assert out["setPendingSalesIsFalse"] is True
+    assert out["nothingQueued"] == 0
+    assert out["cartStillHasItems"] == 1      # cart preserved so the sale can retry
+    assert out["successModalShown"] == 0      # no success for an unrecorded sale
+    assert out["isSaleProcessing"] is False   # completion can be retried
+    assert out["lastButtonState"] is False
+    assert out["errorToastShown"] is True
+    assert out["claimedSaved"] is False       # never claims an unsaved sale
+
+
+def test_storage_failure_is_reported_to_callers_but_success_still_silent():
+    """setPendingSales must distinguish a persisted write from a refused one."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+    helpers = _function(source, "setPendingSales")
+    script = f"""
+const storage = {{}};
+let mode = "ok";
+globalThis.localStorage = {{
+  getItem: (k) => (k in storage ? storage[k] : null),
+  setItem: (k, v) => {{
+    if (mode === "fail") {{ const err = new Error("quota"); err.name = "QuotaExceededError"; throw err; }}
+    storage[k] = String(v);
+  }},
+}};
+{helpers}
+
+const okResult = setPendingSales([{{ transaction_id: "a" }}]);
+const storedValue = localStorage.getItem("pos_pending_sales");
+mode = "fail";
+const failResult = setPendingSales([{{ transaction_id: "b" }}]);
+const survivedValue = localStorage.getItem("pos_pending_sales");
+
+console.log(JSON.stringify({{
+  okResult,
+  failResult,
+  stored: storedValue,
+  survived: survivedValue,
+}}));
+"""
+    out = _run_node_script(script)
+    assert out["okResult"] is True
+    assert out["failResult"] is False
+    # The refused write must not corrupt what was already persisted.
+    assert out["survived"] == out["stored"] == '[{"transaction_id":"a"}]'

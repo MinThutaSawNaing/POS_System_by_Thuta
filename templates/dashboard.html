@@ -8541,8 +8541,13 @@
       function setPendingSales(list) {
         try {
           localStorage.setItem("pos_pending_sales", JSON.stringify(list));
+          return true;
         } catch (e) {
+          // Storage can reject the write when the quota is full or when storage
+          // is disabled entirely. Report it so callers never treat an
+          // unrecorded sale as saved.
           console.error("Failed to save pending sales:", e);
+          return false;
         }
       }
 
@@ -8638,10 +8643,17 @@
           receiptSnapshot: receiptSnapshot || null,
           created_at: new Date().toISOString(),
         });
-        setPendingSales(pending);
+        // Persisting can fail (quota full / storage disabled). Surface that to the
+        // caller instead of claiming a sale was saved when it was not.
+        const saved = setPendingSales(pending);
         updatePendingSalesBadge();
         setConnectionStatus("offline");
+        if (!saved) {
+          console.error("Offline sale was NOT queued — storage write failed:", saleData.transaction_id);
+          return false;
+        }
         showToast(`Sale saved offline — will sync automatically (ID: ${saleData.transaction_id.slice(0,8)})`, "warning");
+        return true;
       }
 
       function updatePendingSalesBadge() {
@@ -8763,7 +8775,13 @@
               const data = await response.json();
               if (data.success) {
                 const current = getPendingSales();
-                setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id));
+                if (!setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id))) {
+                  // The sale is safely on the server but could not be dequeued
+                  // locally. The next sync replays the same transaction_id and the
+                  // server returns the original sale (idempotent), so retrying
+                  // here can never create a duplicate.
+                  console.warn("Synced sale could not be removed from the offline queue; it will retry idempotently:", entry.transaction_id);
+                }
                 syncedCount++;
                 syncedIds.push(entry.saleData.transaction_id);
                 updatePendingSalesBadge();
@@ -8771,7 +8789,9 @@
                 // Server explicitly rejected (4xx or 5xx) — drop the sale and warn prominently
                 rejectedCount++;
                 const current = getPendingSales();
-                setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id));
+                if (!setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id))) {
+                  console.warn("Rejected sale could not be removed from the offline queue:", entry.transaction_id);
+                }
                 showToast("Offline sale rejected: " + (data.message || "Unknown error"), "error");
                 updatePendingSalesBadge();
               } else {
@@ -8835,7 +8855,18 @@
         isSaleProcessing = true;
         setCompleteSaleButtonState(true);
         const receiptSnapshot = buildOfflineReceiptSnapshot(saleData);
-        queueOfflineSale(saleData, receiptSnapshot);
+        if (!queueOfflineSale(saleData, receiptSnapshot)) {
+          // The sale could not be recorded on this device. Never show a success
+          // modal for a sale that does not exist: keep the cart intact so it can
+          // be retried, and tell the cashier explicitly.
+          showToast(
+            "This sale was NOT saved (device storage unavailable or full). Free up space and press Complete Sale again.",
+            "error"
+          );
+          isSaleProcessing = false;
+          setCompleteSaleButtonState(false);
+          return;
+        }
         showSaleSuccessModal(saleData.transaction_id, null, saleData.payment_method === "debt");
         cart = [];
         updateCartDisplay();
