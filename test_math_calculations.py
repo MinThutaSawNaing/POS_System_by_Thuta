@@ -67,6 +67,12 @@ def test_money_float_boundary():
     assert money_float("2.675") == 2.68
 
 
+def test_money_float_nullable_amount_is_zero():
+    """Nullable fields (for example non-cash Sale.cash_received) are safe at
+    JSON/export boundaries rather than crashing Decimal conversion."""
+    assert money_float(None) == 0.0
+
+
 # ------------------------------------------- per-item tax rounding parity
 def _js_style_line_tax(unit_price_cents, qty, tax_rate_pct):
     """Client-expected logic: integer-cent Math.round per item line."""

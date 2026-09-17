@@ -122,6 +122,41 @@ class OfflineSaleTests(unittest.TestCase):
         # the sale's timestamp move forward.
         self.assertEqual(replay_data['created_at'], original_created_at)
 
+    def test_reports_and_sales_history_serialize_non_cash_sale(self):
+        """A nullable cash_received value must not make the shared reports API
+        return 500. Sales History sends page/per_page, while Reports sends the
+        same route unpaginated; both response shapes must remain usable."""
+        report_txn_id = 'offline-report-' + uuid.uuid4().hex
+        with app.app_context():
+            db.session.add(Sale(
+                transaction_id=report_txn_id,
+                total=1000.0,
+                tax=0.0,
+                cash_received=None,
+                refund_amount=0.0,
+                payment_method='debt',
+                user_id=self.user_id,
+                branch_id=self.branch_id,
+            ))
+            db.session.commit()
+
+        client = self._client()
+        # Sales History tab: paginated response.
+        paginated = client.get('/api/reports/sales?page=1&per_page=20')
+        self.assertEqual(paginated.status_code, 200)
+        paginated_data = paginated.get_json()
+        self.assertIsInstance(paginated_data, dict)
+        paginated_sale = next(s for s in paginated_data['items'] if s['transaction_id'] == report_txn_id)
+        self.assertEqual(paginated_sale['cash_received'], 0.0)
+
+        # Reports tab: unpaginated response.
+        report = client.get('/api/reports/sales')
+        self.assertEqual(report.status_code, 200)
+        report_data = report.get_json()
+        self.assertIsInstance(report_data, list)
+        report_sale = next(s for s in report_data if s['transaction_id'] == report_txn_id)
+        self.assertEqual(report_sale['cash_received'], 0.0)
+
     def test_sale_replay_message_indicates_already_synced(self):
         # The replay response's message must indicate the sale was already
         # synced, so the client can recognise the duplicate without parsing

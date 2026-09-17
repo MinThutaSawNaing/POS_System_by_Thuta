@@ -104,8 +104,13 @@ def round_money(value):
 
 
 def money_float(value):
-    """Convert a rounded Decimal to float for final persistence/display (JSON)."""
-    return float(round_money(value))
+    """Convert a rounded monetary value to a JSON-safe float.
+
+    Some legitimate monetary fields, such as ``Sale.cash_received`` for debt
+    or exchange sales, are nullable. At display/export boundaries, represent a
+    missing amount as 0.00 instead of letting Decimal(None) crash the response.
+    """
+    return float(round_money(0 if value is None else value))
 
 
 def json_default(o):
