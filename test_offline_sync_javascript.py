@@ -222,3 +222,29 @@ def test_status_shows_offline_when_sync_cannot_reach_server():
     ])
     assert out["remaining"] == ["k-1"]
     assert out["lastStatus"] == "offline"
+
+
+def test_sidebar_nav_keeps_vertical_block_layout():
+    """Regression guard: the sidebar nav must stay one vertical column.
+
+    The first version of the pinned status footer turned .sidebar into a flex
+    column and gave Bootstrap's .nav (display:flex; flex-wrap:wrap) a constrained
+    height, which made nav links wrap side-by-side into multiple columns and
+    destroyed the sidebar. The indicator must be pinned with sticky positioning
+    while keeping the sidebar in its original block layout.
+    """
+    source = DASHBOARD.read_text(encoding="utf-8")
+
+    sidebar_rule = re.search(r"^\s*\.sidebar\s*\{([^}]*)\}", source, re.MULTILINE)
+    assert sidebar_rule is not None, "main .sidebar CSS rule not found"
+    assert "display: flex" not in sidebar_rule.group(1)
+    assert "flex-direction" not in sidebar_rule.group(1)
+
+    # Never constrain the Bootstrap .nav height (that is what triggers the wrap).
+    assert not re.search(r"\.sidebar\s*>\s*ul\.nav\s*\{", source)
+
+    # Indicator must stay in normal flow via sticky, not absolute/flex pinning.
+    indicator_rule = re.search(r"\.connection-status-indicator\s*\{([^}]*)\}", source)
+    assert indicator_rule is not None, ".connection-status-indicator CSS rule not found"
+    assert "position: sticky" in indicator_rule.group(1)
+    assert "bottom:" in indicator_rule.group(1)
