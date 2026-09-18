@@ -1477,6 +1477,7 @@ with app.app_context():
         db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_name ON product (name)'))
         db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_category ON product (category)'))
         db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_barcode_branch ON product (barcode, branch_id)'))
+        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_branch_id ON product (branch_id, id DESC)'))
         db.session.commit()
     else:
         # Additive indexes: standard lookups plus the branch-scoped composite index
@@ -1484,6 +1485,7 @@ with app.app_context():
         db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_name ON product (name)'))
         db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_category ON product (category)'))
         db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_barcode_branch ON product (barcode, branch_id)'))
+        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_branch_id ON product (branch_id, id DESC)'))
         db.session.commit()
 
     supplier_columns = [col['name'] for col in inspector.get_columns('supplier')]
@@ -1730,6 +1732,7 @@ with app.app_context():
     performance_indexes = [
         'CREATE INDEX IF NOT EXISTS idx_product_name ON product(name)',
         'CREATE INDEX IF NOT EXISTS idx_product_category ON product(category)',
+        'CREATE INDEX IF NOT EXISTS idx_product_branch_id ON product(branch_id, id DESC)',
         'CREATE INDEX IF NOT EXISTS idx_sale_date ON sale(date)',
         'CREATE INDEX IF NOT EXISTS idx_sale_user_date ON sale(user_id, date)',
         'CREATE INDEX IF NOT EXISTS idx_sale_item_sale_id ON sale_item(sale_id)',
@@ -2467,6 +2470,39 @@ def api_products():
         if branch_id is None:
             branch_id = get_current_branch_id()
 
+        # The POS grid only needs a small card payload and appends successive
+        # pages. Cursor pagination avoids an increasingly expensive OFFSET and
+        # COUNT(*) as a branch catalog grows.
+        if request.args.get('view') == 'pos':
+            safe_per_page = max(1, min(per_page or 50, 100))
+            cursor = request.args.get('cursor', type=int)
+            if request.args.get('cursor') and (cursor is None or cursor < 1):
+                return jsonify({'success': False, 'message': 'Invalid cursor'}), 400
+
+            pos_query = db.session.query(
+                Product.id, Product.barcode, Product.name, Product.price,
+                Product.stock, Product.tax_rate, Product.photo_filename,
+            ).filter(Product.branch_id == branch_id)
+            if cursor:
+                pos_query = pos_query.filter(Product.id < cursor)
+            rows = pos_query.order_by(Product.id.desc()).limit(safe_per_page + 1).all()
+            has_more = len(rows) > safe_per_page
+            rows = rows[:safe_per_page]
+            items = [{
+                'id': row.id,
+                'barcode': row.barcode,
+                'name': row.name,
+                'price': row.price,
+                'stock': row.stock,
+                'tax_rate': row.tax_rate,
+                'photo_url': product_photo_url(row.photo_filename),
+            } for row in rows]
+            return jsonify({
+                'items': items,
+                'has_more': has_more,
+                'next_cursor': rows[-1].id if has_more else None,
+            })
+
         query = Product.query.filter_by(branch_id=branch_id)
         if q:
             like_q = f'%{q}%'
@@ -2697,10 +2733,41 @@ def api_single_product(product_id):
         return jsonify({'success': True, 'message': 'Product updated'})
 
     elif request.method == 'DELETE':
-        if product.photo_filename:
-            delete_product_image(product.photo_filename)
-        db.session.delete(product)
-        db.session.commit()
+        dependencies = (
+            (SaleItem.query.filter_by(product_id=product.id).first(), 'it has sales history'),
+            (PurchaseOrderItem.query.filter_by(product_id=product.id).first(),
+             'it appears on purchase orders'),
+            (SupplierPriceAgreement.query.filter_by(product_id=product.id).first(),
+             'it has supplier price agreements'),
+            (WarehouseInventory.query.filter_by(product_id=product.id).first(),
+             'it has warehouse inventory records'),
+            (WarehouseTransfer.query.filter_by(product_id=product.id).first(),
+             'it has warehouse transfer history'),
+            (Promotion.query.filter_by(product_id=product.id).first(),
+             'it has promotion records'),
+            (ReturnExchangeItem.query.filter_by(product_id=product.id).first(),
+             'it has return or exchange history'),
+        )
+        for dependency, reason in dependencies:
+            if dependency:
+                return jsonify({
+                    'success': False,
+                    'message': f"Cannot delete product '{product.name}': {reason}."
+                }), 400
+
+        photo_filename = product.photo_filename
+        try:
+            db.session.delete(product)
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            return jsonify({
+                'success': False,
+                'message': 'Cannot delete product because it is referenced by existing records.'
+            }), 400
+
+        if photo_filename:
+            delete_product_image(photo_filename)
         return jsonify({'success': True, 'message': 'Product deleted'})
 
 @app.route('/api/products/search', methods=['GET'])

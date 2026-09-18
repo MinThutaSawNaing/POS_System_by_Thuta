@@ -8048,33 +8048,49 @@
       }
 
       // POS functions
-      let posProductPage = 1;
       const POS_PER_PAGE = 50;
+      let posProductCursor = null;
+      let posProductsHaveMore = false;
+      let posProductsLoading = false;
+      // The offline cache is an in-memory array, so it continues to use local
+      // page numbers without issuing database queries.
+      let posProductPage = 1;
       let posProductTotalPages = 1;
 
       function loadProductsForPOS(resetPage = true) {
+        if (posProductsLoading) return;
+        posProductsLoading = true;
         const productGrid = document.getElementById("product-grid");
-        productGrid.innerHTML = `
-                      <div style="grid-column: 1 / -1; text-align: center; padding: 3rem 0;">
-                          <div class="spinner-border text-primary" role="status">
-                              <span class="visually-hidden">Loading...</span>
-                          </div>
-                      </div>
-                  `;
+        if (resetPage) {
+          productGrid.innerHTML = `
+                        <div style="grid-column: 1 / -1; text-align: center; padding: 3rem 0;">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                        </div>
+                    `;
+        } else {
+          const loadMoreButton = productGrid.querySelector(".pos-load-more-cell button");
+          if (loadMoreButton) loadMoreButton.disabled = true;
+        }
 
-        if (resetPage) posProductPage = 1;
+        if (resetPage) posProductCursor = null;
 
         const activeBranchId = currentBranch?.id;
-        const url = activeBranchId
-          ? `/api/products?branch_id=${encodeURIComponent(activeBranchId)}&page=${posProductPage}&per_page=${POS_PER_PAGE}`
-          : `/api/products?page=${posProductPage}&per_page=${POS_PER_PAGE}`;
+        const params = new URLSearchParams({ view: "pos", per_page: String(POS_PER_PAGE) });
+        if (activeBranchId) params.set("branch_id", String(activeBranchId));
+        if (posProductCursor) params.set("cursor", String(posProductCursor));
+        const url = `/api/products?${params.toString()}`;
 
         fetch(url)
-          .then((response) => response.json())
+          .then((response) => {
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            return response.json();
+          })
           .then((data) => {
-            // API returns {items, page, per_page, total, total_pages} when paginated
-            const products = data.items || data;
-            posProductTotalPages = data.total_pages || 1;
+            const products = data.items || [];
+            posProductsHaveMore = Boolean(data.has_more);
+            posProductCursor = data.next_cursor || null;
 
             if (resetPage) {
               productGrid.innerHTML = "";
@@ -8112,14 +8128,13 @@
               productGrid.appendChild(productCard);
             });
 
-            // Add "Load More" button if there are more pages
-            if (posProductPage < posProductTotalPages) {
+            if (posProductsHaveMore) {
               const loadMoreCell = document.createElement("div");
               loadMoreCell.className = "pos-load-more-cell";
               loadMoreCell.style.cssText = "grid-column: 1 / -1; text-align: center; padding: 0.75rem 0;";
               loadMoreCell.innerHTML = `
                 <button class="btn btn-outline-dark btn-sm" onclick="loadMorePOSProducts()">
-                  <i class="bi bi-arrow-down"></i> Load More Products (Page ${posProductPage} of ${posProductTotalPages})
+                  <i class="bi bi-arrow-down"></i> Load More Products
                 </button>
               `;
               productGrid.appendChild(loadMoreCell);
@@ -8127,10 +8142,10 @@
 
             normalizeCurrencyDisplay(productGrid);
 
-            // Keep the persistent product snapshot fresh for offline POS use.
-            if (resetPage) {
-              refreshPersistentProductCache();
-            }
+            // Do not refresh the full offline catalog here: POS only needs the
+            // page being displayed, and fetching every product would defeat
+            // cursor pagination for large branches. Existing snapshots remain
+            // available if the connection drops.
           })
           .catch((error) => {
             console.error("Error loading products:", error);
@@ -8141,6 +8156,9 @@
             }
             productGrid.innerHTML =
               '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #dc3545;">Failed to load products.</div>';
+          })
+          .finally(() => {
+            posProductsLoading = false;
           });
       }
 
@@ -8200,7 +8218,6 @@
       }
 
       function loadMorePOSProducts() {
-        posProductPage++;
         loadProductsForPOS(false);
       }
 
