@@ -15,7 +15,7 @@ import uuid
 
 import requests
 
-from app import app, db, Branch, Product, Sale, User
+from app import app, db, Branch, Product, Sale, SaleItem, User
 
 BASE = "http://127.0.0.1:5057"
 _server = None
@@ -73,7 +73,18 @@ class LiveServerSaleTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         with app.app_context():
-            Sale.query.filter(Sale.transaction_id.like('live-%')).delete()
+            # Sale rows must take their sale items with them: SQLite reuses row
+            # ids, so a leaked sale_item row would otherwise attach itself to a
+            # completely unrelated sale created later.
+            stale_sale_ids = [
+                sale.id for sale in
+                Sale.query.filter(Sale.transaction_id.like('live-%')).all()
+            ]
+            SaleItem.query.filter(
+                SaleItem.sale_id.in_(stale_sale_ids or [0])
+            ).delete(synchronize_session=False)
+            Sale.query.filter(Sale.id.in_(stale_sale_ids or [0])).delete(
+                synchronize_session=False)
             product = db.session.get(Product, cls.product_id)
             if product:
                 db.session.delete(product)

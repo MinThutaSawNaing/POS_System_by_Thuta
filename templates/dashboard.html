@@ -7042,7 +7042,9 @@
         document.getElementById("confirmModalMessage").textContent = message;
         confirmModalCallback = onConfirm;
         
-        const modal = new bootstrap.Modal(document.getElementById("confirmModal"));
+        const modal = bootstrap.Modal.getOrCreateInstance(
+          document.getElementById("confirmModal")
+        );
         modal.show();
       }
 
@@ -7051,12 +7053,20 @@
         const confirmBtn = document.getElementById("confirmModalBtn");
         if (confirmBtn) {
           confirmBtn.addEventListener("click", function() {
-            const modal = bootstrap.Modal.getInstance(document.getElementById("confirmModal"));
-            modal.hide();
-            if (confirmModalCallback) {
-              confirmModalCallback();
-              confirmModalCallback = null;
+            const modalElement = document.getElementById("confirmModal");
+            const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+            const onConfirm = confirmModalCallback;
+            confirmModalCallback = null;
+            if (onConfirm) {
+              // Run the callback only once this dialog is fully hidden: it may
+              // open another confirmation dialog (for example a product that
+              // still has sales history) which this hide transition would
+              // otherwise close again.
+              modalElement.addEventListener("hidden.bs.modal", onConfirm, {
+                once: true,
+              });
             }
+            modal.hide();
           });
         }
       });
@@ -9858,31 +9868,45 @@
         showConfirmDialog(
           "Delete Product",
           `Are you sure you want to delete "${productName}"? This action cannot be undone.`,
-          () => {
-            fetch("/api/products/" + productId, {
-              method: "DELETE",
-            })
-              .then((response) => response.json())
-              .then((data) => {
-                if (data.success) {
-                  showToast("Product deleted successfully!", "success");
-                  // Invalidate cache since products have changed
-                  invalidateProductsCache();
-                  loadProducts();
-                  loadDashboardStats();
-                } else {
-                  showToast(
-                    "Error deleting product: " + (data.message || "Unknown error"),
-                    "error"
-                  );
-                }
-              })
-              .catch((error) => {
-                console.error("Error deleting product:", error);
-                showToast("Error deleting product: " + error.message, "error");
-              });
-          }
+          () => requestProductDelete(productId, false)
         );
+      }
+
+      function requestProductDelete(productId, force) {
+        fetch(`/api/products/${productId}${force ? "?force=1" : ""}`, {
+          method: "DELETE",
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.success) {
+              showToast("Product deleted successfully!", "success");
+              // Invalidate cache since products have changed
+              invalidateProductsCache();
+              loadProducts();
+              loadDashboardStats();
+              return;
+            }
+
+            if (!force && (data.has_sales_history || data.requires_confirmation)) {
+              // The product was already sold: warn that its sales history is
+              // kept, then delete it once the user confirms.
+              showConfirmDialog(
+                "Product Has Sales History",
+                "The product you selected have sale history. Are you sure you want to delete it?",
+                () => requestProductDelete(productId, true)
+              );
+              return;
+            }
+
+            showToast(
+              "Error deleting product: " + (data.message || "Unknown error"),
+              "error"
+            );
+          })
+          .catch((error) => {
+            console.error("Error deleting product:", error);
+            showToast("Error deleting product: " + error.message, "error");
+          });
       }
 
       // Sales history functions

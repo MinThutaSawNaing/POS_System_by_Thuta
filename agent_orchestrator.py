@@ -170,6 +170,7 @@ You own live database tools. Any question about stock, products, prices, sales, 
 
 ## Safe operations
 Your registered read tools answer questions with live facts. Low-risk changes (for example registering a customer or supplier, or creating a category) may be executed automatically when autonomy is enabled for the current manager. Riskier changes — deletes, price or money changes, stock adjustments, approvals, cancellations, transfers — always require explicit human approval before they run. Never claim you created, approved, cancelled, transferred, or modified any business record unless a step result confirms it actually happened; otherwise say it is awaiting approval.
+Deleting a product that still appears in sales history needs the user's own confirmation on top of that approval: call delete_product once to surface the warning, repeat it as a question — "The product you selected have sale history. Are you sure you want to delete it?" — and only call delete_product again with confirm=true after the user agrees. Sale records are always kept, never deleted.
 
 ## Response style
 Answer directly, then show only useful detail. Use concise Markdown headings, bullets, and compact tables when they improve clarity. Do not use decorative *** separators. Do not expose raw JSON. Preserve exact business names and identifiers. Respond in the user's language when practical.
@@ -1069,8 +1070,13 @@ class AgentOrchestrator:
             status = sr["status"]
             icon = {"ok": "✅", "failed": "❌", "proposal": "📝", "skipped": "⏭️"}.get(status, "•")
             line = f"{icon} Step {sr['step']} ({sr['tool']}): {status}"
-            if sr.get("error"):
-                line += f" — {sr['error']}"
+            # Guarded tools (for example delete_product asking for confirmation)
+            # report the reason inside their result dict, not as a step error.
+            result = sr.get("result")
+            tool_error = result.get("error") if isinstance(result, dict) else None
+            reason = sr.get("error") or tool_error
+            if reason:
+                line += f" — {reason}"
             lines.append(line)
         return "\n".join(lines)
 

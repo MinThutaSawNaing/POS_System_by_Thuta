@@ -540,11 +540,15 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "delete_product": {
         "name": "delete_product",
-        "description": "Permanently delete a product from the active branch. Refuses if the product has sales history, purchase order items, warehouse stock, or a currently active promotion.",
+        "description": "Permanently delete a product from the active branch. Refuses when the product appears on purchase orders, has warehouse stock, or is covered by an active promotion. A product with sales history is only deleted with confirm=true, which keeps the sale records and just unlinks them from the removed product.",
         "parameters": {
             "type": "object",
             "properties": {
-                "product_id": {"type": "integer", "description": "The product to delete."}
+                "product_id": {"type": "integer", "description": "The product to delete."},
+                "confirm": {
+                    "type": "boolean",
+                    "description": "Set true only after the user explicitly confirmed deleting a product that has sales history. The sale records are kept."
+                }
             },
             "required": ["product_id"]
         }
@@ -844,7 +848,7 @@ _TOOL_META = {
     "update_supplier":                 ("purchasing",  True,  'manager', "Partially update a supplier's contact details, category, or active status.", "small"),
     "update_customer":                 ("customers",   True,  'manager', "Partially update a customer's name/phone/email/address in the active branch.", "small"),
     "create_category":                 ("inventory",   True,  'manager', "Create a new category with optional description/color/sort order.", "small"),
-    "delete_product":                  ("inventory",   True,  'manager', "Delete a product; refuses when sales/PO/warehouse/promotion references exist.", "small"),
+    "delete_product":                  ("inventory",   True,  'manager', "Delete a product; sales history needs confirm=true, while PO/warehouse/active-promotion references always refuse.", "small"),
     "delete_supplier":                 ("purchasing",  True,  'manager', "Delete a supplier; refuses when non-terminal purchase orders exist.", "small"),
     "delete_customer":                 ("customers",   True,  'manager', "Delete a customer; refuses when outstanding debt balances exist.", "small"),
     "update_product_price":            ("inventory",   True,  'manager', "Update a product's price with exact decimal math and an optional audit reason.", "small"),
@@ -2071,8 +2075,14 @@ class AITools:
             "branch_id": self._branch_id()
         }
 
-    def delete_product(self, product_id: int) -> Dict[str, Any]:
-        """Delete a product unless it still has references (manager only)."""
+    def delete_product(self, product_id: int, confirm: bool = False) -> Dict[str, Any]:
+        """Delete a product unless it still has references (manager only).
+
+        A product that already appears in sales history is only removed once
+        the user confirmed: the first call reports needs_confirmation instead
+        of deleting, and the confirmed delete keeps every sale row (only
+        unlinking it from the catalog entry that goes away).
+        """
         Product = self._get_model('Product')
         SaleItem = self._get_model('SaleItem')
         PurchaseOrderItem = self._get_model('PurchaseOrderItem')
@@ -2081,8 +2091,6 @@ class AITools:
         product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
         if not product:
             return {"error": f"Product with ID {product_id} not found in the active branch"}
-        if SaleItem.query.filter_by(product_id=product.id).first():
-            return {"error": f"Cannot delete product '{product.name}' (ID {product.id}): it has sales history"}
         if PurchaseOrderItem.query.filter_by(product_id=product.id).first():
             return {"error": f"Cannot delete product '{product.name}' (ID {product.id}): it appears on purchase orders"}
         warehouse_stock = WarehouseInventory.query.filter(
@@ -2099,15 +2107,42 @@ class AITools:
         ).first()
         if active_promotion:
             return {"error": f"Cannot delete product '{product.name}' (ID {product.id}): an active promotion covers it until {active_promotion.end_date.date().isoformat()}"}
+
+        sales_history_count = SaleItem.query.filter_by(product_id=product.id).count()
+        if sales_history_count and not confirm:
+            return {
+                "needs_confirmation": True,
+                "product_id": product.id,
+                "product_name": product.name,
+                "sales_history_count": sales_history_count,
+                "error": (
+                    f"Product '{product.name}' (ID {product.id}) has "
+                    f"{sales_history_count} line(s) in sales history. Ask the user: "
+                    "\"The product you selected have sale history. Are you sure you "
+                    "want to delete it?\" Then call delete_product again with "
+                    "confirm=true. The sale records are kept."
+                ),
+            }
+
         product_name = product.name
+        if sales_history_count:
+            # Keep every sale row (quantity, price, tax and the sale total) so
+            # sales history and reports stay accurate; only the link to the
+            # catalog entry that is going away is cleared.
+            SaleItem.query.filter_by(product_id=product.id).update(
+                {"product_id": None}, synchronize_session=False
+            )
         self.db.session.delete(product)
         self.db.session.commit()
-        return {
+        result = {
             "success": True,
             "deleted_product_id": product_id,
             "deleted_product_name": product_name,
             "changed_fields": ["deleted"]
         }
+        if sales_history_count:
+            result["sales_history_lines_kept"] = sales_history_count
+        return result
 
     def delete_supplier(self, supplier_id: int) -> Dict[str, Any]:
         """Delete a supplier unless non-terminal purchase orders exist (manager only)."""

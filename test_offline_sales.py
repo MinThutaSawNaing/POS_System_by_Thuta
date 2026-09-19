@@ -3,7 +3,7 @@
 import unittest
 import uuid
 
-from app import app, db, Branch, Product, Sale, User
+from app import app, db, Branch, Product, Sale, SaleItem, User
 
 
 class OfflineSaleTests(unittest.TestCase):
@@ -28,7 +28,18 @@ class OfflineSaleTests(unittest.TestCase):
 
     def tearDown(self):
         with app.app_context():
-            Sale.query.filter(Sale.transaction_id.like('offline-%')).delete()
+            # Sale rows must be removed together with their sale items: SQLite
+            # reuses row ids, so a leaked sale_item row would otherwise attach
+            # itself to a completely unrelated sale created later.
+            stale_sale_ids = [
+                sale.id for sale in
+                Sale.query.filter(Sale.transaction_id.like('offline-%')).all()
+            ]
+            SaleItem.query.filter(
+                SaleItem.sale_id.in_(stale_sale_ids or [0])
+            ).delete(synchronize_session=False)
+            Sale.query.filter(Sale.id.in_(stale_sale_ids or [0])).delete(
+                synchronize_session=False)
             product = db.session.get(Product, self.product_id)
             if product:
                 db.session.delete(product)

@@ -2733,8 +2733,17 @@ def api_single_product(product_id):
         return jsonify({'success': True, 'message': 'Product updated'})
 
     elif request.method == 'DELETE':
+        # A product that was already sold is only removed after the user
+        # confirms the extra warning dialog, which retries with force=1.
+        force = to_bool(request.args.get('force'), False)
+        if not force:
+            body = request.get_json(silent=True)
+            if isinstance(body, dict):
+                force = to_bool(body.get('force'), False)
+
+        sales_history_count = SaleItem.query.filter_by(product_id=product.id).count()
+
         dependencies = (
-            (SaleItem.query.filter_by(product_id=product.id).first(), 'it has sales history'),
             (PurchaseOrderItem.query.filter_by(product_id=product.id).first(),
              'it appears on purchase orders'),
             (SupplierPriceAgreement.query.filter_by(product_id=product.id).first(),
@@ -2755,8 +2764,24 @@ def api_single_product(product_id):
                     'message': f"Cannot delete product '{product.name}': {reason}."
                 }), 400
 
+        if sales_history_count and not force:
+            return jsonify({
+                'success': False,
+                'has_sales_history': True,
+                'requires_confirmation': True,
+                'sales_history_count': sales_history_count,
+                'message': f"Cannot delete product '{product.name}': it has sales history."
+            }), 400
+
         photo_filename = product.photo_filename
         try:
+            if sales_history_count:
+                # Keep every sale row (quantity, price, tax and the sale total)
+                # so sales history and reports stay accurate; only the link to
+                # the catalog entry that is going away is cleared.
+                SaleItem.query.filter_by(product_id=product.id).update(
+                    {'product_id': None}, synchronize_session=False
+                )
             db.session.delete(product)
             db.session.commit()
         except IntegrityError:
@@ -3332,17 +3357,22 @@ def api_single_sale(transaction_id):
         } for r in return_exchange_history]
     }
     for item in items:
-        product = Product.query.get(item.product_id)
+        product = db.session.get(Product, item.product_id) if item.product_id else None
         already_returned = returned_qty_map.get(item.id, 0)
         available_to_return = max(item.quantity - already_returned, 0)
+        if product is None:
+            # A sold product may be deleted while its sales history is kept;
+            # the line keeps its money values but can no longer be returned
+            # because there is no catalog entry left to restock.
+            available_to_return = 0
         sale_data['items'].append({
             'sale_item_id': item.id,
             'product_id': item.product_id,
-            'name': product.name,
+            'name': product.name if product else 'Deleted product',
             'price': item.price,
             'quantity': item.quantity,
             'tax': item.tax,
-            'tax_rate': product.tax_rate,
+            'tax_rate': product.tax_rate if product else 0.0,
             'already_returned_quantity': already_returned,
             'available_return_quantity': available_to_return
         })

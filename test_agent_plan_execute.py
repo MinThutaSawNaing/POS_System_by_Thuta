@@ -568,6 +568,36 @@ class TokenCompactionTests(unittest.TestCase):
         self.assertLessEqual(len(json.dumps(compact)), len(json.dumps(big)))
 
 
+class DeterministicStatusMessageTests(unittest.TestCase):
+    """LLM-free fallback summary must surface real per-step reasons."""
+
+    def _message(self, step_results):
+        return AgentOrchestrator(None, {})._deterministic_status_message(step_results)
+
+    def test_guard_reason_inside_tool_result_is_surfaced(self):
+        # Guarded tools report their reason inside the result dict (status "ok").
+        message = self._message([{
+            "step": 1, "tool": "delete_product", "status": "ok",
+            "result": {
+                "needs_confirmation": True,
+                "error": "Product 'Sold' (ID 5) has 1 line(s) in sales history.",
+            },
+        }])
+
+        self.assertIn("delete_product", message)
+        self.assertIn("sales history", message)
+
+    def test_failed_and_skipped_steps_stay_visible(self):
+        message = self._message([
+            {"step": 1, "tool": "create_purchase_order", "status": "failed",
+             "error": "boom"},
+            {"step": 2, "tool": "delete_product", "status": "skipped"},
+        ])
+
+        self.assertIn("boom", message)
+        self.assertIn("skipped", message)
+
+
 class RegistryCompletenessTests(unittest.TestCase):
     """Registry contract. Base checks run against TOOL_SCHEMAS today; the
     richer TOOL_METADATA checks activate once that registry lands."""

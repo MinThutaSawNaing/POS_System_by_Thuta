@@ -285,6 +285,92 @@ class ReturnExchangeToolTests(FullCoverageToolsTestBase):
             self.assertEqual(db.session.get(Product, swap_id).stock, 9)
 
 
+class DeleteProductToolTests(FullCoverageToolsTestBase):
+    """delete_product keeps sales history and asks for confirmation first."""
+
+    def _product_with_sale(self, qty=2, price=100.0):
+        product = self._product("Sold Product", stock=5, price=price)
+        sale = Sale(transaction_id=f"TX-{uuid.uuid4().hex[:10]}", total=qty * price,
+                    tax=0.0, refund_amount=0.0, payment_method='cash',
+                    user_id=self.admin_id, branch_id=self.branch_id)
+        db.session.add(sale)
+        db.session.flush()
+        item = SaleItem(sale_id=sale.id, product_id=product.id,
+                        quantity=qty, price=price, tax=0.0)
+        db.session.add(item)
+        db.session.commit()
+        return product.id, sale.id, item.id
+
+    def test_unused_product_is_deleted(self):
+        product_id = self._product("Unused Product").id
+
+        result = self.tools.delete_product(product_id)
+
+        self.assertTrue(result.get("success"), msg=result)
+        self.assertEqual(result["deleted_product_id"], product_id)
+        self.assertIsNone(db.session.get(Product, product_id))
+
+    def test_sold_product_asks_for_confirmation_first(self):
+        product_id, _, _ = self._product_with_sale()
+
+        result = self.tools.delete_product(product_id)
+
+        self.assertTrue(result.get("needs_confirmation"))
+        self.assertIn("sale history", result["error"])
+        self.assertIn("confirm=true", result["error"])
+        self.assertEqual(result["sales_history_count"], 1)
+        self.assertIsNotNone(db.session.get(Product, product_id))
+
+    def test_confirmed_delete_keeps_sales_history(self):
+        product_id, sale_id, item_id = self._product_with_sale(qty=2, price=100.0)
+
+        result = self.tools.delete_product(product_id, confirm=True)
+
+        self.assertTrue(result.get("success"), msg=result)
+        self.assertEqual(result["sales_history_lines_kept"], 1)
+        self.assertIsNone(db.session.get(Product, product_id))
+        item = db.session.get(SaleItem, item_id)
+        self.assertIsNone(item.product_id)
+        self.assertEqual(item.quantity, 2)
+        self.assertEqual(item.price, 100.0)
+        self.assertEqual(db.session.get(Sale, sale_id).total, 200.0)
+
+    def test_active_promotion_still_refuses_even_with_confirm(self):
+        from app import Promotion
+        product_id, _, _ = self._product_with_sale()
+        now = datetime.utcnow()
+        db.session.add(Promotion(
+            product_id=product_id, discount_type='percent', discount_value=10,
+            start_date=now - timedelta(days=1), end_date=now + timedelta(days=1)))
+        db.session.commit()
+
+        result = self.tools.delete_product(product_id, confirm=True)
+
+        self.assertIn("active promotion", result.get("error", ""))
+        self.assertIsNotNone(db.session.get(Product, product_id))
+
+    def test_approved_plan_step_deletes_sold_product(self):
+        """The approved Loli step (confirm=true) really removes the product."""
+        product_id, sale_id, item_id = self._product_with_sale()
+        orchestrator = AgentOrchestrator(db, AI_MODELS)
+        orchestrator.set_request_context({"branch_id": self.branch_id,
+                                          "user_id": self.admin_id,
+                                          "role": "manager"})
+        plan = {"steps": [{
+            "step": 1, "tool": "delete_product",
+            "args": {"product_id": product_id, "confirm": True},
+        }]}
+
+        step_results, pending_approvals = orchestrator._execute_plan(plan, approved_steps={1})
+
+        self.assertEqual(pending_approvals, [])
+        self.assertEqual(step_results[0]["status"], "ok")
+        self.assertEqual(step_results[0].get("executed_by"), "approved")
+        self.assertIsNone(db.session.get(Product, product_id))
+        self.assertIsNone(db.session.get(SaleItem, item_id).product_id)
+        self.assertEqual(db.session.get(Sale, sale_id).total, 200.0)
+
+
 class DeliveryStageAndRoleTests(FullCoverageToolsTestBase):
     def _delivery(self):
         from app import Delivery
