@@ -1067,7 +1067,9 @@ class ReturnExchangeItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     return_exchange_id = db.Column(db.Integer, db.ForeignKey('return_exchange.id'), nullable=False)
     original_sale_item_id = db.Column(db.Integer, db.ForeignKey('sale_item.id'))
-    product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
+    # Nullable: a deleted product keeps its return/exchange history rows and is
+    # only unlinked from them, so refunds and returned quantities stay intact.
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'))
     movement = db.Column(db.String(20), nullable=False)  # return or exchange
     quantity = db.Column(db.Integer, nullable=False)
     unit_price = db.Column(db.Float, nullable=False)
@@ -1727,6 +1729,53 @@ with app.app_context():
 
     # Encrypt any legacy plaintext AI API key so it is never stored in the clear.
     migrate_legacy_secrets()
+
+    # Deleting a product keeps its history rows and only unlinks them, so
+    # return/exchange lines must accept a NULL product_id. Legacy SQLite tables
+    # declare product_id NOT NULL, which ALTER TABLE cannot drop, so the table
+    # is rebuilt with the standard SQLite migration pattern.
+    if inspector.has_table('return_exchange_item'):
+        product_column = {
+            col['name']: col for col in inspector.get_columns('return_exchange_item')
+        }.get('product_id')
+        if product_column is not None and not product_column.get('nullable', True):
+            app.logger.warning(
+                "Rebuilding return_exchange_item so product_id can be NULL after "
+                "a product is deleted"
+            )
+            db.session.execute(text('PRAGMA foreign_keys=OFF'))
+            db.session.execute(text('''
+                CREATE TABLE return_exchange_item_new (
+                    id INTEGER NOT NULL PRIMARY KEY,
+                    return_exchange_id INTEGER NOT NULL REFERENCES return_exchange (id),
+                    original_sale_item_id INTEGER REFERENCES sale_item (id),
+                    product_id INTEGER REFERENCES product (id),
+                    movement VARCHAR(20) NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    unit_price FLOAT NOT NULL,
+                    tax_rate FLOAT DEFAULT 0.0,
+                    line_total FLOAT NOT NULL,
+                    line_tax FLOAT NOT NULL
+                )
+            '''))
+            db.session.execute(text('''
+                INSERT INTO return_exchange_item_new (id, return_exchange_id,
+                                                      original_sale_item_id, product_id,
+                                                      movement, quantity, unit_price,
+                                                      tax_rate, line_total, line_tax)
+                SELECT id, return_exchange_id, original_sale_item_id, product_id,
+                       movement, quantity, unit_price, tax_rate, line_total, line_tax
+                FROM return_exchange_item
+            '''))
+            db.session.execute(text('DROP TABLE return_exchange_item'))
+            db.session.execute(text(
+                'ALTER TABLE return_exchange_item_new RENAME TO return_exchange_item'
+            ))
+            db.session.execute(text(
+                'CREATE INDEX IF NOT EXISTS idx_return_exchange_item_product '
+                'ON return_exchange_item (product_id)'
+            ))
+            db.session.commit()
 
     # Performance indexes (safe for repeated startup)
     performance_indexes = [
@@ -2600,16 +2649,21 @@ def api_products():
 
 # --- Single Product Endpoint (GET, PUT, DELETE) ---
 # --- Product deletion helpers ---
+# Shown wherever a sale/return line points at a product that was deleted.
+DELETED_PRODUCT_LABEL = 'Deleted product'
+
+
 def get_product_dependency_summary(product):
     """List every tab/record type a product is wired to, with its delete policy.
 
     Groups are tagged with the action the cleanup window will take:
       * 'delete' — catalog records owned by this product; removed on confirm.
-      * 'keep'   — history (sales, deliveries) that stays readable. Sale lines
-                   are kept and only unlinked from the deleted product.
-      * 'block'  — return/exchange lines must be handled in the Returns tab
-                   first: removing them would erase refund history and make
-                   already-returned quantities refundable a second time.
+      * 'keep'   — history that stays readable: sale lines, deliveries and
+                   return/exchange lines are kept and only unlinked from the
+                   deleted product, so reports, receipts, refunds and
+                   already-returned quantities all stay accurate.
+      * 'block'  — nothing emits this today; the UI still supports it for a
+                   reference that must be handled in its own tab first.
     """
     warehouse_items = WarehouseInventory.query.filter_by(product_id=product.id).all()
     warehouse_quantity = sum(int(item.quantity or 0) for item in warehouse_items)
@@ -2658,8 +2712,8 @@ def get_product_dependency_summary(product):
               'kept for reports and receipts; the lines are only unlinked from the product')
     add_group('deliveries', 'Deliveries on those sales', deliveries, 'keep',
               'delivery records belong to the sales and are kept')
-    add_group('returns_exchanges', 'Return / exchange lines', returns, 'block',
-              'handle these in the Returns tab first')
+    add_group('returns_exchanges', 'Return / exchange lines', returns, 'keep',
+              'kept for refund history; the lines are only unlinked from the product')
 
     return {
         'groups': groups,
@@ -2867,19 +2921,6 @@ def api_single_product(product_id):
 
         summary = get_product_dependency_summary(product)
 
-        if summary['returns_exchanges_count']:
-            return jsonify({
-                'success': False,
-                'blocked': True,
-                'blocked_by': 'returns_exchanges',
-                'returns_exchanges_count': summary['returns_exchanges_count'],
-                'message': (
-                    f"Cannot delete product '{product.name}': it has "
-                    f"{summary['returns_exchanges_count']} return/exchange line(s). "
-                    "Handle them in the Returns tab first."
-                )
-            }), 400
-
         if summary['removable_count'] and not cascade:
             return jsonify({
                 'success': False,
@@ -2907,6 +2948,7 @@ def api_single_product(product_id):
 
         photo_filename = product.photo_filename
         cleaned_up = {}
+        history_kept = {}
         try:
             if cascade:
                 cleaned_up = remove_product_catalog_records(product)
@@ -2917,6 +2959,16 @@ def api_single_product(product_id):
                 SaleItem.query.filter_by(product_id=product.id).update(
                     {'product_id': None}, synchronize_session=False
                 )
+                history_kept['sales_history_lines'] = summary['sales_history_count']
+            if summary['returns_exchanges_count']:
+                # Keep the refund/exchange rows too: unlinking them leaves the
+                # refund money, the settlement and the already-returned
+                # quantities exactly as they were.
+                ReturnExchangeItem.query.filter_by(product_id=product.id).update(
+                    {'product_id': None}, synchronize_session=False
+                )
+                history_kept['returns_exchanges_lines'] = summary[
+                    'returns_exchanges_count']
             db.session.delete(product)
             db.session.commit()
         except IntegrityError:
@@ -2931,7 +2983,8 @@ def api_single_product(product_id):
         return jsonify({
             'success': True,
             'message': 'Product deleted',
-            'cleaned_up': cleaned_up
+            'cleaned_up': cleaned_up,
+            'history_kept': history_kept
         })
 
 @app.route('/api/products/<int:product_id>/dependencies', methods=['GET'])
@@ -3535,7 +3588,7 @@ def api_single_sale(transaction_id):
         sale_data['items'].append({
             'sale_item_id': item.id,
             'product_id': item.product_id,
-            'name': product.name if product else 'Deleted product',
+            'name': product.name if product else DELETED_PRODUCT_LABEL,
             'price': item.price,
             'quantity': item.quantity,
             'tax': item.tax,
@@ -3807,7 +3860,7 @@ def api_single_return_exchange(workflow_id):
             'id': item.id,
             'movement': item.movement,
             'product_id': item.product_id,
-            'product_name': item.product.name if item.product else 'Unknown',
+            'product_name': item.product.name if item.product else DELETED_PRODUCT_LABEL,
             'quantity': item.quantity,
             'unit_price': item.unit_price,
             'tax_rate': item.tax_rate,

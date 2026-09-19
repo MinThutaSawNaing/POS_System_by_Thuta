@@ -124,10 +124,12 @@ Destructive tools are approval-tier AND refuse in the tool layer itself,
 independent of the agent:
 
 - `delete_product` — manager/owner only (the dashboard hides the button and
-  the API refuses with 403 for other roles). Sales history is always kept
-  (lines are only unlinked) and needs `confirm=true`; return/exchange records
-  block the delete entirely; warehouse stock/transfers, promotions, purchase
-  order lines and supplier price agreements are removed only with
+  the API refuses with 403 for other roles). Sales and return/exchange history
+  are always kept: those rows are only unlinked from the removed product, so
+  reports, receipts, refunds and already-returned quantities stay accurate
+  (`return_exchange_item.product_id` is nullable and the startup migration
+  rebuilds the table when it is not). Warehouse stock/transfers, promotions,
+  purchase order lines and supplier price agreements are removed only with
   `cascade=true`, after the user agreed in the "delete everywhere" window.
   The same rules apply to `DELETE /api/products/<id>` (`?force=1&cascade=1`)
   and to the cleanup summary at `GET /api/products/<id>/dependencies`.

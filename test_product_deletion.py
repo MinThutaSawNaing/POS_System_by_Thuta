@@ -336,24 +336,42 @@ class ProductDeletionTests(unittest.TestCase):
         self.assertIsNone(db.session.get(SaleItem, item.id).product_id)
         self.assertEqual(db.session.get(Sale, sale.id).total, 100.0)
 
-    def test_returns_block_the_delete_even_with_the_cascade(self):
+    def test_returns_are_kept_and_unlinked_when_the_product_is_deleted(self):
         product = self._product('Returned Product')
         workflow = self._return_for(product)
         client = self._client()
-        self.assertFalse(
-            client.get(f'/api/products/{product.id}/dependencies').get_json()['can_delete'])
+        dependencies = client.get(f'/api/products/{product.id}/dependencies').get_json()
+        actions = {group['key']: group['action'] for group in dependencies['groups']}
+        self.assertEqual(actions['returns_exchanges'], 'keep')
+        self.assertTrue(dependencies['can_delete'])
 
         response = client.delete(f'/api/products/{product.id}?force=1&cascade=1')
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200)
         body = response.get_json()
-        self.assertTrue(body['blocked'])
-        self.assertEqual(body['blocked_by'], 'returns_exchanges')
-        self.assertIn('Returns tab', body['message'])
-        self.assertIsNotNone(db.session.get(Product, product.id))
-        self.assertEqual(
-            ReturnExchangeItem.query.filter_by(product_id=product.id).count(), 1)
-        self.assertIsNotNone(db.session.get(ReturnExchange, workflow.id))
+        self.assertTrue(body['success'])
+        self.assertEqual(body['history_kept'], {
+            'sales_history_lines': 1, 'returns_exchanges_lines': 1,
+        })
+        self.assertIsNone(db.session.get(Product, product.id))
+        # The refund record is untouched, only its product link is cleared.
+        item = ReturnExchangeItem.query.filter_by(
+            return_exchange_id=workflow.id).one()
+        self.assertIsNone(item.product_id)
+        self.assertEqual(item.quantity, 1)
+        self.assertEqual(item.line_total, 100.0)
+        kept_workflow = db.session.get(ReturnExchange, workflow.id)
+        self.assertEqual(kept_workflow.refund_amount, 100.0)
+
+    def test_return_item_product_column_is_nullable(self):
+        """The startup migration must allow unlinking return history rows."""
+        from sqlalchemy import inspect as sa_inspect
+        columns = {
+            column['name']: column
+            for column in sa_inspect(db.engine).get_columns('return_exchange_item')
+        }
+
+        self.assertTrue(columns['product_id']['nullable'])
 
 
 if __name__ == '__main__':

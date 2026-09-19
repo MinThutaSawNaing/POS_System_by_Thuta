@@ -369,7 +369,7 @@ class DeleteProductToolTests(FullCoverageToolsTestBase):
         self.assertIsNone(db.session.get(SaleItem, item_id).product_id)
         self.assertEqual(db.session.get(Sale, sale_id).total, 200.0)
 
-    def test_returns_block_the_agent_delete(self):
+    def test_returns_are_kept_by_the_agent_delete(self):
         from app import ReturnExchange, ReturnExchangeItem
         product_id, sale_id, item_id = self._product_with_sale()
         workflow = ReturnExchange(
@@ -384,13 +384,15 @@ class DeleteProductToolTests(FullCoverageToolsTestBase):
             unit_price=100.0, tax_rate=0.0, line_total=100.0, line_tax=0.0))
         db.session.commit()
 
-        result = self.tools.delete_product(product_id, confirm=True, cascade=True)
+        result = self.tools.delete_product(product_id, confirm=True)
 
-        self.assertEqual(result.get("blocked_by"), "returns_exchanges")
-        self.assertIn("Returns tab", result["error"])
-        self.assertIsNotNone(db.session.get(Product, product_id))
-        self.assertEqual(
-            ReturnExchangeItem.query.filter_by(product_id=product_id).count(), 1)
+        self.assertTrue(result.get("success"), msg=result)
+        self.assertEqual(result["returns_exchanges_lines_kept"], 1)
+        self.assertIsNone(db.session.get(Product, product_id))
+        self.assertIsNone(
+            ReturnExchangeItem.query.filter_by(
+                return_exchange_id=workflow.id).one().product_id)
+        self.assertIsNotNone(db.session.get(ReturnExchange, workflow.id))
 
     def _wire_catalog_records(self, product):
         """Add warehouse stock, a promotion and a PO line for the product."""

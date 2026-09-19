@@ -540,7 +540,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "delete_product": {
         "name": "delete_product",
-        "description": "Permanently delete a product from the active branch. Sales history is always kept (the lines are only unlinked). Return/exchange records must be handled in the Returns tab first. A product that is still used in other tabs (warehouse stock or transfers, promotions, purchase order lines, supplier price agreements) is only removed with cascade=true, which deletes those records too.",
+        "description": "Permanently delete a product from the active branch. Sales and return/exchange history are always kept (those lines are only unlinked). A product that is still used in other tabs (warehouse stock or transfers, promotions, purchase order lines, supplier price agreements) is only removed with cascade=true, which deletes those records too.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -852,7 +852,7 @@ _TOOL_META = {
     "update_supplier":                 ("purchasing",  True,  'manager', "Partially update a supplier's contact details, category, or active status.", "small"),
     "update_customer":                 ("customers",   True,  'manager', "Partially update a customer's name/phone/email/address in the active branch.", "small"),
     "create_category":                 ("inventory",   True,  'manager', "Create a new category with optional description/color/sort order.", "small"),
-    "delete_product":                  ("inventory",   True,  'manager', "Delete a product; sales history needs confirm=true and other tabs (warehouse/promotions/PO lines/prices) need cascade=true; returns block.", "small"),
+    "delete_product":                  ("inventory",   True,  'manager', "Delete a product; sales and return history are kept, while other tabs (warehouse/promotions/PO lines/prices) need cascade=true.", "small"),
     "delete_supplier":                 ("purchasing",  True,  'manager', "Delete a supplier; refuses when non-terminal purchase orders exist.", "small"),
     "delete_customer":                 ("customers",   True,  'manager', "Delete a customer; refuses when outstanding debt balances exist.", "small"),
     "update_product_price":            ("inventory",   True,  'manager', "Update a product's price with exact decimal math and an optional audit reason.", "small"),
@@ -2083,11 +2083,11 @@ class AITools:
                        cascade: bool = False) -> Dict[str, Any]:
         """Delete a product, optionally wiping every catalog record wired to it.
 
-        Manager only. Sales history is always kept (the lines are merely
-        unlinked), and return/exchange lines must be handled in the Returns tab
-        first. A product still used by other tabs (warehouse, promotions,
-        purchase order lines, supplier prices) is only removed after the user
-        confirmed, with cascade=true.
+        Manager only. Sales and return/exchange history are always kept (those
+        rows are merely unlinked) so reports, receipts, refunds and
+        already-returned quantities stay accurate. A product still used by
+        other tabs (warehouse, promotions, purchase order lines, supplier
+        prices) is only removed after the user confirmed, with cascade=true.
         """
         Product = self._get_model('Product')
         SaleItem = self._get_model('SaleItem')
@@ -2102,16 +2102,7 @@ class AITools:
         if not product:
             return {"error": f"Product with ID {product_id} not found in the active branch"}
 
-        returns = ReturnExchangeItem.query.filter_by(product_id=product.id).count()
-        if returns:
-            return {
-                "blocked_by": "returns_exchanges",
-                "returns_exchanges_count": returns,
-                "error": (
-                    f"Cannot delete product '{product.name}' (ID {product.id}): it has "
-                    f"{returns} return/exchange line(s). Handle them in the Returns tab first."
-                ),
-            }
+        returns_count = ReturnExchangeItem.query.filter_by(product_id=product.id).count()
 
         usage = {
             "warehouse_inventory": WarehouseInventory.query.filter_by(product_id=product.id).count(),
@@ -2168,6 +2159,12 @@ class AITools:
             SaleItem.query.filter_by(product_id=product.id).update(
                 {"product_id": None}, synchronize_session=False
             )
+        if returns_count:
+            # Keep the refund/exchange rows as well: unlinking them preserves
+            # the refund money and the already-returned quantities.
+            ReturnExchangeItem.query.filter_by(product_id=product.id).update(
+                {"product_id": None}, synchronize_session=False
+            )
         self.db.session.delete(product)
         self.db.session.commit()
         result = {
@@ -2178,6 +2175,8 @@ class AITools:
         }
         if sales_history_count:
             result["sales_history_lines_kept"] = sales_history_count
+        if returns_count:
+            result["returns_exchanges_lines_kept"] = returns_count
         if removed:
             result["records_removed"] = removed
         return result

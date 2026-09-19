@@ -154,6 +154,12 @@ PURCHASE_ORDER_GROUP = {
 }
 RETURNS_GROUP = {
     "key": "returns_exchanges", "label": "Return / exchange lines", "count": 1,
+    "action": "keep", "detail": "kept for refund history",
+}
+# No backend group requests this today; the window must still refuse to delete
+# when one ever does.
+BLOCKED_GROUP = {
+    "key": "blocked_records", "label": "Records needing another tab", "count": 1,
     "action": "block",
 }
 
@@ -197,10 +203,10 @@ def test_wired_product_opens_the_delete_everywhere_window():
     assert out["toasts"] == [{"msg": "Product deleted successfully!", "kind": "success"}]
 
 
-def test_returns_block_the_delete_everywhere_window():
+def test_a_blocking_group_disables_the_delete_everywhere_window():
     out = _run_delete_flow(
-        {"success": True, "can_delete": False, "blocked_by": ["returns_exchanges"],
-         "groups": [RETURNS_GROUP]},
+        {"success": True, "can_delete": False, "blocked_by": ["blocked_records"],
+         "groups": [BLOCKED_GROUP]},
         [],
     )
 
@@ -326,12 +332,19 @@ def test_cleanup_window_lists_each_group_with_its_action():
     assert "Are you sure you want to delete it?" in out["warning"]
 
 
-def test_cleanup_window_blocks_when_returns_exist():
-    out = _run_cleanup_dialog([RETURNS_GROUP], False)
+def test_cleanup_window_disables_confirm_for_a_blocking_group():
+    out = _run_cleanup_dialog([BLOCKED_GROUP], False)
 
     assert out["confirmDisabled"] is True
-    assert "Returns tab" in out["warning"]
+    assert "handled in their own tab first" in out["warning"]
     assert "handle first" in out["rows"][0]["badge"]
+
+
+def test_cleanup_window_shows_returns_as_kept_history():
+    out = _run_cleanup_dialog([RETURNS_GROUP], True)
+
+    assert out["confirmDisabled"] is False
+    assert "kept as history" in out["rows"][0]["badge"]
 
 
 def test_branch_id_is_propagated_to_both_requests():
