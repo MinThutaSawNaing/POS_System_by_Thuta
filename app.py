@@ -2599,6 +2599,118 @@ def api_products():
         return jsonify({'success': True, 'message': 'Product added'}), 201
 
 # --- Single Product Endpoint (GET, PUT, DELETE) ---
+# --- Product deletion helpers ---
+def get_product_dependency_summary(product):
+    """List every tab/record type a product is wired to, with its delete policy.
+
+    Groups are tagged with the action the cleanup window will take:
+      * 'delete' — catalog records owned by this product; removed on confirm.
+      * 'keep'   — history (sales, deliveries) that stays readable. Sale lines
+                   are kept and only unlinked from the deleted product.
+      * 'block'  — return/exchange lines must be handled in the Returns tab
+                   first: removing them would erase refund history and make
+                   already-returned quantities refundable a second time.
+    """
+    warehouse_items = WarehouseInventory.query.filter_by(product_id=product.id).all()
+    warehouse_quantity = sum(int(item.quantity or 0) for item in warehouse_items)
+    transfers = WarehouseTransfer.query.filter_by(product_id=product.id).count()
+    promotions = Promotion.query.filter_by(product_id=product.id).count()
+    agreements = SupplierPriceAgreement.query.filter_by(product_id=product.id).count()
+    purchase_order_items = PurchaseOrderItem.query.filter_by(product_id=product.id).all()
+    purchase_order_count = len({item.purchase_order_id for item in purchase_order_items})
+    sales_lines = SaleItem.query.filter_by(product_id=product.id).count()
+    returns = ReturnExchangeItem.query.filter_by(product_id=product.id).count()
+    deliveries = (
+        db.session.query(db.func.count(db.distinct(Delivery.id)))
+        .select_from(Delivery)
+        .join(Sale, Sale.id == Delivery.sale_id)
+        .join(SaleItem, SaleItem.sale_id == Sale.id)
+        .filter(SaleItem.product_id == product.id)
+        .scalar()
+    ) or 0
+
+    groups = []
+
+    def add_group(key, label, count, action, detail=None, **extra):
+        if not count:
+            return
+        group = {'key': key, 'label': label, 'count': int(count), 'action': action}
+        if detail:
+            group['detail'] = detail
+        group.update(extra)
+        groups.append(group)
+
+    add_group('warehouse_inventory', 'Warehouse stock', len(warehouse_items), 'delete',
+              f'{warehouse_quantity} unit(s) in {len(warehouse_items)} batch(es) will be removed',
+              quantity=warehouse_quantity)
+    add_group('warehouse_transfers', 'Warehouse transfers', transfers, 'delete',
+              'warehouse transfer history for this product will be removed')
+    add_group('promotions', 'Promotions', promotions, 'delete',
+              'promotion records for this product will be removed')
+    add_group('supplier_price_agreements', 'Supplier price agreements', agreements,
+              'delete', 'agreed supplier prices for this product will be removed')
+    add_group('purchase_order_items', 'Purchase order lines', len(purchase_order_items),
+              'delete',
+              f'lines removed from {purchase_order_count} purchase order(s); their totals '
+              'are recalculated',
+              purchase_order_count=purchase_order_count)
+    add_group('sales_history', 'Sales history lines', sales_lines, 'keep',
+              'kept for reports and receipts; the lines are only unlinked from the product')
+    add_group('deliveries', 'Deliveries on those sales', deliveries, 'keep',
+              'delivery records belong to the sales and are kept')
+    add_group('returns_exchanges', 'Return / exchange lines', returns, 'block',
+              'handle these in the Returns tab first')
+
+    return {
+        'groups': groups,
+        'removable_count': sum(g['count'] for g in groups if g['action'] == 'delete'),
+        'blocked_by': [g['key'] for g in groups if g['action'] == 'block'],
+        'has_sales_history': sales_lines > 0,
+        'sales_history_count': sales_lines,
+        'returns_exchanges_count': returns,
+    }
+
+
+def remove_product_catalog_records(product):
+    """Remove the catalog records wired to a product that is being deleted.
+
+    Sales and return rows are never touched here: sale lines are only unlinked
+    by the caller and return/exchange records block the delete entirely.
+    Purchase orders stay, but the totals of the orders that lost a line are
+    recalculated from their remaining lines exactly like order creation does.
+    """
+    removed = {
+        'warehouse_inventory': WarehouseInventory.query.filter_by(
+            product_id=product.id).delete(synchronize_session=False),
+        'warehouse_transfers': WarehouseTransfer.query.filter_by(
+            product_id=product.id).delete(synchronize_session=False),
+        'promotions': Promotion.query.filter_by(
+            product_id=product.id).delete(synchronize_session=False),
+        'supplier_price_agreements': SupplierPriceAgreement.query.filter_by(
+            product_id=product.id).delete(synchronize_session=False),
+    }
+
+    purchase_order_ids = [
+        row[0] for row in db.session.query(PurchaseOrderItem.purchase_order_id)
+        .filter(PurchaseOrderItem.product_id == product.id).distinct().all()
+    ]
+    removed['purchase_order_items'] = PurchaseOrderItem.query.filter_by(
+        product_id=product.id).delete(synchronize_session=False)
+
+    for purchase_order_id in purchase_order_ids:
+        purchase_order = db.session.get(PurchaseOrder, purchase_order_id)
+        if not purchase_order:
+            continue
+        remaining = db.session.query(
+            PurchaseOrderItem.ordered_qty, PurchaseOrderItem.unit_cost
+        ).filter(PurchaseOrderItem.purchase_order_id == purchase_order_id).all()
+        purchase_order.total_amount = float(
+            sum((quantity or 0) * (unit_cost or 0) for quantity, unit_cost in remaining)
+        )
+    removed['purchase_orders_recalculated'] = len(purchase_order_ids)
+    return removed
+
+
 @app.route('/api/products/<int:product_id>', methods=['GET', 'PUT', 'DELETE'])
 def api_single_product(product_id):
     if 'user_id' not in session:
@@ -2733,49 +2845,72 @@ def api_single_product(product_id):
         return jsonify({'success': True, 'message': 'Product updated'})
 
     elif request.method == 'DELETE':
+        # Deleting products is a manager (or owner) action: cashiers keep
+        # selling and editing, but they can never remove catalog entries.
+        if session.get('role') not in ('manager', 'boss'):
+            return jsonify({
+                'success': False,
+                'message': 'Only a manager can delete products.'
+            }), 403
+
         # A product that was already sold is only removed after the user
-        # confirms the extra warning dialog, which retries with force=1.
+        # confirms the cleanup window, which retries with force=1 (keep the
+        # sales history) and cascade=1 (also clear the other tabs it is used
+        # in, for example warehouse, promotions and purchase order lines).
         force = to_bool(request.args.get('force'), False)
-        if not force:
+        cascade = to_bool(request.args.get('cascade'), False)
+        if not (force and cascade):
             body = request.get_json(silent=True)
             if isinstance(body, dict):
-                force = to_bool(body.get('force'), False)
+                force = force or to_bool(body.get('force'), False)
+                cascade = cascade or to_bool(body.get('cascade'), False)
 
-        sales_history_count = SaleItem.query.filter_by(product_id=product.id).count()
+        summary = get_product_dependency_summary(product)
 
-        dependencies = (
-            (PurchaseOrderItem.query.filter_by(product_id=product.id).first(),
-             'it appears on purchase orders'),
-            (SupplierPriceAgreement.query.filter_by(product_id=product.id).first(),
-             'it has supplier price agreements'),
-            (WarehouseInventory.query.filter_by(product_id=product.id).first(),
-             'it has warehouse inventory records'),
-            (WarehouseTransfer.query.filter_by(product_id=product.id).first(),
-             'it has warehouse transfer history'),
-            (Promotion.query.filter_by(product_id=product.id).first(),
-             'it has promotion records'),
-            (ReturnExchangeItem.query.filter_by(product_id=product.id).first(),
-             'it has return or exchange history'),
-        )
-        for dependency, reason in dependencies:
-            if dependency:
-                return jsonify({
-                    'success': False,
-                    'message': f"Cannot delete product '{product.name}': {reason}."
-                }), 400
+        if summary['returns_exchanges_count']:
+            return jsonify({
+                'success': False,
+                'blocked': True,
+                'blocked_by': 'returns_exchanges',
+                'returns_exchanges_count': summary['returns_exchanges_count'],
+                'message': (
+                    f"Cannot delete product '{product.name}': it has "
+                    f"{summary['returns_exchanges_count']} return/exchange line(s). "
+                    "Handle them in the Returns tab first."
+                )
+            }), 400
 
-        if sales_history_count and not force:
+        if summary['removable_count'] and not cascade:
+            return jsonify({
+                'success': False,
+                'requires_cascade': True,
+                'has_sales_history': summary['has_sales_history'],
+                'sales_history_count': summary['sales_history_count'],
+                'dependency_groups': summary['groups'],
+                'dependencies': {
+                    group['key']: group['count'] for group in summary['groups']
+                },
+                'message': (
+                    f"Cannot delete product '{product.name}': it is still used in other "
+                    "tabs. Confirm deleting it everywhere."
+                )
+            }), 400
+
+        if summary['has_sales_history'] and not force:
             return jsonify({
                 'success': False,
                 'has_sales_history': True,
                 'requires_confirmation': True,
-                'sales_history_count': sales_history_count,
+                'sales_history_count': summary['sales_history_count'],
                 'message': f"Cannot delete product '{product.name}': it has sales history."
             }), 400
 
         photo_filename = product.photo_filename
+        cleaned_up = {}
         try:
-            if sales_history_count:
+            if cascade:
+                cleaned_up = remove_product_catalog_records(product)
+            if summary['has_sales_history']:
                 # Keep every sale row (quantity, price, tax and the sale total)
                 # so sales history and reports stay accurate; only the link to
                 # the catalog entry that is going away is cleared.
@@ -2793,7 +2928,39 @@ def api_single_product(product_id):
 
         if photo_filename:
             delete_product_image(photo_filename)
-        return jsonify({'success': True, 'message': 'Product deleted'})
+        return jsonify({
+            'success': True,
+            'message': 'Product deleted',
+            'cleaned_up': cleaned_up
+        })
+
+@app.route('/api/products/<int:product_id>/dependencies', methods=['GET'])
+def api_product_dependencies(product_id):
+    """Report every tab a product is wired to before the manager deletes it."""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if session.get('role') not in ('manager', 'boss'):
+        return jsonify({
+            'success': False,
+            'message': 'Only a manager can delete products.'
+        }), 403
+
+    branch_id = get_requested_branch_id(default_to_current=True)
+    if branch_id is None:
+        branch_id = get_current_branch_id()
+    product = Product.query.filter_by(id=product_id, branch_id=branch_id).first()
+    if not product:
+        return jsonify({'success': False, 'message': 'Product not found'}), 404
+
+    summary = get_product_dependency_summary(product)
+    return jsonify({
+        'success': True,
+        'product_id': product.id,
+        'product_name': product.name,
+        'can_delete': not summary['blocked_by'],
+        **summary
+    })
+
 
 @app.route('/api/products/search', methods=['GET'])
 def api_search_products():

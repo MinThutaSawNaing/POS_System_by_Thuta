@@ -73,17 +73,23 @@ class LiveServerSaleTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         with app.app_context():
-            # Sale rows must take their sale items with them: SQLite reuses row
-            # ids, so a leaked sale_item row would otherwise attach itself to a
-            # completely unrelated sale created later.
-            stale_sale_ids = [
+            # Sales posted without a client transaction id get a server-generated
+            # one, so collect their ids from this test's own product instead of
+            # matching a prefix. Sale rows must take their sale items with them:
+            # SQLite reuses row ids, so a leaked sale_item row would otherwise
+            # attach itself to a completely unrelated sale created later.
+            stale_sale_ids = {
+                item.sale_id for item in
+                SaleItem.query.filter_by(product_id=cls.product_id).all()
+            }
+            stale_sale_ids.update(
                 sale.id for sale in
                 Sale.query.filter(Sale.transaction_id.like('live-%')).all()
-            ]
+            )
             SaleItem.query.filter(
-                SaleItem.sale_id.in_(stale_sale_ids or [0])
+                SaleItem.sale_id.in_(stale_sale_ids or {0})
             ).delete(synchronize_session=False)
-            Sale.query.filter(Sale.id.in_(stale_sale_ids or [0])).delete(
+            Sale.query.filter(Sale.id.in_(stale_sale_ids or {0})).delete(
                 synchronize_session=False)
             product = db.session.get(Product, cls.product_id)
             if product:

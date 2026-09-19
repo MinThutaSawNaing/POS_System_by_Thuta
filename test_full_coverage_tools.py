@@ -11,7 +11,7 @@ import uuid
 from decimal import Decimal
 from unittest import mock
 
-from app import (AI_MODELS, app, db, Branch, Category, Product,
+from app import (AI_MODELS, app, db, Branch, Category, Product, Promotion,
                  PurchaseOrder, PurchaseOrderItem, Sale, SaleItem, Supplier,
                  User, WarehouseInventory)
 from agent_orchestrator import AgentOrchestrator
@@ -335,19 +335,87 @@ class DeleteProductToolTests(FullCoverageToolsTestBase):
         self.assertEqual(item.price, 100.0)
         self.assertEqual(db.session.get(Sale, sale_id).total, 200.0)
 
-    def test_active_promotion_still_refuses_even_with_confirm(self):
-        from app import Promotion
+    def test_wired_product_requires_the_cascade_confirmation(self):
         product_id, _, _ = self._product_with_sale()
-        now = datetime.utcnow()
-        db.session.add(Promotion(
-            product_id=product_id, discount_type='percent', discount_value=10,
-            start_date=now - timedelta(days=1), end_date=now + timedelta(days=1)))
-        db.session.commit()
+        self._wire_catalog_records(db.session.get(Product, product_id))
 
         result = self.tools.delete_product(product_id, confirm=True)
 
-        self.assertIn("active promotion", result.get("error", ""))
+        self.assertTrue(result.get("requires_cascade"))
+        self.assertEqual(result["usage"]["promotions"], 1)
+        self.assertEqual(result["usage"]["warehouse_inventory"], 1)
+        self.assertEqual(result["usage"]["purchase_order_items"], 1)
+        self.assertEqual(result["sales_history_count"], 1)
+        self.assertIn("cascade=true", result["error"])
         self.assertIsNotNone(db.session.get(Product, product_id))
+
+    def test_cascade_delete_clears_wired_records(self):
+        product_id, sale_id, item_id = self._product_with_sale()
+        purchase_order_id = self._wire_catalog_records(
+            db.session.get(Product, product_id))
+
+        result = self.tools.delete_product(product_id, confirm=True, cascade=True)
+
+        self.assertTrue(result.get("success"), msg=result)
+        self.assertEqual(result["records_removed"]["promotions"], 1)
+        self.assertEqual(result["records_removed"]["warehouse_inventory"], 1)
+        self.assertEqual(result["records_removed"]["purchase_order_items"], 1)
+        self.assertIsNone(db.session.get(Product, product_id))
+        self.assertEqual(Promotion.query.filter_by(product_id=product_id).count(), 0)
+        self.assertEqual(
+            WarehouseInventory.query.filter_by(product_id=product_id).count(), 0)
+        # The purchase order survives with a recalculated total.
+        self.assertEqual(db.session.get(PurchaseOrder, purchase_order_id).total_amount, 0.0)
+        self.assertIsNone(db.session.get(SaleItem, item_id).product_id)
+        self.assertEqual(db.session.get(Sale, sale_id).total, 200.0)
+
+    def test_returns_block_the_agent_delete(self):
+        from app import ReturnExchange, ReturnExchangeItem
+        product_id, sale_id, item_id = self._product_with_sale()
+        workflow = ReturnExchange(
+            workflow_id=str(uuid.uuid4()), mode='return', original_sale_id=sale_id,
+            return_total=0.0, exchange_total=0.0, net_total=0.0,
+            refund_amount=0.0, collected_amount=0.0, user_id=self.admin_id)
+        db.session.add(workflow)
+        db.session.flush()
+        db.session.add(ReturnExchangeItem(
+            return_exchange_id=workflow.id, original_sale_item_id=item_id,
+            product_id=product_id, movement='return', quantity=1,
+            unit_price=100.0, tax_rate=0.0, line_total=100.0, line_tax=0.0))
+        db.session.commit()
+
+        result = self.tools.delete_product(product_id, confirm=True, cascade=True)
+
+        self.assertEqual(result.get("blocked_by"), "returns_exchanges")
+        self.assertIn("Returns tab", result["error"])
+        self.assertIsNotNone(db.session.get(Product, product_id))
+        self.assertEqual(
+            ReturnExchangeItem.query.filter_by(product_id=product_id).count(), 1)
+
+    def _wire_catalog_records(self, product):
+        """Add warehouse stock, a promotion and a PO line for the product."""
+        supplier = Supplier(name=f"Ag Sup {uuid.uuid4().hex[:6]}",
+                            branch_id=self.branch_id)
+        db.session.add(supplier)
+        db.session.flush()
+        now = datetime.utcnow()
+        db.session.add_all([
+            WarehouseInventory(product_id=product.id, quantity=3, location="B2",
+                               branch_id=self.branch_id),
+            Promotion(product_id=product.id, discount_type="percent",
+                      discount_value=5, start_date=now - timedelta(days=1),
+                      end_date=now + timedelta(days=1)),
+        ])
+        purchase_order = PurchaseOrder(
+            po_number=f"PO-{uuid.uuid4().hex[:10].upper()}", supplier_id=supplier.id,
+            status="approved", total_amount=30.0, branch_id=self.branch_id)
+        db.session.add(purchase_order)
+        db.session.flush()
+        db.session.add(PurchaseOrderItem(
+            purchase_order_id=purchase_order.id, product_id=product.id,
+            ordered_qty=3, received_qty=0, unit_cost=10.0))
+        db.session.commit()
+        return purchase_order.id
 
     def test_approved_plan_step_deletes_sold_product(self):
         """The approved Loli step (confirm=true) really removes the product."""

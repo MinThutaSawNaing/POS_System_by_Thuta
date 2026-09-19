@@ -123,11 +123,14 @@ these tests free of Flask/app-import side effects.
 Destructive tools are approval-tier AND refuse in the tool layer itself,
 independent of the agent:
 
-- `delete_product` — refuses if the product appears on purchase orders,
-  has warehouse stock, or is covered by an active promotion. A product with
-  sales history is deleted only with `confirm=true` (the first call returns
-  `needs_confirmation` and a question for the user); the confirmed delete keeps
-  every sale row and merely unlinks it from the removed catalog entry.
+- `delete_product` — manager/owner only (the dashboard hides the button and
+  the API refuses with 403 for other roles). Sales history is always kept
+  (lines are only unlinked) and needs `confirm=true`; return/exchange records
+  block the delete entirely; warehouse stock/transfers, promotions, purchase
+  order lines and supplier price agreements are removed only with
+  `cascade=true`, after the user agreed in the "delete everywhere" window.
+  The same rules apply to `DELETE /api/products/<id>` (`?force=1&cascade=1`)
+  and to the cleanup summary at `GET /api/products/<id>/dependencies`.
 - `delete_supplier` — refuses while non-terminal purchase orders exist.
 - `delete_customer` — refuses while outstanding debt balances exist.
 

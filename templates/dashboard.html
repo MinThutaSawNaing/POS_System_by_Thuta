@@ -4906,6 +4906,27 @@
       </div>
     </div>
 
+    <!-- Product Cleanup Modal: shows every tab the product is wired to (managers only) -->
+    <div class="modal fade" id="productCleanupModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header bg-danger text-white">
+            <h5 class="modal-title" id="productCleanupTitle"><i class="bi bi-trash3 me-2"></i>Delete Product Everywhere</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p class="mb-3 fs-6" id="productCleanupIntro"></p>
+            <ul class="list-group mb-3" id="productCleanupList"></ul>
+            <div class="alert alert-warning mb-0 d-none" id="productCleanupWarning" role="alert"></div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-danger" id="productCleanupConfirmBtn"><i class="bi bi-trash3 me-1"></i>Delete everywhere</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Sale Success Modal -->
     <div class="modal fade" id="saleSuccessModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-dialog-centered">
@@ -7062,6 +7083,98 @@
               // open another confirmation dialog (for example a product that
               // still has sales history) which this hide transition would
               // otherwise close again.
+              modalElement.addEventListener("hidden.bs.modal", onConfirm, {
+                once: true,
+              });
+            }
+            modal.hide();
+          });
+        }
+      });
+
+      // ============================================
+      // Product Cleanup Dialog (managers only)
+      // ============================================
+      let productCleanupCallback = null;
+
+      const PRODUCT_DEPENDENCY_ACTIONS = {
+        delete: { badge: "text-bg-danger", label: "will be deleted" },
+        keep: { badge: "text-bg-secondary", label: "kept as history" },
+        block: { badge: "text-bg-dark", label: "handle first" },
+      };
+
+      function showProductCleanupDialog(productName, groups, canDelete, onConfirm) {
+        document.getElementById(
+          "productCleanupIntro"
+        ).textContent = `Delete "${productName}" and remove it from every tab listed below? This action cannot be undone.`;
+
+        const list = document.getElementById("productCleanupList");
+        list.innerHTML = "";
+        (groups || []).forEach((group) => {
+          const action =
+            PRODUCT_DEPENDENCY_ACTIONS[group.action] ||
+            PRODUCT_DEPENDENCY_ACTIONS.keep;
+          const item = document.createElement("li");
+          item.className =
+            "list-group-item d-flex justify-content-between align-items-start gap-2";
+
+          const details = document.createElement("span");
+          const label = document.createElement("strong");
+          label.textContent = group.label || group.key;
+          details.appendChild(label);
+          if (group.detail) {
+            const detail = document.createElement("span");
+            detail.className = "text-muted small d-block";
+            detail.textContent = group.detail;
+            details.appendChild(detail);
+          }
+
+          const count = document.createElement("span");
+          count.className = `badge ${action.badge} text-nowrap`;
+          count.textContent = `${group.count} - ${action.label}`;
+
+          item.append(details, count);
+          list.appendChild(item);
+        });
+
+        const hasSalesHistory = (groups || []).some(
+          (group) => group.key === "sales_history"
+        );
+        const blocked = (groups || []).filter((group) => group.action === "block");
+        const warning = document.getElementById("productCleanupWarning");
+        if (blocked.length) {
+          warning.classList.remove("d-none");
+          warning.textContent =
+            "This product still has return/exchange records. Handle them in the Returns tab first, then delete the product.";
+        } else if (hasSalesHistory) {
+          warning.classList.remove("d-none");
+          warning.textContent =
+            "The product you selected have sale history. Are you sure you want to delete it? Sales history and receipts are kept so reports stay accurate.";
+        } else {
+          warning.classList.add("d-none");
+          warning.textContent = "";
+        }
+
+        const confirmBtn = document.getElementById("productCleanupConfirmBtn");
+        confirmBtn.disabled = !canDelete;
+        productCleanupCallback = onConfirm;
+
+        bootstrap.Modal.getOrCreateInstance(
+          document.getElementById("productCleanupModal")
+        ).show();
+      }
+
+      document.addEventListener("DOMContentLoaded", function() {
+        const cleanupBtn = document.getElementById("productCleanupConfirmBtn");
+        if (cleanupBtn) {
+          cleanupBtn.addEventListener("click", function() {
+            const modalElement = document.getElementById("productCleanupModal");
+            const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+            const onConfirm = productCleanupCallback;
+            productCleanupCallback = null;
+            if (onConfirm) {
+              // Same deferral rule as the confirm dialog: run the callback once
+              // the window is fully hidden so follow-up dialogs stay visible.
               modalElement.addEventListener("hidden.bs.modal", onConfirm, {
                 once: true,
               });
@@ -9622,6 +9735,14 @@
 
         data.items.forEach((product) => {
           const row = document.createElement("tr");
+          // Deleting a product is a manager (or owner) action only.
+          const deleteButton = hasManagerOrBossAccess()
+            ? `<button class="btn btn-sm btn-danger" onclick="deleteProduct(${
+                product.id
+              }, '${escapeHtml(product.name)}')">
+                                          <i class="bi bi-trash"></i>
+                                      </button>`
+            : "";
           row.innerHTML = `
                                   <td>${getProductPhotoHtml(product.photo_url, product.name, "product-thumb")}</td>
                                   <td>${product.barcode || "N/A"}</td>
@@ -9636,11 +9757,7 @@
                                       })">
                                           <i class="bi bi-pencil"></i>
                                       </button>
-                                      <button class="btn btn-sm btn-danger" onclick="deleteProduct(${
-                                        product.id
-                                      }, '${escapeHtml(product.name)}')">
-                                          <i class="bi bi-trash"></i>
-                                      </button>
+                                      ${deleteButton}
                                   </td>
                               `;
           productsTable.appendChild(row);
@@ -9865,15 +9982,62 @@
       }
 
       function deleteProduct(productId, productName) {
-        showConfirmDialog(
-          "Delete Product",
-          `Are you sure you want to delete "${productName}"? This action cannot be undone.`,
-          () => requestProductDelete(productId, false)
-        );
+        if (!hasManagerOrBossAccess()) {
+          showToast("Only a manager can delete products.", "error");
+          return;
+        }
+
+        const activeBranchId = currentBranch?.id || null;
+        // Ask the backend which tabs use this product so the manager gets one
+        // window listing everything instead of hunting through each tab.
+        const dependenciesUrl = activeBranchId
+          ? `/api/products/${productId}/dependencies?branch_id=${encodeURIComponent(
+              activeBranchId
+            )}`
+          : `/api/products/${productId}/dependencies`;
+        fetch(dependenciesUrl)
+          .then((response) => response.json())
+          .then((data) => {
+            if (!data.success) {
+              showToast(
+                "Error deleting product: " + (data.message || data.error || "Unknown error"),
+                "error"
+              );
+              return;
+            }
+
+            const groups = data.groups || [];
+            if (!groups.length) {
+              showConfirmDialog(
+                "Delete Product",
+                `Are you sure you want to delete "${productName}"? This action cannot be undone.`,
+                () => requestProductDelete(productId, false, false)
+              );
+              return;
+            }
+
+            showProductCleanupDialog(
+              productName,
+              groups,
+              data.can_delete !== false,
+              () => requestProductDelete(productId, true, true)
+            );
+          })
+          .catch((error) => {
+            console.error("Error checking product usage:", error);
+            showToast("Error checking product usage: " + error.message, "error");
+          });
       }
 
-      function requestProductDelete(productId, force) {
-        fetch(`/api/products/${productId}${force ? "?force=1" : ""}`, {
+      function requestProductDelete(productId, force, cascade) {
+        const activeBranchId = currentBranch?.id || null;
+        const params = new URLSearchParams();
+        if (force) params.set("force", "1");
+        if (cascade) params.set("cascade", "1");
+        if (activeBranchId) params.set("branch_id", activeBranchId);
+        const query = params.toString();
+
+        fetch(`/api/products/${productId}${query ? `?${query}` : ""}`, {
           method: "DELETE",
         })
           .then((response) => response.json())
@@ -9887,19 +10051,33 @@
               return;
             }
 
+            if (data.requires_cascade && !cascade) {
+              // The product is still used in other tabs: list them and retry
+              // with cascade=1 (which also keeps the sales history) once the
+              // manager confirms the cleanup window.
+              showProductCleanupDialog(
+                data.product_name || "",
+                data.dependency_groups || [],
+                !(data.blocked_by || []).length,
+                () => requestProductDelete(productId, true, true)
+              );
+              return;
+            }
+
             if (!force && (data.has_sales_history || data.requires_confirmation)) {
               // The product was already sold: warn that its sales history is
               // kept, then delete it once the user confirms.
               showConfirmDialog(
                 "Product Has Sales History",
                 "The product you selected have sale history. Are you sure you want to delete it?",
-                () => requestProductDelete(productId, true)
+                () => requestProductDelete(productId, true, cascade)
               );
               return;
             }
 
             showToast(
-              "Error deleting product: " + (data.message || "Unknown error"),
+              "Error deleting product: " +
+                (data.message || data.error || "Unknown error"),
               "error"
             );
           })

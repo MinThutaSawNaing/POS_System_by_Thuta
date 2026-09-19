@@ -540,7 +540,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "delete_product": {
         "name": "delete_product",
-        "description": "Permanently delete a product from the active branch. Refuses when the product appears on purchase orders, has warehouse stock, or is covered by an active promotion. A product with sales history is only deleted with confirm=true, which keeps the sale records and just unlinks them from the removed product.",
+        "description": "Permanently delete a product from the active branch. Sales history is always kept (the lines are only unlinked). Return/exchange records must be handled in the Returns tab first. A product that is still used in other tabs (warehouse stock or transfers, promotions, purchase order lines, supplier price agreements) is only removed with cascade=true, which deletes those records too.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -548,6 +548,10 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "confirm": {
                     "type": "boolean",
                     "description": "Set true only after the user explicitly confirmed deleting a product that has sales history. The sale records are kept."
+                },
+                "cascade": {
+                    "type": "boolean",
+                    "description": "Set true only after the user agreed to remove the product everywhere: also deletes its warehouse stock/transfers, promotions, purchase order lines and supplier price agreements."
                 }
             },
             "required": ["product_id"]
@@ -848,7 +852,7 @@ _TOOL_META = {
     "update_supplier":                 ("purchasing",  True,  'manager', "Partially update a supplier's contact details, category, or active status.", "small"),
     "update_customer":                 ("customers",   True,  'manager', "Partially update a customer's name/phone/email/address in the active branch.", "small"),
     "create_category":                 ("inventory",   True,  'manager', "Create a new category with optional description/color/sort order.", "small"),
-    "delete_product":                  ("inventory",   True,  'manager', "Delete a product; sales history needs confirm=true, while PO/warehouse/active-promotion references always refuse.", "small"),
+    "delete_product":                  ("inventory",   True,  'manager', "Delete a product; sales history needs confirm=true and other tabs (warehouse/promotions/PO lines/prices) need cascade=true; returns block.", "small"),
     "delete_supplier":                 ("purchasing",  True,  'manager', "Delete a supplier; refuses when non-terminal purchase orders exist.", "small"),
     "delete_customer":                 ("customers",   True,  'manager', "Delete a customer; refuses when outstanding debt balances exist.", "small"),
     "update_product_price":            ("inventory",   True,  'manager', "Update a product's price with exact decimal math and an optional audit reason.", "small"),
@@ -2075,40 +2079,67 @@ class AITools:
             "branch_id": self._branch_id()
         }
 
-    def delete_product(self, product_id: int, confirm: bool = False) -> Dict[str, Any]:
-        """Delete a product unless it still has references (manager only).
+    def delete_product(self, product_id: int, confirm: bool = False,
+                       cascade: bool = False) -> Dict[str, Any]:
+        """Delete a product, optionally wiping every catalog record wired to it.
 
-        A product that already appears in sales history is only removed once
-        the user confirmed: the first call reports needs_confirmation instead
-        of deleting, and the confirmed delete keeps every sale row (only
-        unlinking it from the catalog entry that goes away).
+        Manager only. Sales history is always kept (the lines are merely
+        unlinked), and return/exchange lines must be handled in the Returns tab
+        first. A product still used by other tabs (warehouse, promotions,
+        purchase order lines, supplier prices) is only removed after the user
+        confirmed, with cascade=true.
         """
         Product = self._get_model('Product')
         SaleItem = self._get_model('SaleItem')
         PurchaseOrderItem = self._get_model('PurchaseOrderItem')
+        SupplierPriceAgreement = self._get_model('SupplierPriceAgreement')
         WarehouseInventory = self._get_model('WarehouseInventory')
+        WarehouseTransfer = self._get_model('WarehouseTransfer')
         Promotion = self._get_model('Promotion')
+        ReturnExchangeItem = self._get_model('ReturnExchangeItem')
+
         product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
         if not product:
             return {"error": f"Product with ID {product_id} not found in the active branch"}
-        if PurchaseOrderItem.query.filter_by(product_id=product.id).first():
-            return {"error": f"Cannot delete product '{product.name}' (ID {product.id}): it appears on purchase orders"}
-        warehouse_stock = WarehouseInventory.query.filter(
-            WarehouseInventory.product_id == product.id,
-            WarehouseInventory.quantity > 0
-        ).first()
-        if warehouse_stock:
-            return {"error": f"Cannot delete product '{product.name}' (ID {product.id}): {warehouse_stock.quantity} units remain in the warehouse"}
-        now = datetime.utcnow()
-        active_promotion = Promotion.query.filter(
-            Promotion.product_id == product.id,
-            Promotion.start_date <= now,
-            Promotion.end_date >= now
-        ).first()
-        if active_promotion:
-            return {"error": f"Cannot delete product '{product.name}' (ID {product.id}): an active promotion covers it until {active_promotion.end_date.date().isoformat()}"}
 
+        returns = ReturnExchangeItem.query.filter_by(product_id=product.id).count()
+        if returns:
+            return {
+                "blocked_by": "returns_exchanges",
+                "returns_exchanges_count": returns,
+                "error": (
+                    f"Cannot delete product '{product.name}' (ID {product.id}): it has "
+                    f"{returns} return/exchange line(s). Handle them in the Returns tab first."
+                ),
+            }
+
+        usage = {
+            "warehouse_inventory": WarehouseInventory.query.filter_by(product_id=product.id).count(),
+            "warehouse_transfers": WarehouseTransfer.query.filter_by(product_id=product.id).count(),
+            "purchase_order_items": PurchaseOrderItem.query.filter_by(product_id=product.id).count(),
+            "promotions": Promotion.query.filter_by(product_id=product.id).count(),
+            "supplier_price_agreements": SupplierPriceAgreement.query.filter_by(product_id=product.id).count(),
+        }
+        removable_usage = {key: count for key, count in usage.items() if count}
         sales_history_count = SaleItem.query.filter_by(product_id=product.id).count()
+
+        if removable_usage and not cascade:
+            listing = ", ".join(f"{key} x{count}" for key, count in removable_usage.items())
+            return {
+                "needs_confirmation": True,
+                "requires_cascade": True,
+                "product_id": product.id,
+                "product_name": product.name,
+                "usage": removable_usage,
+                "sales_history_count": sales_history_count,
+                "error": (
+                    f"Product '{product.name}' (ID {product.id}) is still used in other tabs: "
+                    f"{listing}. Tell the user exactly that and ask whether to delete the product "
+                    "everywhere, then call delete_product again with cascade=true (add confirm=true "
+                    "when it has sales history). The sale records are always kept."
+                ),
+            }
+
         if sales_history_count and not confirm:
             return {
                 "needs_confirmation": True,
@@ -2125,6 +2156,11 @@ class AITools:
             }
 
         product_name = product.name
+        removed = {}
+        if removable_usage:
+            # Mirrors remove_product_catalog_records() in app.py; the agent
+            # cannot import app.py without a circular import.
+            removed = self._purge_product_catalog_records(product)
         if sales_history_count:
             # Keep every sale row (quantity, price, tax and the sale total) so
             # sales history and reports stay accurate; only the link to the
@@ -2142,7 +2178,48 @@ class AITools:
         }
         if sales_history_count:
             result["sales_history_lines_kept"] = sales_history_count
+        if removed:
+            result["records_removed"] = removed
         return result
+
+    def _purge_product_catalog_records(self, product) -> Dict[str, int]:
+        """Remove the catalog records a deleted product was wired to."""
+        WarehouseInventory = self._get_model('WarehouseInventory')
+        WarehouseTransfer = self._get_model('WarehouseTransfer')
+        Promotion = self._get_model('Promotion')
+        SupplierPriceAgreement = self._get_model('SupplierPriceAgreement')
+        PurchaseOrderItem = self._get_model('PurchaseOrderItem')
+        PurchaseOrder = self._get_model('PurchaseOrder')
+
+        removed = {
+            "warehouse_inventory": WarehouseInventory.query.filter_by(
+                product_id=product.id).delete(synchronize_session=False),
+            "warehouse_transfers": WarehouseTransfer.query.filter_by(
+                product_id=product.id).delete(synchronize_session=False),
+            "promotions": Promotion.query.filter_by(
+                product_id=product.id).delete(synchronize_session=False),
+            "supplier_price_agreements": SupplierPriceAgreement.query.filter_by(
+                product_id=product.id).delete(synchronize_session=False),
+        }
+        purchase_order_ids = [
+            row[0] for row in self.db.session.query(PurchaseOrderItem.purchase_order_id)
+            .filter(PurchaseOrderItem.product_id == product.id).distinct().all()
+        ]
+        removed["purchase_order_items"] = PurchaseOrderItem.query.filter_by(
+            product_id=product.id).delete(synchronize_session=False)
+        for purchase_order_id in purchase_order_ids:
+            purchase_order = self.db.session.get(PurchaseOrder, purchase_order_id)
+            if not purchase_order:
+                continue
+            remaining = self.db.session.query(
+                PurchaseOrderItem.ordered_qty, PurchaseOrderItem.unit_cost
+            ).filter(PurchaseOrderItem.purchase_order_id == purchase_order_id).all()
+            purchase_order.total_amount = float(
+                sum((quantity or 0) * (unit_cost or 0)
+                    for quantity, unit_cost in remaining)
+            )
+        removed["purchase_orders_recalculated"] = len(purchase_order_ids)
+        return removed
 
     def delete_supplier(self, supplier_id: int) -> Dict[str, Any]:
         """Delete a supplier unless non-terminal purchase orders exist (manager only)."""
