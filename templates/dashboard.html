@@ -2156,6 +2156,14 @@
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
             </button>
+            <div class="btn-group" role="group" aria-label="Download purchase order report">
+              <button class="btn btn-outline-danger" onclick="exportPurchaseOrders('pdf')" title="Download the purchase order register as a PDF report">
+                <i class="bi bi-file-earmark-pdf"></i> <span class="d-none d-sm-inline">PDF</span>
+              </button>
+              <button class="btn btn-outline-success" onclick="exportPurchaseOrders('xlsx')" title="Download the purchase order register as an Excel workbook">
+                <i class="bi bi-file-earmark-excel"></i> <span class="d-none d-sm-inline">Excel</span>
+              </button>
+            </div>
             <button
               class="btn btn-primary"
               data-bs-toggle="modal"
@@ -2313,6 +2321,14 @@
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
             </button>
+            <div class="btn-group" role="group" aria-label="Download warehouse stock report">
+              <button class="btn btn-outline-danger" onclick="exportWarehouseStock('pdf')" title="Download the stock list as a PDF report">
+                <i class="bi bi-file-earmark-pdf"></i> <span class="d-none d-sm-inline">PDF</span>
+              </button>
+              <button class="btn btn-outline-success" onclick="exportWarehouseStock('xlsx')" title="Download the stock list as an Excel workbook">
+                <i class="bi bi-file-earmark-excel"></i> <span class="d-none d-sm-inline">Excel</span>
+              </button>
+            </div>
             <button class="btn btn-outline-info" onclick="showTransferHistoryModal()">
               <i class="bi bi-clock-history"></i> <span class="d-none d-sm-inline">History</span>
             </button>
@@ -12939,6 +12955,28 @@
         loadPurchaseOrders();
       }
 
+      // Professional purchasing report: the register for the Purchase tab's
+      // current filters, with approval/receiving KPIs, order value totals and (in
+      // Excel) a line-item sheet plus a report-info cover sheet.
+      function exportPurchaseOrders(format) {
+        const params = new URLSearchParams();
+        params.set("format", format === "xlsx" ? "xlsx" : "pdf");
+
+        const search = (document.getElementById("purchase-orders-search")?.value || "").trim();
+        const status = (document.getElementById("purchase-orders-status-filter")?.value || "").trim();
+        const supplierId = (document.getElementById("purchase-orders-supplier-filter")?.value || "").trim();
+        const startDate = (document.getElementById("purchase-orders-start-date")?.value || "").trim();
+        const endDate = (document.getElementById("purchase-orders-end-date")?.value || "").trim();
+
+        if (search) params.set("q", search);
+        if (status) params.set("status", status);
+        if (supplierId) params.set("supplier_id", supplierId);
+        if (startDate) params.set("start_date", startDate);
+        if (endDate) params.set("end_date", endDate);
+
+        return openReportDownload(`/api/purchase_orders/export?${params.toString()}`);
+      }
+
       function viewPurchaseOrderDetails(poId) {
         const modal = new bootstrap.Modal(document.getElementById("purchaseOrderDetailsModal"));
         const content = document.getElementById("po-details-content");
@@ -13691,6 +13729,32 @@
         document.getElementById("warehouse-low-stock-filter").value = "";
         pageState.warehouse = 1;
         loadWarehouseInventory();
+      }
+
+      // Report downloads open in a new tab: PDFs render for review/printing,
+      // Excel workbooks go straight to the browser's download folder.
+      function openReportDownload(url) {
+        const reportWindow = window.open(url, "_blank");
+        if (!reportWindow) {
+          showToast("Report window was blocked. Allow popups for this POS and try again.", "warning");
+          return false;
+        }
+        return true;
+      }
+
+      // Professional stock reporting: the PDF/Excel version of the stock list the
+      // Warehouse tab is currently showing (same search and low-stock filters),
+      // plus letterhead, KPI summary, stock value totals and page numbers.
+      function exportWarehouseStock(format) {
+        const params = new URLSearchParams();
+        params.set("format", format === "xlsx" ? "xlsx" : "pdf");
+
+        const search = (document.getElementById("warehouse-search")?.value || "").trim();
+        const lowStock = (document.getElementById("warehouse-low-stock-filter")?.value || "").trim();
+        if (search) params.set("q", search);
+        if (lowStock) params.set("low_stock", lowStock);
+
+        return openReportDownload(`/api/warehouse/export?${params.toString()}`);
       }
 
       function showRestockModal(productId, productName, availableQty, mainStock, batchNumber) {

@@ -33,6 +33,7 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
   - Dashboard metrics and charts
   - Date-range reporting with export support (Excel, PDF)
   - Printable receipts and barcode labels
+  - Professional stock and purchase order reports (branded PDF and Excel downloads)
   - Sales trends analysis
 
 - **Business Modules**
@@ -214,6 +215,8 @@ POS_System_by_Thuta/
 ├── ai_agent.py               # AI Agent core module
 ├── agent_orchestrator.py     # AI Agent orchestration and tool management
 ├── ai_tools.py               # AI Agent database tools
+├── receipt.py                # Thermal receipt snapshots and paper profiles
+├── reports.py                # Professional PDF/Excel report builders
 ├── requirements.txt
 ├── Dockerfile
 ├── compose.yaml              # Resource-limited VPS deployment
@@ -477,12 +480,20 @@ An admin account is auto-created if missing:
 - Multi-item support with automatic total calculation
 - Approval workflow with status tracking
 - Cancel orders with reason logging
+- Download the filtered register as a branded PDF or Excel workbook (Excel adds a line-item sheet)
 
 ### Warehouse Management
 - Separate warehouse inventory tracking
 - Transfer items to main store stock
 - Manage unstocked products
 - Batch transfer operations
+- Download the current stock list (PDF/Excel) with stock value totals and low-stock KPIs
+
+### Professional Reporting
+- Shared report builders in `reports.py`: letterhead, KPI summary, striped tables, totals and page numbers
+- `GET /api/warehouse/export?format=pdf|xlsx` — stock list honouring the tab's search and low-stock filters
+- `GET /api/purchase_orders/export?format=pdf|xlsx` — PO register honouring search, status, supplier and date filters
+- Manager-only, branch-scoped and consistent with the rows shown in each tab
 
 ### Debt Management
 - Customer debt tracking with payment history

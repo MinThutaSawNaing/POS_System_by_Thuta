@@ -28,6 +28,20 @@ from receipt import (
     normalize_receipt_identity,
     normalize_receipt_paper_size,
 )
+from reports import (
+    LOW_STOCK_THRESHOLD,
+    build_purchase_order_item_sheet,
+    build_purchase_order_report,
+    build_report_pdf,
+    build_report_xlsx,
+    build_warehouse_stock_report,
+    describe_filters,
+    normalize_report_format,
+    purchase_order_status_label,
+    report_content_type,
+    report_disposition,
+    report_filename,
+)
 from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
 import pytz
@@ -4520,11 +4534,90 @@ def api_customers():
         return jsonify({'success': True, 'message': 'Customer added'}), 201
 
 # Purchase Order & Receiving API Endpoints
+def purchase_orders_for_filters(search_query='', status_filter='', supplier_filter='',
+                                start_date='', end_date='', branch_id=None):
+    """Purchase orders for the tab's filters, newest first.
+
+    Shared by the purchase order list API and its PDF/Excel exports so a
+    downloaded report always matches the tab's filtered view.
+    """
+    if branch_id is None:
+        branch_id = get_default_branch_id()
+    query = PurchaseOrder.query.filter_by(branch_id=branch_id)
+
+    if search_query:
+        like_query = f"%{search_query}%"
+        query = query.filter(
+            (PurchaseOrder.po_number.ilike(like_query)) |
+            (Supplier.name.ilike(like_query))
+        ).join(Supplier)
+
+    if status_filter:
+        query = query.filter(PurchaseOrder.status == status_filter)
+
+    if supplier_filter:
+        try:
+            query = query.filter(PurchaseOrder.supplier_id == int(supplier_filter))
+        except ValueError:
+            pass
+
+    if start_date:
+        try:
+            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+            query = query.filter(PurchaseOrder.created_at >= start_dt)
+        except ValueError:
+            pass
+
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+            query = query.filter(PurchaseOrder.created_at < end_dt)
+        except ValueError:
+            pass
+
+    return query.order_by(PurchaseOrder.created_at.desc()).all()
+
+
+def serialize_purchase_order(po, include_items=False):
+    """Purchase order payload shared by the list API and the exports."""
+    payload = {
+        'id': po.id,
+        'po_number': po.po_number,
+        'supplier_id': po.supplier_id,
+        'supplier_name': po.supplier.name if po.supplier else 'Unknown',
+        'status': po.status,
+        'status_label': purchase_order_status_label(po.status),
+        'total_amount': po.total_amount,
+        'expected_delivery_date': po.expected_delivery_date.isoformat() if po.expected_delivery_date else None,
+        'notes': po.notes,
+        'created_by': po.creator.username if po.creator else None,
+        'approved_by': po.approver.username if po.approver else None,
+        'approved_at': po.approved_at.isoformat() if po.approved_at else None,
+        'created_at': po.created_at.isoformat(),
+        'updated_at': po.updated_at.isoformat() if po.updated_at else None,
+        'items_count': len(po.items),
+        'received_items_count': sum(1 for i in po.items if i.received_qty >= i.ordered_qty),
+        'total_ordered': sum(i.ordered_qty for i in po.items),
+        'total_received': sum(i.received_qty for i in po.items),
+    }
+    if include_items:
+        payload['items'] = [{
+            'product_name': item.product.name if item.product else 'Unknown product',
+            'ordered_qty': item.ordered_qty,
+            'received_qty': item.received_qty,
+            'unit_cost': item.unit_cost,
+            'line_total': money_float(
+                safe_to_decimal(item.ordered_qty) * safe_to_decimal(item.unit_cost or 0)
+            ),
+        } for item in po.items]
+    return payload
+
+
 @app.route('/api/purchase_orders', methods=['GET', 'POST'])
 @manager_required
 def api_purchase_orders():
     branch_id = get_default_branch_id()
-    
+
     if request.method == 'GET':
         # Get filter parameters
         search_query = (request.args.get('q') or '').strip()
@@ -4532,60 +4625,12 @@ def api_purchase_orders():
         supplier_filter = (request.args.get('supplier_id') or '').strip()
         start_date = (request.args.get('start_date') or '').strip()
         end_date = (request.args.get('end_date') or '').strip()
-        
-        query = PurchaseOrder.query.filter_by(branch_id=branch_id)
-        
-        # Apply filters
-        if search_query:
-            like_query = f"%{search_query}%"
-            query = query.filter(
-                (PurchaseOrder.po_number.ilike(like_query)) |
-                (Supplier.name.ilike(like_query))
-            ).join(Supplier)
-        
-        if status_filter:
-            query = query.filter(PurchaseOrder.status == status_filter)
-        
-        if supplier_filter:
-            try:
-                query = query.filter(PurchaseOrder.supplier_id == int(supplier_filter))
-            except ValueError:
-                pass
-        
-        if start_date:
-            try:
-                start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-                query = query.filter(PurchaseOrder.created_at >= start_dt)
-            except ValueError:
-                pass
-        
-        if end_date:
-            try:
-                end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
-                query = query.filter(PurchaseOrder.created_at < end_dt)
-            except ValueError:
-                pass
-        
-        purchase_orders = query.order_by(PurchaseOrder.created_at.desc()).all()
-        return jsonify([{
-            'id': po.id,
-            'po_number': po.po_number,
-            'supplier_id': po.supplier_id,
-            'supplier_name': po.supplier.name if po.supplier else 'Unknown',
-            'status': po.status,
-            'total_amount': po.total_amount,
-            'expected_delivery_date': po.expected_delivery_date.isoformat() if po.expected_delivery_date else None,
-            'notes': po.notes,
-            'created_by': po.creator.username if po.creator else None,
-            'approved_by': po.approver.username if po.approver else None,
-            'approved_at': po.approved_at.isoformat() if po.approved_at else None,
-            'created_at': po.created_at.isoformat(),
-            'updated_at': po.updated_at.isoformat() if po.updated_at else None,
-            'items_count': len(po.items),
-            'received_items_count': sum(1 for i in po.items if i.received_qty >= i.ordered_qty),
-            'total_ordered': sum(i.ordered_qty for i in po.items),
-            'total_received': sum(i.received_qty for i in po.items)
-        } for po in purchase_orders])
+
+        purchase_orders = purchase_orders_for_filters(
+            search_query, status_filter, supplier_filter,
+            start_date, end_date, branch_id,
+        )
+        return jsonify([serialize_purchase_order(po) for po in purchase_orders])
 
     data = request.get_json() or {}
     supplier_id = data.get('supplier_id')
@@ -4655,6 +4700,67 @@ def api_purchase_orders():
         db.session.rollback()
         app.logger.error(f"Error creating purchase order: {str(e)}")
         return jsonify({'success': False, 'message': 'Failed to create purchase order'}), 500
+
+@app.route('/api/purchase_orders/export', methods=['GET'])
+@manager_required
+def export_purchase_orders():
+    """Download the purchase order register as a professional PDF or Excel report.
+
+    Uses exactly the tab's filters (search, status, supplier, date range), and
+    the workbook adds a line-item sheet plus a report-info cover sheet.
+    """
+    search_query = (request.args.get('q') or '').strip()
+    status_filter = (request.args.get('status') or '').strip()
+    supplier_filter = (request.args.get('supplier_id') or '').strip()
+    start_date = (request.args.get('start_date') or '').strip()
+    end_date = (request.args.get('end_date') or '').strip()
+    report_format = normalize_report_format(request.args.get('format'))
+    branch_id = get_default_branch_id()
+    branch = db.session.get(Branch, branch_id) if branch_id else None
+
+    purchase_orders = purchase_orders_for_filters(
+        search_query, status_filter, supplier_filter,
+        start_date, end_date, branch_id,
+    )
+    supplier_name = ''
+    if supplier_filter:
+        supplier = db.session.get(Supplier, int(supplier_filter)) if supplier_filter.isdigit() else None
+        supplier_name = supplier.name if supplier else supplier_filter
+
+    records = [serialize_purchase_order(po, include_items=True) for po in purchase_orders]
+    filters_text = describe_filters({
+        'Search': search_query,
+        'Status': purchase_order_status_label(status_filter) if status_filter else '',
+        'Supplier': supplier_name,
+        'From': start_date,
+        'To': end_date,
+    })
+    report = build_purchase_order_report(
+        records,
+        brand=get_receipt_identity(branch),
+        branch_name=branch.name if branch else '',
+        generated_by=session.get('username') or '',
+        filters_text=filters_text,
+        currency_suffix=get_currency_suffix(),
+    )
+
+    if report_format == 'pdf':
+        payload = build_report_pdf(report)
+    else:
+        payload = build_report_xlsx(
+            report,
+            extra_sheets=[
+                build_purchase_order_item_sheet(
+                    records, currency_suffix=get_currency_suffix()
+                )
+            ],
+        )
+    filename = report_filename(report['file_stem'], report_format)
+    response = make_response(payload)
+    response.headers['Content-Type'] = report_content_type(report_format)
+    response.headers['Content-Disposition'] = report_disposition(filename, report_format)
+    return response
+
 
 @app.route('/api/purchase_orders/summary', methods=['GET'])
 @manager_required
@@ -5369,25 +5475,28 @@ def api_supplier_products(supplier_id):
 
 # ==================== Warehouse Management APIs ====================
 
-@app.route('/api/warehouse', methods=['GET'])
-@manager_required
-def api_warehouse_inventory():
-    """Get all warehouse inventory with optional filters"""
-    branch_id = get_default_branch_id()
-    search_query = (request.args.get('q') or '').strip()
-    low_stock = request.args.get('low_stock', '').strip().lower() == 'true'
-    
-    query = WarehouseInventory.query.filter(WarehouseInventory.quantity > 0, WarehouseInventory.branch_id == branch_id)
-    
+def warehouse_inventory_records(search_query='', low_stock=False, branch_id=None):
+    """Warehouse stock rows (quantity > 0) with the tab's optional filters.
+
+    Shared by the stock list API and its PDF/Excel exports so a downloaded
+    report always matches what the Warehouse tab is showing.
+    """
+    if branch_id is None:
+        branch_id = get_default_branch_id()
+    query = WarehouseInventory.query.filter(
+        WarehouseInventory.quantity > 0,
+        WarehouseInventory.branch_id == branch_id,
+    )
+
     if search_query:
         like_query = f"%{search_query}%"
         query = query.join(Product).filter(
             (Product.name.ilike(like_query)) |
             (Product.barcode.ilike(like_query))
         )
-    
+
     inventory = query.order_by(WarehouseInventory.updated_at.desc()).all()
-    
+
     result = []
     for item in inventory:
         total_warehouse_qty = sum(w.quantity for w in item.product.warehouse_items) if item.product.warehouse_items else 0
@@ -5409,11 +5518,54 @@ def api_warehouse_inventory():
             'created_at': item.created_at.isoformat(),
             'updated_at': item.updated_at.isoformat() if item.updated_at else None
         })
-    
+
     if low_stock:
-        result = [r for r in result if r['quantity'] <= 5]
-    
-    return jsonify(result)
+        result = [r for r in result if r['quantity'] <= LOW_STOCK_THRESHOLD]
+
+    return result
+
+@app.route('/api/warehouse', methods=['GET'])
+@manager_required
+def api_warehouse_inventory():
+    """Get all warehouse inventory with optional filters"""
+    search_query = (request.args.get('q') or '').strip()
+    low_stock = request.args.get('low_stock', '').strip().lower() == 'true'
+
+    return jsonify(warehouse_inventory_records(search_query, low_stock))
+
+@app.route('/api/warehouse/export', methods=['GET'])
+@manager_required
+def export_warehouse_stock():
+    """Download the warehouse stock list as a professional PDF or Excel report.
+
+    Honours the same search / low-stock filters as the Warehouse tab, then adds
+    the letterhead, KPI summary, totals and page numbering the report needs.
+    """
+    search_query = (request.args.get('q') or '').strip()
+    low_stock = request.args.get('low_stock', '').strip().lower() == 'true'
+    report_format = normalize_report_format(request.args.get('format'))
+    branch_id = get_default_branch_id()
+    branch = db.session.get(Branch, branch_id) if branch_id else None
+
+    records = warehouse_inventory_records(search_query, low_stock, branch_id)
+    report = build_warehouse_stock_report(
+        records,
+        brand=get_receipt_identity(branch),
+        branch_name=branch.name if branch else '',
+        generated_by=session.get('username') or '',
+        filters_text=describe_filters({
+            'Search': search_query,
+            'Low stock only': low_stock,
+        }),
+        currency_suffix=get_currency_suffix(),
+    )
+
+    payload = build_report_pdf(report) if report_format == 'pdf' else build_report_xlsx(report)
+    filename = report_filename(report['file_stem'], report_format)
+    response = make_response(payload)
+    response.headers['Content-Type'] = report_content_type(report_format)
+    response.headers['Content-Disposition'] = report_disposition(filename, report_format)
+    return response
 
 @app.route('/api/warehouse/summary', methods=['GET'])
 @manager_required
