@@ -462,7 +462,8 @@ def test_offline_print_uses_local_receipt_until_synced():
         for name in (
             "escapeHtml", "getPendingSales", "setPendingSales",
             "getPendingOfflineReceipt", "formatOfflineReceiptMoney",
-            "openOfflineReceiptWindow", "printReceiptFromSuccessModal",
+            "formatOfflineReceiptNumber", "openOfflineReceiptWindow",
+            "printReceiptFromSuccessModal",
         )
     )
     script = f"""
@@ -654,7 +655,8 @@ def test_offline_receipt_escapes_hostile_product_names():
         for name in (
             "escapeHtml", "getPendingSales", "setPendingSales",
             "getPendingOfflineReceipt", "formatOfflineReceiptMoney",
-            "openOfflineReceiptWindow", "printReceiptFromSuccessModal",
+            "formatOfflineReceiptNumber", "openOfflineReceiptWindow",
+            "printReceiptFromSuccessModal",
         )
     )
     script = f"""
@@ -709,6 +711,94 @@ console.log(JSON.stringify({{
     assert out["hasRawImgTag"] is False
     assert out["hasRawScriptTag"] is False
     assert out["scriptTagCount"] == 1
+
+def test_offline_receipt_id_fits_thermal_paper():
+    """The queued-sale receipt printed the full 36-character UUID.
+
+    A UUID is wider than 58 mm thermal paper and `white-space: nowrap` on the
+    value cell stopped it wrapping, so the overflowing row pushed the whole
+    receipt off to the right. The offline receipt must print the same short
+    code the server receipt shows (``transaction_id[-8:].upper()``), and long
+    values must wrap inside the paper instead of overflowing it.
+    """
+    source = DASHBOARD.read_text(encoding="utf-8")
+    helpers = "\n".join(
+        _function(source, name)
+        for name in (
+            "escapeHtml", "getPendingSales", "setPendingSales",
+            "getPendingOfflineReceipt", "formatOfflineReceiptMoney",
+            "formatOfflineReceiptNumber", "openOfflineReceiptWindow",
+            "printReceiptFromSuccessModal",
+        )
+    )
+    script = f"""
+const storage = {{}};
+globalThis.localStorage = {{
+  getItem: (k) => (k in storage ? storage[k] : null),
+  setItem: (k, v) => {{ storage[k] = String(v); }},
+}};
+let printed = "";
+globalThis.window = {{
+  open: () => ({{ opener: null, document: {{ write: (h) => {{ printed += h; }}, close: () => {{}} }}, close: () => {{}} }}),
+}};
+function showToast() {{}}
+function openReceiptWindow() {{ return true; }}
+let currentSaleTransactionId = null;
+{helpers}
+
+const fullId = "00000000-0000-0000-0000-abcdef123456";
+const receipt = {{
+  transactionId: fullId,
+  createdAt: "1/2/2026, 10:00:00 AM",
+  posName: "Parrot POS",
+  currencySuffix: "MMK",
+  paperWidthMm: 58,
+  branchName: "Main Branch",
+  branchAddress: "1 Main St",
+  branchPhone: "555",
+  branchEmail: "main@example.com",
+  cashierName: "Cashier One With A Very Long Display Name",
+  paymentMethod: "cash",
+  cashReceived: 4000,
+  change: 850,
+  items: [{{ name: "Coffee", quantity: 2, unitPrice: 1500, lineSubtotal: 3000, taxRate: 5, taxAmount: 150 }}],
+  subtotal: 3000, tax: 150, total: 3150,
+}};
+setPendingSales([{{ transaction_id: fullId, saleData: {{}}, receiptSnapshot: receipt, created_at: "" }}]);
+currentSaleTransactionId = fullId;
+printReceiptFromSuccessModal();
+
+console.log(JSON.stringify({{
+  wroteHtml: printed.length > 0,
+  shortNumberMatchesServerRule: formatOfflineReceiptNumber(fullId) === "EF123456",
+  unknownWhenMissing: formatOfflineReceiptNumber("") === "UNKNOWN",
+  showsShortReceiptNumber: printed.includes(">EF123456<"),
+  hidesFullTransactionId: !printed.includes(fullId),
+  keepsLongValues: printed.includes("Cashier One With A Very Long Display Name"),
+}}));
+"""
+    out = _run_node_script(script)
+    assert out["wroteHtml"] is True
+    assert out["shortNumberMatchesServerRule"] is True
+    assert out["unknownWhenMissing"] is True
+    assert out["showsShortReceiptNumber"] is True
+    assert out["hidesFullTransactionId"] is True
+    assert out["keepsLongValues"] is True
+
+    # The offline stylesheet must mirror the server receipt's wrap-safe rows:
+    # the label keeps its natural width, the value may break anywhere, and the
+    # paper box clips anything that still does not fit.
+    template = _function(source, "openOfflineReceiptWindow")
+    label_rule = re.search(r"\.row span:first-child\s*\{([^}]*)\}", template)
+    value_rule = re.search(r"\.row span:last-child\s*\{([^}]*)\}", template)
+    paper_rule = re.search(r"^[^\n]*\.receipt \{.*$", template, re.MULTILINE)
+    assert label_rule is not None, ".row label CSS rule missing from the offline receipt"
+    assert value_rule is not None, ".row value CSS rule missing from the offline receipt"
+    assert paper_rule is not None, ".receipt CSS rule missing from the offline receipt"
+    assert "flex: 0 0 auto" in label_rule.group(1)
+    assert "overflow-wrap: anywhere" in value_rule.group(1)
+    assert "white-space: nowrap" not in value_rule.group(1)
+    assert "overflow: hidden" in paper_rule.group(0)
 
 
 def test_offline_sale_aborts_cleanly_when_storage_write_fails():

@@ -7226,6 +7226,14 @@
         return `${Number(value || 0).toFixed(2)} ${suffix || "$"}`.trim();
       }
 
+      // The receipt prints the last 8 characters of the transaction id, exactly
+      // like the server-side receipt. A full UUID is far wider than 58 mm thermal
+      // paper, and printing it pushed the whole receipt off to the right.
+      function formatOfflineReceiptNumber(transactionId) {
+        const normalized = String(transactionId || "").trim();
+        return normalized ? normalized.slice(-8).toUpperCase() : "UNKNOWN";
+      }
+
       function openOfflineReceiptWindow(receipt, autoPrint = false) {
         const receiptWindow = window.open("about:blank", "_blank");
         if (!receiptWindow) {
@@ -7235,6 +7243,7 @@
 
         const escape = escapeHtml;
         const money = (value) => formatOfflineReceiptMoney(value, receipt.currencySuffix);
+        const receiptNumber = formatOfflineReceiptNumber(receipt.transactionId);
         const itemRows = receipt.items.map((item) => `
           <section class="item">
             <div class="item-name">${escape(item.name)}</div>
@@ -7253,22 +7262,24 @@
         try {
           receiptWindow.opener = null;
           receiptWindow.document.write(`<!doctype html>
-            <html><head><meta charset="utf-8"><title>Offline Receipt ${escape(receipt.transactionId)}</title>
+            <html><head><meta charset="utf-8"><title>Offline Receipt ${escape(receiptNumber)}</title>
             <style>
               @page { size: ${receipt.paperWidthMm}mm auto; margin: 0; }
               * { box-sizing: border-box; } body { margin: 0; background: #eee; color: #111; font: 600 12px/1.35 "Courier New", monospace; }
               .toolbar { position: sticky; top: 0; padding: 10px; text-align: center; background: #343a40; } button { padding: 8px 14px; border: 0; border-radius: 4px; cursor: pointer; }
-              .receipt { width: ${receipt.paperWidthMm}mm; min-height: 40mm; margin: 12px auto; padding: 4mm; background: #fff; }
+              .receipt { width: ${receipt.paperWidthMm}mm; min-height: 40mm; margin: 12px auto; padding: 4mm; overflow: hidden; background: #fff; }
               .center { text-align: center; } h1 { margin: 0; font: 800 18px Arial, sans-serif; } .muted { color: #555; font-size: .9em; }
               hr { border: 0; border-top: 1px dashed #111; margin: 7px 0; } .item { margin: 0 0 7px; break-inside: avoid; }
               .item-name { font-weight: 800; overflow-wrap: anywhere; } .item-detail, .row { display: flex; justify-content: space-between; gap: 8px; padding-left: 4px; }
-              .item-detail span:last-child, .row span:last-child { text-align: right; white-space: nowrap; } .grand { font-size: 1.12em; font-weight: 900; }
+              .item-detail span:last-child { text-align: right; white-space: nowrap; } .grand { font-size: 1.12em; font-weight: 900; }
+              .row span:first-child { flex: 0 0 auto; }
+              .row span:last-child { min-width: 0; text-align: right; overflow-wrap: anywhere; }
               @media print { body { background: #fff; } .toolbar { display: none; } .receipt { margin: 0; box-shadow: none; } }
             </style></head><body>
             <div class="toolbar"><button onclick="window.print()">Print Receipt</button></div>
             <main class="receipt">
               <header class="center"><h1>${escape(receipt.posName)}</h1>${branch}<div class="muted">${contact}</div></header>
-              <hr><div class="row"><span>Receipt</span><span>${escape(receipt.transactionId)}</span></div>
+              <hr><div class="row"><span>Receipt</span><span>${escape(receiptNumber)}</span></div>
               <div class="row"><span>Date</span><span>${escape(receipt.createdAt)}</span></div>
               <div class="row"><span>Cashier</span><span>${escape(receipt.cashierName)}</span></div>
               <div class="row"><span>Payment</span><span>${escape(receipt.paymentMethod)}</span></div>
