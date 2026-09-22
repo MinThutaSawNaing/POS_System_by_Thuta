@@ -5567,7 +5567,12 @@
             progressDiv.querySelector(".alert").classList.add("alert-success");
             
             showToast(data.message || "Database restored successfully!", "success");
-            
+            // A restore replaces every table at once; the broad "/api/settings"
+            // write rule is not enough. Drop the whole cache so no tab can paint
+            // pre-restore rows if the operator declines the reload below.
+            invalidateAllCache();
+            invalidateProductsCache();
+
             // Prompt user to refresh
             setTimeout(() => {
               if (confirm("Database restored successfully! Would you like to refresh the page to see the changes?")) {
@@ -5828,11 +5833,12 @@
             // Update all branch indicators
             updateBranchIndicators(data.branch);
             showToast(data.message, "success");
+            // Everything cached belongs to the previous branch: the write to
+            // /api/branches/switch already dropped the memory cache, this drops
+            // the product snapshot too - before anything is re-rendered.
+            invalidateProductsCache();
             // Refresh current section data
             refreshCurrentSection();
-            // Clear product cache
-            cachedProducts = [];
-            productsCacheTimestamp = 0;
 
             const selector = document.getElementById("warehouse-target-branch");
             if (selector) {
@@ -6074,6 +6080,494 @@
         deliveries: 10,
       };
       
+      // ===== SPA DATA CACHE =====
+      // Every sidebar item is a section of this single page, so switching tabs
+      // never reloaded the document - but it did re-fetch that section's data on
+      // every click. On a catalogue of a million products that turns a tab click
+      // into a database stress test and makes the app feel like it reloads.
+      // The layer below makes repeat visits free:
+      //   * GETs to allowlisted list endpoints are served from memory (TTL/group)
+      //   * identical in-flight requests share a single network call
+      //   * a just-expired payload is painted immediately and refreshed in the
+      //     background (stale-while-revalidate) so rapid tab ping-pong costs 0
+      //   * every successful write (POST/PUT/DELETE) invalidates the groups it
+      //     can affect, so nobody ever rings up stale stock
+      //   * the Refresh button and a branch switch bypass the cache entirely
+      // Anything not in CACHEABLE_READ_PATHS (single record lookups, exports,
+      // file downloads, AI endpoints, cross-origin calls) passes straight
+      // through untouched, so this can never break an unlisted call.
+
+      // How long a group's payload may be painted without touching the server.
+      const CACHE_GROUP_TTL = {
+        pos: 30000,
+        dashboard: 30000,
+        reports: 30000,
+        sales: 30000,
+        products: 60000,
+        customers: 60000,
+        debts: 60000,
+        suppliers: 60000,
+        purchases: 60000,
+        warehouse: 60000,
+        deliveries: 60000,
+        promotions: 60000,
+        categories: 120000,
+        users: 120000,
+        settings: 300000,
+        branches: 300000,
+      };
+
+      // Extra window during which expired data is still painted while it is
+      // refreshed behind the scenes. Volatile groups keep it tiny (a cashier must
+      // not sell against half-an-hour-old stock); reference data can be generous.
+      const CACHE_SHORT_STALE_GRACE_MS = 15000;
+      const CACHE_REFERENCE_GROUPS = new Set([
+        "categories",
+        "users",
+        "settings",
+        "branches",
+        "suppliers",
+      ]);
+      const CACHE_LONG_STALE_GRACE_MS = 600000;
+
+      // Upper bound on distinct URLs kept in memory (searches, page and cursor
+      // variants all get their own key), oldest entries dropped first.
+      const CACHE_MAX_ENTRIES = 300;
+
+      // Exact request paths that may be served from memory, mapped to their
+      // invalidation group. Deliberately an allowlist. ("/api/products" serves two
+      // screens - see cacheReadGroupFor below - so its group is resolved by query.)
+      const CACHEABLE_READ_PATHS = new Map([
+        ["/api/products", "products"],
+        ["/api/products/search", "pos"],
+        ["/api/categories", "categories"],
+        ["/api/customers", "customers"],
+        ["/api/debts", "debts"],
+        ["/api/debts/summary", "debts"],
+        ["/api/deliveries", "deliveries"],
+        ["/api/deliveries/stats", "deliveries"],
+        ["/api/promotions", "promotions"],
+        ["/api/purchase_orders", "purchases"],
+        ["/api/purchase_orders/summary", "purchases"],
+        ["/api/reports/sales", "reports"],
+        ["/api/returns_exchanges", "sales"],
+        ["/api/sales", "sales"],
+        ["/api/settings", "settings"],
+        ["/api/suppliers", "suppliers"],
+        ["/api/users", "users"],
+        ["/api/warehouse", "warehouse"],
+        ["/api/warehouse/summary", "warehouse"],
+        ["/api/warehouse/transfers", "warehouse"],
+        ["/api/branches", "branches"],
+        ["/api/branches/current", "branches"],
+        ["/api/dashboard/sales_data", "dashboard"],
+        ["/api/dashboard/top_products", "dashboard"],
+      ]);
+
+      // What a successful write to a path prefix makes stale. Broad on purpose:
+      // over-invalidating only ever costs one extra fetch, under-invalidating
+      // shows a cashier the wrong stock count. null = drop the whole cache.
+      const CACHE_WRITE_INVALIDATIONS = [
+        ["/api/products", ["products", "pos", "categories", "purchases", "warehouse", "promotions", "dashboard", "reports", "sales"]],
+        ["/api/sales", ["pos", "sales", "products", "promotions", "customers", "debts", "warehouse", "dashboard", "reports"]],
+        ["/api/returns_exchanges", ["pos", "sales", "products", "warehouse", "dashboard", "reports"]],
+        ["/api/inventory", ["warehouse", "products", "pos", "purchases"]],
+        ["/api/warehouse", ["warehouse", "products", "pos", "purchases", "dashboard"]],
+        ["/api/purchase_orders", ["purchases", "warehouse", "products", "pos", "suppliers", "deliveries", "dashboard"]],
+        ["/api/categories", ["categories", "products", "pos"]],
+        ["/api/customers", ["customers", "debts", "pos"]],
+        ["/api/debts", ["debts", "customers"]],
+        ["/api/suppliers", ["suppliers", "purchases"]],
+        ["/api/promotions", ["promotions", "pos", "products", "sales", "dashboard", "reports"]],
+        ["/api/deliveries", ["deliveries", "sales", "pos"]],
+        ["/api/users", ["users"]],
+        ["/api/settings", ["settings", "dashboard"]],
+        ["/api/branches", null],
+        // The assistant executes tools server-side, so a command or an approved
+        // step can change almost anything with no write to the affected endpoint.
+        // These are deliberate, low-frequency actions: drop everything rather than
+        // risk a tab painting rows the agent just changed.
+        ["/api/agent/chat", null],
+        ["/api/agent/task", null],
+        ["/api/agent/approve", null],
+        ["/api/agent/reject", null],
+        // Memory/conversation endpoints only touch the assistant's own store.
+        ["/api/agent", []],
+        ["/api/ai", []],
+        ["/api/memory", []],
+      ];
+      const cacheStore = new Map();
+      const cacheInflight = new Map();
+      const cacheEpoch = Object.create(null);
+      // Assigned by the section (tab) render-state block further down. Keeps the
+      // two layers independent: the cache never has to reach into the tab state
+      // directly, so neither block depends on the other being declared first.
+      let notifyCacheInvalidated = null;
+      const nativeFetch =
+        typeof window !== "undefined" && typeof window.fetch === "function"
+          ? window.fetch.bind(window)
+          : null;
+
+      function cacheScope() {
+        // The server resolves the active branch from the session when a request
+        // carries no branch_id, so the same URL can legitimately return different
+        // rows before and after a branch switch. Scope the key by branch.
+        return currentBranch && currentBranch.id != null ? "b" + currentBranch.id : "b0";
+      }
+
+      function cacheKeyFor(url) {
+        return cacheScope() + "|" + url.pathname + (url.search || "");
+      }
+
+      function cacheGraceFor(group) {
+        return CACHE_REFERENCE_GROUPS.has(group)
+          ? CACHE_LONG_STALE_GRACE_MS
+          : CACHE_SHORT_STALE_GRACE_MS;
+      }
+
+      // Which group a cacheable read belongs to, or null when it is not cached.
+      // "/api/products" feeds two screens with different lifecycles: the POS grid
+      // asks for view=pos and is sold against, while the manager list is paged.
+      // One shared group let a Products-tab refresh leave a stale POS grid behind
+      // (and vice versa), so the two are split by query.
+      function cacheReadGroupFor(url) {
+        if (url.pathname === "/api/products") {
+          return url.searchParams.get("view") === "pos" ? "pos" : "products";
+        }
+        return CACHEABLE_READ_PATHS.get(url.pathname) || null;
+      }
+
+      function cacheBumpEpoch(group) {
+        cacheEpoch[group] = (cacheEpoch[group] || 0) + 1;
+      }
+
+      function cacheGroupEpoch(group) {
+        return cacheEpoch[group] || 0;
+      }
+
+      function cacheWriteGroupsForPath(pathname) {
+        for (const [prefix, groups] of CACHE_WRITE_INVALIDATIONS) {
+          if (pathname === prefix || pathname.startsWith(prefix + "/")) return groups;
+        }
+        return null; // unknown write: assume everything may have moved
+      }
+
+      function cacheTrim() {
+        while (cacheStore.size > CACHE_MAX_ENTRIES) {
+          const oldestKey = cacheStore.keys().next().value;
+          if (oldestKey === undefined) return;
+          cacheStore.delete(oldestKey);
+        }
+      }
+
+      function cacheAgeOf(key) {
+        const hit = cacheStore.get(key);
+        return hit ? Date.now() - hit.savedAt : Infinity;
+      }
+
+      function cacheResponseFrom(entry) {
+        return new Response(entry.body, {
+          status: entry.status,
+          statusText: entry.statusText,
+          headers: entry.headers,
+        });
+      }
+
+      // Drop cached payloads (and their in-flight promises) for a set of groups,
+      // or the whole cache when `all` is set. Bumping each group's epoch is what
+      // tells showSection() that an already-rendered tab stopped being live data.
+      function invalidateCacheGroups(groups, options) {
+        const opts = options || {};
+        if (opts.all) {
+          cacheStore.clear();
+          cacheInflight.clear();
+          for (const group of Object.keys(CACHE_GROUP_TTL)) cacheBumpEpoch(group);
+        } else {
+          const wanted = new Set(Array.isArray(groups) ? groups : []);
+          if (!wanted.size) return;
+          for (const group of wanted) cacheBumpEpoch(group);
+          for (const [key, entry] of Array.from(cacheStore.entries())) {
+            if (wanted.has(entry.group)) cacheStore.delete(key);
+          }
+          for (const [key, pending] of Array.from(cacheInflight.entries())) {
+            if (wanted.has(pending.group)) cacheInflight.delete(key);
+          }
+        }
+        if (opts.resetRenderedSections === false || !notifyCacheInvalidated) return;
+        notifyCacheInvalidated(opts.all ? Object.keys(CACHE_GROUP_TTL) : groups || []);
+      }
+
+      function invalidateAllCache() {
+        invalidateCacheGroups(null, { all: true });
+      }
+
+      // Every group a product/stock change can show up in.
+      const PRODUCT_MUTATION_GROUPS = [
+        "products", "pos", "categories", "purchases", "warehouse",
+        "promotions", "dashboard", "reports", "sales",
+      ];
+
+      function invalidateProductsCache() {
+        // Called after a product/stock mutation: drop the cached list payloads and
+        // (when online) the persistent offline snapshot so the next load refreshes
+        // it. When offline the snapshot is kept so ringing up keeps working.
+        cachedProducts = [];
+        productsCacheTimestamp = 0;
+        cachedProductsBranchId = null;
+        invalidateCacheGroups(PRODUCT_MUTATION_GROUPS);
+        if (!isBrowserOffline()) {
+          offlineCacheRemove(cachedProductsKey());
+        }
+      }
+      // One network round trip per key, shared by every caller waiting on it, and
+      // resolved as a buffered entry so several Responses can be built from it (a
+      // live Response body can only be read once).
+      function cacheNetworkFetch(url, key, group, init) {
+        const startedAtEpoch = cacheGroupEpoch(group);
+        const pending = nativeFetch(url.href, init).then(async (response) => {
+          const contentType = response.headers.get("content-type") || "";
+          if (!contentType.includes("json")) {
+            // Not the JSON list we expected (a download, an HTML error page):
+            // hand the untouched response over and cache nothing.
+            return { raw: response, entry: null, group: group };
+          }
+          const body = await response.text();
+          const entry = {
+            body: body,
+            status: response.status,
+            statusText: response.statusText,
+            headers: { "content-type": contentType },
+            group: group,
+            savedAt: Date.now(),
+          };
+          // A write that landed while this request was in flight must win: never
+          // resurrect a payload that mutation already invalidated.
+          if (response.ok && cacheGroupEpoch(group) === startedAtEpoch) {
+            cacheStore.set(key, entry);
+            cacheTrim();
+          }
+          return { raw: null, entry: entry, group: group };
+        });
+        cacheInflight.set(key, { promise: pending, group: group });
+        const settle = () => {
+          const current = cacheInflight.get(key);
+          if (current && current.promise === pending) cacheInflight.delete(key);
+        };
+        pending.then(settle, settle);
+        return pending;
+      }
+
+      function cacheSettledToResponse(settled) {
+        return settled.raw ? settled.raw : cacheResponseFrom(settled.entry);
+      }
+
+      function cacheRevalidate(url, key, group, init) {
+        if (cacheInflight.has(key)) return;
+        cacheNetworkFetch(url, key, group, init).catch(() => {
+          /* a failed background refresh keeps the stale data already on screen */
+        });
+      }
+      // Decide what to do with a request. null / "passthrough" means "not ours" -
+      // the browser's fetch handles it exactly as before.
+      function cachePlanRequest(input, init) {
+        if (!nativeFetch) return null;
+        const isString = typeof input === "string" || input instanceof URL;
+        const rawUrl = isString ? String(input) : (input && input.url) || String(input);
+        const url = new URL(rawUrl, window.location.origin);
+        if (url.origin !== window.location.origin) return null;
+
+        const method = String(
+          (init && init.method) || (!isString && input && input.method) || "GET"
+        ).toUpperCase();
+        if (method !== "GET") return { kind: "passthrough" };
+        if (init && (init.body || init.cache === "no-store")) return { kind: "passthrough" };
+        if (!isString && input && (input.body || input.cache === "no-store")) return { kind: "passthrough" };
+
+        const group = cacheReadGroupFor(url);
+        if (!group) return { kind: "passthrough" };
+        return {
+          kind: "read",
+          url: url,
+          key: cacheKeyFor(url),
+          group: group,
+          ttl: CACHE_GROUP_TTL[group] || 60000,
+        };
+      }
+
+      // The URL of a non-GET same-origin API request, or null for anything whose
+      // method we cannot determine (a GET or an oddball input).
+      function cacheWriteUrlOf(input, init) {
+        const isString = typeof input === "string" || input instanceof URL;
+        const rawUrl = isString ? String(input) : (input && input.url) || String(input);
+        const method = String(
+          (init && init.method) || (!isString && input && input.method) || "GET"
+        ).toUpperCase();
+        if (method === "GET" || method === "HEAD") return null;
+        const url = new URL(rawUrl, window.location.origin);
+        if (url.origin !== window.location.origin) return null;
+        return url.pathname.startsWith("/api/") ? url : null;
+      }
+
+      // Replacement for window.fetch: serves allowlisted list GETs from memory and
+      // clears the groups a successful write touches.
+      function smartFetch(input, init) {
+        let plan = null;
+        let writeUrl = null;
+        try {
+          plan = cachePlanRequest(input, init);
+          if (!plan || plan.kind === "passthrough") writeUrl = cacheWriteUrlOf(input, init);
+        } catch (e) {
+          plan = null;
+          writeUrl = null;
+        }
+
+        if (!plan || plan.kind === "passthrough") {
+          return nativeFetch(input, init).then((response) => {
+            // Writes arrive here: invalidate on success so no later tab visit can
+            // show data from before the change. A bug in invalidation must never
+            // be able to break an already-saved sale, hence the guard.
+            try {
+              if (writeUrl && response.ok) {
+                const groups = cacheWriteGroupsForPath(writeUrl.pathname);
+                invalidateCacheGroups(groups, { all: groups === null });
+              }
+            } catch (e) {
+              console.error("cache invalidation skipped:", e);
+            }
+            return response;
+          });
+        }
+
+        try {
+          const hit = cacheStore.get(plan.key);
+          const age = hit ? Date.now() - hit.savedAt : Infinity;
+          if (hit && age < plan.ttl) return Promise.resolve(cacheResponseFrom(hit));
+          // The grace window extends *beyond* the TTL; comparing it against the
+          // age alone would make the stale branch unreachable for any group whose
+          // grace is shorter than its TTL.
+          if (hit && age < plan.ttl + cacheGraceFor(plan.group)) {
+            // Paint what we already have, quietly fetch the live version for next
+            // time. Resolves in a microtask, so no loading spinner is ever painted.
+            cacheRevalidate(plan.url, plan.key, plan.group, init);
+            return Promise.resolve(cacheResponseFrom(hit));
+          }
+          const pending = cacheInflight.get(plan.key);
+          if (pending) return pending.promise.then(cacheSettledToResponse);
+          return cacheNetworkFetch(plan.url, plan.key, plan.group, init).then(cacheSettledToResponse);
+        } catch (e) {
+          return nativeFetch(input, init);
+        }
+      }
+
+      if (nativeFetch) window.fetch = smartFetch;
+      // ===== END SPA DATA CACHE =====
+
+      // ===== SECTION (TAB) RENDER STATE =====
+      // One source of truth for what each sidebar tab needs, replacing the
+      // duplicated if/else chains in showSection() and refreshCurrentSection().
+      const SECTION_LOADERS = {
+        dashboard: () => loadDashboardStats(),
+        pos: () => { loadProductsForPOS(); loadCustomersForPOS(); },
+        products: () => loadProducts(),
+        categories: () => loadCategories(),
+        sales: () => loadSales(),
+        reports: () => { toggleReportScopeControls(); initSalesChart(); initPaymentChart(); },
+        promotions: () => { loadPromotions(); loadProductsForPromotionModal(); },
+        customers: () => loadCustomers(),
+        debts: () => { loadDebts(); loadCustomersForDebtModal(); },
+        suppliers: () => loadSuppliers(),
+        purchases: () => { loadPOSupplierFilter(); loadPurchaseOrders(); },
+        warehouse: () => { loadWarehouseSummary(); loadWarehouseInventory(); },
+        deliveries: () => { loadDeliveryStats(); loadDeliveries(); },
+        users: () => loadUsers(),
+        settings: () => { loadSettings(); loadBranches(); },
+      };
+
+      // Cache groups each tab paints from. A tab may be skipped on re-entry only
+      // while none of these groups has been invalidated and they are all in date.
+      const SECTION_RESOURCES = {
+        dashboard: ["dashboard", "reports"],
+        pos: ["pos", "customers"],
+        products: ["products"],
+        categories: ["categories"],
+        // loadSales() reads /api/reports/sales, so the Sales tab is gated on the
+        // reports group too.
+        sales: ["sales", "reports"],
+        reports: ["reports", "dashboard"],
+        promotions: ["promotions", "products"],
+        customers: ["customers"],
+        debts: ["debts", "customers"],
+        suppliers: ["suppliers"],
+        purchases: ["purchases", "suppliers"],
+        warehouse: ["warehouse"],
+        deliveries: ["deliveries"],
+        users: ["users"],
+        settings: ["settings", "branches"],
+      };
+      // Chart canvases mis-size when they are built inside a display:none parent,
+      // so these tabs always run their loaders (which now resolve from the memory
+      // cache without a network round trip or a spinner frame).
+      const SECTION_ALWAYS_RENDER = new Set(["dashboard", "reports"]);
+
+      const sectionState = Object.create(null);
+
+      // A tab that paints from an invalidated group must re-render on its next
+      // visit even while its TTL has not lapsed. The cache calls this after any
+      // successful write (see invalidateCacheGroups).
+      notifyCacheInvalidated = function (invalidatedGroups) {
+        const invalidated = new Set(invalidatedGroups);
+        for (const section of Object.keys(sectionState)) {
+          if (sectionResourcesOf(section).some((group) => invalidated.has(group))) {
+            sectionState[section].rendered = false;
+          }
+        }
+      };
+
+      function sectionResourcesOf(section) {
+        return SECTION_RESOURCES[section] || [];
+      }
+
+      // A tab stays skippable only as long as its *most volatile* resource is.
+      function sectionFreshWindow(section) {
+        const groups = sectionResourcesOf(section);
+        if (!groups.length) return 0;
+        return Math.min(...groups.map((group) => CACHE_GROUP_TTL[group] || 60000));
+      }
+
+      function sectionStateOf(section) {
+        if (!sectionState[section]) {
+          sectionState[section] = { rendered: false, renderedAt: 0, epochs: {}, scrollY: 0 };
+        }
+        return sectionState[section];
+      }
+
+      function sectionNeedsRender(section) {
+        const state = sectionStateOf(section);
+        if (!state.rendered) return true;
+        if (SECTION_ALWAYS_RENDER.has(section)) return true;
+        const groups = sectionResourcesOf(section);
+        if (!groups.length) return true;
+        if (Date.now() - state.renderedAt >= sectionFreshWindow(section)) return true;
+        return groups.some((group) => cacheGroupEpoch(group) !== state.epochs[group]);
+      }
+
+      // Paint a tab's data. Returns true when loaders actually ran so the caller
+      // can tell a real reload from a cache-still-fresh no-op.
+      function renderSection(section) {
+        const loader = SECTION_LOADERS[section];
+        if (!loader) return false;
+        loader();
+        const state = sectionStateOf(section);
+        state.rendered = true;
+        state.renderedAt = Date.now();
+        state.epochs = Object.create(null);
+        sectionResourcesOf(section).forEach((group) => {
+          state.epochs[group] = cacheGroupEpoch(group);
+        });
+        return true;
+      }
+      // ===== END SECTION (TAB) RENDER STATE =====
+
       // ===== CACHING IMPLEMENTATION =====
       // Product data caching to reduce API calls
       let cachedProducts = [];
@@ -6116,17 +6610,8 @@
         }
       }
       
-      // Function to invalidate cache when needed (e.g., after adding/updating/deleting a product)
-      function invalidateProductsCache() {
-        cachedProducts = [];
-        productsCacheTimestamp = 0;
-        cachedProductsBranchId = null;
-        // When online, drop the persistent offline product snapshot so the next
-        // load refreshes it; when offline keep it so POS ringing keeps working.
-        if (!isBrowserOffline()) {
-          offlineCacheRemove(cachedProductsKey());
-        }
-      }
+      // NOTE: invalidateProductsCache() now lives in the SPA data cache block
+      // above, where it clears both the memory cache and the offline snapshot.
 
       // ===== OFFLINE PERSISTENT CACHE HELPERS =====
       // Small localStorage-backed store that keeps the data the POS needs to
@@ -6528,15 +7013,21 @@
           .split("T")[0];
         document.getElementById("end-date").value = today;
 
-        // Load initial data
-        loadDashboardStats();
-        loadProducts();
-        loadSales();
+        // Load only what the boot screen needs. Each tab now fetches its data on
+        // first visit and keeps it in memory afterwards (see the SPA data cache),
+        // so the old eager loadProducts()/loadSales() calls - which queried the
+        // two biggest tables on every sign-in, for tabs the operator might never
+        // open - have been replaced by rendering the section that is shown.
         updatePendingSalesBadge();
         setConnectionStatus(isBrowserOffline() ? "offline" : "online");
         syncPendingSales();
         initAutoBarcodeScannerToggle();
-        restoreActiveSection();
+
+        const startSection = resolveStartSection();
+        if (startSection !== "dashboard") {
+          document.getElementById("dashboard-section").style.display = "none";
+        }
+        showSection(startSection);
 
         // Add an exact barcode match on Enter; retain normal product searches.
         document
@@ -6734,7 +7225,8 @@
           link.addEventListener("click", handleNavLinkClick);
         });
 
-        // Initialize swipe gestures for sidebar
+        // Initialize the sidebar links, swipe gestures, scanner and language
+        initSidebarNavLinks();
         initSidebarSwipeGestures();
 
         // Initialize global barcode scanner listener
@@ -6743,6 +7235,18 @@
         // Initialize language
         initLanguage();
       });
+
+      // The sidebar links are href="#" without preventDefault, so the browser
+      // follows each click with a fragment navigation that scrolls to the top -
+      // after showSection() has restored the remembered position, silently undoing
+      // it. The pagination links already call preventDefault for exactly this
+      // reason; do the same for the sidebar. (The logout link has a real href and
+      // the install button is a <button>, so neither is affected.)
+      function initSidebarNavLinks() {
+        document.querySelectorAll('.sidebar .nav-link[href="#"]').forEach((link) => {
+          link.addEventListener("click", (event) => event.preventDefault());
+        });
+      }
 
       // Swipe gesture handling for sidebar on touch devices
       function initSidebarSwipeGestures() {
@@ -7755,80 +8259,60 @@
         });
       }
 
-      // Restore the last open section after a browser refresh.
-      function restoreActiveSection() {
+      // The tab to open on boot: the last one the operator used, provided it still
+      // exists and they are still allowed to see it - otherwise the dashboard.
+      function resolveStartSection() {
         const savedSection = localStorage.getItem(ACTIVE_SECTION_STORAGE_KEY);
-        const savedSectionElement = savedSection && document.getElementById(`${savedSection}-section`);
-        const savedNavLink = savedSection && document.querySelector(`[onclick="showSection('${savedSection}')"]`);
-
-        if (savedSectionElement && savedNavLink && savedSection !== currentSection) {
-          showSection(savedSection);
-        }
+        if (!savedSection || savedSection === "dashboard") return "dashboard";
+        const sectionElement = document.getElementById(`${savedSection}-section`);
+        const savedNavLink = document.querySelector(`[onclick="showSection('${savedSection}')"]`);
+        return sectionElement && savedNavLink ? savedSection : "dashboard";
       }
 
-      // Show different sections
+      // Show different sections. A tab switch is a pure view change: the section's
+      // DOM is already built and its data is in the memory cache, so re-entering a
+      // tab paints instantly instead of re-querying the server. Loaders only run
+      // on a first visit, once a group's TTL has lapsed, or after a write touched
+      // the data that tab shows (see invalidateCacheGroups / sectionNeedsRender).
       function showSection(sectionId) {
-        document.getElementById(currentSection + "-section").style.display =
-          "none";
-        document.querySelector(`.nav-link.active`).classList.remove("active");
-        document.getElementById(sectionId + "-section").style.display = "block";
-        document
-          .querySelector(`[onclick="showSection('${sectionId}')"]`)
-          .classList.add("active");
+        const previousSection = currentSection;
+        const previousElement = document.getElementById(previousSection + "-section");
+        if (previousElement && sectionId !== previousSection) {
+          // Remember where the operator stopped reading, so coming back is not a
+          // jump to the top of the page.
+          sectionStateOf(previousSection).scrollY = window.scrollY || 0;
+          previousElement.style.display = "none";
+        }
+        const activeLink = document.querySelector(".nav-link.active");
+        if (activeLink) activeLink.classList.remove("active");
+
+        const sectionElement = document.getElementById(sectionId + "-section");
+        if (sectionElement) sectionElement.style.display = "block";
+        const navLink = document.querySelector(`[onclick="showSection('${sectionId}')"]`);
+        if (navLink) navLink.classList.add("active");
         currentSection = sectionId;
         localStorage.setItem(ACTIVE_SECTION_STORAGE_KEY, sectionId);
 
-        // Load data for the section if needed
-        if (sectionId === "pos") {
-          loadProductsForPOS();
-          loadCustomersForPOS();
-          // Auto-focus barcode search so scanner is immediately ready
-          if (isAutoBarcodeScannerDetectionEnabled()) {
-            setTimeout(() => {
-              const searchInput = document.getElementById("product-search");
-              if (searchInput) searchInput.focus();
-            }, 100);
-          }
-        } else if (sectionId === "reports") {
-          toggleReportScopeControls();
-          initSalesChart();
-          initPaymentChart();
-        } else if (sectionId === "products") {
-          loadProducts();
-        } else if (sectionId === "dashboard") {
-          loadDashboardStats();
-        } else if (sectionId === "users") {
-          loadUsers();
-        } else if (sectionId === "sales") {
-          loadSales();
-        } else if (sectionId === "promotions") {
-          loadPromotions();
-          loadProductsForPromotionModal();
-        } else if (sectionId === "customers") {
-          loadCustomers();
-        } else if (sectionId === "debts") {
-          loadDebts();
-          loadCustomersForDebtModal();
-        } else if (sectionId === "suppliers") {
-          loadSuppliers();
-        } else if (sectionId === "purchases") {
-          loadPOSupplierFilter();
-          loadPurchaseOrders();
-        } else if (sectionId === "warehouse") {
-          loadWarehouseSummary();
-          loadWarehouseInventory();
-        } else if (sectionId === "deliveries") {
-          loadDeliveryStats();
-          loadDeliveries();
-        } else if (sectionId === "categories") {
-          loadCategories();
-        } else if (sectionId === "settings") {
-          loadSettings();
-          loadBranches();
+        if (sectionNeedsRender(sectionId)) renderSection(sectionId);
+
+        // The POS tab is worked in, not read: keep the scanner field focused, but
+        // without scrolling the page - focus() pulls the field into view, which
+        // would throw away the scroll position restored just above (and, when the
+        // grid has been scrolled down, jump the operator back to the top).
+        if (sectionId === "pos" && isAutoBarcodeScannerDetectionEnabled()) {
+          setTimeout(() => {
+            const searchInput = document.getElementById("product-search");
+            if (searchInput) searchInput.focus({ preventScroll: true });
+          }, 100);
         }
 
-        // Scroll to top when switching sections
-        window.scrollTo(0, 0);
+        if (previousSection === sectionId) {
+          // Clicking the tab you are already on: leave the page exactly as it was.
+          return;
+        }
+        // Restore where the operator stopped reading. The sidebar links have the
+        // fragment navigation suppressed (initSidebarNavLinks), so this sticks.
+        window.scrollTo(0, sectionStateOf(sectionId).scrollY || 0);
       }
 
       // Add this function to check for authorization errors
@@ -7840,74 +8324,32 @@
         return false;
       }
 
-      // Refresh current section function
+      // Manual refresh: the one place a tab switch/reload is forced through to the
+      // server. Drop the cached payloads for this section's groups first, so the
+      // loaders cannot be answered from memory (the old chain also called a
+      // loadSalesReportData() that does not exist, which threw on the Reports tab).
       function refreshCurrentSection() {
         const sectionId = currentSection;
-        
+        const groups = sectionResourcesOf(sectionId);
+
         // Show loading toast
         showToast("Refreshing " + sectionId.charAt(0).toUpperCase() + sectionId.slice(1) + "...", "info");
-        
-        // Reload data based on current section
-        if (sectionId === "pos") {
-          loadProductsForPOS();
-          loadCustomersForPOS();
-        } else if (sectionId === "reports") {
-          initSalesChart();
-          initPaymentChart();
-          loadSalesReportData();
-        } else if (sectionId === "products") {
-          loadProducts();
-        } else if (sectionId === "dashboard") {
-          loadDashboardStats();
-        } else if (sectionId === "users") {
-          loadUsers();
-        } else if (sectionId === "sales") {
-          loadSales();
-        } else if (sectionId === "promotions") {
-          loadPromotions();
-          loadProductsForPromotionModal();
-        } else if (sectionId === "customers") {
-          loadCustomers();
-        } else if (sectionId === "debts") {
-          loadDebts();
-          loadCustomersForDebtModal();
-        } else if (sectionId === "suppliers") {
-          loadSuppliers();
-        } else if (sectionId === "purchases") {
-          loadPOSupplierFilter();
-          loadPurchaseOrders();
-        } else if (sectionId === "warehouse") {
-          loadWarehouseSummary();
-          loadWarehouseInventory();
-        } else if (sectionId === "deliveries") {
-          loadDeliveryStats();
-          loadDeliveries();
-        } else if (sectionId === "categories") {
-          loadCategories();
-        } else if (sectionId === "settings") {
-          loadSettings();
-          loadBranches();
+
+        // Nothing cached for this tab (an unknown section): fall back to dropping
+        // everything so the refresh is guaranteed real.
+        if (groups.length) {
+          invalidateCacheGroups(groups, { resetRenderedSections: false });
+        } else {
+          invalidateAllCache();
         }
+        renderSection(sectionId);
         
         showToast(sectionId.charAt(0).toUpperCase() + sectionId.slice(1) + " refreshed successfully!", "success");
       }
 
-      // Update your fetch calls to use this check
-      fetch("/api/users")
-        .then((response) => {
-          if (response.status === 401 || response.status === 403) {
-            throw new Error("Unauthorized access");
-          }
-          return response.json();
-        })
-        .then((data) => {
-          // process data
-        })
-        .catch((error) => {
-          if (checkAuthError(error)) return;
-          console.error("Error:", error);
-          // show error to user
-        });
+      // NOTE: a leftover top-level demo `fetch("/api/users")` block used to sit
+      // here. It ran on every page load, fetched the user list for nobody, and
+      // discarded the result - so it is gone: tab data now loads on first visit.
 
       // Dashboard functions
       function loadDashboardStats() {
@@ -8423,7 +8865,7 @@
             normalizeCurrencyDisplay(productGrid);
 
             document.getElementById("product-search").value = "";
-            document.getElementById("product-search").focus();
+            document.getElementById("product-search").focus({ preventScroll: true });
           })
           .catch((error) => {
             console.error("Error searching products:", error);
@@ -8555,10 +8997,11 @@
         // Quick subtle toast for cart additions (1.5s duration, success type for green color)
         showToast(`+${quantity} ${product.name}`, "success", 1500);
 
-        // Refocus search
+        // Refocus search, without scrolling: the operator may have scrolled down
+        // the product grid and must not be yanked back to the top on every add.
         const searchInput = document.getElementById("product-search");
         searchInput.value = "";
-        searchInput.focus();
+        searchInput.focus({ preventScroll: true });
       }
 
       function updateCartDisplay() {
@@ -9004,6 +9447,11 @@
       }
 
       window.addEventListener("online", function () {
+        // While the connection is down the service worker answers API GETs from
+        // its own cache, and those replies were stamped as freshly fetched here.
+        // Drop the memory cache so nothing from before the outage can be shown as
+        // live data once the connection is back.
+        invalidateAllCache();
         if (getPendingSales().length) {
           syncPendingSales();
         } else {
