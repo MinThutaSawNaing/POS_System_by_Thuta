@@ -122,6 +122,7 @@ def build_receipt_snapshot(
     payment_method: str,
     cash_received: Any,
     change_given: Any,
+    payment_breakdown: Mapping[str, Any] | None = None,
     items: Iterable[Mapping[str, Any]],
     subtotal: Any,
     tax: Any,
@@ -171,6 +172,10 @@ def build_receipt_snapshot(
             "method": str(payment_method or "unknown"),
             "cash_received": None if cash_received is None else _money(cash_received),
             "change_given": _money(change_given),
+            "breakdown": {
+                str(method): _money(amount)
+                for method, amount in (payment_breakdown or {}).items()
+            },
         },
         "items": snapshot_items,
         "subtotal": _money(subtotal),
@@ -188,6 +193,7 @@ def build_receipt_view(snapshot: Mapping[str, Any], paper_size: Any) -> dict[str
     suffix = str(snapshot.get("currency_suffix") or "$")
     transaction_id = str(snapshot.get("transaction_id") or "")
     payment = dict(snapshot.get("payment") or {})
+    payment_breakdown = dict(payment.get("breakdown") or {})
     branch = dict(snapshot.get("branch") or {})
     cashier = dict(snapshot.get("cashier") or {})
     stored_identity = snapshot.get("receipt_identity")
@@ -237,6 +243,14 @@ def build_receipt_view(snapshot: Mapping[str, Any], paper_size: Any) -> dict[str
         "cashier_name": str(cashier.get("name") or "Unknown"),
         "payment_method": str(payment.get("method") or "unknown").replace("_", " ").title(),
         "is_cash": str(payment.get("method") or "").lower() == "cash",
+        "is_split": str(payment.get("method") or "").lower() == "split_payment",
+        "payment_breakdown": [
+            {
+                "method": str(method).replace("_", " ").title(),
+                "amount_display": format_receipt_money(amount, suffix),
+            }
+            for method, amount in payment_breakdown.items()
+        ],
         "items": items,
         "subtotal_display": format_receipt_money(snapshot.get("subtotal"), suffix),
         "tax_display": format_receipt_money(snapshot.get("tax"), suffix),

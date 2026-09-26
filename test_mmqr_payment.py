@@ -120,7 +120,7 @@ class MMQRPaymentTests(unittest.TestCase):
         self.assertIn('id="mmqrPaymentModal"', dashboard)
         self.assertIn('text-success', dashboard)
         self.assertIn('function showMMQRPaymentModal()', dashboard)
-        self.assertIn('paymentMethod === "mobile_payment" && !mmqrConfirmed', dashboard)
+        self.assertIn('mobile_payment" || (paymentMethod === "split_payment"', dashboard)
 
 
 if __name__ == '__main__':

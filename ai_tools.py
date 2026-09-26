@@ -1643,8 +1643,32 @@ class AITools:
         since = datetime.utcnow() - timedelta(days=days)
         sales = self._branch_filter(Sale.query.filter(Sale.date >= since), Sale).order_by(Sale.date.desc()).all()
         methods = {}
-        for sale in sales: methods[sale.payment_method or 'unknown'] = methods.get(sale.payment_method or 'unknown', Decimal('0')) + money_dec(sale.total or 0)
-        recent = [{"transaction_id": s.transaction_id, "total": money_str(s.total or 0), "payment_method": s.payment_method, "date": s.date.isoformat() if s.date else None} for s in sales[:self._limit(limit, 10)]]
+        for sale in sales:
+            breakdown = None
+            try:
+                breakdown = json.loads(sale.payment_breakdown) if sale.payment_breakdown else None
+            except (TypeError, ValueError):
+                breakdown = None
+            if isinstance(breakdown, dict):
+                for method, amount in breakdown.items():
+                    methods[method] = methods.get(method, Decimal('0')) + money_dec(amount)
+            else:
+                method = sale.payment_method or 'unknown'
+                methods[method] = methods.get(method, Decimal('0')) + money_dec(sale.total or 0)
+        recent = []
+        for sale in sales[:self._limit(limit, 10)]:
+            breakdown = None
+            try:
+                breakdown = json.loads(sale.payment_breakdown) if sale.payment_breakdown else None
+            except (TypeError, ValueError):
+                breakdown = None
+            recent.append({
+                "transaction_id": sale.transaction_id,
+                "total": money_str(sale.total or 0),
+                "payment_method": sale.payment_method,
+                "payment_breakdown": breakdown if isinstance(breakdown, dict) else None,
+                "date": sale.date.isoformat() if sale.date else None,
+            })
         return self._scope({"period_days": days, "transaction_count": len(sales), "total_sales": money_str(sum((money_dec(s.total or 0) for s in sales), Decimal('0'))), "payment_method_totals": {key: money_str(value) for key, value in methods.items()}, "recent_sales": recent})
         
     # ==================================================================

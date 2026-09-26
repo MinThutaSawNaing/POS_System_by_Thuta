@@ -80,6 +80,11 @@
         <div class="meta-row"><span>Date</span><span>{{ receipt.date }}</span></div>
         <div class="meta-row"><span>Cashier</span><span>{{ receipt.cashier_name }}</span></div>
         <div class="meta-row"><span>Payment</span><span>{{ receipt.payment_method }}</span></div>
+        {% if receipt.is_split %}
+          {% for payment in receipt.payment_breakdown %}
+            <div class="meta-row"><span>{{ payment.method }}</span><span>{{ payment.amount_display }}</span></div>
+          {% endfor %}
+        {% endif %}
         <hr class="rule" />
 
         {% if receipt.is_narrow %}

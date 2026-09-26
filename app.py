@@ -136,6 +136,33 @@ def json_default(o):
         return float(o)
     raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
+def get_sale_payment_breakdown(sale):
+    if not sale.payment_breakdown:
+        return None
+    try:
+        value = json.loads(sale.payment_breakdown)
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+def normalize_payment_breakdown(raw_breakdown, total):
+    if not isinstance(raw_breakdown, dict):
+        raise ValueError('Payment breakdown is required for split payment')
+    normalized = {}
+    for raw_method, raw_amount in raw_breakdown.items():
+        method = str(raw_method or '').strip().lower()
+        if method in normalized:
+            raise ValueError('Split payment methods must be different')
+        if method not in {'cash', 'credit_card', 'debit_card', 'mobile_payment'}:
+            raise ValueError('Invalid split payment method')
+        amount = round_money(to_decimal(raw_amount))
+        if amount <= 0:
+            raise ValueError('Split payment amounts must be greater than zero')
+        normalized[method] = amount
+    if len(normalized) != 2 or sum(normalized.values(), Decimal('0.00')) != total:
+        raise ValueError('Split payment amounts must equal the sale total')
+    return normalized
+
 # Settings whose values are credentials are encrypted at rest with a key derived
 # from SECRET_KEY, so secrets are never stored in plaintext in the database.
 _SECRET_SETTING_KEYS = {'ai_api_key'}
@@ -1024,6 +1051,7 @@ class Sale(db.Model):
     cash_received = db.Column(db.Float)
     refund_amount = db.Column(db.Float, default=0.0)
     payment_method = db.Column(db.String(20))
+    payment_breakdown = db.Column(db.Text)
     receipt_snapshot = db.Column(db.Text)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
@@ -1551,7 +1579,8 @@ with app.app_context():
     sale_columns = [col['name'] for col in inspector.get_columns('sale')]
     sale_migrations = [
         ('cash_received', 'ALTER TABLE sale ADD COLUMN cash_received FLOAT'),
-        ('refund_amount', 'ALTER TABLE sale ADD COLUMN refund_amount FLOAT DEFAULT 0')
+        ('refund_amount', 'ALTER TABLE sale ADD COLUMN refund_amount FLOAT DEFAULT 0'),
+        ('payment_breakdown', 'ALTER TABLE sale ADD COLUMN payment_breakdown TEXT')
     ]
     for column_name, migration_sql in sale_migrations:
         if column_name not in sale_columns:
@@ -3324,6 +3353,7 @@ def _sale_replay_response(existing):
         'total': money_float(existing.total),
         'refund_amount': money_float(existing.refund_amount),
         'payment_method': existing.payment_method,
+        'payment_breakdown': get_sale_payment_breakdown(existing),
         'duplicate': True,
     }
     existing_date = getattr(existing, 'date', None)
@@ -3390,12 +3420,27 @@ def _create_sale_transaction(data):
         total = subtotal + tax_total
         total_rounded = round_money(total)
 
-        payment_method = data.get('payment_method', 'cash')
+        payment_method = str(data.get('payment_method', 'cash') or 'cash').strip().lower()
+        allowed_payment_methods = {'cash', 'credit_card', 'debit_card', 'mobile_payment', 'debt', 'split_payment'}
+        if payment_method not in allowed_payment_methods:
+            return jsonify({'success': False, 'message': 'Invalid payment method'}), 400
+        payment_breakdown = None
         cash_received_raw = data.get('cash_received')
         cash_received = None
         refund_amount = 0.0
 
-        if payment_method == 'cash':
+        if payment_method == 'split_payment':
+            if data.get('customer_id'):
+                return jsonify({'success': False, 'message': 'Split payment cannot be charged to a customer account'}), 400
+            try:
+                payment_breakdown = normalize_payment_breakdown(data.get('payment_breakdown'), total_rounded)
+            except (TypeError, ValueError, ArithmeticError) as error:
+                return jsonify({'success': False, 'message': str(error)}), 400
+            cash_amount = payment_breakdown.get('cash', Decimal('0.00'))
+            if cash_amount:
+                cash_received = cash_amount
+            payment_breakdown = {method: float(amount) for method, amount in payment_breakdown.items()}
+        elif payment_method == 'cash':
             if cash_received_raw in (None, ''):
                 return jsonify({'success': False, 'message': 'Cash received is required for cash payment'}), 400
             try:
@@ -3424,6 +3469,7 @@ def _create_sale_transaction(data):
             cash_received=cash_received,
             refund_amount=refund_amount,
             payment_method=payment_method,
+            payment_breakdown=json.dumps(payment_breakdown, ensure_ascii=False) if payment_breakdown else None,
             user_id=session['user_id'],
             branch_id=get_current_branch_id()
         )
@@ -3519,6 +3565,7 @@ def _create_sale_transaction(data):
                 payment_method=sale.payment_method,
                 cash_received=sale.cash_received,
                 change_given=sale.refund_amount,
+                payment_breakdown=get_sale_payment_breakdown(sale),
                 items=[{
                     'product_id': item['product'].id,
                     'name': item['product'].name,
@@ -3622,6 +3669,7 @@ def api_sales():
             'total': s.total,
             'tax': s.tax,
             'payment_method': s.payment_method,
+            'payment_breakdown': get_sale_payment_breakdown(s),
             'user_id': s.user_id,
             'username': s.user.username if s.user else 'Unknown',
             'branch_id': s.branch_id
@@ -3654,6 +3702,7 @@ def api_single_sale(transaction_id):
         'cash_received': sale.cash_received,
         'refund_amount': sale.refund_amount or 0,
         'payment_method': sale.payment_method,
+        'payment_breakdown': get_sale_payment_breakdown(sale),
         'user_id' : sale.user_id,
         'username' : sale.user.username if sale.user else 'Unknown',
         'delivery': serialize_delivery(sale.delivery) if getattr(sale, 'delivery', None) else None,
@@ -4161,6 +4210,7 @@ def print_receipt(transaction_id):
             payment_method=sale.payment_method,
             cash_received=sale.cash_received,
             change_given=sale.refund_amount,
+            payment_breakdown=get_sale_payment_breakdown(sale),
             items=legacy_items,
             subtotal=subtotal,
             tax=sale.tax,
@@ -4192,7 +4242,7 @@ def export_sales_report():
             query = query.filter(Sale.date >= start_date_obj)
         if end_date:
             end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
-            query = query.filter(Sale.date <= end_date_obj)
+            query = query.filter(Sale.date <= end_date_obj.replace(hour=23, minute=59, second=59))
     except ValueError:
         return jsonify({'success': False, 'message': 'Invalid date format'}), 400
 
@@ -4207,6 +4257,7 @@ def export_sales_report():
             'Cash Received': money_float(sale.cash_received),
             'Refund Given': money_float(sale.refund_amount or 0),
             'Payment Method': sale.payment_method,
+            'Payment Breakdown': json.dumps(get_sale_payment_breakdown(sale), ensure_ascii=False) if get_sale_payment_breakdown(sale) else '',
             'User ID': sale.user_id
         })
     df = pd.DataFrame(data)
@@ -4277,6 +4328,7 @@ def api_report_sales():
                 'cash_received': money_float(s.cash_received),
                 'refund_amount': money_float(s.refund_amount or 0),
                 'payment_method': s.payment_method,
+                'payment_breakdown': get_sale_payment_breakdown(s),
                 'user_id': s.user_id,
                 'username': s.user.username if s.user else 'Unknown',
                 'has_delivery': hasattr(s, 'delivery') and s.delivery is not None,

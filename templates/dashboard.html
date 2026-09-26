@@ -1290,6 +1290,7 @@
                     <option value="credit_card">Credit Card</option>
                     <option value="debit_card">Debit Card</option>
                     <option value="mobile_payment">Mobile Payment</option>
+                    <option value="split_payment">Split Payment</option>
                     <option value="debt">Charge to Customer</option>
                   </select>
                 </div>
@@ -1316,6 +1317,32 @@
                       </div>
                     </div>
                   </div>
+                </div>
+                <div class="mb-2 border rounded p-2 small" id="split-payment-fields" style="display: none">
+                  <div class="fw-semibold mb-2">Split payment (exactly two methods)</div>
+                  <div class="row g-1 mb-1">
+                    <div class="col-7">
+                      <select class="form-select form-select-sm" id="split-method-one" onchange="handleSplitPaymentChange()">
+                        <option value="cash">Cash</option>
+                        <option value="mobile_payment">MMQR / Mobile Payment</option>
+                        <option value="credit_card">Credit Card</option>
+                        <option value="debit_card">Debit Card</option>
+                      </select>
+                    </div>
+                    <div class="col-5"><input type="number" min="0.01" step="0.01" class="form-control form-control-sm" id="split-amount-one" placeholder="Amount" oninput="updateSplitPaymentDisplay()" /></div>
+                  </div>
+                  <div class="row g-1">
+                    <div class="col-7">
+                      <select class="form-select form-select-sm" id="split-method-two" onchange="handleSplitPaymentChange()">
+                        <option value="mobile_payment">MMQR / Mobile Payment</option>
+                        <option value="cash">Cash</option>
+                        <option value="credit_card">Credit Card</option>
+                        <option value="debit_card">Debit Card</option>
+                      </select>
+                    </div>
+                    <div class="col-5"><input type="number" min="0.01" step="0.01" class="form-control form-control-sm" id="split-amount-two" placeholder="Amount" oninput="updateSplitPaymentDisplay()" /></div>
+                  </div>
+                  <div id="split-payment-remaining" class="text-muted mt-1">Enter two amounts equal to the total.</div>
                 </div>
                 <div class="mb-2" id="cash-payment-fields">
                   <label class="form-label small fw-semibold">Cash Received</label>
@@ -7881,6 +7908,9 @@
           <hr><div class="row"><span>Cash received</span><span>${money(receipt.cashReceived)}</span></div>
           <div class="row"><span>Change</span><span>${money(receipt.change)}</span></div>
         ` : "";
+        const splitRows = receipt.paymentMethod === "split_payment" && receipt.paymentBreakdown ? `
+          ${Object.entries(receipt.paymentBreakdown).map(([method, amount]) => `<div class="row"><span>${escape(method.replaceAll("_", " "))}</span><span>${money(amount)}</span></div>`).join("")}
+        ` : "";
 
         try {
           receiptWindow.opener = null;
@@ -7910,7 +7940,7 @@
               ${itemRows}<hr>
               <div class="row"><span>Subtotal</span><span>${money(receipt.subtotal)}</span></div>
               <div class="row"><span>Tax</span><span>${money(receipt.tax)}</span></div><hr>
-              <div class="row grand"><span>TOTAL</span><span>${money(receipt.total)}</span></div>${cashRows}
+              <div class="row grand"><span>TOTAL</span><span>${money(receipt.total)}</span></div>${cashRows}${splitRows}
               <hr><footer class="center">Thank you for your purchase.<br>Please keep your receipt.</footer>
             </main>
             <script>window.addEventListener("load", function () { ${autoPrint ? "window.print();" : ""} });<\/script>
@@ -9172,6 +9202,8 @@
         updateCashRefundDisplay();
         if (cart.length > 0 && document.getElementById("payment-method")?.value === "mobile_payment") {
           showMMQRPaymentModal();
+        } else if (cart.length > 0 && document.getElementById("payment-method")?.value === "split_payment" && splitUsesMobilePayment()) {
+          showMMQRPaymentModal();
         }
       }
 
@@ -9194,8 +9226,10 @@
       function toggleCashPaymentFields() {
         const paymentMethod = document.getElementById("payment-method")?.value;
         const cashSection = document.getElementById("cash-payment-fields");
+        const splitSection = document.getElementById("split-payment-fields");
         if (!cashSection) return;
         cashSection.style.display = paymentMethod === "cash" ? "block" : "none";
+        if (splitSection) splitSection.style.display = paymentMethod === "split_payment" ? "block" : "none";
       }
 
       function handlePaymentMethodChange() {
@@ -9204,9 +9238,51 @@
         const paymentMethod = document.getElementById("payment-method")?.value;
         if (paymentMethod === "mobile_payment" && cart.length > 0) {
           showMMQRPaymentModal();
+        } else if (paymentMethod === "split_payment" && cart.length > 0 && splitUsesMobilePayment()) {
+          showMMQRPaymentModal();
         } else {
           bootstrap.Modal.getInstance(document.getElementById("mmqrPaymentModal"))?.hide();
         }
+      }
+
+      function splitUsesMobilePayment() {
+        return ["split-method-one", "split-method-two"].some((id) => document.getElementById(id)?.value === "mobile_payment");
+      }
+
+      function handleSplitPaymentChange() {
+        updateSplitPaymentDisplay();
+        if (document.getElementById("payment-method")?.value === "split_payment" && splitUsesMobilePayment() && cart.length > 0) {
+          showMMQRPaymentModal();
+        } else {
+          bootstrap.Modal.getInstance(document.getElementById("mmqrPaymentModal"))?.hide();
+        }
+      }
+
+      function resetSplitPaymentFields() {
+        const methodOne = document.getElementById("split-method-one");
+        const methodTwo = document.getElementById("split-method-two");
+        const amountOne = document.getElementById("split-amount-one");
+        const amountTwo = document.getElementById("split-amount-two");
+        if (methodOne) methodOne.value = "cash";
+        if (methodTwo) methodTwo.value = "mobile_payment";
+        if (amountOne) amountOne.value = "";
+        if (amountTwo) amountTwo.value = "";
+        updateSplitPaymentDisplay();
+      }
+
+      function updateSplitPaymentDisplay() {
+        const remaining = document.getElementById("split-payment-remaining");
+        if (!remaining) return;
+        const totalCents = toCents(getCurrentCartTotal());
+        const first = toCents(document.getElementById("split-amount-one")?.value || "0");
+        const second = toCents(document.getElementById("split-amount-two")?.value || "0");
+        const difference = totalCents - first - second;
+        remaining.textContent = difference === 0
+          ? "Payment amounts match the total."
+          : `Remaining: ${formatCurrency(Math.abs(difference) / 100)}${difference < 0 ? " over" : ""}`;
+        remaining.className = difference === 0 ? "text-success mt-1" : "text-danger mt-1";
+        const modalElement = document.getElementById("mmqrPaymentModal");
+        if (modalElement?.classList.contains("show") && splitUsesMobilePayment()) showMMQRPaymentModal();
       }
 
       function showMMQRPaymentModal() {
@@ -9222,7 +9298,13 @@
           image.style.display = "inline-block";
         }
         if (missing) missing.style.display = "none";
-        if (total) total.textContent = formatCurrency(getCurrentCartTotal());
+        let amountToPay = getCurrentCartTotal();
+        if (document.getElementById("payment-method")?.value === "split_payment" && splitUsesMobilePayment()) {
+          const mobileMethod = ["split-method-one", "split-method-two"].find((id) => document.getElementById(id)?.value === "mobile_payment");
+          amountToPay = centsToNumber(toCents(document.getElementById(mobileMethod ? mobileMethod.replace("method", "amount") : "")?.value || "0"));
+          if (!amountToPay) amountToPay = getCurrentCartTotal();
+        }
+        if (total) total.textContent = formatCurrency(amountToPay);
         const modalElement = document.getElementById("mmqrPaymentModal");
         const modal = bootstrap.Modal.getInstance(modalElement) || new bootstrap.Modal(modalElement);
         if (!modalElement.classList.contains("show")) modal.show();
@@ -9361,9 +9443,10 @@
         });
         const totalCents = subtotalCents + taxCents;
         const paymentMethod = saleData.payment_method || "cash";
+        const paymentBreakdown = saleData.payment_breakdown || null;
         const cashReceived = paymentMethod === "cash"
           ? centsToNumber(toCents(saleData.cash_received))
-          : 0;
+          : paymentBreakdown?.cash ? Number(paymentBreakdown.cash) : 0;
         const branch = currentBranch || {};
 
         return {
@@ -9378,6 +9461,7 @@
           branchEmail: branch.email || "",
           cashierName: document.getElementById("username-display")?.textContent?.trim() || "Unknown",
           paymentMethod: paymentMethod,
+          paymentBreakdown: paymentBreakdown,
           cashReceived: cashReceived,
           change: centsToNumber(Math.max(0, toCents(cashReceived) - totalCents)),
           items: items,
@@ -9540,13 +9624,20 @@
                 syncedIds.push(entry.saleData.transaction_id);
                 updatePendingSalesBadge();
               } else if (!response.ok) {
-                // Server explicitly rejected (4xx or 5xx) — drop the sale and warn prominently
+                // Split payments may already have collected one or more legs while
+                // offline, so keep their audit trail for cashier reconciliation.
+                // Preserve the legacy drop behavior for older single-method queues.
                 rejectedCount++;
-                const current = getPendingSales();
-                if (!setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id))) {
-                  console.warn("Rejected sale could not be removed from the offline queue:", entry.transaction_id);
+                if (entry.saleData.payment_method === "split_payment") {
+                  stopSync = true;
+                  showToast("Offline split sale needs attention: " + (data.message || "Server rejected the sale"), "error");
+                } else {
+                  const current = getPendingSales();
+                  if (!setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id))) {
+                    console.warn("Rejected sale could not be removed from the offline queue:", entry.transaction_id);
+                  }
+                  showToast("Offline sale rejected: " + (data.message || "Unknown error"), "error");
                 }
-                showToast("Offline sale rejected: " + (data.message || "Unknown error"), "error");
                 updatePendingSalesBadge();
               } else {
                 // Other failure — keep queued, retry later
@@ -9631,6 +9722,7 @@
         updateCartDisplay();
         const cashReceived = document.getElementById("cash-received");
         if (cashReceived) cashReceived.value = "";
+        if (typeof resetSplitPaymentFields === "function") resetSplitPaymentFields();
         setTimeout(() => {
           isSaleProcessing = false;
           setCompleteSaleButtonState(false);
@@ -9652,7 +9744,7 @@
         const paymentMethod = document.getElementById("payment-method").value;
         const customerId = document.getElementById("pos-customer-select").value;
 
-        if (paymentMethod === "mobile_payment" && !mmqrConfirmed) {
+        if ((paymentMethod === "mobile_payment" || (paymentMethod === "split_payment" && splitUsesMobilePayment())) && !mmqrConfirmed) {
           showMMQRPaymentModal();
           return;
         }
@@ -9698,6 +9790,20 @@
           }
           saleData.cash_received = centsToNumber(cashReceivedCents);
         }
+        if (paymentMethod === "split_payment") {
+          const methodOne = document.getElementById("split-method-one").value;
+          const methodTwo = document.getElementById("split-method-two").value;
+          const amountOne = toCents(document.getElementById("split-amount-one").value || "0");
+          const amountTwo = toCents(document.getElementById("split-amount-two").value || "0");
+          if (methodOne === methodTwo || amountOne <= 0 || amountTwo <= 0 || amountOne + amountTwo !== toCents(getCurrentCartTotal())) {
+            showToast("Choose two different methods and enter amounts equal to the total", "warning");
+            return;
+          }
+          saleData.payment_breakdown = {
+            [methodOne]: centsToNumber(amountOne),
+            [methodTwo]: centsToNumber(amountTwo),
+          };
+        }
 
         // Include customer_id if a customer is selected
         if (customerId) {
@@ -9734,6 +9840,7 @@
               cart = [];
               updateCartDisplay();
               document.getElementById("cash-received").value = "";
+              if (typeof resetSplitPaymentFields === "function") resetSplitPaymentFields();
               document.getElementById("pos-enable-delivery").checked = false;
               togglePosDeliveryFields();
               updateCashRefundDisplay();
@@ -10758,6 +10865,9 @@
             }
 
             data.items.forEach((sale) => {
+              const paymentLabel = sale.payment_breakdown
+                ? `Split: ${Object.entries(sale.payment_breakdown).map(([method, amount]) => `${method.replaceAll("_", " ")} ${formatCurrency(amount)}`).join(" + ")}`
+                : sale.payment_method;
               const deliveryBadge = sale.has_delivery 
                 ? '<span class="badge bg-info ms-1" title="Has Delivery"><i class="bi bi-truck"></i></span>' 
                 : '';
@@ -10769,7 +10879,7 @@
                                   ).toLocaleString()}</td>
                                   <td>$${sale.total.toFixed(2)}</td>
                                   <td>$${(sale.refund_amount || 0).toFixed(2)}</td>
-                                  <td>${sale.payment_method}</td>
+                                  <td>${escapeHtml(paymentLabel)}</td>
                                   <td>${sale.username || "Unknown"}</td>
                                   <td>
                                       <div class="btn-group btn-group-sm" role="group">
@@ -10945,7 +11055,8 @@
                               <div class="row mt-4">
                                   <div class="col-md-6">
                                       <h6>Payment Method</h6>
-                                      <p>${sale.payment_method}</p>
+                                      <p>${escapeHtml(sale.payment_method)}</p>
+                                      ${sale.payment_breakdown ? `<div class="small text-muted">${Object.entries(sale.payment_breakdown).map(([method, amount]) => `<div>${escapeHtml(method.replaceAll("_", " "))}: ${formatCurrency(amount)}</div>`).join("")}</div>` : ""}
                                   </div>
                                   <div class="col-md-6">
                                       <h6>Processed By</h6>
@@ -11306,10 +11417,13 @@
             // Group sales by payment method
             const paymentMethods = {};
             data.forEach((sale) => {
-              if (!paymentMethods[sale.payment_method]) {
-                paymentMethods[sale.payment_method] = 0;
-              }
-              paymentMethods[sale.payment_method] += sale.total;
+              const entries = sale.payment_breakdown
+                ? Object.entries(sale.payment_breakdown)
+                : [[sale.payment_method, sale.total]];
+              entries.forEach(([method, amount]) => {
+                if (!paymentMethods[method]) paymentMethods[method] = 0;
+                paymentMethods[method] += Number(amount) || 0;
+              });
             });
 
             // Prepare chart data
@@ -11388,14 +11502,18 @@
             // Group by payment method
             const paymentMethods = {};
             data.forEach((sale) => {
-              if (!paymentMethods[sale.payment_method]) {
-                paymentMethods[sale.payment_method] = {
-                  count: 0,
-                  total: 0,
-                };
-              }
-              paymentMethods[sale.payment_method].count++;
-              paymentMethods[sale.payment_method].total += sale.total;
+              const entries = sale.payment_breakdown
+                ? Object.entries(sale.payment_breakdown)
+                : [[sale.payment_method, sale.total]];
+              entries.forEach(([method, amount]) => {
+                if (!paymentMethods[method]) paymentMethods[method] = { count: 0, total: 0 };
+                paymentMethods[method].total += Number(amount) || 0;
+              });
+            });
+
+            data.forEach((sale) => {
+              const methods = sale.payment_breakdown ? Object.keys(sale.payment_breakdown) : [sale.payment_method];
+              methods.forEach((method) => { if (paymentMethods[method]) paymentMethods[method].count++; });
             });
 
             let paymentMethodsHtml = "";
