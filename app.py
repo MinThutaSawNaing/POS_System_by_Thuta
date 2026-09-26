@@ -8,6 +8,7 @@ import uuid
 import io
 import json
 import time
+import struct
 from sqlalchemy import inspect, text, func, event, or_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from decimal import Decimal, ROUND_HALF_UP
@@ -60,12 +61,14 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pos.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = os.path.join(app.root_path, 'uploads', 'products')
 app.config['RECEIPT_LOGO_FOLDER'] = os.path.join(app.root_path, 'uploads', 'receipts')
+app.config['MMQR_FOLDER'] = os.path.join(app.root_path, 'uploads', 'mmqr')
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB per request
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365)
 db = SQLAlchemy(app)
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['RECEIPT_LOGO_FOLDER'], exist_ok=True)
+os.makedirs(app.config['MMQR_FOLDER'], exist_ok=True)
 
 MONEY_QUANT = Decimal('0.01')
 ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
@@ -252,6 +255,32 @@ def get_receipt_customization_settings(branch=None):
 
 def receipt_logo_url(filename):
     return url_for('receipt_logo', filename=filename) if filename else None
+
+def mmqr_url(filename):
+    return url_for('mmqr_image', filename=filename) if filename else None
+
+def is_valid_mmqr_image(file_path, extension):
+    """Reject truncated files that merely start with an image signature."""
+    with open(file_path, 'rb') as image_file:
+        content = image_file.read(2 * 1024 * 1024 + 1)
+    if extension == 'png':
+        if len(content) < 33 or not content.startswith(b'\x89PNG\r\n\x1a\n'):
+            return False
+        if content[12:16] != b'IHDR' or content[-8:-4] != b'IEND':
+            return False
+        width, height = struct.unpack('>II', content[16:24])
+        return 0 < width <= 4096 and 0 < height <= 4096
+    if extension == 'jpg':
+        return len(content) >= 4 and content.startswith(b'\xff\xd8\xff') and content.endswith(b'\xff\xd9')
+    return False
+
+def delete_mmqr_file(filename):
+    """Delete only generated MMQR filenames, never an arbitrary path."""
+    if not filename or os.path.basename(filename) != filename:
+        return
+    file_path = os.path.join(app.config['MMQR_FOLDER'], filename)
+    if os.path.exists(file_path):
+        os.remove(file_path)
 
 def format_currency(value, currency_code=None):
     symbol = get_currency_suffix(currency_code)
@@ -1876,6 +1905,7 @@ def api_settings():
             'receipt_customization': get_receipt_customization_settings(
                 db.session.get(Branch, get_current_branch_id())
             ),
+            'mmqr_url': mmqr_url(get_setting('mmqr_filename', '')),
             'ai_api_key_configured': bool(ai_api_key and len(ai_api_key) > 10)
         })
 
@@ -2316,6 +2346,14 @@ def receipt_logo(filename):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     return response
 
+@app.route('/uploads/mmqr/<path:filename>')
+@login_required
+def mmqr_image(filename):
+    response = make_response(send_from_directory(app.config['MMQR_FOLDER'], filename))
+    response.headers['Cache-Control'] = 'private, max-age=86400'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
 @app.route('/api/settings/receipt-logo', methods=['POST', 'DELETE'])
 @manager_required
 def api_receipt_logo():
@@ -2346,6 +2384,48 @@ def api_receipt_logo():
         'message': 'Receipt logo updated',
         'logo_filename': filename,
         'logo_url': receipt_logo_url(filename)
+    })
+
+@app.route('/api/settings/mmqr', methods=['POST', 'DELETE'])
+@manager_required
+def api_mmqr():
+    if request.method == 'DELETE':
+        previous = get_setting('mmqr_filename', '')
+        set_setting('mmqr_filename', '')
+        delete_mmqr_file(previous)
+        return jsonify({'success': True, 'message': 'MMQR removed', 'mmqr_url': None})
+
+    image = request.files.get('mmqr')
+    if not image or not image.filename:
+        return jsonify({'success': False, 'message': 'Select an MMQR image'}), 400
+    if request.content_length and request.content_length > 2 * 1024 * 1024:
+        return jsonify({'success': False, 'message': 'MMQR image must be 2 MB or smaller'}), 413
+
+    header = image.stream.read(16)
+    image.stream.seek(0)
+    extension = detect_receipt_logo_extension(header)
+    if extension not in {'png', 'jpg'}:
+        return jsonify({'success': False, 'message': 'Use a valid PNG or JPG MMQR image'}), 400
+
+    filename = f"{uuid.uuid4().hex}.{extension}"
+    destination = os.path.join(app.config['MMQR_FOLDER'], filename)
+    image.save(destination)
+    if os.path.getsize(destination) > 2 * 1024 * 1024:
+        os.remove(destination)
+        return jsonify({'success': False, 'message': 'MMQR image must be 2 MB or smaller'}), 413
+    if not is_valid_mmqr_image(destination, extension):
+        os.remove(destination)
+        return jsonify({'success': False, 'message': 'The uploaded MMQR image is invalid or incomplete'}), 400
+
+    previous = get_setting('mmqr_filename', '')
+    set_setting('mmqr_filename', filename)
+    if previous and previous != filename:
+        delete_mmqr_file(previous)
+    return jsonify({
+        'success': True,
+        'message': 'MMQR updated',
+        'mmqr_filename': filename,
+        'mmqr_url': mmqr_url(filename)
     })
 
 @app.route('/public/<path:filename>')
