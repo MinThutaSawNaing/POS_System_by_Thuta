@@ -14534,6 +14534,10 @@
       }
 
       function exportDeliveryReport(format) {
+        if (!hasManagerOrBossAccess()) {
+          showToast("Manager access is required to export delivery reports.", "error");
+          return false;
+        }
         ensureDeliveryReportDefaults();
         const params = deliveryReportDateParams();
         params.set("format", format === "xlsx" ? "xlsx" : "pdf");
