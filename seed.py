@@ -15,7 +15,11 @@ import argparse
 import os
 import uuid
 
-from PIL import Image, ImageDraw, ImageFont
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_AVAILABLE = True
+except ImportError:  # seed.py still works without Pillow, just without photos
+    PIL_AVAILABLE = False
 
 from app import app, db, Branch, Category, Product, get_default_branch_id
 
@@ -196,6 +200,10 @@ def seed_products(branch_id, with_photos=True):
     }
 
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    if with_photos and not PIL_AVAILABLE:
+        print('Pillow is not installed - seeding without photos.')
+        print('  Install it with:  pip install Pillow')
+        with_photos = False
     created = skipped = categories_added = photos = 0
 
     for name, category_name, price, cost, stock in DEMO_PRODUCTS:

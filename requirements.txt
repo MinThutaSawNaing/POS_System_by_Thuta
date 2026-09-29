@@ -9,6 +9,8 @@ requests
 cryptography
 numpy==1.26.4
 waitress==3.0.2
+# Used by seed.py to generate demo product photos.
+Pillow
 # Optional embedded Loli long-term memory. It is inactive until local-only
 # AI_MEMORY_* configuration is supplied; see .env.example.
 mem0ai
