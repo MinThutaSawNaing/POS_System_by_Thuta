@@ -4224,6 +4224,25 @@ def print_delivery_slip(delivery_id):
     return response
 
 # --- Delivery Performance Reporting ---
+@app.route('/delivery-report')
+def delivery_report_page():
+    """Standalone window page for delivery performance reporting.
+
+    Opened from the Deliveries tab's Reporting button; data is fetched
+    client-side from /api/deliveries/report. Exports stay manager/boss only,
+    mirroring the /api/deliveries/export guard.
+    """
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    response = make_response(render_template(
+        'delivery_report.html',
+        can_export=session.get('role') in ('manager', 'boss'),
+    ))
+    response.headers['Cache-Control'] = 'private, no-store, max-age=0'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+
 def parse_delivery_report_date(value, end_of_day=False):
     """Parse a YYYY-MM-DD filter into a UTC datetime bound (None when blank/bad).
 

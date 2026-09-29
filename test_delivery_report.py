@@ -292,6 +292,29 @@ class DeliveryReportRouteTests(unittest.TestCase):
         data = response.get_json()
         self.assertEqual(data['total'], 0)
 
+    def test_report_page_requires_login(self):
+        response = self.app.test_client().get('/delivery-report')
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/login', response.headers.get('Location', ''))
+
+    def test_report_page_renders_for_manager_with_export_buttons(self):
+        response = self.client(role='manager').get('/delivery-report')
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('Delivery Performance Report', html)
+        self.assertIn('id="export-pdf"', html)
+        self.assertIn('id="export-xlsx"', html)
+        self.assertIn('/api/deliveries/report', html)
+
+    def test_report_page_hides_export_buttons_for_cashiers(self):
+        response = self.client(role='cashier').get('/delivery-report')
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('Delivery Performance Report', html)
+        # The buttons must not render; the JS getElementById references remain.
+        self.assertNotIn('id="export-pdf"', html)
+        self.assertNotIn('id="export-xlsx"', html)
+
     def test_export_requires_manager_or_boss(self):
         self.assertEqual(self.client(role='cashier').get('/api/deliveries/export').status_code, 403)
         self.assertEqual(self.client(role='manager').get('/api/deliveries/export').status_code, 200)
