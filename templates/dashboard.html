@@ -2548,6 +2548,29 @@
             <div id="deliveries-pagination" class="d-flex justify-content-start mt-3"></div>
           </div>
         </div>
+
+        <!-- Delivery Performance Report -->
+        <div class="card mt-3">
+          <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <h5 class="mb-0"><i class="bi bi-graph-up-arrow me-2"></i>Delivery Performance</h5>
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <input type="date" id="delivery-report-from" class="form-control form-control-sm" style="width: auto;" title="From date" />
+              <input type="date" id="delivery-report-to" class="form-control form-control-sm" style="width: auto;" title="To date" />
+              <button class="btn btn-sm btn-primary" onclick="loadDeliveryReport()" title="Reload the performance report for the selected range">
+                <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Load</span>
+              </button>
+              <button class="btn btn-sm btn-outline-danger" onclick="exportDeliveryReport('pdf')" title="Download the delivery performance report as a PDF">
+                <i class="bi bi-file-earmark-pdf"></i> <span class="d-none d-sm-inline">PDF</span>
+              </button>
+              <button class="btn btn-sm btn-outline-success" onclick="exportDeliveryReport('xlsx')" title="Download the delivery performance report as an Excel workbook">
+                <i class="bi bi-file-earmark-excel"></i> <span class="d-none d-sm-inline">Excel</span>
+              </button>
+            </div>
+          </div>
+          <div class="card-body" id="delivery-report-body">
+            <p class="text-muted mb-0">Loading delivery performance…</p>
+          </div>
+        </div>
       </div>
 
       <!-- Users Section -->
@@ -6616,7 +6639,7 @@
         suppliers: () => loadSuppliers(),
         purchases: () => { loadPOSupplierFilter(); loadPurchaseOrders(); },
         warehouse: () => { loadWarehouseSummary(); loadWarehouseInventory(); },
-        deliveries: () => { loadDeliveryStats(); loadDeliveries(); },
+        deliveries: () => { loadDeliveryStats(); loadDeliveries(); loadDeliveryReport(); },
         users: () => loadUsers(),
         settings: () => { loadSettings(); loadBranches(); },
       };
@@ -14392,6 +14415,129 @@
           console.error("Failed to open delivery slip window:", error);
           showToast("Failed to open the delivery slip. Please try again.", "error");
         }
+      }
+
+      // ==================== Delivery Performance Report ====================
+      // Management view of fulfilment speed: KPIs, courier performance and an
+      // "oldest open first" watchlist so late deliveries get chased in time.
+
+      function ensureDeliveryReportDefaults() {
+        const fromInput = document.getElementById("delivery-report-from");
+        const toInput = document.getElementById("delivery-report-to");
+        if (!fromInput || !toInput) return;
+        if (!toInput.value) toInput.value = new Date().toISOString().slice(0, 10);
+        if (!fromInput.value) {
+          const from = new Date();
+          from.setDate(from.getDate() - 30);
+          fromInput.value = from.toISOString().slice(0, 10);
+        }
+      }
+
+      function deliveryReportDateParams() {
+        const params = new URLSearchParams();
+        const from = (document.getElementById("delivery-report-from")?.value || "").trim();
+        const to = (document.getElementById("delivery-report-to")?.value || "").trim();
+        if (from) params.set("date_from", from);
+        if (to) params.set("date_to", to);
+        return params;
+      }
+
+      function formatReportHours(value) {
+        return value === null || value === undefined ? "—" : `${Number(value).toFixed(1)} h`;
+      }
+
+      function loadDeliveryReport() {
+        ensureDeliveryReportDefaults();
+        const body = document.getElementById("delivery-report-body");
+        if (!body) return;
+        body.innerHTML = '<div class="text-center py-3"><div class="spinner-border text-primary" role="status"></div></div>';
+        const params = deliveryReportDateParams();
+        // no-store keeps the memory cache out of it: pressing Load always refetches.
+        fetch(`/api/deliveries/report${params.toString() ? `?${params.toString()}` : ""}`, { cache: "no-store" })
+          .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+          .then(({ ok, data }) => {
+            if (!ok || !data.kpis) {
+              body.innerHTML = `<p class="text-danger mb-0">${escapeHtml(data.message || data.error || "Failed to load the delivery report.")}</p>`;
+              return;
+            }
+            renderDeliveryReport(body, data);
+          })
+          .catch((e) => {
+            console.error("Error loading delivery report", e);
+            body.innerHTML = '<p class="text-danger mb-0">Failed to load the delivery report.</p>';
+          });
+      }
+
+      function renderDeliveryReport(container, data) {
+        const k = data.kpis || {};
+        const percent = (value) => (value === null || value === undefined ? "—" : `${Number(value).toFixed(0)}%`);
+        const kpiCards = [
+          { label: "Deliveries", value: k.total ?? 0, cls: "" },
+          { label: "Delivered", value: k.delivered ?? 0, cls: "text-success" },
+          { label: "In progress", value: k.open ?? 0, cls: "text-primary" },
+          { label: "Overdue (&gt;24h)", value: k.overdue ?? 0, cls: "text-danger" },
+          { label: "Cancelled", value: k.cancelled ?? 0, cls: "text-secondary" },
+          { label: "Completion", value: percent(k.completion_rate), cls: "" },
+          { label: "On-time (≤24h)", value: percent(k.on_time_rate), cls: "" },
+          { label: "Avg time to deliver", value: formatReportHours(k.avg_fulfillment_hours), cls: "" },
+        ];
+        const courierRows = (data.courier_performance || []).map((c) => `
+          <tr>
+            <td>${escapeHtml(c.courier_name || "-")}</td>
+            <td class="text-end">${c.assigned ?? 0}</td>
+            <td class="text-end">${c.delivered ?? 0}</td>
+            <td class="text-end">${c.open ?? 0}</td>
+            <td class="text-end ${c.overdue > 0 ? "text-danger fw-semibold" : ""}">${c.overdue ?? 0}</td>
+            <td class="text-end">${formatReportHours(c.avg_fulfillment_hours)}</td>
+          </tr>`).join("");
+        const attentionRows = (data.attention || []).map((d) => `
+          <tr>
+            <td>${escapeHtml(d.delivery_number || "-")}</td>
+            <td>${escapeHtml(d.recipient_name || "-")}<br /><small class="text-muted">${escapeHtml(d.recipient_phone || "")}</small></td>
+            <td><span class="badge bg-info">${escapeHtml(d.stage_label || d.stage || "-")}</span></td>
+            <td>${escapeHtml(d.priority || "-")}</td>
+            <td>${escapeHtml(d.courier_name || "-")}</td>
+            <td class="${d.timing_flag === "Overdue" ? "text-danger fw-semibold" : ""}">${formatReportHours(d.age_hours)}</td>
+            <td>${d.timing_flag === "Overdue" ? '<span class="badge bg-danger">Overdue</span>' : '<span class="badge bg-success">On track</span>'}</td>
+            <td><button class="btn btn-sm btn-outline-primary" onclick="openUpdateDeliveryModal(${Number(d.id) || 0})" title="Open delivery"><i class="bi bi-pencil"></i></button></td>
+          </tr>`).join("");
+        container.innerHTML = `
+          <div class="row g-2 mb-3">
+            ${kpiCards.map((c) => `
+              <div class="col-6 col-md-3">
+                <div class="card bg-light"><div class="card-body py-2">
+                  <small class="text-muted d-block" style="font-size: 0.75rem;">${c.label}</small>
+                  <h5 class="mb-0 fs-6 ${c.cls}">${c.value}</h5>
+                </div></div>
+              </div>`).join("")}
+          </div>
+          <div class="row g-3">
+            <div class="col-12 col-lg-6">
+              <h6 class="text-muted">Courier performance</h6>
+              <div class="table-responsive">
+                <table class="table table-sm table-striped">
+                  <thead><tr><th>Courier</th><th class="text-end">Assigned</th><th class="text-end">Delivered</th><th class="text-end">Open</th><th class="text-end">Overdue</th><th class="text-end">Avg time</th></tr></thead>
+                  <tbody>${courierRows || '<tr><td colspan="6" class="text-muted text-center">No deliveries in range</td></tr>'}</tbody>
+                </table>
+              </div>
+            </div>
+            <div class="col-12 col-lg-6">
+              <h6 class="text-muted">Needs attention (open, oldest first)</h6>
+              <div class="table-responsive">
+                <table class="table table-sm table-striped">
+                  <thead><tr><th>Delivery #</th><th>Recipient</th><th>Stage</th><th>Priority</th><th>Courier</th><th>Open age</th><th>Timing</th><th></th></tr></thead>
+                  <tbody>${attentionRows || '<tr><td colspan="8" class="text-muted text-center">Nothing open — all clear</td></tr>'}</tbody>
+                </table>
+              </div>
+            </div>
+          </div>`;
+      }
+
+      function exportDeliveryReport(format) {
+        ensureDeliveryReportDefaults();
+        const params = deliveryReportDateParams();
+        params.set("format", format === "xlsx" ? "xlsx" : "pdf");
+        return openReportDownload(`/api/deliveries/export?${params.toString()}`);
       }
 
       // ==================== Warehouse Management Functions ====================

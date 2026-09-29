@@ -32,17 +32,21 @@ from receipt import (
 )
 from reports import (
     LOW_STOCK_THRESHOLD,
+    build_delivery_performance_report,
+    build_delivery_performance_rows,
     build_purchase_order_item_sheet,
     build_purchase_order_report,
     build_report_pdf,
     build_report_xlsx,
     build_warehouse_stock_report,
+    delivery_courier_performance,
     describe_filters,
     normalize_report_format,
     purchase_order_status_label,
     report_content_type,
     report_disposition,
     report_filename,
+    summarize_delivery_performance,
 )
 from reportlab.graphics import renderPDF
 from reportlab.graphics.shapes import Drawing
@@ -4217,6 +4221,119 @@ def print_delivery_slip(delivery_id):
     response = make_response(render_template('delivery_slip.html', slip=slip_view))
     response.headers['Cache-Control'] = 'private, no-store, max-age=0'
     response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+# --- Delivery Performance Reporting ---
+def parse_delivery_report_date(value, end_of_day=False):
+    """Parse a YYYY-MM-DD filter into a UTC datetime bound (None when blank/bad).
+
+    ``end_of_day`` shifts to the following midnight so an inclusive date picked
+    in the UI becomes an exclusive upper bound for the query.
+    """
+    text = str(value or '').strip()
+    if not text:
+        return None
+    try:
+        day = datetime.strptime(text, '%Y-%m-%d')
+    except ValueError:
+        return None
+    return day + timedelta(days=1) if end_of_day else day
+
+
+def delivery_report_records(date_from=None, date_to=None, branch_id=None):
+    """Serialized deliveries for the performance report and its exports.
+
+    Shared by /api/deliveries/report and /api/deliveries/export so a downloaded
+    report always matches the on-screen analysis (same contract as the
+    Warehouse and Purchase tabs).
+    """
+    if branch_id is None:
+        branch_id = get_default_branch_id()
+    query = Delivery.query.filter_by(branch_id=branch_id)
+    start = parse_delivery_report_date(date_from)
+    end = parse_delivery_report_date(date_to, end_of_day=True)
+    if start:
+        query = query.filter(Delivery.created_at >= start)
+    if end:
+        query = query.filter(Delivery.created_at < end)
+    deliveries = query.order_by(Delivery.created_at.desc()).all()
+    return [serialize_delivery(delivery) for delivery in deliveries]
+
+
+@app.route('/api/deliveries/report', methods=['GET'])
+def api_delivery_report():
+    """Delivery performance KPIs, courier stats and the open-delivery watchlist."""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    date_from = (request.args.get('date_from') or '').strip()
+    date_to = (request.args.get('date_to') or '').strip()
+    if (date_from and parse_delivery_report_date(date_from) is None) or \
+            (date_to and parse_delivery_report_date(date_to) is None):
+        return jsonify({'success': False, 'message': 'Invalid date filter; use YYYY-MM-DD'}), 400
+
+    records = delivery_report_records(date_from, date_to)
+    rows = build_delivery_performance_rows(records)
+
+    by_stage = {key: 0 for key in DELIVERY_STAGE_FLOW.keys()}
+    for row in rows:
+        if row['stage'] in by_stage:
+            by_stage[row['stage']] += 1
+
+    open_rows = sorted(
+        (row for row in rows if row['stage'] not in ('delivered', 'cancelled')),
+        key=lambda row: row['age_hours'] or 0,
+        reverse=True,
+    )[:50]
+    attention = [{
+        'id': row['id'],
+        'delivery_number': row['delivery_number'],
+        'recipient_name': row['recipient_name'],
+        'recipient_phone': row['recipient_phone'],
+        'township': row['township'],
+        'stage': row['stage'],
+        'stage_label': row['stage_label'],
+        'priority': row['priority'],
+        'courier_name': row['courier_name'],
+        'age_hours': row['age_hours'],
+        'timing_flag': row['timing_flag'],
+    } for row in open_rows]
+
+    return jsonify({
+        'total': len(rows),
+        'kpis': summarize_delivery_performance(rows),
+        'by_stage': by_stage,
+        'courier_performance': delivery_courier_performance(rows),
+        'attention': attention,
+    })
+
+
+@app.route('/api/deliveries/export', methods=['GET'])
+@manager_or_boss_required
+def export_deliveries():
+    """Download the delivery register as a professional PDF or Excel report."""
+    date_from = (request.args.get('date_from') or '').strip()
+    date_to = (request.args.get('date_to') or '').strip()
+    report_format = normalize_report_format(request.args.get('format'))
+    branch_id = get_default_branch_id()
+    branch = db.session.get(Branch, branch_id) if branch_id else None
+
+    records = delivery_report_records(date_from, date_to, branch_id)
+    rows = build_delivery_performance_rows(records)
+    report = build_delivery_performance_report(
+        rows,
+        brand=get_receipt_identity(branch),
+        branch_name=branch.name if branch else '',
+        generated_by=session.get('username') or '',
+        filters_text=describe_filters({'From': date_from, 'To': date_to}),
+        currency_suffix=get_currency_suffix(),
+    )
+
+    payload = build_report_pdf(report) if report_format == 'pdf' else build_report_xlsx(report)
+    filename = report_filename(report['file_stem'], report_format)
+    response = make_response(payload)
+    response.headers['Content-Type'] = report_content_type(report_format)
+    response.headers['Content-Disposition'] = report_disposition(filename, report_format)
     return response
 
 # --- Thermal Receipt ---

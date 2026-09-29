@@ -12,7 +12,7 @@ unit-testable without a database and both tabs share one imported look.
 from __future__ import annotations
 
 import io
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 from xml.sax.saxutils import escape
 
@@ -1081,4 +1081,288 @@ def _write_info_sheet(workbook: Any, report: Mapping[str, Any]) -> None:
             worksheet.write(row, 0, "•", label_format)
             worksheet.write(row, 1, note, value_format)
             row += 1
+
+
+
+# ==================== Delivery performance ====================
+#
+# Fulfilment tracking for the Deliveries tab: how fast goods reach customers
+# and which open deliveries need attention. Same presentation-only contract as
+# the other builders — plain dicts in, report dict out, no database access.
+
+DELIVERY_OVERDUE_HOURS = 24.0
+DELIVERY_ON_TIME_HOURS = 24.0
+UNASSIGNED_COURIER = "Unassigned"
+
+DELIVERY_REGISTER_COLUMNS = (
+    column("delivery_number", "Delivery #", width=17),
+    column("recipient_name", "Recipient", width=16),
+    column("township", "Township", width=13),
+    column("stage_label", "Stage", width=11, align="center"),
+    column("priority", "Priority", width=9, align="center"),
+    column("courier_name", "Courier", width=13),
+    column("created_at", "Created", width=12, align="center", kind="date"),
+    column("delivered_at", "Delivered", width=12, align="center", kind="date"),
+    column("fulfillment_hours_display", "Hours to deliver", width=10, align="right"),
+    column("age_hours_display", "Open age (h)", width=9, align="right"),
+    column("timing_flag", "Timing", width=10, align="center"),
+    column("delivery_fee", "Fee", width=11, align="right", kind="money"),
+)
+
+
+def parse_report_datetime(value: Any) -> datetime | None:
+    """Parse a datetime or ISO string into a naive-UTC datetime (None if bad)."""
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone.utc).replace(tzinfo=None)
+    return moment
+
+
+def delivery_duration_hours(start: Any, end: Any) -> float | None:
+    """Whole hours (one decimal) between two stamps; None when either is missing."""
+    start_at = parse_report_datetime(start)
+    end_at = parse_report_datetime(end)
+    if start_at is None or end_at is None:
+        return None
+    hours = (end_at - start_at).total_seconds() / 3600.0
+    if hours != hours or hours in (float("inf"), float("-inf")):
+        return None
+    return round(max(hours, 0.0), 1)
+
+
+def format_report_hours(value: Any) -> str:
+    return EMPTY_CELL if value is None else f"{number_value(value):,.1f}"
+
+
+def build_delivery_performance_rows(
+    records: Iterable[Mapping[str, Any]],
+    now: Any = None,
+) -> list[dict[str, Any]]:
+    """Timing metrics per delivery from plain serialized delivery dicts."""
+    now_at = parse_report_datetime(now) or datetime.utcnow()
+    rows: list[dict[str, Any]] = []
+    for record in records or []:
+        record = dict(record)
+        stage = str(record.get("stage") or "").strip().lower()
+        created_at = record.get("created_at")
+        delivered_at = record.get("delivered_at") if stage == "delivered" else None
+        packing_hours = delivery_duration_hours(created_at, record.get("packaged_at"))
+        dispatch_hours = delivery_duration_hours(record.get("packaged_at"), record.get("out_for_delivery_at"))
+        final_leg_hours = delivery_duration_hours(record.get("out_for_delivery_at"), delivered_at)
+        fulfillment_hours = delivery_duration_hours(created_at, delivered_at)
+        age_hours = (
+            delivery_duration_hours(created_at, now_at)
+            if stage not in ("delivered", "cancelled")
+            else None
+        )
+
+        if stage == "delivered":
+            timing_flag = "Delivered"
+        elif stage == "cancelled":
+            timing_flag = "Cancelled"
+        elif age_hours is not None and age_hours > DELIVERY_OVERDUE_HOURS:
+            timing_flag = "Overdue"
+        else:
+            timing_flag = "On track"
+
+        rows.append({
+            "id": record.get("id"),
+            "delivery_number": str(record.get("delivery_number") or ""),
+            "sale_transaction_id": str(record.get("sale_transaction_id") or ""),
+            "recipient_name": str(record.get("recipient_name") or "Unknown"),
+            "recipient_phone": record.get("recipient_phone"),
+            "township": record.get("township"),
+            "stage": stage,
+            "stage_label": str(record.get("stage_label") or stage.replace("_", " ").title()),
+            "priority": str(record.get("priority") or "normal").capitalize(),
+            "courier_name": str(record.get("courier_name") or "").strip() or UNASSIGNED_COURIER,
+            "tracking_code": record.get("tracking_code"),
+            "delivery_fee": record.get("delivery_fee"),
+            "created_at": created_at,
+            "packaged_at": record.get("packaged_at"),
+            "out_for_delivery_at": record.get("out_for_delivery_at"),
+            "delivered_at": delivered_at,
+            "packing_hours": packing_hours,
+            "dispatch_hours": dispatch_hours,
+            "final_leg_hours": final_leg_hours,
+            "fulfillment_hours": fulfillment_hours,
+            "age_hours": age_hours,
+            "timing_flag": timing_flag,
+            "fulfillment_hours_display": format_report_hours(fulfillment_hours),
+            "age_hours_display": format_report_hours(age_hours),
+        })
+    return rows
+
+
+
+def _average_hours(values: Iterable[Any]) -> float | None:
+    numbers = [number_value(value) for value in values if value is not None]
+    return round(sum(numbers) / len(numbers), 1) if numbers else None
+
+
+def summarize_delivery_performance(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Headline KPIs: counts, completion/on-time rates and average leg times."""
+    rows = [dict(row) for row in rows or []]
+    delivered = [row for row in rows if row.get("stage") == "delivered"]
+    cancelled = [row for row in rows if row.get("stage") == "cancelled"]
+    open_rows = [row for row in rows if row.get("stage") not in ("delivered", "cancelled")]
+    overdue = [row for row in open_rows if row.get("timing_flag") == "Overdue"]
+    on_time = [
+        row for row in delivered
+        if row.get("fulfillment_hours") is not None
+        and number_value(row["fulfillment_hours"]) <= DELIVERY_ON_TIME_HOURS
+    ]
+    fulfillment_values = [
+        number_value(row["fulfillment_hours"])
+        for row in delivered
+        if row.get("fulfillment_hours") is not None
+    ]
+    expected = len(delivered) + len(open_rows)
+    return {
+        "total": len(rows),
+        "delivered": len(delivered),
+        "cancelled": len(cancelled),
+        "open": len(open_rows),
+        "overdue": len(overdue),
+        "on_time_delivered": len(on_time),
+        "on_time_rate": round(len(on_time) / len(delivered) * 100, 1) if delivered else None,
+        "completion_rate": round(len(delivered) / expected * 100, 1) if expected else None,
+        "avg_fulfillment_hours": _average_hours(fulfillment_values),
+        "fastest_fulfillment_hours": round(min(fulfillment_values), 1) if fulfillment_values else None,
+        "slowest_fulfillment_hours": round(max(fulfillment_values), 1) if fulfillment_values else None,
+        "avg_packing_hours": _average_hours([row.get("packing_hours") for row in rows]),
+        "avg_dispatch_hours": _average_hours([row.get("dispatch_hours") for row in rows]),
+        "avg_final_leg_hours": _average_hours([row.get("final_leg_hours") for row in rows]),
+        "avg_open_age_hours": _average_hours([row.get("age_hours") for row in open_rows]),
+    }
+
+
+def delivery_courier_performance(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Per-courier workload, completions, overdue count and average speed."""
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        row = dict(row)
+        courier = str(row.get("courier_name") or "").strip() or UNASSIGNED_COURIER
+        stats = grouped.setdefault(courier, {
+            "courier_name": courier,
+            "assigned": 0,
+            "delivered": 0,
+            "open": 0,
+            "overdue": 0,
+            "cancelled": 0,
+            "_fulfillment": [],
+        })
+        stats["assigned"] += 1
+        stage = str(row.get("stage") or "")
+        if stage == "delivered":
+            stats["delivered"] += 1
+            if row.get("fulfillment_hours") is not None:
+                stats["_fulfillment"].append(row["fulfillment_hours"])
+        elif stage == "cancelled":
+            stats["cancelled"] += 1
+        else:
+            stats["open"] += 1
+            if row.get("timing_flag") == "Overdue":
+                stats["overdue"] += 1
+
+    result = []
+    for stats in grouped.values():
+        result.append({
+            "courier_name": stats["courier_name"],
+            "assigned": stats["assigned"],
+            "delivered": stats["delivered"],
+            "open": stats["open"],
+            "overdue": stats["overdue"],
+            "cancelled": stats["cancelled"],
+            "avg_fulfillment_hours": _average_hours(stats["_fulfillment"]),
+        })
+    result.sort(key=lambda entry: (-entry["assigned"], entry["courier_name"]))
+    return result
+
+
+
+def build_delivery_performance_report(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    brand: Mapping[str, Any] | None = None,
+    branch_name: str = "",
+    generated_by: str = "",
+    filters_text: str = "",
+    currency_suffix: str = "$",
+    generated_at: Any = None,
+) -> dict[str, Any]:
+    """Delivery register with timing KPIs for the Deliveries tab exports."""
+    rows = [dict(row) for row in rows or []]
+    kpis = summarize_delivery_performance(rows)
+
+    register: list[dict[str, Any]] = []
+    total_fees = 0.0
+    for row in rows:
+        fee = round_money_value(row.get("delivery_fee"))
+        total_fees = round_money_value(total_fees + fee)
+        register.append({
+            "delivery_number": row.get("delivery_number"),
+            "recipient_name": row.get("recipient_name"),
+            "township": row.get("township"),
+            "stage_label": row.get("stage_label"),
+            "priority": row.get("priority"),
+            "courier_name": row.get("courier_name"),
+            "created_at": row.get("created_at"),
+            "delivered_at": row.get("delivered_at"),
+            "fulfillment_hours_display": row.get("fulfillment_hours_display") or EMPTY_CELL,
+            "age_hours_display": row.get("age_hours_display") or EMPTY_CELL,
+            "timing_flag": row.get("timing_flag"),
+            "delivery_fee": fee,
+        })
+
+    def rate_label(value: Any) -> str:
+        return EMPTY_CELL if value is None else f"{number_value(value):.0f}%"
+
+    def hours_label(value: Any) -> str:
+        return EMPTY_CELL if value is None else f"{number_value(value):,.1f} h"
+
+    summary = [
+        {"label": "Deliveries", "value": f"{kpis['total']:,}"},
+        {"label": "Delivered", "value": f"{kpis['delivered']:,}"},
+        {"label": "Still open", "value": f"{kpis['open']:,}"},
+        {"label": f"Overdue (> {DELIVERY_OVERDUE_HOURS:g} h open)", "value": f"{kpis['overdue']:,}"},
+        {"label": "Cancelled", "value": f"{kpis['cancelled']:,}"},
+        {"label": "Completion rate", "value": rate_label(kpis["completion_rate"])},
+        {"label": f"On-time rate (≤ {DELIVERY_ON_TIME_HOURS:g} h)", "value": rate_label(kpis["on_time_rate"])},
+        {"label": "Avg time to deliver", "value": hours_label(kpis["avg_fulfillment_hours"])},
+        {"label": "Avg packing time", "value": hours_label(kpis["avg_packing_hours"])},
+        {"label": "Avg dispatch time", "value": hours_label(kpis["avg_dispatch_hours"])},
+        {
+            "label": "Delivery fees",
+            "value": format_report_cell(total_fees, "money", currency_suffix),
+        },
+    ]
+    return _common_report_fields(
+        title="Delivery Performance Report",
+        subtitle="Fulfilment speed and tracking for customer deliveries",
+        sheet_name="Delivery Register",
+        file_stem="delivery_performance",
+        columns=DELIVERY_REGISTER_COLUMNS,
+        rows=register,
+        totals={"delivery_fee": total_fees},
+        summary=summary,
+        meta=_report_meta(branch_name, generated_by, filters_text, generated_at),
+        notes=[
+            f"Open deliveries older than {DELIVERY_OVERDUE_HOURS:g} hours are flagged Overdue.",
+            f"On-time deliveries reach the customer within {DELIVERY_ON_TIME_HOURS:g} hours of creation.",
+            "Hours to deliver is measured from delivery creation to the delivered stamp.",
+            "Open age counts hours since creation for deliveries that are not yet final.",
+        ],
+        brand=brand,
+        currency_suffix=currency_suffix,
+    )
 
