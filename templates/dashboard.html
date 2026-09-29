@@ -8260,8 +8260,57 @@
         return normalized ? normalized.slice(-8).toUpperCase() : "UNKNOWN";
       }
 
+      function isStandalonePWA() {
+        return window.matchMedia?.("(display-mode: standalone)").matches === true
+          || window.navigator.standalone === true;
+      }
+
+      function createPwaPrintFrame() {
+        const frame = document.createElement("iframe");
+        frame.className = "pwa-print-frame";
+        frame.name = `pwa-print-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        frame.title = "Print document";
+        frame.setAttribute("aria-hidden", "true");
+        Object.assign(frame.style, {
+          position: "fixed",
+          right: "0",
+          bottom: "0",
+          width: "1px",
+          height: "1px",
+          border: "0",
+          opacity: "0",
+          pointerEvents: "none",
+        });
+        document.body.appendChild(frame);
+
+        let removed = false;
+        const cleanup = () => {
+          if (removed) return;
+          removed = true;
+          frame.remove();
+        };
+        const registerAfterPrintCleanup = () => {
+          frame.contentWindow?.addEventListener("afterprint", cleanup, { once: true });
+        };
+        registerAfterPrintCleanup();
+        frame.addEventListener("load", registerAfterPrintCleanup);
+        // Some mobile engines do not dispatch afterprint from child frames.
+        setTimeout(cleanup, 120000);
+        return frame;
+      }
+
+      function loadUrlInPwaPrintFrame(url) {
+        const frame = createPwaPrintFrame();
+        frame.src = url;
+        return true;
+      }
+
       function openOfflineReceiptWindow(receipt, autoPrint = false) {
-        const receiptWindow = window.open("about:blank", "_blank");
+        const printFrame = typeof isStandalonePWA === "function" && isStandalonePWA()
+          ? createPwaPrintFrame()
+          : null;
+        const shouldAutoPrint = autoPrint || Boolean(printFrame);
+        const receiptWindow = printFrame?.contentWindow || window.open("about:blank", "_blank");
         if (!receiptWindow) {
           showToast("Receipt window was blocked. Allow popups for this POS and try again.", "warning");
           return false;
@@ -8319,12 +8368,13 @@
               <div class="row grand"><span>TOTAL</span><span>${money(receipt.total)}</span></div>${cashRows}${splitRows}
               <hr><footer class="center">Thank you for your purchase.<br>Please keep your receipt.</footer>
             </main>
-            <script>window.addEventListener("load", function () { ${autoPrint ? "window.print();" : ""} });<\/script>
+            <script>window.addEventListener("load", function () { ${shouldAutoPrint ? "window.print();" : ""} });<\/script>
             </body></html>`);
           receiptWindow.document.close();
           return true;
         } catch (error) {
-          receiptWindow.close();
+          if (printFrame) printFrame.remove();
+          else receiptWindow.close();
           console.error("Failed to create offline receipt:", error);
           showToast("Failed to create the offline receipt. Please try again.", "error");
           return false;
@@ -8338,7 +8388,12 @@
           return false;
         }
 
-        const suffix = autoPrint ? "?autoprint=1" : "";
+        const standalone = isStandalonePWA();
+        const suffix = autoPrint || standalone ? "?autoprint=1" : "";
+        const url = `/api/sales/${encodeURIComponent(normalizedId)}/print${suffix}`;
+        if (standalone) {
+          return loadUrlInPwaPrintFrame(url);
+        }
         const receiptWindow = window.open("about:blank", "_blank");
         if (!receiptWindow) {
           showToast("Receipt window was blocked. Allow popups for this POS and try again.", "warning");
@@ -8346,7 +8401,7 @@
         }
         try {
           receiptWindow.opener = null;
-          receiptWindow.location.replace(`/api/sales/${encodeURIComponent(normalizedId)}/print${suffix}`);
+          receiptWindow.location.replace(url);
         } catch (error) {
           receiptWindow.close();
           console.error("Failed to open receipt window:", error);
@@ -10461,10 +10516,11 @@
         // print-ready window. A hidden form POST carries the selection because
         // long label runs would exceed URL query-string limits.
         try {
+          const pwaPrintFrame = isStandalonePWA() ? createPwaPrintFrame() : null;
           const form = document.createElement("form");
           form.method = "POST";
           form.action = "/api/products/barcode_labels/print?autoprint=1";
-          form.target = "_blank";
+          form.target = pwaPrintFrame?.name || "_blank";
 
           const idsInput = document.createElement("input");
           idsInput.type = "hidden";
@@ -10486,7 +10542,7 @@
             document.getElementById("barcodeLabelModal")
           );
           modal?.hide();
-          showToast("Label sheet opened — print at 100% / Actual size", "success");
+          showToast("Label sheet ready — print at 100% / Actual size", "success");
         } catch (error) {
           console.error("Error opening the label sheet:", error);
           showToast("Error opening the label sheet: " + error.message, "error");
@@ -14814,6 +14870,11 @@
           showToast("Delivery ID is missing", "error");
           return;
         }
+        const url = `/api/deliveries/${encodeURIComponent(deliveryId)}/print?autoprint=1`;
+        if (isStandalonePWA()) {
+          loadUrlInPwaPrintFrame(url);
+          return;
+        }
         const slipWindow = window.open("about:blank", "_blank");
         if (!slipWindow) {
           showToast("Print window was blocked. Allow popups for this POS and try again.", "warning");
@@ -14821,7 +14882,7 @@
         }
         try {
           slipWindow.opener = null;
-          slipWindow.location.replace(`/api/deliveries/${encodeURIComponent(deliveryId)}/print?autoprint=1`);
+          slipWindow.location.replace(url);
         } catch (error) {
           slipWindow.close();
           console.error("Failed to open delivery slip window:", error);
