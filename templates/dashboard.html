@@ -2730,12 +2730,12 @@
             </div>
             <div class="mb-3">
               <label class="form-label">Language / ဘာသာစကား</label>
-              <select class="form-select" id="settings-language" onchange="changeLanguage(this.value)">
+              <select class="form-select" id="settings-language">
                 <option value="en">English</option>
                 <option value="my">မြန်မာ (Myanmar)</option>
               </select>
             </div>
-            <button class="btn btn-primary w-100 w-sm-auto" onclick="saveSettings()">
+            <button type="button" class="btn btn-primary w-100 w-sm-auto" id="save-general-settings-btn" onclick="saveSettings()">
               <i class="bi bi-save"></i> Save Settings
             </button>
           </div>
@@ -2833,9 +2833,12 @@
                 <button type="button" class="btn btn-outline-danger btn-sm mb-1" id="remove-mmqr-btn" onclick="removeMMQR()">
                   <i class="bi bi-trash me-1"></i>Remove
                 </button>
-                <div class="form-text">PNG or JPG up to 2 MB.</div>
+                <div class="form-text">PNG or JPG up to 2 MB. Changes are only applied after saving.</div>
               </div>
             </div>
+            <button type="button" class="btn btn-success mt-3" id="save-mmqr-btn" onclick="saveMMQRConfiguration()">
+              <i class="bi bi-save me-1"></i>Save MMQR
+            </button>
             <div class="alert alert-light border mt-3 mb-0 py-2" id="mmqr-access-note" style="display: none;">
               Manager access is required to change the MMQR image.
             </div>
@@ -2872,6 +2875,9 @@
               </div>
             </fieldset>
             <div class="form-text mt-3"><i class="bi bi-info-circle me-1"></i>In the printer dialog, use 100% / Actual size and disable browser headers and footers.</div>
+            <button type="button" class="btn btn-primary mt-3" id="save-receipt-printer-btn" onclick="saveReceiptPrinterSettings()">
+              <i class="bi bi-save me-1"></i>Save receipt printer
+            </button>
             <div class="alert alert-light border mt-3 mb-0 py-2" id="receipt-paper-access-note" style="display: none;">
               Manager access is required to change the shared printer profile.
             </div>
@@ -2902,7 +2908,10 @@
                 <input type="number" class="form-control" id="label-columns" min="1" max="10" step="1" />
               </div>
             </div>
-            <div class="form-text mt-3"><i class="bi bi-info-circle me-1"></i>Saved with the Save Changes button below. Print the label sheet at 100% / Actual size with no margins.</div>
+            <div class="form-text mt-3"><i class="bi bi-info-circle me-1"></i>Print the label sheet at 100% / Actual size with no margins.</div>
+            <button type="button" class="btn btn-primary mt-3" id="save-label-printing-btn" onclick="saveLabelPrintingSettings()">
+              <i class="bi bi-save me-1"></i>Save label printing
+            </button>
             <div class="alert alert-light border mt-3 mb-0 py-2" id="label-geometry-access-note" style="display: none;">
               Manager access is required to change label geometry.
             </div>
@@ -2948,8 +2957,11 @@
                 </label>
               </div>
               <div class="form-text">
-                When enabled, Loli can apply low-risk changes (new suppliers, customers, categories) immediately. Risky changes always require your approval.
+                When enabled, Loli can apply low-risk changes (new suppliers, customers, categories) immediately. Risky changes always require your approval. The change is not applied until you save it.
               </div>
+              <button type="button" class="btn btn-primary btn-sm mt-2" id="save-agent-autonomy-btn" onclick="saveAgentAutonomy()">
+                <i class="bi bi-save me-1"></i>Save autonomy
+              </button>
             </div>
             {% endif %}
             <div class="d-flex flex-wrap gap-2">
@@ -5223,10 +5235,14 @@
       };
       let pendingReceiptLogoFile = null;
       let pendingReceiptLogoObjectUrl = null;
+      let pendingMMQRFile = null;
+      let pendingMMQRObjectUrl = null;
+      let pendingMMQRRemoval = false;
+      let savedAgentAutonomy = false;
       const CURRENT_USER_ROLE = "{{ session.role }}";
 
       document.addEventListener("change", (event) => {
-        if (event.target?.id === "mmqr-file") uploadMMQR(event.target.files?.[0]);
+        if (event.target?.id === "mmqr-file") stageMMQRFile(event.target.files?.[0]);
       });
 
       // ---- Shared money utilities (integer-cent arithmetic) ----
@@ -5369,7 +5385,12 @@
         if (posNameInput) posNameInput.value = APP_SETTINGS.posName;
 
         const currencySelect = document.getElementById("settings-currency-code");
-        if (currencySelect) currencySelect.value = APP_SETTINGS.currencyCode;
+        if (currencySelect) {
+          currencySelect.value = APP_SETTINGS.currencyCode;
+          currencySelect.disabled = !hasManagerAccess();
+        }
+        const generalSaveButton = document.getElementById("save-general-settings-btn");
+        if (generalSaveButton) generalSaveButton.disabled = !hasManagerAccess();
 
         document.querySelectorAll('input[name="receipt-paper-size"]').forEach((input) => {
           input.checked = input.value === APP_SETTINGS.receiptPaperSize;
@@ -5377,6 +5398,8 @@
         });
         const receiptAccessNote = document.getElementById("receipt-paper-access-note");
         if (receiptAccessNote) receiptAccessNote.style.display = hasManagerAccess() ? "none" : "block";
+        const receiptPrinterSaveButton = document.getElementById("save-receipt-printer-btn");
+        if (receiptPrinterSaveButton) receiptPrinterSaveButton.disabled = !hasManagerAccess();
 
         const labelGeometry = APP_SETTINGS.labelGeometry || {};
         const labelFieldMap = {
@@ -5394,6 +5417,8 @@
         });
         const labelAccessNote = document.getElementById("label-geometry-access-note");
         if (labelAccessNote) labelAccessNote.style.display = hasManagerAccess() ? "none" : "block";
+        const labelPrintingSaveButton = document.getElementById("save-label-printing-btn");
+        if (labelPrintingSaveButton) labelPrintingSaveButton.disabled = !hasManagerAccess();
 
         const customization = APP_SETTINGS.receiptCustomization;
         const fieldMap = {
@@ -5416,10 +5441,7 @@
         if (removeLogoButton) removeLogoButton.disabled = !hasManagerAccess() || !customization.logo_url;
         const customizationAccessNote = document.getElementById("receipt-customization-access-note");
         if (customizationAccessNote) customizationAccessNote.style.display = hasManagerAccess() ? "none" : "block";
-        const mmqrInput = document.getElementById("mmqr-file");
-        const mmqrRemoveButton = document.getElementById("remove-mmqr-btn");
-        if (mmqrInput) mmqrInput.disabled = !hasManagerAccess();
-        if (mmqrRemoveButton) mmqrRemoveButton.disabled = !hasManagerAccess() || !APP_SETTINGS.mmqrUrl;
+        updateMMQRControls();
         const mmqrAccessNote = document.getElementById("mmqr-access-note");
         if (mmqrAccessNote) mmqrAccessNote.style.display = hasManagerAccess() ? "none" : "block";
         renderMMQRPreview();
@@ -5479,45 +5501,105 @@
         const preview = document.getElementById("mmqr-preview");
         const empty = document.getElementById("mmqr-preview-empty");
         if (!preview || !empty) return;
-        preview.src = APP_SETTINGS.mmqrUrl || "";
-        preview.style.display = APP_SETTINGS.mmqrUrl ? "inline-block" : "none";
-        empty.style.display = APP_SETTINGS.mmqrUrl ? "none" : "block";
+        const previewUrl = pendingMMQRRemoval
+          ? null
+          : (pendingMMQRObjectUrl || APP_SETTINGS.mmqrUrl);
+        preview.src = previewUrl || "";
+        preview.style.display = previewUrl ? "inline-block" : "none";
+        empty.textContent = pendingMMQRRemoval ? "MMQR will be removed after saving" : "No MMQR uploaded";
+        empty.style.display = previewUrl ? "none" : "block";
       }
 
-      async function uploadMMQR(file) {
+      function updateMMQRControls() {
+        const mmqrInput = document.getElementById("mmqr-file");
+        const mmqrRemoveButton = document.getElementById("remove-mmqr-btn");
+        const mmqrSaveButton = document.getElementById("save-mmqr-btn");
+        if (mmqrInput) mmqrInput.disabled = !hasManagerAccess();
+        if (mmqrRemoveButton) {
+          mmqrRemoveButton.disabled = !hasManagerAccess() || (!APP_SETTINGS.mmqrUrl && !pendingMMQRFile);
+        }
+        if (mmqrSaveButton) {
+          mmqrSaveButton.disabled = !hasManagerAccess() || (!pendingMMQRFile && !pendingMMQRRemoval);
+        }
+      }
+
+      function clearPendingMMQR() {
+        pendingMMQRFile = null;
+        pendingMMQRRemoval = false;
+        if (pendingMMQRObjectUrl) URL.revokeObjectURL(pendingMMQRObjectUrl);
+        pendingMMQRObjectUrl = null;
+        const input = document.getElementById("mmqr-file");
+        if (input) input.value = "";
+      }
+
+      function stageMMQRFile(file) {
         if (!hasManagerAccess() || !file) return;
-        const formData = new FormData();
-        formData.append("mmqr", file);
+        if (file.size > 2 * 1024 * 1024) {
+          showToast("MMQR image must be 2 MB or smaller", "warning");
+          document.getElementById("mmqr-file").value = "";
+          return;
+        }
+        if (!["image/png", "image/jpeg"].includes(file.type)) {
+          showToast("Use a PNG or JPG MMQR image", "warning");
+          document.getElementById("mmqr-file").value = "";
+          return;
+        }
+        pendingMMQRFile = file;
+        pendingMMQRRemoval = false;
+        if (pendingMMQRObjectUrl) URL.revokeObjectURL(pendingMMQRObjectUrl);
+        pendingMMQRObjectUrl = URL.createObjectURL(file);
+        renderMMQRPreview();
+        updateMMQRControls();
+        showToast("MMQR selected — click Save MMQR to apply it", "info");
+      }
+
+      async function saveMMQRConfiguration() {
+        if (!hasManagerAccess() || (!pendingMMQRFile && !pendingMMQRRemoval)) return;
+        const button = document.getElementById("save-mmqr-btn");
+        const originalContent = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
         try {
-          const response = await fetch("/api/settings/mmqr", { method: "POST", body: formData });
+          let response;
+          if (pendingMMQRRemoval) {
+            response = await fetch("/api/settings/mmqr", { method: "DELETE" });
+          } else {
+            const formData = new FormData();
+            formData.append("mmqr", pendingMMQRFile);
+            response = await fetch("/api/settings/mmqr", { method: "POST", body: formData });
+          }
           const data = await response.json();
-          if (!response.ok || !data.success) throw new Error(data.message || "Failed to upload MMQR");
+          if (!response.ok || !data.success) throw new Error(data.message || "Failed to save MMQR");
           APP_SETTINGS.mmqrUrl = data.mmqr_url || null;
-          renderMMQRPreview();
+          clearPendingMMQR();
           offlineCacheSet(SETTINGS_CACHE_KEY, { ...(offlineCacheGet(SETTINGS_CACHE_KEY)?.data || {}), mmqr_url: APP_SETTINGS.mmqrUrl });
-          applySettingsUI();
-          showToast("MMQR updated", "success");
+          renderMMQRPreview();
+          updateMMQRControls();
+          showToast(APP_SETTINGS.mmqrUrl ? "MMQR saved" : "MMQR removed", "success");
         } catch (error) {
-          console.error("Error uploading MMQR:", error);
-          showToast(error.message || "Failed to upload MMQR", "error");
+          console.error("Error saving MMQR:", error);
+          showToast(error.message || "Failed to save MMQR", "error");
+        } finally {
+          button.innerHTML = originalContent;
+          updateMMQRControls();
         }
       }
 
-      async function removeMMQR() {
-        if (!hasManagerAccess() || !APP_SETTINGS.mmqrUrl) return;
-        try {
-          const response = await fetch("/api/settings/mmqr", { method: "DELETE" });
-          const data = await response.json();
-          if (!response.ok || !data.success) throw new Error(data.message || "Failed to remove MMQR");
-          APP_SETTINGS.mmqrUrl = null;
+      function removeMMQR() {
+        if (!hasManagerAccess() || (!APP_SETTINGS.mmqrUrl && !pendingMMQRFile)) return;
+        if (pendingMMQRFile) {
+          clearPendingMMQR();
           renderMMQRPreview();
-          offlineCacheSet(SETTINGS_CACHE_KEY, { ...(offlineCacheGet(SETTINGS_CACHE_KEY)?.data || {}), mmqr_url: null });
-          applySettingsUI();
-          showToast("MMQR removed", "success");
-        } catch (error) {
-          console.error("Error removing MMQR:", error);
-          showToast(error.message || "Failed to remove MMQR", "error");
+          updateMMQRControls();
+          showToast("Unsaved MMQR selection discarded", "info");
+          return;
+        } else {
+          clearPendingMMQR();
+          pendingMMQRRemoval = true;
         }
+        renderMMQRPreview();
+        updateMMQRControls();
+        showToast("MMQR removal staged — click Save MMQR to apply it", "warning");
       }
 
       function getReceiptCustomizationFormValues() {
@@ -5673,45 +5755,55 @@
         }
       }
 
-      // Agent Autonomy toggle (manager only)
+      // Agent Autonomy is loaded into a draft toggle. It is only persisted by
+      // saveAgentAutonomy(), never by changing the toggle itself.
       function loadAgentAutonomy() {
         const autonomyToggle = document.getElementById("agent-autonomy-toggle");
         if (!autonomyToggle) return;
         fetch("/api/agent/autonomy")
           .then((response) => response.json())
           .then((data) => {
-            autonomyToggle.checked = Boolean(data.enabled);
+            savedAgentAutonomy = Boolean(data.enabled);
+            autonomyToggle.checked = savedAgentAutonomy;
           })
           .catch((error) => {
             console.error("Error loading agent autonomy:", error);
           });
-        autonomyToggle.addEventListener("change", () => {
-          const enabled = autonomyToggle.checked;
-          fetch("/api/agent/autonomy", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ enabled }),
+      }
+
+      function saveAgentAutonomy() {
+        const autonomyToggle = document.getElementById("agent-autonomy-toggle");
+        const button = document.getElementById("save-agent-autonomy-btn");
+        if (!autonomyToggle || !button) return;
+        const enabled = autonomyToggle.checked;
+        const originalContent = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
+        fetch("/api/agent/autonomy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled }),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (!data.success) throw new Error(data.message || "Failed to update Agent Autonomy");
+            savedAgentAutonomy = enabled;
+            showToast(
+              enabled
+                ? "Agent Autonomy enabled — Loli can apply low-risk changes immediately"
+                : "Agent Autonomy disabled — all changes require approval",
+              "success"
+            );
           })
-            .then((response) => response.json())
-            .then((data) => {
-              if (!data.success) {
-                autonomyToggle.checked = !enabled;
-                showToast(data.message || "Failed to update Agent Autonomy", "error");
-                return;
-              }
-              showToast(
-                enabled
-                  ? "Agent Autonomy enabled — Loli can apply low-risk changes immediately"
-                  : "Agent Autonomy disabled — all changes require approval",
-                "success"
-              );
-            })
-            .catch((error) => {
-              console.error("Error updating agent autonomy:", error);
-              autonomyToggle.checked = !enabled;
-              showToast("Failed to update Agent Autonomy", "error");
-            });
-        });
+          .catch((error) => {
+            console.error("Error updating agent autonomy:", error);
+            autonomyToggle.checked = savedAgentAutonomy;
+            showToast(error.message || "Failed to update Agent Autonomy", "error");
+          })
+          .finally(() => {
+            button.disabled = false;
+            button.innerHTML = originalContent;
+          });
       }
 
       function toggleApiKeyVisibility() {
@@ -5916,14 +6008,52 @@
           });
       }
 
-      function saveSettings() {
-        const currencyCode = document.getElementById("settings-currency-code")?.value;
-        const receiptPaperSize = document.querySelector('input[name="receipt-paper-size"]:checked')?.value;
-        if (!currencyCode || !receiptPaperSize) return;
+      function saveSettingsPayload(payload, buttonId, successMessage, onSuccess) {
+        const button = document.getElementById(buttonId);
+        const originalButtonContent = button?.innerHTML;
+        if (button) {
+          button.disabled = true;
+          button.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span> Saving...';
+        }
+        return fetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+          .then(async (response) => {
+            const data = await response.json();
+            if (!response.ok || !data.success) throw new Error(data.message || "Failed to save settings");
+            onSuccess?.(data);
+            showToast(successMessage, "success");
+            return data;
+          })
+          .catch((error) => {
+            console.error("Error saving settings:", error);
+            showToast(error.message || "Failed to save settings", "error");
+          })
+          .finally(() => {
+            if (button) {
+              button.disabled = false;
+              button.innerHTML = originalButtonContent;
+            }
+          });
+      }
 
-        // Label geometry rides along with the main save; disabled (non-manager)
-        // or missing fields are simply not sent. The server re-validates ranges.
-        const labelGeometryPayload = {};
+      function saveReceiptPrinterSettings() {
+        const receiptPaperSize = document.querySelector('input[name="receipt-paper-size"]:checked')?.value;
+        if (!receiptPaperSize) return;
+        return saveSettingsPayload(
+          { receipt_paper_size: receiptPaperSize },
+          "save-receipt-printer-btn",
+          "Receipt printer settings saved",
+          (data) => {
+            APP_SETTINGS.receiptPaperSize = data.receipt_paper_size || receiptPaperSize;
+          }
+        );
+      }
+
+      function getLabelGeometryPayload() {
+        const payload = {};
         const labelFields = {
           "label-width-mm": "label_width_mm",
           "label-height-mm": "label_height_mm",
@@ -5936,55 +6066,43 @@
           const value = Number(field.value);
           if (!Number.isFinite(value)) {
             showToast("Label geometry values must be numbers", "error");
-            return;
+            return null;
           }
-          labelGeometryPayload[key] = value;
+          payload[key] = value;
         }
+        return payload;
+      }
 
-        const saveButton = document.querySelector('button[onclick="saveSettings()"]');
-        const originalButtonContent = saveButton?.innerHTML;
-        if (saveButton) {
-          saveButton.disabled = true;
-          saveButton.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span> Saving...';
-        }
-
-        fetch("/api/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            currency_code: currencyCode,
-            receipt_paper_size: receiptPaperSize,
-            label_geometry: labelGeometryPayload,
-          }),
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            if (!data.success) {
-              showToast(data.message || "Failed to save settings", "error");
-              return;
-            }
-
-            APP_SETTINGS.currencyCode = data.currency_code;
-            APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(data.currency_code);
-            APP_SETTINGS.receiptPaperSize = data.receipt_paper_size || receiptPaperSize;
+      function saveLabelPrintingSettings() {
+        const labelGeometry = getLabelGeometryPayload();
+        if (!labelGeometry) return;
+        return saveSettingsPayload(
+          { label_geometry: labelGeometry },
+          "save-label-printing-btn",
+          "Label printing settings saved",
+          (data) => {
             APP_SETTINGS.labelGeometry = {
               ...APP_SETTINGS.labelGeometry,
               ...(data.label_geometry || {}),
             };
-            applySettingsUI();
-            showToast("Settings updated successfully", "success");
-          })
-          .catch((error) => {
-            console.error("Error saving settings:", error);
-            showToast("Failed to save settings", "error");
-            applySettingsUI();
-          })
-          .finally(() => {
-            if (saveButton) {
-              saveButton.disabled = false;
-              saveButton.innerHTML = originalButtonContent;
-            }
-          });
+          }
+        );
+      }
+
+      function saveSettings() {
+        const currencyCode = document.getElementById("settings-currency-code")?.value;
+        const language = document.getElementById("settings-language")?.value;
+        if (!currencyCode || !language) return;
+        return saveSettingsPayload(
+          { currency_code: currencyCode },
+          "save-general-settings-btn",
+          "General settings saved",
+          (data) => {
+            APP_SETTINGS.currencyCode = data.currency_code;
+            APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(data.currency_code);
+            changeLanguage(language, { silent: true });
+          }
+        );
       }
 
       // ===== BRANCH MANAGEMENT FUNCTIONS =====
@@ -8496,7 +8614,7 @@
       }
 
       // Change language
-      function changeLanguage(lang) {
+      function changeLanguage(lang, options = {}) {
         currentLanguage = lang;
         localStorage.setItem("pos_language", lang);
         
@@ -8508,7 +8626,9 @@
         document.documentElement.lang = lang;
         
         applyTranslations();
-        showToast(lang === "my" ? "ဘာသာစကားပြောင်းလဲပြီးပါပြီ" : "Language changed successfully", "success");
+        if (!options.silent) {
+          showToast(lang === "my" ? "ဘာသာစကားပြောင်းလဲပြီးပါပြီ" : "Language changed successfully", "success");
+        }
       }
 
       // Apply translations to all elements with data-i18n attribute
