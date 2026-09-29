@@ -5,6 +5,40 @@ import unittest
 import uuid
 
 
+class BarcodeLabelSearchMarkupTests(unittest.TestCase):
+    """The label picker exposes an accessible, state-preserving live search."""
+
+    @classmethod
+    def setUpClass(cls):
+        from pathlib import Path
+        cls.dashboard = Path('templates/dashboard.html').read_text(encoding='utf-8')
+
+    def test_search_controls_and_live_result_status_are_present(self):
+        self.assertIn('id="barcode-product-search"', self.dashboard)
+        self.assertIn('type="search"', self.dashboard)
+        self.assertIn('oninput="filterBarcodeLabelProducts()"', self.dashboard)
+        self.assertIn('id="clear-barcode-product-search"', self.dashboard)
+        self.assertIn('id="barcode-product-result-count"', self.dashboard)
+        self.assertIn('aria-live="polite"', self.dashboard)
+
+    def test_rows_are_searchable_by_name_barcode_and_category(self):
+        self.assertIn('row.dataset.searchText', self.dashboard)
+        self.assertIn('product.name', self.dashboard)
+        self.assertIn('product.barcode', self.dashboard)
+        self.assertIn('product.category', self.dashboard)
+        self.assertIn('function filterBarcodeLabelProducts()', self.dashboard)
+
+    def test_filter_hides_rows_without_rebuilding_them(self):
+        # Toggling hidden preserves checked state and edited quantities.
+        self.assertIn('row.hidden = !matches;', self.dashboard)
+        self.assertIn('function clearBarcodeLabelSearch()', self.dashboard)
+        self.assertIn('No products match your search.', self.dashboard)
+
+    def test_select_all_operates_on_visible_rows(self):
+        self.assertIn('getVisibleBarcodeProductRows()', self.dashboard)
+        self.assertIn('row.querySelector(".product-checkbox")', self.dashboard)
+
+
 class LabelBarcodeSvgTests(unittest.TestCase):
     def test_svg_root_is_clean_and_physical_mm(self):
         from app import build_label_barcode_svg

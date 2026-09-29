@@ -3565,6 +3565,43 @@
               at <strong>100% / Actual size</strong> on the label roll.
             </div>
 
+            <div class="d-flex flex-column flex-sm-row align-items-sm-center gap-2 mb-3">
+              <div class="input-group flex-grow-1">
+                <span class="input-group-text" aria-hidden="true">
+                  <i class="bi bi-search"></i>
+                </span>
+                <input
+                  type="search"
+                  class="form-control"
+                  id="barcode-product-search"
+                  placeholder="Search by name, barcode, or category"
+                  aria-label="Search products for barcode labels"
+                  aria-controls="barcode-products-table"
+                  autocomplete="off"
+                  oninput="filterBarcodeLabelProducts()"
+                />
+                <button
+                  type="button"
+                  class="btn btn-outline-secondary"
+                  id="clear-barcode-product-search"
+                  onclick="clearBarcodeLabelSearch()"
+                  aria-label="Clear product search"
+                  title="Clear search"
+                  hidden
+                >
+                  <i class="bi bi-x-lg" aria-hidden="true"></i>
+                </button>
+              </div>
+              <span
+                id="barcode-product-result-count"
+                class="badge rounded-pill text-bg-light border text-secondary px-3 py-2 text-nowrap"
+                role="status"
+                aria-live="polite"
+              >
+                Loading products…
+              </span>
+            </div>
+
             <div class="table-responsive">
               <table class="table table-striped table-hover">
                 <thead>
@@ -10126,6 +10163,7 @@
 
       // Barcode Label functions
       function showBarcodeLabelDialog() {
+        clearBarcodeLabelSearch();
         const modal = new bootstrap.Modal(
           document.getElementById("barcodeLabelModal")
         );
@@ -10135,6 +10173,14 @@
 
       function loadProductsForBarcodeLabels() {
         const table = document.getElementById("barcode-products-table");
+        const resultCount = document.getElementById("barcode-product-result-count");
+        const selectAll = document.getElementById("select-all-products");
+        if (resultCount) resultCount.textContent = "Loading products…";
+        if (selectAll) {
+          selectAll.checked = false;
+          selectAll.indeterminate = false;
+          selectAll.disabled = true;
+        }
         table.innerHTML = `
               <tr>
                   <td colspan="6" class="text-center py-4">
@@ -10156,17 +10202,24 @@
                               <td colspan="6" class="text-center py-4 text-muted">No products found.</td>
                           </tr>
                       `;
+              updateBarcodeLabelFilterStatus(0, 0);
               return;
             }
 
             data.forEach((product) => {
               const row = document.createElement("tr");
+              row.className = "barcode-product-row";
+              row.dataset.searchText = [
+                product.name,
+                product.barcode,
+                product.category,
+              ].filter(Boolean).join(" ").toLocaleLowerCase();
               row.innerHTML = `
                           <td><input type="checkbox" class="product-checkbox" data-id="${
                             product.id
                           }"></td>
-                          <td>${product.barcode || "N/A"}</td>
-                          <td>${product.name}</td>
+                          <td>${escapeHtml(product.barcode || "N/A")}</td>
+                          <td>${escapeHtml(product.name)}</td>
                           <td>${formatCurrency(product.price)}</td>
                           <td>
                             <input type="number" class="form-control form-control-sm barcode-qty" data-id="${product.id}" min="1" step="1" value="1" />
@@ -10175,6 +10228,12 @@
                       `;
               table.appendChild(row);
             });
+            table.onchange = (event) => {
+              if (event.target.classList.contains("product-checkbox")) {
+                updateBarcodeSelectAllState();
+              }
+            };
+            filterBarcodeLabelProducts();
           })
           .catch((error) => {
             console.error("Error loading products:", error);
@@ -10183,16 +10242,80 @@
                           <td colspan="6" class="text-center py-4 text-danger">Failed to load products.</td>
                       </tr>
                   `;
+            if (resultCount) resultCount.textContent = "Products unavailable";
           });
       }
 
-      function toggleSelectAllProducts() {
-        const selectAll = document.getElementById(
-          "select-all-products"
-        ).checked;
-        document.querySelectorAll(".product-checkbox").forEach((checkbox) => {
-          checkbox.checked = selectAll;
+      function getVisibleBarcodeProductRows() {
+        return Array.from(document.querySelectorAll(".barcode-product-row"))
+          .filter((row) => !row.hidden);
+      }
+
+      function updateBarcodeLabelFilterStatus(visibleCount, totalCount) {
+        const resultCount = document.getElementById("barcode-product-result-count");
+        if (!resultCount) return;
+        resultCount.textContent = totalCount === 0
+          ? "0 products"
+          : `${visibleCount} of ${totalCount} product${totalCount === 1 ? "" : "s"}`;
+      }
+
+      function updateBarcodeSelectAllState() {
+        const selectAll = document.getElementById("select-all-products");
+        if (!selectAll) return;
+        const visibleCheckboxes = getVisibleBarcodeProductRows()
+          .map((row) => row.querySelector(".product-checkbox"))
+          .filter(Boolean);
+        const selectedCount = visibleCheckboxes.filter((checkbox) => checkbox.checked).length;
+        selectAll.disabled = visibleCheckboxes.length === 0;
+        selectAll.checked = visibleCheckboxes.length > 0 && selectedCount === visibleCheckboxes.length;
+        selectAll.indeterminate = selectedCount > 0 && selectedCount < visibleCheckboxes.length;
+      }
+
+      function filterBarcodeLabelProducts() {
+        const searchInput = document.getElementById("barcode-product-search");
+        const clearButton = document.getElementById("clear-barcode-product-search");
+        const query = (searchInput?.value || "").trim().toLocaleLowerCase();
+        const rows = Array.from(document.querySelectorAll(".barcode-product-row"));
+        let visibleCount = 0;
+
+        rows.forEach((row) => {
+          const matches = !query || (row.dataset.searchText || "").includes(query);
+          row.hidden = !matches;
+          if (matches) visibleCount += 1;
         });
+
+        if (clearButton) clearButton.hidden = query.length === 0;
+        updateBarcodeLabelFilterStatus(visibleCount, rows.length);
+
+        let emptyRow = document.getElementById("barcode-products-search-empty");
+        if (visibleCount === 0 && rows.length > 0) {
+          if (!emptyRow) {
+            emptyRow = document.createElement("tr");
+            emptyRow.id = "barcode-products-search-empty";
+            emptyRow.innerHTML = '<td colspan="6" class="text-center py-4 text-muted"><i class="bi bi-search me-2"></i>No products match your search.</td>';
+            document.getElementById("barcode-products-table")?.appendChild(emptyRow);
+          }
+          emptyRow.hidden = false;
+        } else if (emptyRow) {
+          emptyRow.hidden = true;
+        }
+        updateBarcodeSelectAllState();
+      }
+
+      function clearBarcodeLabelSearch() {
+        const searchInput = document.getElementById("barcode-product-search");
+        if (searchInput) searchInput.value = "";
+        filterBarcodeLabelProducts();
+        searchInput?.focus();
+      }
+
+      function toggleSelectAllProducts() {
+        const selectAll = document.getElementById("select-all-products").checked;
+        getVisibleBarcodeProductRows().forEach((row) => {
+          const checkbox = row.querySelector(".product-checkbox");
+          if (checkbox) checkbox.checked = selectAll;
+        });
+        updateBarcodeSelectAllState();
       }
 
       function generateBarcodeLabels() {
