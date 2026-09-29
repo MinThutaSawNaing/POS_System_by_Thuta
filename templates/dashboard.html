@@ -2878,6 +2878,37 @@
           </div>
         </div>
 
+        <div class="card mt-3">
+          <div class="card-header bg-dark text-white">
+            <h5 class="mb-0"><i class="bi bi-upc-scan me-2"></i>Label Printing</h5>
+          </div>
+          <div class="card-body">
+            <p class="text-muted mb-3">Sticker geometry for barcode labels printed from the Products tab. Match these to your physical label roll — the print window paginates one row of labels per page.</p>
+            <div class="row g-3">
+              <div class="col-6 col-md-3">
+                <label class="form-label" for="label-width-mm">Label width (mm)</label>
+                <input type="number" class="form-control" id="label-width-mm" min="10" max="200" step="0.5" />
+              </div>
+              <div class="col-6 col-md-3">
+                <label class="form-label" for="label-height-mm">Label height (mm)</label>
+                <input type="number" class="form-control" id="label-height-mm" min="5" max="100" step="0.5" />
+              </div>
+              <div class="col-6 col-md-3">
+                <label class="form-label" for="label-gap-mm">Gap between labels (mm)</label>
+                <input type="number" class="form-control" id="label-gap-mm" min="0" max="20" step="0.5" />
+              </div>
+              <div class="col-6 col-md-3">
+                <label class="form-label" for="label-columns">Columns per row</label>
+                <input type="number" class="form-control" id="label-columns" min="1" max="10" step="1" />
+              </div>
+            </div>
+            <div class="form-text mt-3"><i class="bi bi-info-circle me-1"></i>Saved with the Save Changes button below. Print the label sheet at 100% / Actual size with no margins.</div>
+            <div class="alert alert-light border mt-3 mb-0 py-2" id="label-geometry-access-note" style="display: none;">
+              Manager access is required to change label geometry.
+            </div>
+          </div>
+        </div>
+
         <!-- AI Agent Settings -->
         <div class="card mt-4">
           <div class="card-header bg-primary text-white">
@@ -3529,9 +3560,9 @@
           <div class="modal-body">
             <div class="alert alert-info">
               <i class="bi bi-info-circle"></i> Select products and label
-              quantities. A print-ready label sheet (32×19 mm labels, 3 per
-              row with 3 mm gaps) opens in a new window — print it at
-              <strong>100% / Actual size</strong> on the label roll.
+              quantities. A print-ready label sheet opens in a new window using
+              your configured label size (Settings → Label Printing) — print it
+              at <strong>100% / Actual size</strong> on the label roll.
             </div>
 
             <div class="table-responsive">
@@ -5134,6 +5165,12 @@
         currencySuffix: "{{ currency_suffix }}",
         mmqrUrl: null,
         receiptPaperSize: "THERMAL_80MM",
+        labelGeometry: {
+          label_width_mm: 32,
+          label_height_mm: 19,
+          label_gap_mm: 3,
+          label_columns: 3,
+        },
         receiptCustomization: {
           brand_name: "Parrot POS",
           logo_filename: "",
@@ -5304,6 +5341,23 @@
         const receiptAccessNote = document.getElementById("receipt-paper-access-note");
         if (receiptAccessNote) receiptAccessNote.style.display = hasManagerAccess() ? "none" : "block";
 
+        const labelGeometry = APP_SETTINGS.labelGeometry || {};
+        const labelFieldMap = {
+          "label-width-mm": labelGeometry.label_width_mm,
+          "label-height-mm": labelGeometry.label_height_mm,
+          "label-gap-mm": labelGeometry.label_gap_mm,
+          "label-columns": labelGeometry.label_columns,
+        };
+        Object.entries(labelFieldMap).forEach(([id, value]) => {
+          const field = document.getElementById(id);
+          if (field && document.activeElement !== field) {
+            field.value = value === null || value === undefined ? "" : value;
+          }
+          if (field) field.disabled = !hasManagerAccess();
+        });
+        const labelAccessNote = document.getElementById("label-geometry-access-note");
+        if (labelAccessNote) labelAccessNote.style.display = hasManagerAccess() ? "none" : "block";
+
         const customization = APP_SETTINGS.receiptCustomization;
         const fieldMap = {
           "receipt-brand-name": customization.brand_name,
@@ -5345,6 +5399,10 @@
             APP_SETTINGS.currencyCode = data.currency_code || APP_SETTINGS.currencyCode;
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(APP_SETTINGS.currencyCode);
             APP_SETTINGS.receiptPaperSize = data.receipt_paper_size || APP_SETTINGS.receiptPaperSize;
+            APP_SETTINGS.labelGeometry = {
+              ...APP_SETTINGS.labelGeometry,
+              ...(data.label_geometry || {}),
+            };
             APP_SETTINGS.mmqrUrl = data.mmqr_url || null;
             APP_SETTINGS.receiptCustomization = {
               ...APP_SETTINGS.receiptCustomization,
@@ -5365,6 +5423,10 @@
               APP_SETTINGS.currencyCode = data.currency_code || APP_SETTINGS.currencyCode;
               APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(APP_SETTINGS.currencyCode);
               APP_SETTINGS.receiptPaperSize = data.receipt_paper_size || APP_SETTINGS.receiptPaperSize;
+              APP_SETTINGS.labelGeometry = {
+                ...APP_SETTINGS.labelGeometry,
+                ...(data.label_geometry || {}),
+              };
               APP_SETTINGS.mmqrUrl = data.mmqr_url || null;
               APP_SETTINGS.receiptCustomization = {
                 ...APP_SETTINGS.receiptCustomization,
@@ -5822,6 +5884,26 @@
         const receiptPaperSize = document.querySelector('input[name="receipt-paper-size"]:checked')?.value;
         if (!currencyCode || !receiptPaperSize) return;
 
+        // Label geometry rides along with the main save; disabled (non-manager)
+        // or missing fields are simply not sent. The server re-validates ranges.
+        const labelGeometryPayload = {};
+        const labelFields = {
+          "label-width-mm": "label_width_mm",
+          "label-height-mm": "label_height_mm",
+          "label-gap-mm": "label_gap_mm",
+          "label-columns": "label_columns",
+        };
+        for (const [id, key] of Object.entries(labelFields)) {
+          const field = document.getElementById(id);
+          if (!field || field.disabled || field.value === "") continue;
+          const value = Number(field.value);
+          if (!Number.isFinite(value)) {
+            showToast("Label geometry values must be numbers", "error");
+            return;
+          }
+          labelGeometryPayload[key] = value;
+        }
+
         const saveButton = document.querySelector('button[onclick="saveSettings()"]');
         const originalButtonContent = saveButton?.innerHTML;
         if (saveButton) {
@@ -5835,6 +5917,7 @@
           body: JSON.stringify({
             currency_code: currencyCode,
             receipt_paper_size: receiptPaperSize,
+            label_geometry: labelGeometryPayload,
           }),
         })
           .then((response) => response.json())
@@ -5847,6 +5930,10 @@
             APP_SETTINGS.currencyCode = data.currency_code;
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(data.currency_code);
             APP_SETTINGS.receiptPaperSize = data.receipt_paper_size || receiptPaperSize;
+            APP_SETTINGS.labelGeometry = {
+              ...APP_SETTINGS.labelGeometry,
+              ...(data.label_geometry || {}),
+            };
             applySettingsUI();
             showToast("Settings updated successfully", "success");
           })

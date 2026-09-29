@@ -128,5 +128,121 @@ class LabelSheetRouteTests(unittest.TestCase):
         self.assertIn('const autoPrint = true', response.get_data(as_text=True))
 
 
+class LabelGeometrySettingsTests(unittest.TestCase):
+    """get_label_geometry, the settings API round-trip and dynamic sheets.
+
+    Every test restores the original setting values so the live database is
+    left exactly as it was found.
+    """
+
+    def setUp(self):
+        from app import AppSetting, User, app, db, get_default_branch_id
+        self.app = app
+        self.db = db
+        app.config.update(TESTING=True)
+        self.context = app.app_context()
+        self.context.push()
+        self.user = User.query.filter_by(username='admin').first()
+        self.branch_id = get_default_branch_id()
+        self.keys = ('label_width_mm', 'label_height_mm', 'label_gap_mm', 'label_columns')
+        self.originals = {
+            key: (AppSetting.query.filter_by(key=key).first().value
+                  if AppSetting.query.filter_by(key=key).first() else None)
+            for key in self.keys
+        }
+
+    def tearDown(self):
+        from app import AppSetting
+        for key, value in self.originals.items():
+            setting = AppSetting.query.filter_by(key=key).first()
+            if value is None:
+                if setting:
+                    self.db.session.delete(setting)
+            elif setting:
+                setting.value = value
+            else:
+                self.db.session.add(AppSetting(key=key, value=value))
+        self.db.session.commit()
+        self.context.pop()
+
+    def manager_client(self):
+        client = self.app.test_client()
+        with client.session_transaction() as session:
+            session['user_id'] = self.user.id
+            session['role'] = 'manager'
+            session['branch_id'] = self.branch_id
+        return client
+
+    def test_normalize_rejects_junk_and_out_of_range(self):
+        from app import normalize_label_setting
+        self.assertIsNone(normalize_label_setting('label_width_mm', 'abc'))
+        self.assertIsNone(normalize_label_setting('label_width_mm', None))
+        self.assertIsNone(normalize_label_setting('label_width_mm', 9))    # below 10
+        self.assertIsNone(normalize_label_setting('label_width_mm', 201))  # above 200
+        self.assertIsNone(normalize_label_setting('label_gap_mm', -1))
+        self.assertIsNone(normalize_label_setting('label_columns', 0))
+        self.assertIsNone(normalize_label_setting('unknown_key', 5))
+        self.assertEqual(normalize_label_setting('label_width_mm', '37.25'), 37.2)
+        self.assertEqual(normalize_label_setting('label_columns', 2.9), 2)
+        self.assertEqual(normalize_label_setting('label_gap_mm', 0), 0.0)
+
+    def test_defaults_match_the_physical_roll(self):
+        from app import get_label_geometry
+        geometry = get_label_geometry()
+        self.assertEqual(geometry['label_width_mm'], 32.0)
+        self.assertEqual(geometry['label_columns'], 3)
+        self.assertEqual(geometry['page_width_mm'], 102.0)
+        self.assertEqual(geometry['row_pitch_mm'], 22.0)
+
+    def test_settings_api_round_trip_and_validation(self):
+        client = self.manager_client()
+        response = client.get('/api/settings')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('label_geometry', response.get_json())
+
+        saved = client.put('/api/settings', json={'label_geometry': {
+            'label_width_mm': 40, 'label_height_mm': 25,
+            'label_gap_mm': 2, 'label_columns': 2,
+        }})
+        self.assertEqual(saved.status_code, 200)
+        echoed = saved.get_json()['label_geometry']
+        self.assertEqual(echoed['label_width_mm'], 40.0)
+        self.assertEqual(echoed['label_columns'], 2)
+        self.assertEqual(echoed['page_width_mm'], 82.0)
+
+        invalid = client.put('/api/settings', json={'label_geometry': {'label_width_mm': 9999}})
+        self.assertEqual(invalid.status_code, 400)
+        self.assertIn('Invalid label', invalid.get_json()['message'])
+        # the rejected save must not change the stored value
+        from app import get_label_geometry
+        self.assertEqual(get_label_geometry()['label_width_mm'], 40.0)
+
+    def test_print_route_follows_configured_geometry(self):
+        from app import Product, set_setting
+        import uuid
+        set_setting('label_columns', '2')
+        set_setting('label_width_mm', '40')
+        product = Product(
+            name='Geometry Test Product', price=1000, stock=0, tax_rate=0,
+            branch_id=self.branch_id, barcode='GEO-' + uuid.uuid4().hex[:10],
+        )
+        self.db.session.add(product)
+        self.db.session.commit()
+        try:
+            response = self.manager_client().post(
+                '/api/products/barcode_labels/print',
+                data={'product_ids': str(product.id), 'quantities': '{}'},
+            )
+            self.assertEqual(response.status_code, 200)
+            html = response.get_data(as_text=True)
+            self.assertIn('size: 83mm 22mm', html)          # 2*40 + 3 gap
+            self.assertIn('repeat(2, 40mm)', html)
+            self.assertIn('justify-content: center', html)  # content is centered
+            self.assertIn('max-width: 38mm', html)          # barcode fits inside
+        finally:
+            self.db.session.delete(self.db.session.get(Product, product.id))
+            self.db.session.commit()
+
+
 if __name__ == '__main__':
     unittest.main()

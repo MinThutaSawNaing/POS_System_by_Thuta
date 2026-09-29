@@ -1938,6 +1938,7 @@ def api_settings():
             'currency_code': get_currency_code(),
             'currency_suffix': get_currency_suffix(),
             'receipt_paper_size': get_receipt_paper_size(),
+            'label_geometry': get_label_geometry(),
             'receipt_customization': get_receipt_customization_settings(
                 db.session.get(Branch, get_current_branch_id())
             ),
@@ -1965,6 +1966,23 @@ def api_settings():
         if normalized_paper_size not in RECEIPT_PAPER_OPTIONS:
             return jsonify({'success': False, 'message': 'Invalid receipt paper size'}), 400
         updated_settings['receipt_paper_size'] = normalized_paper_size
+
+    label_geometry = data.get('label_geometry')
+    if label_geometry is not None:
+        if not isinstance(label_geometry, dict):
+            return jsonify({'success': False, 'message': 'Invalid label geometry'}), 400
+        for key, value in label_geometry.items():
+            if key not in LABEL_SETTING_LIMITS:
+                continue  # ignore unknown keys so older clients cannot break saves
+            normalized = normalize_label_setting(key, value)
+            low, high = LABEL_SETTING_LIMITS[key]
+            if normalized is None:
+                label = key.replace('label_', '').replace('_', ' ').replace('mm', '(mm)').strip()
+                return jsonify({
+                    'success': False,
+                    'message': f'Invalid label {label}: use a number between {low:g} and {high:g}'
+                }), 400
+            updated_settings[key] = str(normalized)
 
     customization = data.get('receipt_customization')
     if customization is not None:
@@ -2006,6 +2024,7 @@ def api_settings():
             'currency_code': effective_currency,
             'currency_suffix': get_currency_suffix(effective_currency),
             'receipt_paper_size': updated_settings.get('receipt_paper_size', get_receipt_paper_size()),
+            'label_geometry': get_label_geometry(),
             'receipt_customization': get_receipt_customization_settings(
                 db.session.get(Branch, get_current_branch_id())
             )
@@ -3183,6 +3202,53 @@ LABEL_GAP_MM = 3.0
 LABEL_MAX_PER_PRODUCT = 500
 MM_TO_PT = 2.83465
 
+# Settings-adjustable label geometry with sane physical bounds so a typo in
+# Settings can never produce an unprintable sheet.
+LABEL_DEFAULTS = {
+    'label_width_mm': LABEL_WIDTH_MM,
+    'label_height_mm': LABEL_HEIGHT_MM,
+    'label_gap_mm': LABEL_GAP_MM,
+    'label_columns': LABEL_COLUMNS,
+}
+LABEL_SETTING_LIMITS = {
+    'label_width_mm': (10.0, 200.0),
+    'label_height_mm': (5.0, 100.0),
+    'label_gap_mm': (0.0, 20.0),
+    'label_columns': (1, 10),
+}
+
+
+def normalize_label_setting(key, value):
+    """Validate one label geometry value; return None when unusable."""
+    if key not in LABEL_SETTING_LIMITS:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float('inf'), float('-inf')):
+        return None
+    low, high = LABEL_SETTING_LIMITS[key]
+    if number < low or number > high:
+        return None
+    return int(number) if key == 'label_columns' else round(number, 1)
+
+
+def get_label_geometry():
+    """Effective label sheet geometry (stored settings with safe fallbacks)."""
+    geometry = {}
+    for key, fallback in LABEL_DEFAULTS.items():
+        normalized = normalize_label_setting(key, get_setting(key, fallback))
+        geometry[key] = fallback if normalized is None else normalized
+    geometry['columns'] = geometry['label_columns']
+    geometry['gap_mm'] = geometry['label_gap_mm']
+    geometry['page_width_mm'] = (
+        geometry['label_width_mm'] * geometry['label_columns']
+        + geometry['label_gap_mm'] * (geometry['label_columns'] - 1)
+    )
+    geometry['row_pitch_mm'] = geometry['label_height_mm'] + geometry['label_gap_mm']
+    return geometry
+
 
 def build_label_barcode_svg(value, max_width_mm=29.0, height_mm=8.0):
     """Render a Code128 barcode as inline SVG sized to fit the label.
@@ -3253,6 +3319,10 @@ def print_barcode_labels():
     products_by_id = {product.id: product for product in products}
 
     labels = []
+    geometry = get_label_geometry()
+    # Barcode footprint scales with the configured label so content always fits.
+    svg_max_width = max(5.0, geometry['label_width_mm'] - 3.0)
+    svg_height = max(4.0, min(12.0, geometry['label_height_mm'] * 0.45))
     for product_id in product_ids:  # keep the order the user selected
         product = products_by_id.get(product_id)
         if not product:
@@ -3263,26 +3333,23 @@ def print_barcode_labels():
             qty = 1
         qty = max(1, min(qty, LABEL_MAX_PER_PRODUCT))
         label = {
-            'svg': build_label_barcode_svg(product.barcode or str(product.id)),
+            'svg': build_label_barcode_svg(
+                product.barcode or str(product.id),
+                max_width_mm=svg_max_width,
+                height_mm=svg_height,
+            ),
             'name': product.name or f'Product #{product.id}',
             'price_display': format_currency(product.price),
         }
         for _ in range(qty):
             labels.append(label)
 
+    columns = geometry['label_columns']
     rows = []
-    for index in range(0, len(labels), LABEL_COLUMNS):
-        chunk = labels[index:index + LABEL_COLUMNS]
-        rows.append({'labels': chunk, 'fillers': range(LABEL_COLUMNS - len(chunk))})
+    for index in range(0, len(labels), columns):
+        chunk = labels[index:index + columns]
+        rows.append({'labels': chunk, 'fillers': range(columns - len(chunk))})
 
-    geometry = {
-        'columns': LABEL_COLUMNS,
-        'label_width_mm': LABEL_WIDTH_MM,
-        'label_height_mm': LABEL_HEIGHT_MM,
-        'gap_mm': LABEL_GAP_MM,
-        'page_width_mm': LABEL_WIDTH_MM * LABEL_COLUMNS + LABEL_GAP_MM * (LABEL_COLUMNS - 1),
-        'row_pitch_mm': LABEL_HEIGHT_MM + LABEL_GAP_MM,
-    }
     response = make_response(render_template(
         'barcode_labels.html',
         rows=rows,
