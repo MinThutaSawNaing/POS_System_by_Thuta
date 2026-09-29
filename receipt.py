@@ -188,6 +188,81 @@ def format_receipt_money(value: Any, suffix: str) -> str:
     return f"{_money(value):,.2f} {suffix}".strip()
 
 
+def build_delivery_slip_view(slip: Mapping[str, Any], paper_size: Any) -> dict[str, Any]:
+    """Build the print view for a driver's delivery slip from plain data.
+
+    ``slip`` is a plain mapping assembled by the caller (delivery fields,
+    packing items and money totals). Money values are quantized with the same
+    helper used for sale receipts so both documents stay consistent.
+    """
+    slip = slip or {}
+    profile = get_paper_profile(paper_size)
+    suffix = str(slip.get("currency_suffix") or "$")
+    branch = dict(slip.get("branch") or {})
+    stored_identity = slip.get("receipt_identity")
+    if stored_identity:
+        identity = normalize_receipt_identity(dict(stored_identity), branch)
+    else:
+        identity = normalize_receipt_identity(
+            {"brand_name": slip.get("brand_name") or DEFAULT_RECEIPT_BRAND_NAME},
+            branch,
+        )
+
+    items = []
+    for raw_item in slip.get("items") or []:
+        item = dict(raw_item)
+        try:
+            quantity = int(item.get("quantity") or 0)
+        except (TypeError, ValueError):
+            quantity = 0
+        items.append({
+            "name": str(item.get("name") or "Item"),
+            "quantity": quantity,
+        })
+
+    order_total = _money(slip.get("order_total"))
+    delivery_fee = _money(slip.get("delivery_fee"))
+    collect_total = _money(slip.get("collect_total"))
+
+    created_at = str(slip.get("created_at") or "")
+    try:
+        created_at = datetime.fromisoformat(created_at).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        pass
+
+    delivery_address = str(slip.get("delivery_address") or "")
+
+    return {
+        "paper_size": normalize_receipt_paper_size(paper_size),
+        "paper": profile,
+        "is_narrow": profile["width_mm"] == 58,
+        "brand_name": identity["brand_name"],
+        "logo_filename": identity["logo_filename"],
+        "email": identity["email"],
+        "phone": identity["phone"],
+        "address_lines": identity["address"].splitlines() if identity["address"] else [],
+        "branch": branch,
+        "delivery_number": str(slip.get("delivery_number") or ""),
+        "stage_label": str(slip.get("stage_label") or slip.get("stage") or ""),
+        "priority": str(slip.get("priority") or "normal").capitalize(),
+        "created_at": created_at,
+        "sale_transaction_id": str(slip.get("sale_transaction_id") or ""),
+        "payment_method": str(slip.get("payment_method") or "").replace("_", " ").title(),
+        "recipient_name": str(slip.get("recipient_name") or ""),
+        "recipient_phone": str(slip.get("recipient_phone") or ""),
+        "delivery_address_lines": delivery_address.splitlines() if delivery_address else [],
+        "township": str(slip.get("township") or ""),
+        "instructions": str(slip.get("instructions") or ""),
+        "courier_name": str(slip.get("courier_name") or ""),
+        "courier_phone": str(slip.get("courier_phone") or ""),
+        "tracking_code": str(slip.get("tracking_code") or ""),
+        "items": items,
+        "order_total_display": format_receipt_money(order_total, suffix),
+        "delivery_fee_display": format_receipt_money(delivery_fee, suffix),
+        "collect_total_display": format_receipt_money(collect_total, suffix),
+    }
+
+
 def build_receipt_view(snapshot: Mapping[str, Any], paper_size: Any) -> dict[str, Any]:
     profile = get_paper_profile(paper_size)
     suffix = str(snapshot.get("currency_suffix") or "$")

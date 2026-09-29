@@ -23,6 +23,7 @@ from receipt import (
     DEFAULT_RECEIPT_FOOTER,
     DEFAULT_RECEIPT_PAPER_SIZE,
     RECEIPT_PAPER_OPTIONS,
+    build_delivery_slip_view,
     build_receipt_snapshot,
     build_receipt_view,
     detect_receipt_logo_extension,
@@ -4148,6 +4149,75 @@ def api_delivery_stats():
         'high_priority_open': sum(1 for d in deliveries if d.priority in ('high', 'urgent') and d.stage not in ('delivered', 'cancelled')),
         'ready_dispatch': stage_counts.get('packaged', 0)
     })
+
+# --- Delivery Slip (driver copy) ---
+@app.route('/api/deliveries/<int:delivery_id>/print', methods=['GET'])
+def print_delivery_slip(delivery_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    delivery = Delivery.query.filter_by(id=delivery_id, branch_id=get_default_branch_id()).first()
+    if not delivery:
+        return jsonify({'success': False, 'message': 'Delivery not found'}), 404
+
+    sale = delivery.sale
+    packing_items = []
+    order_total = Decimal('0.00')
+    sale_transaction_id = ''
+    payment_method = ''
+    if sale:
+        sale_transaction_id = sale.transaction_id or ''
+        payment_method = sale.payment_method or ''
+        order_total = safe_to_decimal(sale.total)
+        for sale_item in SaleItem.query.filter_by(sale_id=sale.id).all():
+            # Skip malformed rows so bad legacy data can never break the slip.
+            quantity = int(sale_item.quantity or 0)
+            if quantity <= 0:
+                continue
+            product = db.session.get(Product, sale_item.product_id)
+            packing_items.append({
+                'name': product.name if product else f'Unavailable item #{sale_item.product_id}',
+                'quantity': quantity,
+            })
+
+    delivery_fee = safe_to_decimal(delivery.delivery_fee)
+    branch = db.session.get(Branch, delivery.branch_id) if delivery.branch_id else None
+
+    slip_view = build_delivery_slip_view({
+        'currency_suffix': get_currency_suffix(),
+        'branch': {
+            'name': branch.name if branch else '',
+            'code': branch.code if branch else '',
+            'address': branch.address if branch else '',
+            'phone': branch.phone if branch else '',
+            'email': branch.email if branch else ''
+        },
+        'receipt_identity': get_receipt_identity(branch),
+        'delivery_number': delivery.delivery_number,
+        'stage_label': DELIVERY_STAGE_LABELS.get(delivery.stage, delivery.stage),
+        'priority': delivery.priority,
+        'created_at': delivery.created_at.isoformat() if delivery.created_at else '',
+        'sale_transaction_id': sale_transaction_id,
+        'payment_method': payment_method,
+        'recipient_name': delivery.recipient_name,
+        'recipient_phone': delivery.recipient_phone,
+        'delivery_address': delivery.delivery_address,
+        'township': delivery.township,
+        'instructions': delivery.instructions,
+        'courier_name': delivery.courier_name,
+        'courier_phone': delivery.courier_phone,
+        'tracking_code': delivery.tracking_code,
+        'items': packing_items,
+        'order_total': order_total,
+        'delivery_fee': delivery_fee,
+        'collect_total': order_total + delivery_fee,
+    }, get_receipt_paper_size())
+    slip_view['logo_url'] = receipt_logo_url(slip_view.get('logo_filename'))
+
+    response = make_response(render_template('delivery_slip.html', slip=slip_view))
+    response.headers['Cache-Control'] = 'private, no-store, max-age=0'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
 
 # --- Thermal Receipt ---
 @app.route('/api/sales/<string:transaction_id>/print', methods=['GET'])

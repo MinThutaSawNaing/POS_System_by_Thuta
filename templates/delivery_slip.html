@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Delivery {{ slip.delivery_number }} · {{ slip.brand_name }}</title>
+    <style id="slip-page-style">
+      @page { size: {{ slip.paper.width_mm }}mm 20mm; margin: 0; }
+    </style>
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; background: #e9ecef; color: #111; }
+      body { font-family: Arial, "Padauk", "Myanmar Text", sans-serif; }
+      .toolbar {
+        position: sticky; top: 0; z-index: 2; display: flex; justify-content: center;
+        gap: 10px; padding: 12px; background: rgba(33, 37, 41, .96); color: white;
+      }
+      .toolbar button {
+        border: 1px solid rgba(255,255,255,.35); border-radius: 6px; padding: 9px 15px;
+        background: white; color: #212529; font: 600 14px/1 Arial, sans-serif; cursor: pointer;
+      }
+      .toolbar button.primary { background: #0d6efd; border-color: #0d6efd; color: white; }
+      .toolbar button:focus-visible { outline: 3px solid #ffc107; outline-offset: 2px; }
+      .print-help { margin: 10px auto; max-width: 520px; padding: 0 12px; text-align: center; color: #495057; font-size: 13px; }
+      .receipt-shell { width: {{ slip.paper.width_mm }}mm; margin: 16px auto; background: white; box-shadow: 0 8px 30px rgba(0,0,0,.18); }
+      .receipt {
+        width: {{ slip.paper.width_mm }}mm; padding: {% if slip.is_narrow %}3mm{% else %}4mm{% endif %};
+        overflow: hidden; background: white; font-family: "Courier New", "Padauk", "Myanmar Text", monospace;
+        font-size: {% if slip.is_narrow %}10.5px{% else %}12px{% endif %}; font-weight: 600; line-height: 1.32;
+      }
+      .center { text-align: center; }
+      .receipt-logo { display: block; max-width: {% if slip.is_narrow %}26mm{% else %}34mm{% endif %}; max-height: {% if slip.is_narrow %}12mm{% else %}15mm{% endif %}; margin: 0 auto 5px; object-fit: contain; filter: grayscale(1) contrast(1.35); }
+      .brand { margin: 0; font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if slip.is_narrow %}16px{% else %}19px{% endif %}; font-weight: 800; letter-spacing: .4px; }
+      .branch-name { margin-top: 2px; font-weight: 700; }
+      .contact { margin-top: 2px; overflow-wrap: anywhere; font-size: .92em; }
+      .rule { border: 0; border-top: 1px dashed #111; margin: 6px 0; }
+      .rule.strong { border-top-style: solid; border-top-width: 2px; }
+      .slip-title { font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if slip.is_narrow %}14px{% else %}16px{% endif %}; font-weight: 900; letter-spacing: 1.5px; margin: 2px 0; }
+      .meta-row, .total-row { display: flex; justify-content: space-between; gap: 8px; }
+      .meta-row span:first-child, .total-row span:first-child { flex: 0 0 auto; }
+      .meta-row span:last-child, .total-row span:last-child { text-align: right; overflow-wrap: anywhere; }
+      .block-label { font-weight: 800; letter-spacing: .8px; margin: 2px 0; }
+      .block-value { overflow-wrap: anywhere; }
+      .item-row { display: flex; justify-content: space-between; gap: 6px; break-inside: avoid; page-break-inside: avoid; margin-bottom: 4px; }
+      .item-row .name { overflow-wrap: anywhere; font-weight: 700; }
+      .item-row .qty { text-align: right; white-space: nowrap; font-weight: 800; }
+      .total-row { padding: 1px 0; }
+      .total-row.grand { padding: 4px 0; font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if slip.is_narrow %}15px{% else %}17px{% endif %}; font-weight: 900; }
+      .signature-line { margin-top: 14px; display: flex; align-items: flex-end; gap: 6px; }
+      .signature-line .line { flex: 1 1 auto; border-bottom: 1px solid #111; height: 18px; }
+      .footer { margin-top: 8px; text-align: center; font-size: .92em; }
+      .cut-line { margin-top: 8px; color: #555; letter-spacing: 1px; white-space: nowrap; overflow: hidden; }
+      @media print {
+        html, body { width: {{ slip.paper.width_mm }}mm; min-height: 0; background: white; }
+        .toolbar, .print-help { display: none !important; }
+        .receipt-shell { margin: 0; box-shadow: none; }
+        .receipt { margin: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="toolbar" aria-label="Delivery slip actions">
+      <button type="button" class="primary" id="print-button">Print slip</button>
+      <button type="button" onclick="window.close()">Close</button>
+    </div>
+    <p class="print-help">Use {{ slip.paper.label }}, 100% / Actual size, with browser headers and footers disabled.</p>
+    <main class="receipt-shell">
+      <article class="receipt" id="slip-content">
+        <header class="center">
+          {% if slip.logo_url %}<img class="receipt-logo" src="{{ slip.logo_url }}" alt="{{ slip.brand_name }} logo" />{% endif %}
+          <h1 class="brand">{{ slip.brand_name }}</h1>
+          {% if slip.branch.name %}<div class="branch-name">{{ slip.branch.name }}</div>{% endif %}
+          {% for address_line in slip.address_lines %}<div class="contact">{{ address_line }}</div>{% endfor %}
+          {% if slip.phone or slip.email %}<div class="contact">{{ slip.phone }}{% if slip.phone and slip.email %} · {% endif %}{{ slip.email }}</div>{% endif %}
+        </header>
+        <hr class="rule strong" />
+        <div class="slip-title center">DELIVERY SLIP</div>
+        <hr class="rule" />
+        <div class="meta-row"><span>Delivery #</span><span>{{ slip.delivery_number }}</span></div>
+        {% if slip.created_at %}<div class="meta-row"><span>Date</span><span>{{ slip.created_at }}</span></div>{% endif %}
+        {% if slip.stage_label %}<div class="meta-row"><span>Stage</span><span>{{ slip.stage_label }}</span></div>{% endif %}
+        <div class="meta-row"><span>Priority</span><span>{{ slip.priority }}</span></div>
+        {% if slip.sale_transaction_id %}<div class="meta-row"><span>Sale Txn</span><span>{{ slip.sale_transaction_id }}</span></div>{% endif %}
+        {% if slip.payment_method %}<div class="meta-row"><span>Payment</span><span>{{ slip.payment_method }}</span></div>{% endif %}
+        <hr class="rule" />
+
+        <div class="block-label">RECIPIENT</div>
+        {% if slip.recipient_name %}<div class="block-value">{{ slip.recipient_name }}</div>{% endif %}
+        {% if slip.recipient_phone %}<div class="block-value">Ph: {{ slip.recipient_phone }}</div>{% endif %}
+        {% for address_line in slip.delivery_address_lines %}<div class="block-value">{{ address_line }}</div>{% endfor %}
+        {% if slip.township %}<div class="block-value">{{ slip.township }}</div>{% endif %}
+        {% if slip.instructions %}<div class="block-value">Note: {{ slip.instructions }}</div>{% endif %}
+
+        {% if slip.courier_name or slip.tracking_code %}
+          <hr class="rule" />
+          {% if slip.courier_name %}<div class="meta-row"><span>Courier</span><span>{{ slip.courier_name }}{% if slip.courier_phone %} · {{ slip.courier_phone }}{% endif %}</span></div>{% endif %}
+          {% if slip.tracking_code %}<div class="meta-row"><span>Tracking</span><span>{{ slip.tracking_code }}</span></div>{% endif %}
+        {% endif %}
+
+        <hr class="rule" />
+        <div class="block-label">ITEMS</div>
+        {% for item in slip["items"] %}
+          <div class="item-row"><span class="name">{{ item.name }}</span><span class="qty">&times; {{ item.quantity }}</span></div>
+        {% else %}
+          <div class="item-row"><span class="name">No item details</span></div>
+        {% endfor %}
+
+        <hr class="rule" />
+        <div class="total-row"><span>Order total</span><span>{{ slip.order_total_display }}</span></div>
+        <div class="total-row"><span>Delivery fee</span><span>{{ slip.delivery_fee_display }}</span></div>
+        <hr class="rule strong" />
+        <div class="total-row grand"><span>COLLECT</span><span>{{ slip.collect_total_display }}</span></div>
+
+        <div class="signature-line"><span>Received by</span><span class="line"></span></div>
+        <footer class="footer">
+          <div>Driver copy — hand to recipient on delivery.</div>
+          <div class="cut-line">- - - - - - - - - - - - - - - - - -</div>
+        </footer>
+      </article>
+    </main>
+    <script>
+      (() => {
+        const widthMm = {{ slip.paper.width_mm }};
+        const content = document.getElementById("slip-content");
+        const printButton = document.getElementById("print-button");
+        let ready = false;
+
+        function preparePage() {
+          const heightPx = Math.max(0, content.scrollHeight);
+          const heightMm = Math.max(20, Math.ceil((heightPx / 96) * 25.4 + 3));
+          document.getElementById("slip-page-style").textContent =
+            `@page { size: ${widthMm}mm ${heightMm}mm; margin: 0; }`;
+          ready = true;
+        }
+
+        async function printSlip() {
+          preparePage();
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          window.print();
+        }
+
+        printButton.addEventListener("click", printSlip);
+        window.addEventListener("beforeprint", preparePage);
+        window.addEventListener("load", async () => {
+          if (document.fonts?.ready) await document.fonts.ready;
+          const logo = content.querySelector(".receipt-logo");
+          if (logo && !logo.complete && logo.decode) {
+            try { await logo.decode(); } catch (error) { console.warn("Slip logo could not be decoded", error); }
+          }
+          preparePage();
+          if (new URLSearchParams(window.location.search).get("autoprint") === "1" && ready) {
+            await printSlip();
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

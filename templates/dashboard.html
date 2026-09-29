@@ -14235,6 +14235,7 @@
                 <td><span class="badge bg-${priorityBadgeClass}">${d.priority}</span></td>
                 <td>${formatCurrency(d.delivery_fee || 0)}</td>
                 <td>
+                  <button class="btn btn-sm btn-outline-secondary me-1" onclick="printDeliverySlip(${d.id})" title="Print Delivery Slip"><i class="bi bi-printer"></i></button>
                   <button class="btn btn-sm btn-outline-primary me-1" onclick="openUpdateDeliveryModal(${d.id})"><i class="bi bi-pencil"></i></button>
                   ${d.can_transition_to && d.can_transition_to.length ? `<button class="btn btn-sm btn-outline-success" onclick="advanceDeliveryStage(${d.id}, '${d.can_transition_to[0]}')">Next</button>` : ""}
                 </td>
@@ -14371,6 +14372,26 @@
           .catch((e) => {
             console.error("Error advancing stage", e);
           });
+      }
+
+      function printDeliverySlip(deliveryId) {
+        if (!deliveryId) {
+          showToast("Delivery ID is missing", "error");
+          return;
+        }
+        const slipWindow = window.open("about:blank", "_blank");
+        if (!slipWindow) {
+          showToast("Print window was blocked. Allow popups for this POS and try again.", "warning");
+          return;
+        }
+        try {
+          slipWindow.opener = null;
+          slipWindow.location.replace(`/api/deliveries/${encodeURIComponent(deliveryId)}/print?autoprint=1`);
+        } catch (error) {
+          slipWindow.close();
+          console.error("Failed to open delivery slip window:", error);
+          showToast("Failed to open the delivery slip. Please try again.", "error");
+        }
       }
 
       // ==================== Warehouse Management Functions ====================
