@@ -3528,9 +3528,10 @@
           </div>
           <div class="modal-body">
             <div class="alert alert-info">
-              <i class="bi bi-info-circle"></i> Select products to generate
-              barcode labels. Labels will be printed 3 per row with the product
-              name and price.
+              <i class="bi bi-info-circle"></i> Select products and label
+              quantities. A print-ready label sheet (32×19 mm labels, 3 per
+              row with 3 mm gaps) opens in a new window — print it at
+              <strong>100% / Actual size</strong> on the label roll.
             </div>
 
             <div class="table-responsive">
@@ -10126,44 +10127,40 @@
           return;
         }
 
-        fetch("/api/products/barcode_labels", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            product_ids: selectedProducts,
-            quantities: quantities,
-          }),
-        })
-          .then((response) => {
-            if (response.ok) {
-              return response.blob();
-            }
-            throw new Error("Failed to generate labels");
-          })
-          .then((blob) => {
-            // Create a download link and trigger it
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = "barcode_labels.pdf";
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            window.URL.revokeObjectURL(url);
+        // Open the thermal label sheet (32x19 mm labels, 3 per row) in a
+        // print-ready window. A hidden form POST carries the selection because
+        // long label runs would exceed URL query-string limits.
+        try {
+          const form = document.createElement("form");
+          form.method = "POST";
+          form.action = "/api/products/barcode_labels/print?autoprint=1";
+          form.target = "_blank";
 
-            // Close the modal
-            const modal = bootstrap.Modal.getInstance(
-              document.getElementById("barcodeLabelModal")
-            );
-            modal.hide();
-            showToast("Barcode labels generated successfully!", "success");
-          })
-          .catch((error) => {
-            console.error("Error generating labels:", error);
-            showToast("Error generating labels: " + error.message, "error");
-          });
+          const idsInput = document.createElement("input");
+          idsInput.type = "hidden";
+          idsInput.name = "product_ids";
+          idsInput.value = selectedProducts.join(",");
+
+          const quantitiesInput = document.createElement("input");
+          quantitiesInput.type = "hidden";
+          quantitiesInput.name = "quantities";
+          quantitiesInput.value = JSON.stringify(quantities);
+
+          form.append(idsInput, quantitiesInput);
+          document.body.appendChild(form);
+          form.submit();
+          form.remove();
+
+          // Close the modal
+          const modal = bootstrap.Modal.getInstance(
+            document.getElementById("barcodeLabelModal")
+          );
+          modal?.hide();
+          showToast("Label sheet opened — print at 100% / Actual size", "success");
+        } catch (error) {
+          console.error("Error opening the label sheet:", error);
+          showToast("Error opening the label sheet: " + error.message, "error");
+        }
       }
 
       // ============================================

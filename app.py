@@ -4,6 +4,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from datetime import datetime, timedelta
 import os
+import re
 import uuid
 import io
 import json
@@ -49,6 +50,7 @@ from reports import (
     summarize_delivery_performance,
 )
 from reportlab.graphics import renderPDF
+from reportlab.graphics import renderSVG
 from reportlab.graphics.shapes import Drawing
 import pytz
 from functools import wraps
@@ -3168,6 +3170,130 @@ def api_search_products():
         'tax_rate': p.tax_rate,
         'photo_url': product_photo_url(p.photo_filename)
     } for p in products])
+
+# ==================== Barcode Label Printing (thermal 3-up roll) ====================
+# Physical label geometry in millimetres for the shop's sticker roll:
+# 32 x 19 mm labels, 3 columns, 3 mm gaps. One printed browser page is one
+# row (page height = label height + gap = the roll pitch) so the feeder gap
+# sensor lines up with every row, matching how the receipt/slip windows print.
+LABEL_COLUMNS = 3
+LABEL_WIDTH_MM = 32.0
+LABEL_HEIGHT_MM = 19.0
+LABEL_GAP_MM = 3.0
+LABEL_MAX_PER_PRODUCT = 500
+MM_TO_PT = 2.83465
+
+
+def build_label_barcode_svg(value, max_width_mm=29.0, height_mm=8.0):
+    """Render a Code128 barcode as inline SVG sized to fit the label.
+
+    The old PDF path used a fixed bar width, so longer barcodes overflowed the
+    32 mm label. Here the natural width is measured at barWidth=1.0 and the
+    bars are scaled down to fit. The SVG root is stamped with physical mm
+    dimensions (reportlab emits unit-less point values, which browsers would
+    otherwise read as px and print 25% too small); the viewBox keeps the
+    drawing crisp at that size.
+    """
+    text = str(value or '').strip() or '0'
+    max_width_pt = max_width_mm * MM_TO_PT
+    bar_height_pt = height_mm * MM_TO_PT
+    bar_width = 1.0
+    drawing = createBarcodeDrawing(
+        'Code128', value=text, barHeight=bar_height_pt, barWidth=bar_width,
+    )
+    # reportlab rounds each bar to whole render units, so one proportional
+    # step can still overshoot; shrink against the measured width until the
+    # barcode fits the label (a couple of iterations in practice).
+    for _ in range(8):
+        actual_width = float(drawing.width or 0)
+        if actual_width <= 0 or actual_width <= max_width_pt:
+            break
+        bar_width = max(0.05, bar_width * (max_width_pt / actual_width) * 0.98)
+        drawing = createBarcodeDrawing(
+            'Code128', value=text, barHeight=bar_height_pt, barWidth=bar_width,
+        )
+    svg = renderSVG.drawToString(drawing)
+    if isinstance(svg, bytes):
+        svg = svg.decode('utf-8')
+    start = svg.find('<svg')
+    if start == -1:
+        return ''
+    svg = svg[start:]
+    width_mm = float(drawing.width or 0) / MM_TO_PT
+    height_mm_actual = float(drawing.height or 0) / MM_TO_PT
+    svg = re.sub(r'(<svg[^>]*?)width="[^"]*"', rf'\1width="{width_mm:.2f}mm"', svg, count=1)
+    svg = re.sub(r'(<svg[^>]*?)height="[^"]*"', rf'\1height="{height_mm_actual:.2f}mm"', svg, count=1)
+    return svg
+
+
+@app.route('/api/products/barcode_labels/print', methods=['POST'])
+def print_barcode_labels():
+    """Label sheet as a print-ready window page (32x19mm labels, 3 per row)."""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    product_ids = []
+    for chunk in str(request.form.get('product_ids') or '').split(','):
+        chunk = chunk.strip()
+        if chunk.isdigit():
+            product_ids.append(int(chunk))
+    if not product_ids:
+        return jsonify({'success': False, 'message': 'No products selected'}), 400
+
+    try:
+        quantities = json.loads(request.form.get('quantities') or '{}')
+        if not isinstance(quantities, dict):
+            quantities = {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        quantities = {}
+
+    products = Product.query.filter(Product.id.in_(product_ids)).all()
+    if not products:
+        return jsonify({'success': False, 'message': 'No products found'}), 404
+    products_by_id = {product.id: product for product in products}
+
+    labels = []
+    for product_id in product_ids:  # keep the order the user selected
+        product = products_by_id.get(product_id)
+        if not product:
+            continue
+        try:
+            qty = int(quantities.get(str(product_id), 1))
+        except (TypeError, ValueError):
+            qty = 1
+        qty = max(1, min(qty, LABEL_MAX_PER_PRODUCT))
+        label = {
+            'svg': build_label_barcode_svg(product.barcode or str(product.id)),
+            'name': product.name or f'Product #{product.id}',
+            'price_display': format_currency(product.price),
+        }
+        for _ in range(qty):
+            labels.append(label)
+
+    rows = []
+    for index in range(0, len(labels), LABEL_COLUMNS):
+        chunk = labels[index:index + LABEL_COLUMNS]
+        rows.append({'labels': chunk, 'fillers': range(LABEL_COLUMNS - len(chunk))})
+
+    geometry = {
+        'columns': LABEL_COLUMNS,
+        'label_width_mm': LABEL_WIDTH_MM,
+        'label_height_mm': LABEL_HEIGHT_MM,
+        'gap_mm': LABEL_GAP_MM,
+        'page_width_mm': LABEL_WIDTH_MM * LABEL_COLUMNS + LABEL_GAP_MM * (LABEL_COLUMNS - 1),
+        'row_pitch_mm': LABEL_HEIGHT_MM + LABEL_GAP_MM,
+    }
+    response = make_response(render_template(
+        'barcode_labels.html',
+        rows=rows,
+        geometry=geometry,
+        label_count=len(labels),
+        auto_print=request.args.get('autoprint') == '1',
+    ))
+    response.headers['Cache-Control'] = 'private, no-store, max-age=0'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
 
 @app.route('/api/products/barcode_labels', methods=['POST'])
 def generate_barcode_labels():
