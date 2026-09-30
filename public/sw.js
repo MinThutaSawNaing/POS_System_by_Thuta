@@ -7,7 +7,7 @@
  * plain-HTTP LAN the browser ignores this file and the localStorage data caches
  * in dashboard.html still provide offline POS data.
  */
-const SW_VERSION = "1.1.0";
+const SW_VERSION = "1.1.1";
 const CACHE_NAME = "parrot-pos-" + SW_VERSION;
 
 const PRECACHE_URLS = [
@@ -80,6 +80,13 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
 
   const url = new URL(request.url);
+
+  // Audit history is authorization-sensitive and must never survive logout or
+  // a role change in persistent Cache Storage. TXT exports also stay streamed.
+  if (url.origin === self.location.origin && url.pathname.startsWith("/api/logs")) {
+    event.respondWith(fetch(request, { cache: "no-store" }));
+    return;
+  }
 
   // Cross-origin (e.g. Google Fonts): cache-first with runtime population.
   if (url.origin !== self.location.origin) {

@@ -36,6 +36,13 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
   - Professional stock and purchase order reports (branded PDF and Excel downloads)
   - Sales trends analysis
 
+- **Append-Only System Logs**
+  - Automatically records committed sales, returns/exchanges, stock movements, and administrative changes
+  - Captures the operator, branch, time, affected record, request path, and field-level before/after values
+  - Redacts passwords, API keys, tokens, receipt snapshots, and other sensitive payloads
+  - Manager/boss-only Logs tab grouped by Asia/Yangon business day, with search, category/action/actor/date filters, and pagination
+  - Downloads every matching event as a UTF-8 TXT file grouped under daily date headings
+
 - **Business Modules**
   - Promotions (fixed and percentage discounts)
   - Customer management

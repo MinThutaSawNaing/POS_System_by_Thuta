@@ -576,6 +576,40 @@
         padding: 0.75rem;
       }
 
+      .audit-stat-card {
+        border: 1px solid #e4e8ee;
+        border-radius: 0.75rem;
+        background: #fff;
+        padding: 1rem;
+        height: 100%;
+      }
+
+      .audit-stat-card .audit-stat-value {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #212529;
+      }
+
+      .audit-action-badge { min-width: 4.5rem; text-transform: capitalize; }
+
+      .audit-day-row td {
+        background: #f1f5f9 !important;
+        color: #334155;
+        font-weight: 700;
+        border-top: 2px solid #cbd5e1;
+      }
+
+      .audit-details {
+        margin: 0;
+        max-width: 48rem;
+        max-height: 18rem;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 0.75rem;
+        color: #495057;
+      }
+
       /* Branch indicator styles */
       .branch-indicator {
         display: inline-flex;
@@ -1286,6 +1320,13 @@
             <i class="bi bi-people"></i>Users
           </a>
         </li>
+        {% if session.role in ('manager', 'boss') %}
+        <li class="nav-item">
+          <a class="nav-link" href="#" onclick="showSection('logs')">
+            <i class="bi bi-journal-text"></i>Logs
+          </a>
+        </li>
+        {% endif %}
         <li class="nav-item">
           <a class="nav-link" href="#" onclick="showSection('settings')">
             <i class="bi bi-gear"></i>Settings
@@ -2804,6 +2845,49 @@
           </div>
         </div>
       </div>
+
+      <!-- System Audit Logs Section -->
+      {% if session.role in ('manager', 'boss') %}
+      <div id="logs-section" style="display: none">
+        <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
+          <div>
+            <h2 class="mb-0">System Logs</h2>
+            <p class="text-muted mb-0 small">Append-only history of sales, returns, inventory, and administrative changes.</p>
+          </div>
+          <div class="d-flex gap-2">
+            <button class="btn btn-outline-primary" onclick="downloadLogsText()"><i class="bi bi-download me-1"></i>Download TXT</button>
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="row g-3 mb-3">
+          <div class="col-6 col-lg-3"><div class="audit-stat-card"><div class="small text-muted">Matching events</div><div class="audit-stat-value" id="logs-matching-count">—</div></div></div>
+          <div class="col-6 col-lg-3"><div class="audit-stat-card"><div class="small text-muted">Events today</div><div class="audit-stat-value" id="logs-today-count">—</div></div></div>
+          <div class="col-6 col-lg-3"><div class="audit-stat-card"><div class="small text-muted">Active actors</div><div class="audit-stat-value" id="logs-actors-count">—</div></div></div>
+          <div class="col-6 col-lg-3"><div class="audit-stat-card"><div class="small text-muted">Retention</div><div class="audit-stat-value fs-5 mt-1"><i class="bi bi-lock-fill text-success me-1"></i>Append-only</div></div></div>
+        </div>
+
+        <div class="card mb-3"><div class="card-body"><div class="row g-2 align-items-end">
+          <div class="col-12 col-lg-4"><label for="logs-search" class="form-label small">Search</label><input id="logs-search" class="form-control" placeholder="Transaction, record, path, or description" /></div>
+          <div class="col-6 col-md-3 col-lg-2"><label for="logs-category-filter" class="form-label small">Category</label><select id="logs-category-filter" class="form-select"><option value="">All categories</option></select></div>
+          <div class="col-6 col-md-3 col-lg-2"><label for="logs-action-filter" class="form-label small">Action</label><select id="logs-action-filter" class="form-select"><option value="">All actions</option><option value="create">Created</option><option value="update">Updated</option><option value="delete">Deleted</option></select></div>
+          <div class="col-6 col-md-3 col-lg-2"><label for="logs-start-filter" class="form-label small">From</label><input type="date" id="logs-start-filter" class="form-control" /></div>
+          <div class="col-6 col-md-3 col-lg-2"><label for="logs-end-filter" class="form-label small">To</label><input type="date" id="logs-end-filter" class="form-control" /></div>
+          <div class="col-12 col-md-4 col-lg-3"><label for="logs-actor-filter" class="form-label small">Performed by</label><input id="logs-actor-filter" class="form-control" placeholder="Username" /></div>
+          <div class="col-12 col-md-auto"><button class="btn btn-primary" onclick="applyLogFilters()"><i class="bi bi-funnel me-1"></i>Apply filters</button> <button class="btn btn-outline-secondary" onclick="clearLogFilters()">Clear</button></div>
+        </div></div></div>
+
+        <div class="card"><div class="card-body">
+          <div class="table-responsive"><table class="table table-hover align-middle">
+            <thead><tr><th>Time</th><th>Actor</th><th>Category</th><th>Action</th><th>Event</th><th>Branch</th><th>Details</th></tr></thead>
+            <tbody id="logs-table"><tr><td colspan="7" class="text-center py-4 text-muted">Open this tab to load the audit trail.</td></tr></tbody>
+          </table></div>
+          <div id="logs-pagination" class="d-flex justify-content-start mt-3"></div>
+        </div></div>
+      </div>
+      {% endif %}
 
       <!-- Settings Section -->
       <div id="settings-section" style="display: none">
@@ -6924,6 +7008,7 @@
         purchases: 1,
         warehouse: 1,
         deliveries: 1,
+        logs: 1,
       };
       const pageSize = {
         products: 10,
@@ -6936,6 +7021,7 @@
         purchases: 10,
         warehouse: 10,
         deliveries: 10,
+        logs: 25,
       };
       
       // ===== SPA DATA CACHE =====
@@ -6971,6 +7057,7 @@
         promotions: 60000,
         categories: 120000,
         users: 120000,
+        logs: 15000,
         settings: 300000,
         branches: 300000,
       };
@@ -7027,6 +7114,9 @@
       // over-invalidating only ever costs one extra fetch, under-invalidating
       // shows a cashier the wrong stock count. null = drop the whole cache.
       const CACHE_WRITE_INVALIDATIONS = [
+        // Authorization-sensitive reads only: explicitly accounted for but never
+        // stored by the SPA cache or service worker.
+        ["/api/logs", []],
         ["/api/products", ["products", "pos", "categories", "purchases", "warehouse", "promotions", "dashboard", "reports", "sales"]],
         ["/api/sales", ["pos", "sales", "products", "promotions", "customers", "debts", "warehouse", "dashboard", "reports"]],
         ["/api/returns_exchanges", ["pos", "sales", "products", "warehouse", "dashboard", "reports"]],
@@ -7109,7 +7199,11 @@
 
       function cacheWriteGroupsForPath(pathname) {
         for (const [prefix, groups] of CACHE_WRITE_INVALIDATIONS) {
-          if (pathname === prefix || pathname.startsWith(prefix + "/")) return groups;
+          if (pathname === prefix || pathname.startsWith(prefix + "/")) {
+            // Every successful mutation creates audit rows, regardless of which
+            // business group it changes.
+            return groups === null ? null : Array.from(new Set([...groups, "logs"]));
+          }
         }
         return null; // unknown write: assume everything may have moved
       }
@@ -7342,6 +7436,7 @@
         warehouse: () => { loadWarehouseSummary(); loadWarehouseInventory(); },
         deliveries: () => { loadDeliveryStats(); loadDeliveries(); },
         users: () => loadUsers(),
+        logs: () => loadLogs(),
         settings: () => { loadSettings(); loadBranches(); loadUnits(); },
       };
 
@@ -7364,6 +7459,7 @@
         warehouse: ["warehouse"],
         deliveries: ["deliveries"],
         users: ["users"],
+        logs: ["logs"],
         settings: ["settings", "branches"],
       };
       // Chart canvases mis-size when they are built inside a display:none parent,
@@ -12976,6 +13072,127 @@
               </tr>
             `;
             renderPagination("users", "users-pagination", 1, loadUsers);
+          });
+      }
+
+      function applyLogFilters() {
+        pageState.logs = 1;
+        invalidateCacheGroups(["logs"], { resetRenderedSections: false });
+        loadLogs();
+      }
+
+      function clearLogFilters() {
+        ["logs-search", "logs-category-filter", "logs-action-filter",
+         "logs-start-filter", "logs-end-filter", "logs-actor-filter"].forEach((id) => {
+          const field = document.getElementById(id);
+          if (field) field.value = "";
+        });
+        applyLogFilters();
+      }
+
+      function auditActionClass(action) {
+        return action === "create" ? "success" : action === "delete" ? "danger" : "primary";
+      }
+
+      function logFilterParams(includePagination = true) {
+        const params = new URLSearchParams();
+        if (includePagination) {
+          params.set("page", String(pageState.logs));
+          params.set("per_page", String(pageSize.logs));
+        }
+        const filterMap = {
+          q: "logs-search", category: "logs-category-filter",
+          action: "logs-action-filter", start: "logs-start-filter",
+          end: "logs-end-filter", actor: "logs-actor-filter",
+        };
+        Object.entries(filterMap).forEach(([key, id]) => {
+          const value = (document.getElementById(id)?.value || "").trim();
+          if (value) params.set(key, value);
+        });
+        return params;
+      }
+
+      async function downloadLogsText() {
+        const query = logFilterParams(false).toString();
+        try {
+          const response = await fetch(`/api/logs/export.txt${query ? `?${query}` : ""}`, {
+            cache: "no-store",
+          });
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.message || `Download failed (${response.status})`);
+          }
+          const blob = await response.blob();
+          const disposition = response.headers.get("Content-Disposition") || "";
+          const match = disposition.match(/filename="?([^";]+)"?/i);
+          const link = document.createElement("a");
+          link.href = URL.createObjectURL(blob);
+          link.download = match ? match[1] : "parrot_pos_logs.txt";
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          URL.revokeObjectURL(link.href);
+        } catch (error) {
+          showToast(error.message || "Failed to download logs", "error");
+        }
+      }
+
+      function loadLogs() {
+        const table = document.getElementById("logs-table");
+        if (!table) return;
+        table.innerHTML = '<tr><td colspan="7" class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></td></tr>';
+
+        const params = logFilterParams(true);
+
+        fetch(`/api/logs?${params.toString()}`, { cache: "no-store" })
+          .then((response) => {
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            return response.json();
+          })
+          .then((data) => {
+            document.getElementById("logs-matching-count").textContent = data.summary?.matching ?? data.total ?? 0;
+            document.getElementById("logs-today-count").textContent = data.summary?.today ?? 0;
+            document.getElementById("logs-actors-count").textContent = data.summary?.actors ?? 0;
+
+            const categorySelect = document.getElementById("logs-category-filter");
+            const selectedCategory = categorySelect.value;
+            if (categorySelect.options.length <= 1) {
+              (data.categories || []).forEach((category) => {
+                const option = document.createElement("option");
+                option.value = category;
+                option.textContent = category;
+                categorySelect.appendChild(option);
+              });
+              categorySelect.value = selectedCategory;
+            }
+
+            if (!data.items?.length) {
+              table.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-muted">No audit events match these filters.</td></tr>';
+            } else {
+              let currentDay = null;
+              table.innerHTML = data.items.map((log) => {
+                const details = JSON.stringify(log.changes || {}, null, 2);
+                const record = log.entity_id ? `${log.entity_type} #${log.entity_id}` : log.entity_type;
+                const dayHeading = log.local_date !== currentDay
+                  ? `<tr class="audit-day-row"><td colspan="7"><i class="bi bi-calendar3 me-2"></i>${escapeHtml(log.local_date_label || log.local_date || "Unknown date")} <small class="fw-normal text-muted">Asia/Yangon</small></td></tr>`
+                  : "";
+                currentDay = log.local_date;
+                return `${dayHeading}<tr>
+                  <td class="text-nowrap"><small>${escapeHtml(log.local_time || "—")}</small></td>
+                  <td><strong>${escapeHtml(log.actor_username || "System")}</strong><br><small class="text-muted">${escapeHtml(log.actor_role || "system")}</small></td>
+                  <td><span class="badge bg-light text-dark border">${escapeHtml(log.category)}</span></td>
+                  <td><span class="badge bg-${auditActionClass(log.action)} audit-action-badge">${escapeHtml(log.action)}</span></td>
+                  <td><div>${escapeHtml(log.summary)}</div><small class="text-muted">${escapeHtml(record)}${log.request_path ? ` · ${escapeHtml(log.request_path)}` : ""}</small></td>
+                  <td>${escapeHtml(log.branch_name || (log.branch_id ? `Branch #${log.branch_id}` : "System-wide"))}</td>
+                  <td><details><summary class="btn btn-sm btn-outline-secondary">View</summary><pre class="audit-details mt-2">${escapeHtml(details)}</pre></details></td>
+                </tr>`;
+              }).join("");
+            }
+            renderPagination("logs", "logs-pagination", data.total_pages || 1, loadLogs);
+          })
+          .catch((error) => {
+            table.innerHTML = `<tr><td colspan="7" class="text-center py-4 text-danger">Failed to load logs. ${escapeHtml(error.message)}</td></tr>`;
+            renderPagination("logs", "logs-pagination", 1, loadLogs);
           });
       }
 

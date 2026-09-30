@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, make_response, send_from_directory, send_file
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, make_response, send_from_directory, send_file, has_request_context, Response, stream_with_context
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -10,8 +10,9 @@ import io
 import json
 import time
 import struct
-from sqlalchemy import inspect, text, func, event, or_
+from sqlalchemy import inspect, text, func, event, or_, and_
 from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session as SQLAlchemySession
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -1440,6 +1441,335 @@ class Delivery(db.Model):
     sale = db.relationship('Sale', backref=db.backref('delivery', uselist=False))
     customer = db.relationship('Customer', backref='deliveries')
     creator = db.relationship('User', backref='created_deliveries')
+
+
+class AuditLog(db.Model):
+    """Immutable history of committed business-data changes."""
+    __tablename__ = 'audit_log'
+
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    actor_user_id = db.Column(db.Integer, nullable=True, index=True)
+    actor_username = db.Column(db.String(80), nullable=False, default='System')
+    actor_role = db.Column(db.String(20), nullable=True)
+    branch_id = db.Column(db.Integer, nullable=True, index=True)
+    branch_name = db.Column(db.String(100), nullable=True)
+    category = db.Column(db.String(40), nullable=False, index=True)
+    action = db.Column(db.String(20), nullable=False, index=True)
+    entity_type = db.Column(db.String(80), nullable=False, index=True)
+    entity_id = db.Column(db.String(128), nullable=True, index=True)
+    entity_label = db.Column(db.String(200), nullable=True)
+    summary = db.Column(db.String(300), nullable=False)
+    changes_json = db.Column(db.Text, nullable=True)
+    request_method = db.Column(db.String(10), nullable=True)
+    request_path = db.Column(db.String(300), nullable=True)
+    ip_address = db.Column(db.String(64), nullable=True)
+    user_agent = db.Column(db.String(300), nullable=True)
+
+    __table_args__ = (
+        db.Index('idx_audit_log_branch_created', 'branch_id', 'created_at'),
+        db.Index('idx_audit_log_category_created', 'category', 'created_at'),
+        db.Index('idx_audit_log_actor_created', 'actor_user_id', 'created_at'),
+    )
+
+
+AUDIT_CATEGORY_BY_ENTITY = {
+    'Sale': 'Sales', 'SaleItem': 'Sales',
+    'ReturnExchange': 'Returns & Exchanges',
+    'ReturnExchangeItem': 'Returns & Exchanges',
+    'Product': 'Products', 'Category': 'Products', 'Unit': 'Products',
+    'WarehouseInventory': 'Inventory', 'WarehouseTransfer': 'Inventory',
+    'PurchaseOrder': 'Purchasing', 'PurchaseOrderItem': 'Purchasing',
+    'Supplier': 'Purchasing', 'SupplierCommunication': 'Purchasing',
+    'SupplierPriceAgreement': 'Purchasing',
+    'Customer': 'Customers', 'Debt': 'Customers', 'DebtPayment': 'Customers',
+    'Delivery': 'Deliveries', 'Promotion': 'Promotions',
+    'User': 'Users', 'Branch': 'Settings', 'AppSetting': 'Settings',
+    'AgentTask': 'AI Assistant', 'MemoryRegistry': 'AI Assistant',
+    'MemoryAudit': 'AI Assistant',
+}
+AUDIT_SENSITIVE_FIELDS = {
+    'password', 'value', 'receipt_snapshot', 'command', 'plan_json',
+    'step_results_json', 'details', 'bank_account', 'tax_id',
+    'payment_breakdown', 'phone', 'email', 'address', 'delivery_address',
+    'recipient_phone', 'courier_phone', 'notes', 'communication_notes',
+    'instructions',
+}
+AUDIT_LABEL_FIELDS = (
+    'transaction_id', 'workflow_id', 'po_number', 'delivery_number', 'name',
+    'username', 'key', 'barcode', 'memory_id', 'batch_number', 'id',
+)
+AUDIT_TIMEZONE = pytz.timezone('Asia/Yangon')
+
+
+def audit_local_datetime(moment):
+    """Convert a stored UTC audit timestamp to the business timezone."""
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        moment = pytz.utc.localize(moment)
+    else:
+        moment = moment.astimezone(pytz.utc)
+    return moment.astimezone(AUDIT_TIMEZONE)
+
+
+def audit_day_utc_bounds(raw_date):
+    """Return [start, end) UTC-naive bounds for one Asia/Yangon date."""
+    try:
+        local_start = AUDIT_TIMEZONE.localize(
+            datetime.strptime(str(raw_date).strip(), '%Y-%m-%d'))
+    except (TypeError, ValueError):
+        return None
+    local_end = local_start + timedelta(days=1)
+    return (
+        local_start.astimezone(pytz.utc).replace(tzinfo=None),
+        local_end.astimezone(pytz.utc).replace(tzinfo=None),
+    )
+
+
+def _audit_json_value(value):
+    """Return a bounded, JSON-safe audit value without leaking large payloads."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        if isinstance(value, str) and len(value) > 1000:
+            return value[:1000] + '…'
+        return value
+    return str(value)[:1000]
+
+
+def _audit_column_value(obj, column_name):
+    lowered = column_name.lower()
+    if lowered in AUDIT_SENSITIVE_FIELDS or any(
+            token in lowered for token in ('password', 'secret', 'token', 'api_key')):
+        return '[REDACTED]'
+    return _audit_json_value(getattr(obj, column_name, None))
+
+
+def _audit_snapshot(obj):
+    return {
+        column.key: _audit_column_value(obj, column.key)
+        for column in inspect(obj).mapper.column_attrs
+    }
+
+
+def _audit_entity_label(obj):
+    for field in AUDIT_LABEL_FIELDS:
+        value = getattr(obj, field, None)
+        if value not in (None, ''):
+            return str(value)[:200]
+    return None
+
+
+def _audit_branch_id(obj):
+    value = getattr(obj, 'branch_id', None)
+    if value is not None:
+        return value
+    if isinstance(obj, Branch):
+        return obj.id
+    return session.get('branch_id') if has_request_context() else None
+
+
+def _audit_request_context():
+    if not has_request_context() or request.method in ('GET', 'HEAD', 'OPTIONS'):
+        return None
+    # request.remote_addr is authoritative unless ProxyFix is deliberately
+    # configured for a trusted reverse proxy. Never trust client-supplied XFF.
+    ip_address = request.remote_addr
+    return {
+        'actor_user_id': session.get('user_id'),
+        'actor_username': session.get('username') or 'System',
+        'actor_role': session.get('role'),
+        'session_branch_id': session.get('branch_id'),
+        'request_method': request.method,
+        'request_path': request.path[:300],
+        'ip_address': (ip_address or '')[:64] or None,
+        'user_agent': str(request.user_agent)[:300] or None,
+    }
+
+
+def _audit_summary(action, entity_type, label, changed_fields):
+    readable = re.sub(r'(?<!^)(?=[A-Z])', ' ', entity_type).lower()
+    target = f' “{label}”' if label else ''
+    if action == 'create':
+        return f'Created {readable}{target}'[:300]
+    if action == 'delete':
+        return f'Deleted {readable}{target}'[:300]
+    fields = ', '.join(field.replace('_', ' ') for field in changed_fields[:8])
+    suffix = f' ({fields})' if fields else ''
+    return f'Updated {readable}{target}{suffix}'[:300]
+
+
+def record_audit_event(category, action, entity_type, entity_id=None,
+                       entity_label=None, changes=None, branch_id=None,
+                       summary=None):
+    """Record a change made through SQL that bypasses normal ORM history.
+
+    Callers add the event before their normal commit. It therefore shares the
+    business transaction and is discarded automatically on rollback.
+    """
+    context = _audit_request_context()
+    if not context:
+        return None
+    row = AuditLog(
+        actor_user_id=context['actor_user_id'],
+        actor_username=context['actor_username'],
+        actor_role=context['actor_role'],
+        branch_id=branch_id or context['session_branch_id'],
+        category=category,
+        action=action,
+        entity_type=entity_type,
+        entity_id=str(entity_id) if entity_id is not None else None,
+        entity_label=str(entity_label)[:200] if entity_label is not None else None,
+        summary=(summary or _audit_summary(action, entity_type, entity_label,
+                                           list((changes or {}).keys())))[:300],
+        changes_json=json.dumps(changes or {}, ensure_ascii=False,
+                                default=json_default),
+        request_method=context['request_method'],
+        request_path=context['request_path'],
+        ip_address=context['ip_address'],
+        user_agent=context['user_agent'],
+    )
+    db.session.add(row)
+    return row
+
+
+@event.listens_for(SQLAlchemySession, 'before_flush')
+def _collect_audit_changes(db_session, flush_context, instances):
+    """Capture ORM changes so their logs commit or roll back atomically."""
+    if any(isinstance(obj, AuditLog) for obj in db_session.dirty) or any(
+            isinstance(obj, AuditLog) for obj in db_session.deleted):
+        raise ValueError('System audit logs are append-only')
+
+    context = _audit_request_context()
+    if not context or db_session.info.get('_audit_collecting'):
+        return
+
+    pending = []
+    for obj in list(db_session.new):
+        if isinstance(obj, db.Model) and not isinstance(obj, AuditLog):
+            pending.append({'object': obj, 'action': 'create',
+                            'changed_fields': []})
+
+    for obj in list(db_session.dirty):
+        if not isinstance(obj, db.Model) or isinstance(obj, AuditLog):
+            continue
+        state = inspect(obj)
+        changes = {}
+        for attribute in state.mapper.column_attrs:
+            history = state.attrs[attribute.key].history
+            if not history.has_changes():
+                continue
+            old_value = history.deleted[0] if history.deleted else None
+            new_value = getattr(obj, attribute.key, None)
+            lowered = attribute.key.lower()
+            if lowered in AUDIT_SENSITIVE_FIELDS or any(
+                    token in lowered for token in ('password', 'secret', 'token', 'api_key')):
+                old_value = new_value = '[REDACTED]'
+            changes[attribute.key] = {
+                'before': _audit_json_value(old_value),
+                'after': _audit_json_value(new_value),
+            }
+        if changes:
+            pending.append({'object': obj, 'action': 'update',
+                            'changes': changes,
+                            'changed_fields': list(changes)})
+
+    for obj in list(db_session.deleted):
+        if isinstance(obj, db.Model) and not isinstance(obj, AuditLog):
+            pending.append({'object': obj, 'action': 'delete',
+                            'before': _audit_snapshot(obj), 'changed_fields': []})
+
+    if pending:
+        existing_context, existing = db_session.info.get(
+            '_audit_pending', (context, []))
+        db_session.info['_audit_pending'] = (existing_context, existing + pending)
+
+
+@event.listens_for(SQLAlchemySession, 'do_orm_execute', retval=True)
+def _audit_bulk_orm_write(execute_state):
+    """Leave evidence for Query.update/delete paths that bypass object history."""
+    if not (execute_state.is_update or execute_state.is_delete):
+        return execute_state.invoke_statement()
+    context = _audit_request_context()
+    mapper = execute_state.bind_mapper
+    entity_type = mapper.class_.__name__ if mapper is not None else 'Database records'
+    if entity_type == 'AuditLog':
+        if not execute_state.session.info.get('_allow_audit_log_maintenance'):
+            raise ValueError('System audit logs are append-only')
+        return execute_state.invoke_statement()
+    result = execute_state.invoke_statement()
+    if not context:
+        return result
+    action = 'update' if execute_state.is_update else 'delete'
+    count = max(int(getattr(result, 'rowcount', 0) or 0), 0)
+    execute_state.session.add(AuditLog(
+        actor_user_id=context['actor_user_id'],
+        actor_username=context['actor_username'],
+        actor_role=context['actor_role'],
+        branch_id=context['session_branch_id'],
+        category=AUDIT_CATEGORY_BY_ENTITY.get(entity_type, 'System'),
+        action=action,
+        entity_type=entity_type,
+        summary=f'Bulk {action} affected {count} {entity_type} record(s)'[:300],
+        changes_json=json.dumps({'affected_records': count}),
+        request_method=context['request_method'], request_path=context['request_path'],
+        ip_address=context['ip_address'], user_agent=context['user_agent'],
+    ))
+    return result
+
+
+@event.listens_for(SQLAlchemySession, 'after_flush_postexec')
+def _write_audit_changes(db_session, flush_context):
+    queued = db_session.info.pop('_audit_pending', None)
+    if not queued:
+        return
+    context, pending = queued
+    db_session.info['_audit_collecting'] = True
+    try:
+        for entry in pending:
+            obj = entry['object']
+            action = entry['action']
+            entity_type = type(obj).__name__
+            label = _audit_entity_label(obj)
+            if action == 'create':
+                changes = {'after': _audit_snapshot(obj)}
+            elif action == 'delete':
+                changes = {'before': entry['before']}
+            else:
+                changes = entry['changes']
+            branch_id = _audit_branch_id(obj) or context['session_branch_id']
+            db_session.add(AuditLog(
+                actor_user_id=context['actor_user_id'],
+                actor_username=context['actor_username'],
+                actor_role=context['actor_role'],
+                branch_id=branch_id,
+                branch_name=obj.name if isinstance(obj, Branch) else None,
+                category=AUDIT_CATEGORY_BY_ENTITY.get(entity_type, 'System'),
+                action=action,
+                entity_type=entity_type,
+                entity_id=str(getattr(obj, 'id', '') or '') or None,
+                entity_label=label,
+                summary=_audit_summary(action, entity_type, label,
+                                       entry['changed_fields']),
+                changes_json=json.dumps(changes, ensure_ascii=False,
+                                        default=json_default),
+                request_method=context['request_method'],
+                request_path=context['request_path'],
+                ip_address=context['ip_address'],
+                user_agent=context['user_agent'],
+            ))
+    finally:
+        db_session.info.pop('_audit_collecting', None)
+
+
+@event.listens_for(SQLAlchemySession, 'after_rollback')
+def _discard_rolled_back_audit_changes(db_session):
+    """A reused scoped session must not carry failed events into its next commit."""
+    db_session.info.pop('_audit_pending', None)
+    db_session.info.pop('_audit_collecting', None)
 
 def serialize_delivery(delivery):
     return {
@@ -4091,6 +4421,17 @@ def _create_sale_transaction(data):
             if stock_result.rowcount == 0:
                 db.session.rollback()
                 return jsonify({'success': False, 'message': f'Insufficient stock for {item["product"].name}. Available: {item["product"].stock}'}), 400
+            previous_stock = int(item['product'].stock or 0)
+            record_audit_event(
+                category='Inventory', action='update', entity_type='Product',
+                entity_id=item['product'].id, entity_label=item['product'].name,
+                branch_id=sale.branch_id,
+                changes={'stock': {
+                    'before': previous_stock,
+                    'after': previous_stock - item['quantity'],
+                }},
+                summary=f"Sale {sale.transaction_id}: reduced {item['product'].name} stock by {item['quantity']}",
+            )
 
         # Handle debt transactions if customer_id is provided
         if 'customer_id' in data and data['customer_id']:
@@ -5327,6 +5668,212 @@ def api_single_user(user_id):
         db.session.delete(user)
         db.session.commit()
         return jsonify({'success': True, 'message': 'User deleted'})
+
+
+def filtered_audit_log_query(args):
+    """Build the one filter contract shared by the list and TXT export."""
+    query = AuditLog.query
+
+    raw_branch_id = (args.get('branch_id') or '').strip()
+    branch_id = args.get('branch_id', type=int)
+    if raw_branch_id and branch_id is None:
+        raise ValueError('Invalid branch filter')
+    if branch_id:
+        query = query.filter(AuditLog.branch_id == branch_id)
+
+    category = (args.get('category') or '').strip()
+    if category:
+        query = query.filter(AuditLog.category == category)
+
+    action = (args.get('action') or '').strip().lower()
+    if action and action not in ('create', 'update', 'delete'):
+        raise ValueError('Invalid action filter')
+    if action in ('create', 'update', 'delete'):
+        query = query.filter(AuditLog.action == action)
+
+    actor = (args.get('actor') or '').strip()
+    if actor:
+        query = query.filter(AuditLog.actor_username.ilike(f'%{actor}%'))
+
+    search = (args.get('q') or '').strip()
+    if search:
+        like_search = f'%{search}%'
+        query = query.filter(or_(
+            AuditLog.summary.ilike(like_search),
+            AuditLog.entity_type.ilike(like_search),
+            AuditLog.entity_id.ilike(like_search),
+            AuditLog.entity_label.ilike(like_search),
+            AuditLog.request_path.ilike(like_search),
+        ))
+
+    raw_start = (args.get('start') or '').strip()
+    raw_end = (args.get('end') or '').strip()
+    start_bounds = audit_day_utc_bounds(raw_start)
+    if raw_start and not start_bounds:
+        raise ValueError('Invalid start date; expected YYYY-MM-DD')
+    if start_bounds:
+        query = query.filter(AuditLog.created_at >= start_bounds[0])
+    end_bounds = audit_day_utc_bounds(raw_end)
+    if raw_end and not end_bounds:
+        raise ValueError('Invalid end date; expected YYYY-MM-DD')
+    if start_bounds and end_bounds and start_bounds[0] >= end_bounds[1]:
+        raise ValueError('Start date must not be after end date')
+    if end_bounds:
+        query = query.filter(AuditLog.created_at < end_bounds[1])
+    return query
+
+
+def serialize_audit_log(row, branch_names=None):
+    try:
+        changes = json.loads(row.changes_json) if row.changes_json else {}
+    except (TypeError, ValueError):
+        changes = {}
+    local_time = audit_local_datetime(row.created_at)
+    branch_names = branch_names or {}
+    return {
+        'id': row.id,
+        'created_at': row.created_at.isoformat() if row.created_at else None,
+        'local_created_at': local_time.isoformat() if local_time else None,
+        'local_date': local_time.strftime('%Y-%m-%d') if local_time else None,
+        'local_date_label': local_time.strftime('%A, %d %B %Y') if local_time else 'Unknown date',
+        'local_time': local_time.strftime('%H:%M:%S') if local_time else None,
+        'timezone': 'Asia/Yangon',
+        'actor_user_id': row.actor_user_id,
+        'actor_username': row.actor_username,
+        'actor_role': row.actor_role,
+        'branch_id': row.branch_id,
+        'branch_name': row.branch_name or branch_names.get(row.branch_id),
+        'category': row.category,
+        'action': row.action,
+        'entity_type': row.entity_type,
+        'entity_id': row.entity_id,
+        'entity_label': row.entity_label,
+        'summary': row.summary,
+        'changes': changes,
+        'request_method': row.request_method,
+        'request_path': row.request_path,
+        'ip_address': row.ip_address,
+    }
+
+
+@app.route('/api/logs', methods=['GET'])
+@manager_or_boss_required
+def api_audit_logs():
+    """Return the immutable audit trail with server-side filters/pagination."""
+    page = max(request.args.get('page', 1, type=int) or 1, 1)
+    per_page = min(max(request.args.get('per_page', 25, type=int) or 25, 1), 100)
+    try:
+        query = filtered_audit_log_query(request.args)
+    except ValueError as error:
+        return jsonify({'success': False, 'message': str(error)}), 400
+
+    today_bounds = audit_day_utc_bounds(datetime.now(AUDIT_TIMEZONE).strftime('%Y-%m-%d'))
+    filtered_total = query.count()
+    filtered_today = query.filter(
+        AuditLog.created_at >= today_bounds[0],
+        AuditLog.created_at < today_bounds[1],
+    ).count()
+    pagination = query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).paginate(
+        page=page, per_page=per_page, error_out=False)
+
+    branch_ids = {row.branch_id for row in pagination.items if row.branch_id}
+    branch_names = {
+        branch.id: branch.name
+        for branch in Branch.query.filter(Branch.id.in_(branch_ids)).all()
+    } if branch_ids else {}
+
+    response = jsonify({
+        'items': [serialize_audit_log(row, branch_names) for row in pagination.items],
+        'page': pagination.page,
+        'per_page': per_page,
+        'total': pagination.total,
+        'total_pages': pagination.pages,
+        'summary': {
+            'matching': filtered_total,
+            'today': filtered_today,
+            'actors': query.with_entities(AuditLog.actor_username).distinct().count(),
+        },
+        'categories': sorted(set(AUDIT_CATEGORY_BY_ENTITY.values()) | {'System'}),
+    })
+    response.headers['Cache-Control'] = 'private, no-store, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Vary'] = 'Cookie'
+    return response
+
+
+def audit_text_line(label, value):
+    value = value if value not in (None, '') else '—'
+    return f'{label}: {audit_text_value(value)}\n'
+
+
+def audit_text_value(value):
+    """Keep one logical value on one line so text cannot forge event headings."""
+    return ''.join(
+        character if character >= ' ' and character != '\x7f' else ' '
+        for character in str(value).replace('\r', ' ').replace('\n', ' ')
+    ).strip()
+
+
+@app.route('/api/logs/export.txt', methods=['GET'])
+@manager_or_boss_required
+def export_audit_logs_text():
+    """Download every filtered audit event, grouped by Asia/Yangon day."""
+    try:
+        query = filtered_audit_log_query(request.args)
+    except ValueError as error:
+        return jsonify({'success': False, 'message': str(error)}), 400
+    export_limit = 10000
+    matching_count = query.count()
+    if matching_count > export_limit:
+        return jsonify({
+            'success': False,
+            'message': f'{matching_count} events match. Narrow the date or other filters to {export_limit} events or fewer.'
+        }), 413
+    query = query.order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+    branch_names = {branch.id: branch.name for branch in Branch.query.all()}
+    generated_at = datetime.now(AUDIT_TIMEZONE)
+
+    def generate():
+        # UTF-8 BOM makes Myanmar text open correctly in Windows Notepad/Excel.
+        yield '\ufeffPARROT POS — SYSTEM AUDIT LOGS\n'
+        yield f'Generated: {generated_at.strftime("%Y-%m-%d %H:%M:%S")} Asia/Yangon\n'
+        yield 'Filters: ' + ', '.join(
+            f'{audit_text_value(key)}={audit_text_value(value)}' for key, value in request.args.items()
+            if key in {'q', 'category', 'action', 'actor', 'branch_id', 'start', 'end'}
+        ) + '\n'
+        yield '=' * 78 + '\n'
+        current_date = None
+        found = False
+        for row in query.yield_per(500):
+            found = True
+            item = serialize_audit_log(row, branch_names)
+            if item['local_date'] != current_date:
+                current_date = item['local_date']
+                yield f'\n## {audit_text_value(item["local_date_label"])} ({audit_text_value(current_date)})\n'
+                yield '-' * 78 + '\n'
+            yield f'\n[{audit_text_value(item["local_time"])}] {audit_text_value(item["action"].upper())} · {audit_text_value(item["category"])}\n'
+            yield audit_text_line('Event', item['summary'])
+            yield audit_text_line('Performed by', f'{item["actor_username"]} ({item["actor_role"] or "system"})')
+            yield audit_text_line('Branch', item['branch_name'] or (f'Branch #{item["branch_id"]}' if item['branch_id'] else 'System-wide'))
+            record = item['entity_type'] + (f' #{item["entity_id"]}' if item['entity_id'] else '')
+            yield audit_text_line('Record', record)
+            yield audit_text_line('Request', f'{item["request_method"] or "—"} {item["request_path"] or "—"}')
+            yield audit_text_line('IP address', item['ip_address'])
+            yield 'Changes:\n' + json.dumps(item['changes'], ensure_ascii=False, indent=2) + '\n'
+        if not found:
+            yield '\nNo audit events matched the selected filters.\n'
+
+    filename = f'parrot_pos_logs_{generated_at.strftime("%Y%m%d_%H%M%S")}.txt'
+    return Response(
+        stream_with_context(generate()),
+        content_type='text/plain; charset=utf-8',
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Cache-Control': 'private, no-store, max-age=0',
+            'Pragma': 'no-cache',
+            'Vary': 'Cookie',
+        },
+    )
 
 # --- PROMOTIONS API ---
 @app.route('/api/promotions', methods=['GET', 'POST'])
