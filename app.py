@@ -12,7 +12,7 @@ import time
 import struct
 from sqlalchemy import inspect, text, func, event, or_
 from sqlalchemy.exc import IntegrityError, OperationalError
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -83,6 +83,14 @@ CURRENCY_OPTIONS = {
     'USD': '$',
     'MMK': 'MMK',
     'THB': 'THB'
+}
+UNIT_TYPES = {'weight', 'volume', 'count', 'length', 'custom'}
+UNIT_TYPE_LABELS = {
+    'weight': 'Weight',
+    'volume': 'Volume',
+    'count': 'Count',
+    'length': 'Length',
+    'custom': 'Custom'
 }
 DELIVERY_STAGE_FLOW = {
     'to_deliver': ['packaged', 'cancelled'],
@@ -455,6 +463,9 @@ def serialize_product(product):
         'stock': product.stock,
         'category': product.category_ref.name if product.category_ref else product.category,
         'category_id': product.category_id,
+        'unit_id': product.unit_id,
+        'unit_name': product.unit_ref.name if product.unit_ref else None,
+        'unit_symbol': product.unit_ref.symbol if product.unit_ref else None,
         'tax_rate': product.tax_rate,
         'reorder_point': product.reorder_point,
         'reorder_quantity': product.reorder_quantity,
@@ -462,6 +473,148 @@ def serialize_product(product):
         'photo_filename': product.photo_filename,
         'photo_url': product_photo_url(product.photo_filename)
     }
+
+# --- Unit system helpers ---
+
+def unit_factor_to_root(unit):
+    """Walk the base chain and return (root_unit, effective factor to root).
+
+    Chains are normally one hop (validation rejects linking to a non-root and
+    rejects demoting a base that has children), but the walk multiplies every
+    factor and guards against cycles so legacy or hand-edited data can never
+    make the conversion math silently wrong. Returns (None, None) when the
+    chain is broken.
+    """
+    factor = Decimal('1')
+    current = unit
+    seen = set()
+    while current is not None and current.base_unit_id and current.id not in seen:
+        seen.add(current.id)
+        step = safe_to_decimal(current.factor_to_base, default=None)
+        if step is None or step <= 0:
+            return None, None
+        factor *= step
+        current = db.session.get(Unit, current.base_unit_id)
+    if current is None:
+        return None, None
+    return current, factor
+
+def unit_root(unit):
+    """Return the group base unit a unit converts through (None if broken)."""
+    root, _ = unit_factor_to_root(unit)
+    return root
+
+def convert_unit_quantity(from_unit, to_unit, quantity):
+    """Convert a quantity between two units; None when they are unrelated.
+
+    Units only convert inside the same root group (weight -> weight, never
+    weight -> count). The math goes through the group base unit, multiplying
+    the full chain of factors on each side.
+    """
+    if from_unit is None or to_unit is None:
+        return None
+    from_root, from_factor = unit_factor_to_root(from_unit)
+    to_root, to_factor = unit_factor_to_root(to_unit)
+    if from_root is None or to_root is None or from_root.id != to_root.id:
+        return None
+    if to_factor <= 0:
+        return None
+    quantity_decimal = safe_to_decimal(quantity, default=None)
+    if quantity_decimal is None:
+        return None
+    converted = quantity_decimal * from_factor / to_factor
+    try:
+        return converted.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP).normalize()
+    except InvalidOperation:
+        return None
+
+def resolve_product_unit_id(value, allow_inactive_id=None):
+    """Validate an incoming product unit_id; returns (unit_id, error_message).
+
+    ``allow_inactive_id`` lets a product keep the unit it already has when
+    that unit was deactivated after the assignment (editing the price of such
+    a product must not silently wipe its unit).
+    """
+    if value in (None, '', 'null'):
+        return None, None
+    try:
+        unit_id = int(value)
+    except (TypeError, ValueError):
+        return None, 'Invalid unit'
+    unit = db.session.get(Unit, unit_id)
+    if unit is None:
+        return None, 'Unit not found'
+    if not unit.is_active and unit.id != allow_inactive_id:
+        return None, f'Unit "{unit.name}" is inactive'
+    return unit_id, None
+
+def validate_unit_payload(data, existing=None):
+    """Validate a unit create/update payload; returns (values, error_message)."""
+    name = str(data.get('name') or '').strip()
+    symbol = str(data.get('symbol') or '').strip()
+    unit_type = str(data.get('unit_type') or 'count').strip().lower()
+
+    if not name or len(name) > 50:
+        return None, 'Unit name is required (max 50 characters)'
+    if not symbol or len(symbol) > 15:
+        return None, 'Unit symbol is required (max 15 characters)'
+    if unit_type not in UNIT_TYPES:
+        return None, 'Invalid unit type'
+
+    symbol_conflict = Unit.query.filter(func.lower(Unit.symbol) == symbol.lower()).first()
+    if symbol_conflict and (existing is None or symbol_conflict.id != existing.id):
+        return None, f'Symbol "{symbol}" is already used by {symbol_conflict.name}'
+    name_conflict = Unit.query.filter(func.lower(Unit.name) == name.lower()).first()
+    if name_conflict and (existing is None or name_conflict.id != existing.id):
+        return None, f'A unit named "{name}" already exists'
+
+    base_unit = None
+    base_unit_id = data.get('base_unit_id')
+    if base_unit_id not in (None, '', 0, '0'):
+        try:
+            base_unit_id = int(base_unit_id)
+        except (TypeError, ValueError):
+            return None, 'Invalid base unit'
+        base_unit = db.session.get(Unit, base_unit_id)
+        if base_unit is None:
+            return None, 'Base unit not found'
+        if existing is not None and base_unit.id == existing.id:
+            return None, 'A unit cannot be its own base unit'
+        if base_unit.unit_type != unit_type:
+            return None, 'Base unit must be of the same unit type'
+        if base_unit.base_unit_id is not None:
+            return None, 'Base unit must itself be a base unit of its type'
+        if existing is not None and existing.child_units:
+            # Demoting a base other units convert from would silently change
+            # what their stored factors mean (two-hop chains).
+            return None, (
+                f'Cannot make {existing.symbol} convert from another unit: '
+                'other units convert from it. Reassign their base unit first.'
+            )
+
+    factor_decimal = safe_to_decimal(data.get('factor_to_base', 1.0), default=None)
+    if factor_decimal is None or factor_decimal <= 0:
+        return None, 'Conversion factor must be a positive number'
+    if base_unit is None and factor_decimal != Decimal('1'):
+        return None, 'A base unit must have a conversion factor of 1'
+    factor = float(factor_decimal)
+
+    try:
+        sort_order = max(int(data.get('sort_order', 0) or 0), 0)
+    except (TypeError, ValueError):
+        return None, 'Invalid sort order'
+
+    is_active = to_bool(data.get('is_active', True), True)
+
+    return {
+        'name': name,
+        'symbol': symbol,
+        'unit_type': unit_type,
+        'base_unit_id': base_unit.id if base_unit else None,
+        'factor_to_base': factor,
+        'is_active': is_active,
+        'sort_order': sort_order
+    }, None
 
 def login_required(f):
     @wraps(f)
@@ -915,6 +1068,48 @@ class Category(db.Model):
             'supplier_count': len(self.suppliers) if self.suppliers else 0
         }
 
+class Unit(db.Model):
+    """A measurement unit (gram, pound, liter, piece...) with conversion links.
+
+    Units are grouped by ``unit_type``. Exactly one unit per group is the base
+    (``base_unit_id`` is NULL and its factor is 1.0); every other unit points
+    directly at its group base with a multiplicative ``factor_to_base``, so any
+    two units of the same group convert through the base:
+
+        quantity_in_base = quantity * from_unit.factor_to_base
+        quantity_in_to   = quantity_in_base / to_unit.factor_to_base
+
+    One-hop links to a root keep the conversion graph cycle-free by design.
+    The whole list is editable by managers in Settings -> Units of Measurement.
+    """
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), nullable=False)
+    symbol = db.Column(db.String(15), nullable=False)
+    unit_type = db.Column(db.String(20), nullable=False, default='count')
+    base_unit_id = db.Column(db.Integer, db.ForeignKey('unit.id'))
+    factor_to_base = db.Column(db.Float, nullable=False, default=1.0)
+    is_active = db.Column(db.Boolean, default=True)
+    sort_order = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    base_unit = db.relationship('Unit', remote_side=[id], backref='child_units')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'symbol': self.symbol,
+            'unit_type': self.unit_type,
+            'unit_type_label': UNIT_TYPE_LABELS.get(self.unit_type, self.unit_type),
+            'base_unit_id': self.base_unit_id,
+            'base_unit_name': self.base_unit.name if self.base_unit else None,
+            'base_unit_symbol': self.base_unit.symbol if self.base_unit else None,
+            'factor_to_base': self.factor_to_base,
+            'is_active': bool(self.is_active),
+            'sort_order': self.sort_order
+        }
+
 class Product(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     barcode = db.Column(db.String(50))  # Branch-scoped: uniqueness enforced per (barcode, branch_id) at app level
@@ -924,12 +1119,15 @@ class Product(db.Model):
     stock = db.Column(db.Integer, default=0)
     category = db.Column(db.String(50))  # Legacy field, kept for backward compatibility
     category_id = db.Column(db.Integer, db.ForeignKey('category.id'))  # New foreign key
+    unit_id = db.Column(db.Integer, db.ForeignKey('unit.id'))  # How quantities of this product are counted
     tax_rate = db.Column(db.Float, default=0.0)
     photo_filename = db.Column(db.String(255))
     reorder_point = db.Column(db.Integer, default=10)
     reorder_quantity = db.Column(db.Integer, default=50)
     reorder_enabled = db.Column(db.Boolean, default=True)
     branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
+
+    unit_ref = db.relationship('Unit', backref='products')
 
 class Supplier(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -1466,7 +1664,8 @@ with app.app_context():
     product_migrations = [
         ('reorder_point', 'ALTER TABLE product ADD COLUMN reorder_point INTEGER DEFAULT 10'),
         ('reorder_quantity', 'ALTER TABLE product ADD COLUMN reorder_quantity INTEGER DEFAULT 50'),
-        ('reorder_enabled', 'ALTER TABLE product ADD COLUMN reorder_enabled BOOLEAN DEFAULT 1')
+        ('reorder_enabled', 'ALTER TABLE product ADD COLUMN reorder_enabled BOOLEAN DEFAULT 1'),
+        ('unit_id', 'ALTER TABLE product ADD COLUMN unit_id INTEGER REFERENCES unit (id)')
     ]
     for column_name, migration_sql in product_migrations:
         if column_name not in product_columns:
@@ -1806,6 +2005,49 @@ with app.app_context():
         db.session.add(AppSetting(key='receipt_paper_size', value=DEFAULT_RECEIPT_PAPER_SIZE))
         db.session.commit()
 
+    # Seed the default unit system: one base unit per type plus common
+    # conversions (1 kg = 1000 g, 1 lb = 453.59237 g, ...). Managers can
+    # rename, adjust or extend everything in Settings -> Units of Measurement.
+    # The units_seeded flag makes this a true first-startup seed: a manager
+    # who later deletes every unit does not get the defaults resurrected.
+    if not AppSetting.query.filter_by(key='units_seeded').first():
+        if db.session.execute(text('SELECT COUNT(*) FROM unit')).scalar() == 0:
+            default_units = [
+                # (name, symbol, unit_type, base symbol, factor_to_base, sort_order)
+                ('Unit', 'unit', 'count', None, 1.0, 1),
+                ('Pair', 'pr', 'count', 'unit', 2.0, 2),
+                ('Dozen', 'dz', 'count', 'unit', 12.0, 3),
+                ('Gram', 'g', 'weight', None, 1.0, 10),
+                ('Kilogram', 'kg', 'weight', 'g', 1000.0, 11),
+                ('Pound', 'lb', 'weight', 'g', 453.59237, 12),
+                ('Ounce', 'oz', 'weight', 'g', 28.349523125, 13),
+                ('Milliliter', 'ml', 'volume', None, 1.0, 20),
+                ('Liter', 'l', 'volume', 'ml', 1000.0, 21),
+                ('Meter', 'm', 'length', None, 1.0, 30),
+                ('Centimeter', 'cm', 'length', 'm', 0.01, 31),
+                ('Foot', 'ft', 'length', 'm', 0.3048, 32),
+                ('Inch', 'in', 'length', 'm', 0.0254, 33),
+            ]
+            seeded_units = {}
+            for name, symbol, unit_type, base_symbol, factor, sort_order in default_units:
+                unit = Unit(
+                    name=name, symbol=symbol, unit_type=unit_type,
+                    factor_to_base=factor, sort_order=sort_order
+                )
+                db.session.add(unit)
+                db.session.flush()
+                seeded_units[symbol] = unit
+            for name, symbol, unit_type, base_symbol, factor, sort_order in default_units:
+                if base_symbol:
+                    seeded_units[symbol].base_unit_id = seeded_units[base_symbol].id
+            db.session.commit()
+        db.session.add(AppSetting(key='units_seeded', value='true'))
+        db.session.commit()
+        db.session.execute(text(
+            'CREATE INDEX IF NOT EXISTS idx_product_unit ON product (unit_id)'
+        ))
+        db.session.commit()
+
     # Encrypt any legacy plaintext AI API key so it is never stored in the clear.
     migrate_legacy_secrets()
 
@@ -1871,6 +2113,7 @@ with app.app_context():
         'CREATE INDEX IF NOT EXISTS idx_delivery_stage_priority ON delivery(stage, priority)',
         'CREATE INDEX IF NOT EXISTS idx_delivery_created_at ON delivery(created_at)',
         'CREATE INDEX IF NOT EXISTS idx_warehouse_product_qty ON warehouse_inventory(product_id, quantity)',
+        'CREATE INDEX IF NOT EXISTS idx_product_unit ON product(unit_id)',
         # Keep these explicit for databases created before the memory models
         # existed.  IF NOT EXISTS makes startup safe and idempotent on SQLite.
         'CREATE INDEX IF NOT EXISTS idx_memory_registry_owner ON memory_registry(user_id, branch_id, scope)',
@@ -2654,6 +2897,138 @@ def api_categories_bulk_update():
     db.session.commit()
     return jsonify({'success': True, 'message': f'Updated {len(item_ids)} item(s)'})
 
+# Unit API Endpoints
+@app.route('/api/units', methods=['GET', 'POST'])
+def api_units():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    if request.method == 'GET':
+        active_only = to_bool(request.args.get('active_only'), False)
+        query = Unit.query
+        if active_only:
+            query = query.filter_by(is_active=True)
+        units = query.order_by(Unit.unit_type, Unit.sort_order, Unit.id).all()
+        product_counts = dict(
+            db.session.query(Product.unit_id, func.count(Product.id))
+            .filter(Product.unit_id.isnot(None))
+            .group_by(Product.unit_id)
+            .all()
+        )
+        items = []
+        for unit in units:
+            item = unit.to_dict()
+            item['product_count'] = product_counts.get(unit.id, 0)
+            items.append(item)
+        return jsonify({'items': items, 'unit_types': sorted(UNIT_TYPES)})
+
+    # Creating units is a manager action, like every other settings change.
+    if session.get('role') != 'manager':
+        return jsonify({'success': False, 'message': 'Manager access required'}), 403
+
+    data = request.get_json() or {}
+    values, error = validate_unit_payload(data)
+    if error:
+        return jsonify({'success': False, 'message': error}), 400
+    unit = Unit(**values)
+    db.session.add(unit)
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'Unit added', 'unit': unit.to_dict()}), 201
+
+@app.route('/api/units/<int:unit_id>', methods=['PUT', 'DELETE'])
+def api_single_unit(unit_id):
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    if session.get('role') != 'manager':
+        return jsonify({'success': False, 'message': 'Manager access required'}), 403
+
+    unit = db.session.get(Unit, unit_id)
+    if not unit:
+        return jsonify({'success': False, 'message': 'Unit not found'}), 404
+
+    if request.method == 'PUT':
+        data = request.get_json() or {}
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+        merged = {
+            'name': data.get('name', unit.name),
+            'symbol': data.get('symbol', unit.symbol),
+            'unit_type': data.get('unit_type', unit.unit_type),
+            'base_unit_id': data.get('base_unit_id', unit.base_unit_id),
+            'factor_to_base': data.get('factor_to_base', unit.factor_to_base),
+            'sort_order': data.get('sort_order', unit.sort_order),
+            'is_active': data.get('is_active', unit.is_active),
+        }
+        values, error = validate_unit_payload(merged, existing=unit)
+        if error:
+            return jsonify({'success': False, 'message': error}), 400
+        if values['unit_type'] != unit.unit_type and unit.child_units:
+            return jsonify({
+                'success': False,
+                'message': (
+                    f'Cannot change the type of {unit.symbol}: other units '
+                    'convert from it. Reassign their base unit first.'
+                )
+            }), 400
+        for key, value in values.items():
+            setattr(unit, key, value)
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Unit updated', 'unit': unit.to_dict()})
+
+    # DELETE: a unit that products count in, or that other units convert
+    # from, is never removed silently - the references would become nonsense.
+    product_count = Product.query.filter_by(unit_id=unit.id).count()
+    if product_count:
+        return jsonify({
+            'success': False,
+            'message': (
+                f'Cannot delete "{unit.name}": {product_count} product(s) still '
+                'use it. Change their unit first, or deactivate the unit instead.'
+            )
+        }), 409
+    child_units = [child for child in unit.child_units]
+    if child_units:
+        symbols = ', '.join(sorted(child.symbol for child in child_units))
+        return jsonify({
+            'success': False,
+            'message': (
+                f'Cannot delete "{unit.name}": {symbols} convert from it. '
+                'Reassign their base unit first.'
+            )
+        }), 409
+    db.session.delete(unit)
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'Unit deleted'})
+
+@app.route('/api/units/convert', methods=['GET'])
+def api_units_convert():
+    """Convert a quantity between two related units (same type group)."""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        from_unit = db.session.get(Unit, int(request.args.get('from_id')))
+        to_unit = db.session.get(Unit, int(request.args.get('to_id')))
+        quantity = safe_to_decimal(request.args.get('quantity', '1'), default=None)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'Invalid conversion request'}), 400
+    if from_unit is None or to_unit is None or quantity is None or quantity < 0:
+        return jsonify({'success': False, 'message': 'Invalid conversion request'}), 400
+    if quantity > Decimal('1000000000000'):
+        return jsonify({'success': False, 'message': 'Quantity is too large to convert'}), 400
+    converted = convert_unit_quantity(from_unit, to_unit, quantity)
+    if converted is None:
+        return jsonify({
+            'success': False,
+            'message': f'{from_unit.symbol} and {to_unit.symbol} are not related units'
+        }), 400
+    return jsonify({
+        'success': True,
+        'from_symbol': from_unit.symbol,
+        'to_symbol': to_unit.symbol,
+        'quantity': float(quantity.normalize()),
+        'converted': float(converted)
+    })
+
 # Product API Endpoints
 @app.route('/api/products', methods=['GET', 'POST'])
 def api_products():
@@ -2680,12 +3055,18 @@ def api_products():
             pos_query = db.session.query(
                 Product.id, Product.barcode, Product.name, Product.price,
                 Product.stock, Product.tax_rate, Product.photo_filename,
+                Product.unit_id,
             ).filter(Product.branch_id == branch_id)
             if cursor:
                 pos_query = pos_query.filter(Product.id < cursor)
             rows = pos_query.order_by(Product.id.desc()).limit(safe_per_page + 1).all()
             has_more = len(rows) > safe_per_page
             rows = rows[:safe_per_page]
+            unit_ids = {row.unit_id for row in rows if row.unit_id}
+            unit_symbols = dict(
+                db.session.query(Unit.id, Unit.symbol)
+                .filter(Unit.id.in_(unit_ids)).all()
+            ) if unit_ids else {}
             items = [{
                 'id': row.id,
                 'barcode': row.barcode,
@@ -2693,6 +3074,7 @@ def api_products():
                 'price': row.price,
                 'stock': row.stock,
                 'tax_rate': row.tax_rate,
+                'unit_symbol': unit_symbols.get(row.unit_id),
                 'photo_url': product_photo_url(row.photo_filename),
             } for row in rows]
             return jsonify({
@@ -2773,6 +3155,10 @@ def api_products():
             except ValueError as e:
                 return jsonify({'success': False, 'message': str(e)}), 400
 
+        unit_id, unit_error = resolve_product_unit_id(data.get('unit_id'))
+        if unit_error:
+            return jsonify({'success': False, 'message': unit_error}), 400
+
         product = Product(
             barcode=barcode,
             name=name,
@@ -2780,6 +3166,7 @@ def api_products():
             cost=cost,
             stock=stock,
             category_id=int(data.get('category_id')) if data.get('category_id') else None,
+            unit_id=unit_id,
             tax_rate=tax_rate,
             reorder_point=reorder_point,
             reorder_quantity=reorder_quantity,
@@ -2936,6 +3323,9 @@ def api_single_product(product_id):
             'stock': product.stock,
             'category': product.category_ref.name if product.category_ref else product.category,
             'category_id': product.category_id,
+            'unit_id': product.unit_id,
+            'unit_name': product.unit_ref.name if product.unit_ref else None,
+            'unit_symbol': product.unit_ref.symbol if product.unit_ref else None,
             'tax_rate': product.tax_rate,
             'reorder_point': product.reorder_point,
             'reorder_quantity': product.reorder_quantity,
@@ -3007,6 +3397,13 @@ def api_single_product(product_id):
                 product.category = None
         elif 'category' in data:
             product.category = data.get('category', product.category)
+        if 'unit_id' in data:
+            unit_id, unit_error = resolve_product_unit_id(
+                data.get('unit_id'), allow_inactive_id=product.unit_id
+            )
+            if unit_error:
+                return jsonify({'success': False, 'message': unit_error}), 400
+            product.unit_id = unit_id
         if 'tax_rate' in data:
             try:
                 new_tax_rate = safe_to_decimal(data.get('tax_rate') or 0, default=Decimal('-1'))
@@ -3187,6 +3584,7 @@ def api_search_products():
         'price': p.price,
         'stock': p.stock,
         'tax_rate': p.tax_rate,
+        'unit_symbol': p.unit_ref.symbol if p.unit_ref else None,
         'photo_url': product_photo_url(p.photo_filename)
     } for p in products])
 

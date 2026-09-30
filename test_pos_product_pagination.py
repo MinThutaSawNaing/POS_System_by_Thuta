@@ -58,7 +58,7 @@ class PosProductPaginationTests(unittest.TestCase):
         self.assertIsNotNone(first_data['next_cursor'])
         self.assertEqual(
             set(first_data['items'][0]),
-            {'id', 'barcode', 'name', 'price', 'stock', 'tax_rate', 'photo_url'},
+            {'id', 'barcode', 'name', 'price', 'stock', 'tax_rate', 'unit_symbol', 'photo_url'},
         )
 
         second = self._client().get(

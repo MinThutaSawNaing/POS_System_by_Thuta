@@ -52,6 +52,12 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
   - Default branch configuration with automatic fallback
   - Branch-specific reporting and analytics
 
+- **Dynamic Units of Measurement**
+  - Per-product units (grams, kilograms, pounds, liters, units, ...)
+  - Editable conversion relationships between units of the same type (1 kg = 1000 g)
+  - Managed in Settings → Units of Measurement, with a quick converter
+  - Unit symbols shown on product lists, POS cards and the sale cart
+
 - **AI Agent Assistant (Loli)**
   - Branch-aware natural language operations queries
   - Inventory, procurement, warehouse, sales, customer, debt, delivery, promotion, and return summaries
@@ -60,6 +66,19 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
 
 - **Windows Setup Script**
   - `SetupTheSoftware.bat` creates a virtual environment and installs dependencies
+
+---
+
+## 📏 Units of Measurement
+
+Products can be counted in any unit — pieces, grams, kilograms, pounds, liters, meters, or custom units you define yourself.
+
+- **Settings → Units of Measurement** lists every unit with its type, its relationship to the group's base unit (e.g. `1 kg = 1000 g`), how many products use it, and its active status. Managers can add, edit, deactivate or delete units there (deleting is blocked while products or other units still reference the unit).
+- Every unit belongs to a **type group** (`count`, `weight`, `volume`, `length`, `custom`). One unit per group is the **base unit** (factor 1); all others store a conversion factor to it, so any two units of the same group convert through the base. Weight (g/kg/lb/oz), volume (ml/l), count (unit/pair/dozen) and length (m/cm/ft/in) defaults are seeded on first startup.
+- The **Quick Convert** widget in the same card converts any related pair (e.g. 2 kg → 2000 g) via `GET /api/units/convert`.
+- The **Add/Edit Product** forms have a Unit dropdown; the chosen symbol is displayed in the products table, on POS product cards (`Stock: 5 kg`) and on cart lines.
+
+Unit API: `GET/POST /api/units`, `PUT/DELETE /api/units/<id>` (writes are manager-only), `GET /api/units/convert?from_id=&to_id=&quantity=`.
 
 ---
 

@@ -1495,6 +1495,7 @@
                     <th>Name</th>
                     <th>Price</th>
                     <th>Stock</th>
+                    <th class="d-none d-md-table-cell">Unit</th>
                     <th class="d-none d-md-table-cell">Category</th>
                     <th class="d-none d-lg-table-cell">Tax Rate</th>
                     <th>Actions</th>
@@ -1503,7 +1504,7 @@
                 <tbody id="products-table">
                   <!-- Products will be loaded here -->
                   <tr>
-                    <td colspan="8" class="text-center py-4">
+                    <td colspan="9" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                       </div>
@@ -2741,6 +2742,67 @@
           </div>
         </div>
 
+        <!-- Units of Measurement -->
+        <div class="card mt-3">
+          <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+            <h5 class="mb-0"><i class="bi bi-rulers me-2"></i>Units of Measurement</h5>
+            <button type="button" class="btn btn-light btn-sm" id="add-unit-btn" onclick="openUnitModal()">
+              <i class="bi bi-plus-lg me-1"></i>Add Unit
+            </button>
+          </div>
+          <div class="card-body">
+            <p class="text-muted small mb-3">
+              Units define how product quantities are counted (grams, pounds, liters, units...).
+              Units of the same type convert through their base unit &mdash; for example
+              1 kg = 1000 g. Assign a unit to each product; adjust the list and the
+              conversion factors here.
+            </p>
+            <div class="table-responsive">
+              <table class="table table-striped table-hover align-middle mb-3">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Symbol</th>
+                    <th>Type</th>
+                    <th>Relationship</th>
+                    <th>Products</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="units-table">
+                  <tr>
+                    <td colspan="7" class="text-center py-3 text-muted">Loading units...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="border rounded p-3" id="unit-converter">
+              <h6 class="mb-2"><i class="bi bi-arrow-left-right me-1"></i>Quick Convert</h6>
+              <div class="row g-2 align-items-end">
+                <div class="col-6 col-md-3">
+                  <label class="form-label small mb-1" for="unit-convert-quantity">Quantity</label>
+                  <input type="number" step="any" min="0" class="form-control form-control-sm" id="unit-convert-quantity" value="1" />
+                </div>
+                <div class="col-6 col-md-3">
+                  <label class="form-label small mb-1" for="unit-convert-from">From</label>
+                  <select class="form-select form-select-sm" id="unit-convert-from"></select>
+                </div>
+                <div class="col-6 col-md-3">
+                  <label class="form-label small mb-1" for="unit-convert-to">To</label>
+                  <select class="form-select form-select-sm" id="unit-convert-to"></select>
+                </div>
+                <div class="col-6 col-md-3 d-grid">
+                  <button type="button" class="btn btn-outline-primary btn-sm" onclick="runUnitConversion()">
+                    <i class="bi bi-calculator me-1"></i>Convert
+                  </button>
+                </div>
+              </div>
+              <div id="unit-convert-result" class="mt-2 small fw-semibold"></div>
+            </div>
+          </div>
+        </div>
+
         <div class="card mt-3">
           <div class="card-header bg-primary text-white">
             <h5 class="mb-0"><i class="bi bi-shop-window me-2"></i>Receipt Customization</h5>
@@ -3284,6 +3346,15 @@
                 </div>
               </div>
               <div class="mb-3">
+                <label class="form-label">Unit</label>
+                <select class="form-select" id="add-product-unit">
+                  <option value="">Select unit</option>
+                </select>
+                <div class="form-text">
+                  How this product is counted (kg, liter, unit...). Manage units in Settings.
+                </div>
+              </div>
+              <div class="mb-3">
                 <label class="form-label">Product Photo</label>
                 <input
                   type="file"
@@ -3419,6 +3490,15 @@
                 </div>
               </div>
               <div class="mb-3">
+                <label class="form-label">Unit</label>
+                <select class="form-select" id="edit-product-unit">
+                  <option value="">Select unit</option>
+                </select>
+                <div class="form-text">
+                  How this product is counted (kg, liter, unit...). Manage units in Settings.
+                </div>
+              </div>
+              <div class="mb-3">
                 <label class="form-label">Product Photo</label>
                 <input
                   type="file"
@@ -3453,6 +3533,125 @@
               onclick="updateProduct()"
             >
               Update Product
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Unit Modal (Add / Edit) -->
+    <div
+      class="modal fade"
+      id="unitModal"
+      tabindex="-1"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="unit-modal-title">Add Unit</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="unit-form">
+              <input type="hidden" id="unit-id" />
+              <div class="mb-3">
+                <label class="form-label"
+                  >Unit Name <span class="text-danger">*</span></label
+                >
+                <input
+                  type="text"
+                  class="form-control"
+                  id="unit-name"
+                  maxlength="50"
+                  placeholder="e.g., Kilogram"
+                  required
+                />
+              </div>
+              <div class="row">
+                <div class="col-6 mb-3">
+                  <label class="form-label"
+                    >Symbol <span class="text-danger">*</span></label
+                  >
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="unit-symbol"
+                    maxlength="15"
+                    placeholder="e.g., kg"
+                    required
+                  />
+                </div>
+                <div class="col-6 mb-3">
+                  <label class="form-label">Type</label>
+                  <select class="form-select" id="unit-type" onchange="fillUnitBaseDropdown()">
+                    <option value="count">Count</option>
+                    <option value="weight">Weight</option>
+                    <option value="volume">Volume</option>
+                    <option value="length">Length</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Converts From (Base Unit)</label>
+                <select class="form-select" id="unit-base-select" onchange="handleUnitBaseChange()">
+                  <option value="">This is a base unit (factor = 1)</option>
+                </select>
+                <div class="form-text">
+                  Only base units of the selected type are listed. Example: pick
+                  <em>Gram</em> and factor <em>1000</em> to define 1 kg = 1000 g.
+                </div>
+              </div>
+              <div class="row">
+                <div class="col-6 mb-3">
+                  <label class="form-label">1 unit equals (in base)</label>
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    class="form-control"
+                    id="unit-factor"
+                    value="1"
+                  />
+                </div>
+                <div class="col-6 mb-3">
+                  <label class="form-label">Sort Order</label>
+                  <input
+                    type="number"
+                    class="form-control"
+                    id="unit-sort-order"
+                    value="0"
+                    min="0"
+                  />
+                </div>
+              </div>
+              <div class="mb-3 form-check">
+                <input type="checkbox" class="form-check-input" id="unit-active" checked />
+                <label class="form-check-label" for="unit-active">Active (visible in product dropdowns)</label>
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              id="save-unit-btn"
+              onclick="saveUnit()"
+            >
+              Save Unit
             </button>
           </div>
         </div>
@@ -6608,6 +6807,7 @@
         ["/api/sales", "sales"],
         ["/api/settings", "settings"],
         ["/api/suppliers", "suppliers"],
+        ["/api/units", "settings"],
         ["/api/users", "users"],
         ["/api/warehouse", "warehouse"],
         ["/api/warehouse/summary", "warehouse"],
@@ -6636,6 +6836,9 @@
         ["/api/deliveries", ["deliveries", "sales", "pos"]],
         ["/api/users", ["users"]],
         ["/api/settings", ["settings", "dashboard"]],
+        // Units feed the settings tab and the unit symbol shown on product
+        // rows/POS cards, so a unit change repaints all three.
+        ["/api/units", ["settings", "products", "pos"]],
         ["/api/branches", null],
         // The assistant executes tools server-side, so a command or an approved
         // step can change almost anything with no write to the affected endpoint.
@@ -6934,7 +7137,7 @@
         warehouse: () => { loadWarehouseSummary(); loadWarehouseInventory(); },
         deliveries: () => { loadDeliveryStats(); loadDeliveries(); },
         users: () => loadUsers(),
-        settings: () => { loadSettings(); loadBranches(); },
+        settings: () => { loadSettings(); loadBranches(); loadUnits(); },
       };
 
       // Cache groups each tab paints from. A tab may be skipped on re-entry only
@@ -7430,6 +7633,7 @@
         initResizableSidebar();
         applySettingsUI();
         loadSettings();
+        loadUnits();
         loadBranchSelector();
         startCurrencyObserver();
         ["receipt-brand-name", "receipt-email", "receipt-phone", "receipt-address", "receipt-footer-message"].forEach((id) => {
@@ -9279,7 +9483,7 @@
                     product.name
                   }</h6>
                   <p class="card-text mb-1">${formatCurrency(product.price)}</p>
-                  <small class="${Number(product.stock) === 0 ? "text-danger" : "text-muted"}">Stock: ${product.stock}</small>
+                  <small class="${Number(product.stock) === 0 ? "text-danger" : "text-muted"}">Stock: ${product.stock}${product.unit_symbol ? " " + escapeHtml(product.unit_symbol) : ""}</small>
               </div>
           </div>
       `;
@@ -9352,7 +9556,7 @@
               ${getProductPhotoHtml(product.photo_url, product.name, "product-card-img")}
               <h6 class="card-title fw-bold text-success mb-2">${product.name}</h6>
               <p class="card-text mb-1">${formatCurrency(product.price)}</p>
-              <small class="${Number(product.stock) === 0 ? "text-danger" : "text-muted"}">Stock: ${product.stock}</small>
+              <small class="${Number(product.stock) === 0 ? "text-danger" : "text-muted"}">Stock: ${product.stock}${product.unit_symbol ? " " + escapeHtml(product.unit_symbol) : ""}</small>
             </div>
           </div>
         `;
@@ -9421,7 +9625,7 @@
                                           <p class="card-text">${formatCurrency(product.price)}</p>
                                           <small class="${Number(product.stock) === 0 ? "text-danger" : "text-muted"}">Stock: ${
                                             product.stock
-                                          }</small>
+                                          }${product.unit_symbol ? " " + escapeHtml(product.unit_symbol) : ""}</small>
                                       </div>
                                   </div>
                               `;
@@ -9556,6 +9760,7 @@
             quantity: quantity,
             tax_rate: product.tax_rate || 0,
             original_price: product.price,
+            unit: product.unit_symbol || "",
           });
         }
 
@@ -9609,7 +9814,7 @@
           ? `<small class="text-danger">Was ${formatCurrency(item.original_price)}</small>`
           : ""
       }
-                      <small class="text-muted">${formatCurrency(Number(item.price))} x ${item.quantity}</small>
+                      <small class="text-muted">${formatCurrency(Number(item.price))} x ${item.quantity}${item.unit ? " " + escapeHtml(item.unit) : ""}</small>
                   </div>
                   <div class="text-end">
                       <h6 class="mb-0">${formatCurrency(itemTotal)}</h6>
@@ -10924,6 +11129,302 @@
         });
       }
 
+      // ===== UNITS OF MEASUREMENT =====
+      let cachedUnits = null;
+
+      function formatUnitFactor(value) {
+        const num = Number(value);
+        if (!Number.isFinite(num)) return String(value);
+        return String(parseFloat(num.toFixed(6)));
+      }
+
+      function unitRelationshipText(unit) {
+        if (!unit.base_unit_id || !unit.base_unit_symbol) return "Base unit";
+        return `1 ${escapeHtml(unit.symbol)} = ${formatUnitFactor(unit.factor_to_base)} ${escapeHtml(unit.base_unit_symbol)}`;
+      }
+
+      function loadUnits() {
+        fetch("/api/units")
+          .then((response) => {
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            return response.json();
+          })
+          .then((data) => {
+            cachedUnits = data.items || [];
+            renderUnitsTable(cachedUnits);
+            fillUnitDropdowns(cachedUnits);
+          })
+          .catch((error) => {
+            console.error("Error loading units:", error);
+            renderUnitsTable([]);
+          });
+      }
+
+      function renderUnitsTable(units) {
+        const tbody = document.getElementById("units-table");
+        if (!tbody) return;
+        const canManage = hasManagerAccess();
+        const addButton = document.getElementById("add-unit-btn");
+        if (addButton) addButton.style.display = canManage ? "" : "none";
+
+        if (!units || units.length === 0) {
+          tbody.innerHTML =
+            '<tr><td colspan="7" class="text-center py-3 text-muted">No units defined yet.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = "";
+        units.forEach((unit) => {
+          const row = document.createElement("tr");
+          const statusBadge = unit.is_active
+            ? '<span class="badge bg-success">Active</span>'
+            : '<span class="badge bg-secondary">Inactive</span>';
+          const actions = canManage
+            ? `<button class="btn btn-sm btn-primary me-1" title="Edit unit" onclick="editUnit(${unit.id})">
+                   <i class="bi bi-pencil"></i>
+               </button>
+               <button class="btn btn-sm btn-danger" title="Delete unit" onclick="deleteUnit(${unit.id})">
+                   <i class="bi bi-trash"></i>
+               </button>`
+            : '<span class="text-muted small">View only</span>';
+          row.innerHTML = `
+              <td>${escapeHtml(unit.name)}</td>
+              <td><code>${escapeHtml(unit.symbol)}</code></td>
+              <td>${escapeHtml(unit.unit_type_label || unit.unit_type)}</td>
+              <td>${unitRelationshipText(unit)}</td>
+              <td>${unit.product_count || 0}</td>
+              <td>${statusBadge}</td>
+              <td class="text-nowrap">${actions}</td>
+          `;
+          tbody.appendChild(row);
+        });
+      }
+
+      function fillUnitDropdowns(units) {
+        // Product forms list every unit, inactive ones included and labelled:
+        // a product already counted in a deactivated unit must keep showing
+        // (and re-submitting) that assignment instead of silently losing it.
+        ["add-product-unit", "edit-product-unit"].forEach((id) => {
+          const select = document.getElementById(id);
+          if (!select) return;
+          const currentValue = select.value;
+          select.innerHTML = '<option value="">Select unit</option>';
+          (units || []).forEach((unit) => {
+            const opt = document.createElement("option");
+            opt.value = unit.id;
+            opt.textContent = unit.is_active
+              ? `${unit.name} (${unit.symbol})`
+              : `${unit.name} (${unit.symbol}) — inactive`;
+            select.appendChild(opt);
+          });
+          if (currentValue) select.value = currentValue;
+        });
+
+        // Settings quick converter: every unit, grouped by type.
+        ["unit-convert-from", "unit-convert-to"].forEach((id) => {
+          const select = document.getElementById(id);
+          if (!select) return;
+          const currentValue = select.value;
+          select.innerHTML = "";
+          const groups = {};
+          (units || []).forEach((unit) => {
+            const type = unit.unit_type_label || unit.unit_type;
+            groups[type] = groups[type] || [];
+            groups[type].push(unit);
+          });
+          Object.keys(groups).sort().forEach((type) => {
+            const optgroup = document.createElement("optgroup");
+            optgroup.label = type;
+            groups[type].forEach((unit) => {
+              const opt = document.createElement("option");
+              opt.value = unit.id;
+              opt.textContent = `${unit.name} (${unit.symbol})`;
+              optgroup.appendChild(opt);
+            });
+            select.appendChild(optgroup);
+          });
+          if (currentValue && select.querySelector(`option[value="${currentValue}"]`)) {
+            select.value = currentValue;
+          }
+        });
+      }
+
+      function fillUnitBaseDropdown() {
+        const select = document.getElementById("unit-base-select");
+        if (!select) return;
+        const unitType = document.getElementById("unit-type").value;
+        const editingId = document.getElementById("unit-id").value;
+        const currentValue = select.value;
+        select.innerHTML =
+          '<option value="">This is a base unit (factor = 1)</option>';
+        (cachedUnits || [])
+          .filter((unit) => unit.unit_type === unitType && !unit.base_unit_id && String(unit.id) !== String(editingId))
+          .forEach((unit) => {
+            const opt = document.createElement("option");
+            opt.value = unit.id;
+            opt.textContent = `${unit.name} (${unit.symbol})`;
+            select.appendChild(opt);
+          });
+        if (currentValue && select.querySelector(`option[value="${currentValue}"]`)) {
+          select.value = currentValue;
+        }
+        handleUnitBaseChange();
+      }
+
+      function handleUnitBaseChange() {
+        const baseSelect = document.getElementById("unit-base-select");
+        const factorInput = document.getElementById("unit-factor");
+        if (!baseSelect || !factorInput) return;
+        if (!baseSelect.value) {
+          // A base unit always converts 1:1 to itself.
+          factorInput.value = "1";
+          factorInput.readOnly = true;
+        } else {
+          factorInput.readOnly = false;
+        }
+      }
+
+      function openUnitModal(unit) {
+        document.getElementById("unit-id").value = unit?.id || "";
+        document.getElementById("unit-name").value = unit?.name || "";
+        document.getElementById("unit-symbol").value = unit?.symbol || "";
+        document.getElementById("unit-type").value = unit?.unit_type || "count";
+        document.getElementById("unit-sort-order").value = unit?.sort_order || 0;
+        document.getElementById("unit-active").checked = unit ? unit.is_active : true;
+        document.getElementById("unit-modal-title").textContent = unit ? "Edit Unit" : "Add Unit";
+        fillUnitBaseDropdown();
+        document.getElementById("unit-base-select").value = unit?.base_unit_id || "";
+        document.getElementById("unit-factor").value = unit ? formatUnitFactor(unit.factor_to_base) : "1";
+        handleUnitBaseChange();
+        const modal = new bootstrap.Modal(document.getElementById("unitModal"));
+        modal.show();
+      }
+
+      function editUnit(unitId) {
+        const unit = (cachedUnits || []).find((u) => u.id === unitId);
+        if (!unit) {
+          showToast("Unit not found. Reload the settings tab.", "warning");
+          return;
+        }
+        openUnitModal(unit);
+      }
+
+      function saveUnit() {
+        if (!hasManagerAccess()) {
+          showToast("Only a manager can change units.", "error");
+          return;
+        }
+        const unitId = document.getElementById("unit-id").value;
+        const name = document.getElementById("unit-name").value.trim();
+        const symbol = document.getElementById("unit-symbol").value.trim();
+        const unitType = document.getElementById("unit-type").value;
+        const baseUnitId = document.getElementById("unit-base-select").value;
+        const factor = parseFloat(document.getElementById("unit-factor").value);
+        const sortOrder = parseInt(document.getElementById("unit-sort-order").value, 10) || 0;
+        const isActive = document.getElementById("unit-active").checked;
+
+        if (!name || !symbol) {
+          showToast("Unit name and symbol are required", "warning");
+          return;
+        }
+        if (!Number.isFinite(factor) || factor <= 0) {
+          showToast("Conversion factor must be a positive number", "warning");
+          return;
+        }
+
+        const payload = {
+          name: name,
+          symbol: symbol,
+          unit_type: unitType,
+          base_unit_id: baseUnitId ? parseInt(baseUnitId, 10) : null,
+          factor_to_base: factor,
+          sort_order: sortOrder,
+          is_active: isActive,
+        };
+
+        const button = document.getElementById("save-unit-btn");
+        const originalContent = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span> Saving...';
+
+        fetch(unitId ? `/api/units/${unitId}` : "/api/units", {
+          method: unitId ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+          .then(async (response) => {
+            const data = await response.json();
+            if (!response.ok || !data.success) throw new Error(data.message || "Failed to save unit");
+            showToast(unitId ? "Unit updated" : "Unit added", "success");
+            bootstrap.Modal.getInstance(document.getElementById("unitModal"))?.hide();
+            loadUnits();
+          })
+          .catch((error) => {
+            console.error("Error saving unit:", error);
+            showToast(error.message || "Failed to save unit", "error");
+          })
+          .finally(() => {
+            button.disabled = false;
+            button.innerHTML = originalContent;
+          });
+      }
+
+      function deleteUnit(unitId) {
+        if (!hasManagerAccess()) {
+          showToast("Only a manager can change units.", "error");
+          return;
+        }
+        // Resolve the symbol from the loaded list instead of embedding it in
+        // the onclick attribute, where a quote in the symbol would break the
+        // JS string context.
+        const unit = (cachedUnits || []).find((u) => u.id === unitId);
+        const unitSymbol = unit ? unit.symbol : `#${unitId}`;
+        showConfirmDialog(
+          "Delete Unit",
+          `Are you sure you want to delete the unit "${unitSymbol}"? Units used by products or referenced by other units cannot be deleted.`,
+          () => {
+            fetch(`/api/units/${unitId}`, { method: "DELETE" })
+              .then(async (response) => {
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.message || "Failed to delete unit");
+                showToast(`Unit "${unitSymbol}" deleted`, "success");
+                loadUnits();
+              })
+              .catch((error) => {
+                console.error("Error deleting unit:", error);
+                showToast(error.message || "Failed to delete unit", "error");
+              });
+          }
+        );
+      }
+
+      function runUnitConversion() {
+        const fromId = document.getElementById("unit-convert-from").value;
+        const toId = document.getElementById("unit-convert-to").value;
+        const quantity = document.getElementById("unit-convert-quantity").value;
+        const resultBox = document.getElementById("unit-convert-result");
+        if (!fromId || !toId) {
+          if (resultBox) resultBox.textContent = "";
+          showToast("Select both units to convert", "warning");
+          return;
+        }
+        const params = new URLSearchParams({ from_id: fromId, to_id: toId, quantity: quantity || "1" });
+        fetch(`/api/units/convert?${params.toString()}`)
+          .then((response) => response.json())
+          .then((data) => {
+            if (!data.success) {
+              resultBox.innerHTML = `<span class="text-danger">${escapeHtml(data.message || "Conversion failed")}</span>`;
+              return;
+            }
+            resultBox.innerHTML =
+              `<span class="text-primary">${formatUnitFactor(data.quantity)} ${escapeHtml(data.from_symbol)} = ${formatUnitFactor(data.converted)} ${escapeHtml(data.to_symbol)}</span>`;
+          })
+          .catch((error) => {
+            console.error("Error converting units:", error);
+            resultBox.innerHTML = '<span class="text-danger">Conversion failed. Check connection.</span>';
+          });
+      }
+
       // Color picker preview handlers
       document.addEventListener("DOMContentLoaded", function() {
         const addColorPicker = document.getElementById("add-category-color");
@@ -10973,7 +11474,7 @@
         if (!data.items || data.items.length === 0) {
           productsTable.innerHTML = `
                                   <tr>
-                                      <td colspan="8" class="text-center py-4 text-muted">No products found.</td>
+                                      <td colspan="9" class="text-center py-4 text-muted">No products found.</td>
                                   </tr>
                               `;
           renderPagination("products", "products-pagination", 1, loadProducts);
@@ -10996,6 +11497,7 @@
                                   <td>${product.name}</td>
                                   <td>$${product.price.toFixed(2)}</td>
                                   <td>${product.stock}</td>
+                                  <td class="d-none d-md-table-cell">${product.unit_symbol ? escapeHtml(product.unit_symbol) : "—"}</td>
                                   <td>${product.category || "N/A"}</td>
                                   <td>${product.tax_rate}%</td>
                                   <td>
@@ -11022,7 +11524,7 @@
         const productsTable = document.getElementById("products-table");
         productsTable.innerHTML = `
                       <tr>
-                          <td colspan="8" class="text-center py-4">
+                          <td colspan="9" class="text-center py-4">
                               <div class="spinner-border text-primary" role="status">
                                   <span class="visually-hidden">Loading...</span>
                               </div>
@@ -11058,7 +11560,7 @@
             }
             productsTable.innerHTML = `
                               <tr>
-                                  <td colspan="8" class="text-center py-4 text-danger">Failed to load products.</td>
+                                  <td colspan="9" class="text-center py-4 text-danger">Failed to load products.</td>
                               </tr>
                           `;
             renderPagination("products", "products-pagination", 1, loadProducts);
@@ -11072,6 +11574,7 @@
         const cost = parseFloat(document.getElementById("add-cost").value) || 0;
         const stock = 0; // Stock is managed through warehouse
         const categoryId = document.getElementById("add-category").value;
+        const unitId = document.getElementById("add-product-unit").value;
         const taxRate =
           parseFloat(document.getElementById("add-tax-rate").value) || 0;
         const photoFile = document.getElementById("add-photo").files[0];
@@ -11088,6 +11591,7 @@
         productData.append("cost", String(cost));
         productData.append("stock", String(stock));
         productData.append("category_id", categoryId || "");
+        productData.append("unit_id", unitId || "");
         productData.append("tax_rate", String(taxRate));
         if (photoFile) {
           productData.append("photo", photoFile);
@@ -11138,6 +11642,19 @@
             document.getElementById("edit-stock").value = product.stock;
             document.getElementById("edit-product-category").value =
               product.category_id || "";
+            // Self-heal the unit dropdown: if the units list has not loaded
+            // yet (or the unit is missing from it), inject the product's own
+            // unit so saving the form can never wipe the assignment.
+            const unitSelect = document.getElementById("edit-product-unit");
+            if (product.unit_id && !unitSelect.querySelector(`option[value="${product.unit_id}"]`)) {
+              const unitOption = document.createElement("option");
+              unitOption.value = product.unit_id;
+              unitOption.textContent = product.unit_name
+                ? `${product.unit_name} (${product.unit_symbol})`
+                : `Unit #${product.unit_id}`;
+              unitSelect.appendChild(unitOption);
+            }
+            unitSelect.value = product.unit_id || "";
             document.getElementById("edit-tax-rate").value = product.tax_rate;
             document.getElementById("edit-remove-photo").checked = false;
             document.getElementById("edit-photo").value = "";
@@ -11176,6 +11693,7 @@
           parseFloat(document.getElementById("edit-cost").value) || 0;
         const stock = currentProduct.stock; // Stock is managed through warehouse - keep current value
         const categoryId = document.getElementById("edit-product-category").value;
+        const unitId = document.getElementById("edit-product-unit").value;
         const taxRate =
           parseFloat(document.getElementById("edit-tax-rate").value) || 0;
         const photoFile = document.getElementById("edit-photo").files[0];
@@ -11193,6 +11711,7 @@
         productData.append("cost", String(cost));
         productData.append("stock", String(stock));
         productData.append("category_id", categoryId || "");
+        productData.append("unit_id", unitId || "");
         productData.append("tax_rate", String(taxRate));
         productData.append("remove_photo", removePhoto ? "true" : "false");
         if (photoFile) {
