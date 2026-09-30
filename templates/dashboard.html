@@ -8935,6 +8935,7 @@
           warehouse: "Warehouse",
           deliveries: "Deliveries",
           users: "Users",
+          logs: "Logs",
           settings: "Settings",
           logout: "Logout",
           
@@ -9057,6 +9058,7 @@
           warehouse: "ကုန်လက်ကျန်",
           deliveries: "ပို့ဆောင်မှု",
           users: "အသုံးပြုသူများ",
+          logs: "စနစ်မှတ်တမ်းများ",
           settings: "ဆက်တင်များ",
           logout: "ထွက်ရန်",
           
@@ -9211,14 +9213,12 @@
         });
 
         // Update sidebar navigation
-        const navLinks = document.querySelectorAll(".sidebar .nav-link");
-        const navKeys = ["dashboard", "pos", "products", "categories", "sales", "reports", "promotions", "customers", "debts", "suppliers", "purchases", "warehouse", "deliveries", "users", "settings"];
-        navLinks.forEach((link, index) => {
-          if (index < navKeys.length) {
-            const icon = link.querySelector("i");
-            if (icon) {
-              link.innerHTML = icon.outerHTML + " " + t(navKeys[index]);
-            }
+        document.querySelectorAll(".sidebar .nav-link[onclick*='showSection']").forEach((link) => {
+          const sectionMatch = link.getAttribute("onclick")?.match(/showSection\('([^']+)'\)/);
+          const translationKey = sectionMatch?.[1];
+          const icon = link.querySelector("i");
+          if (translationKey && icon && translations[currentLanguage]?.[translationKey]) {
+            link.innerHTML = icon.outerHTML + " " + t(translationKey);
           }
         });
 
@@ -9249,6 +9249,7 @@
           "warehouse-section h2": "warehouse",
           "deliveries-section h2": "deliveries",
           "reports-section h2": "reports",
+          "logs-section h2": "logs",
           "settings-section h2": "settings"
         };
 

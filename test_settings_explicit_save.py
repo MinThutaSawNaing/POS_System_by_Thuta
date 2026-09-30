@@ -58,3 +58,15 @@ def test_scoped_save_functions_send_only_their_own_configuration():
     )[0]
     assert 'label_geometry' in label_block
     assert 'receipt_paper_size' not in label_block
+
+
+def test_sidebar_translation_uses_section_names_not_fragile_positions():
+    translation_block = DASHBOARD.split('// Update sidebar navigation', 1)[1].split(
+        '// Update section titles', 1
+    )[0]
+    assert 'navKeys = [' not in translation_block
+    assert "showSection\\('([^']+)'\\)" in translation_block
+    assert 'translations[currentLanguage]?.[translationKey]' in translation_block
+    assert 'logs: "Logs"' in DASHBOARD
+    assert 'logs: "စနစ်မှတ်တမ်းများ"' in DASHBOARD
+    assert '"logs-section h2": "logs"' in DASHBOARD
