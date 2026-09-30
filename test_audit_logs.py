@@ -4,7 +4,8 @@ import uuid
 from datetime import datetime
 
 from app import (AuditLog, Branch, Product, User, app, audit_day_utc_bounds,
-                 audit_local_datetime, db)
+                 audit_local_datetime, db, decode_audit_changes,
+                 encode_audit_changes, migrate_audit_detail_storage)
 
 
 class AuditLogTests(unittest.TestCase):
@@ -106,7 +107,7 @@ class AuditLogTests(unittest.TestCase):
             self.assertIsNotNone(sale_log)
             self.assertEqual(sale_log.category, 'Sales')
             self.assertIsNotNone(stock_log)
-            stock_change = json.loads(stock_log.changes_json)['stock']
+            stock_change = decode_audit_changes(stock_log)['stock']
             self.assertEqual(stock_change, {'before': 5, 'after': 3})
             self.created_log_ids.extend([sale_log.id, stock_log.id])
             # Child SaleItem logs are expected too; include all transaction-created
@@ -139,8 +140,92 @@ class AuditLogTests(unittest.TestCase):
                                            action='create').order_by(AuditLog.id.desc()).first()
             self.assertIsNotNone(row)
             self.created_log_ids.append(row.id)
-            self.assertNotIn(secret, row.changes_json)
-            self.assertEqual(json.loads(row.changes_json)['after']['password'], '[REDACTED]')
+            self.assertNotIn(secret.encode(), row.changes_blob)
+            self.assertEqual(decode_audit_changes(row)['after']['password'], '[REDACTED]')
+
+    def test_detail_codec_is_compact_and_legacy_compatible(self):
+        details = {
+            'before': {'stock': 100, 'description': 'repeat-me-' * 100},
+            'after': {'stock': 99, 'description': 'repeat-me-' * 100},
+        }
+        compact_json = json.dumps(details, ensure_ascii=False, separators=(',', ':')).encode()
+        packed = encode_audit_changes(details)
+        self.assertIsNotNone(packed)
+        self.assertLess(len(packed), len(compact_json))
+        self.assertEqual(encode_audit_changes({}), None)
+
+        compressed_row = AuditLog(changes_blob=packed)
+        legacy_row = AuditLog(changes_json=json.dumps(details))
+        self.assertEqual(decode_audit_changes(compressed_row), details)
+        self.assertEqual(decode_audit_changes(legacy_row), details)
+        self.assertEqual(decode_audit_changes(AuditLog(changes_blob=b'Xbad')), {})
+        self.assertEqual(decode_audit_changes(AuditLog(
+            changes_blob=b'Ztruncated', changes_json=json.dumps(details)
+        )), details)
+        for falsey in ([], False, 0, '', None):
+            if falsey is None:
+                self.assertEqual(encode_audit_changes(falsey), None)
+            else:
+                self.assertEqual(
+                    decode_audit_changes(AuditLog(changes_blob=encode_audit_changes(falsey))),
+                    falsey,
+                )
+
+    def test_storage_migration_is_batched_idempotent_and_preserves_bad_text(self):
+        valid_value = {'long': 'compress-this-' * 200}
+        malformed = '{not-json:' + ('x' * 1500)
+        with app.app_context():
+            valid = AuditLog(actor_username='migration', category='System', action='create',
+                             entity_type='Fixture', summary='valid legacy',
+                             changes_json=json.dumps(valid_value))
+            bad = AuditLog(actor_username='migration', category='System', action='create',
+                           entity_type='Fixture', summary='bad legacy', changes_json=malformed)
+            db.session.add_all([valid, bad])
+            db.session.commit()
+            self.created_log_ids.extend([valid.id, bad.id])
+
+            migrate_audit_detail_storage(batch_size=1)
+            db.session.expire_all()
+            valid = db.session.get(AuditLog, valid.id)
+            bad = db.session.get(AuditLog, bad.id)
+            self.assertEqual(decode_audit_changes(valid), valid_value)
+            self.assertIsNone(valid.changes_json)
+            self.assertIsNotNone(valid.changes_blob)
+            self.assertEqual(bad.changes_json, malformed)
+            self.assertIsNone(bad.changes_blob)
+
+            first_blob = bytes(valid.changes_blob)
+            migrate_audit_detail_storage(batch_size=1)
+            db.session.expire_all()
+            self.assertEqual(bytes(db.session.get(AuditLog, valid.id).changes_blob), first_blob)
+            self.assertEqual(db.session.get(AuditLog, bad.id).changes_json, malformed)
+
+    def test_logs_api_enforces_thirty_rows_per_page(self):
+        marker = f'PAGE-{uuid.uuid4().hex}'
+        with app.app_context():
+            rows = [AuditLog(
+                actor_username='pager', category='System', action='create',
+                entity_type='Fixture', entity_id=f'{marker}-{index}',
+                summary=f'{marker} event {index}',
+                changes_blob=encode_audit_changes({'sequence': index}),
+            ) for index in range(35)]
+            db.session.add_all(rows)
+            db.session.commit()
+            self.created_log_ids.extend(row.id for row in rows)
+
+        client = self.client_for(self.manager_id, 'manager', self.manager.username)
+        first = client.get(f'/api/logs?q={marker}&page=1&per_page=100').get_json()
+        second = client.get(f'/api/logs?q={marker}&page=2&per_page=1').get_json()
+        self.assertEqual(first['per_page'], 30)
+        self.assertEqual(len(first['items']), 30)
+        self.assertEqual(first['total'], 35)
+        self.assertEqual(first['total_pages'], 2)
+        self.assertEqual(len(second['items']), 5)
+        first_ids = [item['id'] for item in first['items']]
+        second_ids = [item['id'] for item in second['items']]
+        self.assertFalse(set(first_ids) & set(second_ids))
+        self.assertEqual(first_ids, sorted(first_ids, reverse=True))
+        self.assertEqual(second_ids, sorted(second_ids, reverse=True))
 
     def test_rollback_does_not_leave_a_false_log(self):
         marker = f'Rollback Product {uuid.uuid4().hex}'
@@ -165,7 +250,8 @@ class AuditLogTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertIn('items', payload)
-        self.assertLessEqual(len(payload['items']), 1)
+        self.assertEqual(payload['per_page'], 30)
+        self.assertLessEqual(len(payload['items']), 30)
         self.assertIn('summary', payload)
         self.assertIn('categories', payload)
         self.assertEqual(response.headers['Cache-Control'], 'private, no-store, max-age=0')

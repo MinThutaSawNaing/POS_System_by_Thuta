@@ -58,6 +58,7 @@ from functools import wraps
 from reportlab.graphics.barcode import createBarcodeDrawing
 import base64
 import hashlib
+import zlib
 from cryptography.fernet import Fernet, InvalidToken
 
 # Import AI Agent modules
@@ -1449,17 +1450,20 @@ class AuditLog(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
-    actor_user_id = db.Column(db.Integer, nullable=True, index=True)
+    actor_user_id = db.Column(db.Integer, nullable=True)
     actor_username = db.Column(db.String(80), nullable=False, default='System')
     actor_role = db.Column(db.String(20), nullable=True)
-    branch_id = db.Column(db.Integer, nullable=True, index=True)
+    branch_id = db.Column(db.Integer, nullable=True)
     branch_name = db.Column(db.String(100), nullable=True)
-    category = db.Column(db.String(40), nullable=False, index=True)
-    action = db.Column(db.String(20), nullable=False, index=True)
-    entity_type = db.Column(db.String(80), nullable=False, index=True)
-    entity_id = db.Column(db.String(128), nullable=True, index=True)
+    category = db.Column(db.String(40), nullable=False)
+    action = db.Column(db.String(20), nullable=False)
+    entity_type = db.Column(db.String(80), nullable=False)
+    entity_id = db.Column(db.String(128), nullable=True)
     entity_label = db.Column(db.String(200), nullable=True)
     summary = db.Column(db.String(300), nullable=False)
+    # New records keep details in compact zlib-compressed UTF-8 JSON. The old
+    # text column remains temporarily readable for rolling upgrades/backups.
+    changes_blob = db.Column(db.LargeBinary, nullable=True)
     changes_json = db.Column(db.Text, nullable=True)
     request_method = db.Column(db.String(10), nullable=True)
     request_path = db.Column(db.String(300), nullable=True)
@@ -1469,7 +1473,7 @@ class AuditLog(db.Model):
     __table_args__ = (
         db.Index('idx_audit_log_branch_created', 'branch_id', 'created_at'),
         db.Index('idx_audit_log_category_created', 'category', 'created_at'),
-        db.Index('idx_audit_log_actor_created', 'actor_user_id', 'created_at'),
+        db.Index('idx_audit_log_action_created', 'action', 'created_at'),
     )
 
 
@@ -1500,6 +1504,116 @@ AUDIT_LABEL_FIELDS = (
     'username', 'key', 'barcode', 'memory_id', 'batch_number', 'id',
 )
 AUDIT_TIMEZONE = pytz.timezone('Asia/Yangon')
+AUDIT_PAGE_SIZE = 30
+
+
+def encode_audit_changes(changes):
+    """Return the smaller of compact JSON and zlib, tagged for decoding."""
+    if changes is None or changes == {}:
+        return None
+    raw = json.dumps(
+        changes, ensure_ascii=False, separators=(',', ':'), default=json_default
+    ).encode('utf-8')
+    compressed = zlib.compress(raw, level=9)
+    return (b'Z' + compressed) if len(compressed) < len(raw) else (b'J' + raw)
+
+
+def decode_audit_changes(row):
+    """Read compressed details, falling back to pre-migration JSON text."""
+    try:
+        if row.changes_blob:
+            payload = bytes(row.changes_blob)
+            if payload[:1] == b'Z':
+                raw = zlib.decompress(payload[1:])
+            elif payload[:1] == b'J':
+                raw = payload[1:]
+            else:
+                raise ValueError('Unknown audit detail encoding')
+            return json.loads(raw.decode('utf-8'))
+        if row.changes_json is not None:
+            return json.loads(row.changes_json)
+    except (TypeError, ValueError, UnicodeDecodeError, zlib.error, json.JSONDecodeError):
+        app.logger.warning('Could not decode audit detail for log %s', getattr(row, 'id', '?'))
+        # During rolling migration, a valid legacy copy may still be available.
+        if row.changes_json is not None:
+            try:
+                return json.loads(row.changes_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+    return {}
+
+
+def migrate_audit_detail_storage(batch_size=500):
+    """Add/backfill compact details safely in bounded, restartable batches."""
+    inspector = inspect(db.engine)
+    if not inspector.has_table('audit_log'):
+        return
+    audit_columns = {col['name'] for col in inspector.get_columns('audit_log')}
+    if 'changes_blob' not in audit_columns:
+        try:
+            db.session.execute(text('ALTER TABLE audit_log ADD COLUMN changes_blob BLOB'))
+            db.session.commit()
+        except OperationalError as error:
+            db.session.rollback()
+            # Another startup may have completed the additive DDL while this
+            # process waited for SQLite's writer lock. Re-inspect before failing.
+            refreshed = {col['name'] for col in inspect(db.engine).get_columns('audit_log')}
+            if 'changes_blob' not in refreshed:
+                raise error
+
+    last_id = 0
+    while True:
+        legacy_rows = db.session.execute(text(
+            "SELECT id, changes_json FROM audit_log "
+            "WHERE id > :last_id AND changes_json IS NOT NULL "
+            "AND changes_blob IS NULL ORDER BY id LIMIT :batch_size"
+        ), {'last_id': last_id, 'batch_size': batch_size}).all()
+        if not legacy_rows:
+            break
+        for log_id, raw_details in legacy_rows:
+            last_id = log_id
+            try:
+                parsed = json.loads(raw_details)
+                packed = encode_audit_changes(parsed)
+                # Empty objects intentionally have no payload; clearing '{}' is
+                # still lossless because decode returns the same empty object.
+                if packed is None and parsed != {}:
+                    continue
+            except (TypeError, ValueError, json.JSONDecodeError):
+                # Never truncate or discard malformed historical evidence.
+                app.logger.warning('Leaving malformed legacy audit detail in row %s', log_id)
+                continue
+            db.session.execute(text(
+                'UPDATE audit_log SET changes_blob = :packed, changes_json = NULL '
+                'WHERE id = :id AND changes_blob IS NULL AND changes_json = :original'
+            ), {'packed': packed, 'id': log_id, 'original': raw_details})
+        db.session.commit()
+
+    # Reconcile interrupted/rolling deployments that temporarily wrote both.
+    last_id = 0
+    while True:
+        duplicate_rows = db.session.execute(text(
+            "SELECT id, changes_blob, changes_json FROM audit_log "
+            "WHERE id > :last_id AND changes_blob IS NOT NULL "
+            "AND changes_json IS NOT NULL ORDER BY id LIMIT :batch_size"
+        ), {'last_id': last_id, 'batch_size': batch_size}).all()
+        if not duplicate_rows:
+            break
+        for log_id, blob, raw_details in duplicate_rows:
+            last_id = log_id
+            try:
+                holder = type('AuditDetail', (), {
+                    'id': log_id, 'changes_blob': blob, 'changes_json': None
+                })()
+                if decode_audit_changes(holder) != json.loads(raw_details):
+                    continue
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            db.session.execute(text(
+                'UPDATE audit_log SET changes_json = NULL '
+                'WHERE id = :id AND changes_blob = :blob AND changes_json = :original'
+            ), {'id': log_id, 'blob': blob, 'original': raw_details})
+        db.session.commit()
 
 
 def audit_local_datetime(moment):
@@ -1552,6 +1666,7 @@ def _audit_snapshot(obj):
     return {
         column.key: _audit_column_value(obj, column.key)
         for column in inspect(obj).mapper.column_attrs
+        if getattr(obj, column.key, None) is not None
     }
 
 
@@ -1625,12 +1740,13 @@ def record_audit_event(category, action, entity_type, entity_id=None,
         entity_label=str(entity_label)[:200] if entity_label is not None else None,
         summary=(summary or _audit_summary(action, entity_type, entity_label,
                                            list((changes or {}).keys())))[:300],
-        changes_json=json.dumps(changes or {}, ensure_ascii=False,
-                                default=json_default),
+        changes_blob=encode_audit_changes(changes),
         request_method=context['request_method'],
         request_path=context['request_path'],
         ip_address=context['ip_address'],
-        user_agent=context['user_agent'],
+        # User agent is not shown in the audit UI and can be hundreds of bytes;
+        # omit it from new rows to keep the append-only table lean.
+        user_agent=None,
     )
     db.session.add(row)
     return row
@@ -1714,9 +1830,9 @@ def _audit_bulk_orm_write(execute_state):
         action=action,
         entity_type=entity_type,
         summary=f'Bulk {action} affected {count} {entity_type} record(s)'[:300],
-        changes_json=json.dumps({'affected_records': count}),
+        changes_blob=encode_audit_changes({'affected_records': count}),
         request_method=context['request_method'], request_path=context['request_path'],
-        ip_address=context['ip_address'], user_agent=context['user_agent'],
+        ip_address=context['ip_address'], user_agent=None,
     ))
     return result
 
@@ -1754,12 +1870,11 @@ def _write_audit_changes(db_session, flush_context):
                 entity_label=label,
                 summary=_audit_summary(action, entity_type, label,
                                        entry['changed_fields']),
-                changes_json=json.dumps(changes, ensure_ascii=False,
-                                        default=json_default),
+                changes_blob=encode_audit_changes(changes),
                 request_method=context['request_method'],
                 request_path=context['request_path'],
                 ip_address=context['ip_address'],
-                user_agent=context['user_agent'],
+                user_agent=None,
             ))
     finally:
         db_session.info.pop('_audit_collecting', None)
@@ -1819,6 +1934,26 @@ with app.app_context():
     db.session.execute(text('PRAGMA busy_timeout=5000'))
     db.create_all()
     inspector = inspect(db.engine)
+
+    # Audit-detail storage migration: compact existing JSON into a BLOB in bounded,
+    # restartable batches and stop duplicating it in the legacy text column.
+    if inspector.has_table('audit_log'):
+        migrate_audit_detail_storage()
+
+        # Early builds created one index per filtered column. Composite indexes
+        # cover the actual date-ordered queries with fewer index pages/writes.
+        for obsolete_index in (
+            'ix_audit_log_actor_user_id', 'ix_audit_log_branch_id',
+            'ix_audit_log_category', 'ix_audit_log_action',
+            'ix_audit_log_entity_type', 'ix_audit_log_entity_id',
+            'idx_audit_log_actor_created',
+        ):
+            db.session.execute(text(f'DROP INDEX IF EXISTS {obsolete_index}'))
+        db.session.execute(text(
+            'CREATE INDEX IF NOT EXISTS idx_audit_log_action_created '
+            'ON audit_log (action, created_at)'
+        ))
+        db.session.commit()
 
     # Persist immutable financial and display data for reliable receipt reprints.
     if inspector.has_table('sale'):
@@ -5724,10 +5859,7 @@ def filtered_audit_log_query(args):
 
 
 def serialize_audit_log(row, branch_names=None):
-    try:
-        changes = json.loads(row.changes_json) if row.changes_json else {}
-    except (TypeError, ValueError):
-        changes = {}
+    changes = decode_audit_changes(row)
     local_time = audit_local_datetime(row.created_at)
     branch_names = branch_names or {}
     return {
@@ -5761,7 +5893,9 @@ def serialize_audit_log(row, branch_names=None):
 def api_audit_logs():
     """Return the immutable audit trail with server-side filters/pagination."""
     page = max(request.args.get('page', 1, type=int) or 1, 1)
-    per_page = min(max(request.args.get('per_page', 25, type=int) or 25, 1), 100)
+    # Fixed small pages keep response memory and DOM work predictable. Remaining
+    # rows stay write-only in SQLite until the operator chooses another page.
+    per_page = AUDIT_PAGE_SIZE
     try:
         query = filtered_audit_log_query(request.args)
     except ValueError as error:

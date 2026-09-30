@@ -70,3 +70,19 @@ def test_sidebar_translation_uses_section_names_not_fragile_positions():
     assert 'logs: "Logs"' in DASHBOARD
     assert 'logs: "စနစ်မှတ်တမ်းများ"' in DASHBOARD
     assert '"logs-section h2": "logs"' in DASHBOARD
+
+
+def test_logs_are_lazy_paged_and_scrolled_inside_their_card():
+    assert 'logs: 30,' in DASHBOARD
+    assert 'logs: () => loadLogs()' in DASHBOARD
+    assert 'const SECTION_ALWAYS_RENDER = new Set(["dashboard", "reports"])' in DASHBOARD
+    assert 'savedSection === "logs"' in DASHBOARD
+    assert 'loadLogs();' not in DASHBOARD.split('// Load only what the boot screen needs', 1)[1].split(
+        'showSection(startSection);', 1
+    )[0]
+    assert 'id="logs-table-scroll"' in DASHBOARD
+    assert 'class="table-responsive audit-table-scroll"' in DASHBOARD
+    assert 'max-height: min(62vh, 620px)' in DASHBOARD
+    assert 'id="logs-pagination"' in DASHBOARD
+    assert 'logsRequestGeneration' in DASHBOARD
+    assert 'sectionStateOf("logs").rendered = false' in DASHBOARD
