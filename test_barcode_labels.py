@@ -38,6 +38,27 @@ class BarcodeLabelSearchMarkupTests(unittest.TestCase):
         self.assertIn('getVisibleBarcodeProductRows()', self.dashboard)
         self.assertIn('row.querySelector(".product-checkbox")', self.dashboard)
 
+    def test_product_list_owns_its_own_scrollbar_inside_the_dialog(self):
+        # The dialog keeps its header, search controls and footer pinned while
+        # only the product rows scroll in a bounded box.
+        self.assertIn(
+            'class="table-responsive barcode-products-scroll"', self.dashboard
+        )
+        self.assertIn('id="barcode-products-scroll"', self.dashboard)
+        self.assertIn('.barcode-products-scroll {', self.dashboard)
+        self.assertIn('max-height: min(52vh, 460px);', self.dashboard)
+        self.assertIn('overflow: auto;', self.dashboard)
+        self.assertIn('overscroll-behavior: contain;', self.dashboard)
+        self.assertIn('scrollbar-gutter: stable;', self.dashboard)
+
+    def test_scroll_area_keeps_the_column_headings_in_view(self):
+        self.assertIn('.barcode-products-scroll thead th {', self.dashboard)
+        self.assertIn('position: sticky;', self.dashboard)
+        # A focusable region so the rows can be scrolled from the keyboard.
+        self.assertIn('tabindex="0"', self.dashboard)
+        # No extra table margin inside the scroll box.
+        self.assertIn('class="table table-striped table-hover mb-0"', self.dashboard)
+
 
 class LabelBarcodeSvgTests(unittest.TestCase):
     def test_svg_root_is_clean_and_physical_mm(self):
