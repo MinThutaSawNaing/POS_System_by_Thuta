@@ -361,6 +361,129 @@
         .receipt-preview-column { max-width: 260px; margin: 0 auto; width: 100%; }
       }
 
+      /* ===== Settings console =====
+         One calm admin-console look: a sticky group rail on the left, one
+         settings group visible at a time on the right, uniform white cards
+         with a tinted icon chip instead of the old rainbow headers. */
+      .settings-layout {
+        --set-accent: #0d6efd;
+        --set-accent-soft: rgba(13, 110, 253, 0.09);
+        --set-accent-ink: #0b5ed7;
+        --set-border: #e4e8ee;
+        --set-muted: #6c757d;
+      }
+      .settings-nav {
+        position: sticky;
+        top: 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+      }
+      .settings-nav-title {
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #8a94a6;
+        padding: 0 0.75rem 0.4rem;
+      }
+      .settings-nav-item {
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+        width: 100%;
+        padding: 0.55rem 0.75rem;
+        border: 0;
+        border-left: 3px solid transparent;
+        border-radius: 0.5rem;
+        background: transparent;
+        color: #495057;
+        font-size: 0.925rem;
+        font-weight: 500;
+        text-align: left;
+        cursor: pointer;
+      }
+      .settings-nav-item:hover { background: #f1f3f6; }
+      .settings-nav-item:focus-visible {
+        outline: 2px solid var(--set-accent);
+        outline-offset: 1px;
+      }
+      .settings-nav-item .bi { font-size: 1.05rem; flex: 0 0 auto; }
+      .settings-nav-item small {
+        display: block;
+        font-size: 0.74rem;
+        font-weight: 400;
+        line-height: 1.25;
+        color: var(--set-muted);
+      }
+      .settings-nav-item.active {
+        background: var(--set-accent-soft);
+        border-left-color: var(--set-accent);
+        color: var(--set-accent-ink);
+        font-weight: 600;
+      }
+      .settings-group {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+      .settings-card {
+        border: 1px solid var(--set-border);
+        border-radius: 0.6rem;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+      }
+      .settings-card > .card-header {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        background: #fbfcfe;
+        border-bottom: 1px solid var(--set-border);
+        padding: 0.85rem 1.1rem;
+      }
+      .settings-icon-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2.25rem;
+        height: 2.25rem;
+        border-radius: 0.55rem;
+        background: var(--set-accent-soft);
+        color: var(--set-accent-ink);
+        font-size: 1.05rem;
+        flex: 0 0 auto;
+      }
+      .settings-card-header-title { min-width: 0; }
+      .settings-card-header-title h5 {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 600;
+        color: #212529;
+      }
+      .settings-card-subtitle {
+        font-size: 0.78rem;
+        color: var(--set-muted);
+      }
+      .settings-card > .card-header > .btn { margin-left: auto; }
+      @media (max-width: 991.98px) {
+        .settings-nav {
+          position: static;
+          flex-direction: row;
+          overflow-x: auto;
+          padding-bottom: 0.35rem;
+          gap: 0.35rem;
+          -webkit-overflow-scrolling: touch;
+        }
+        .settings-nav-item {
+          width: auto;
+          white-space: nowrap;
+          border-left: 0;
+          border-bottom: 3px solid transparent;
+          background: #f6f8fa;
+        }
+        .settings-nav-item.active { border-bottom-color: var(--set-accent); }
+        .settings-nav-item small { display: none; }
+      }
+
       #cart-items {
         max-height: 45vh;
         overflow-y: auto;
@@ -2691,10 +2814,48 @@
           </button>
         </div>
 
+        <div class="row g-3 g-lg-4 settings-layout">
+          <div class="col-lg-3 col-xl-2">
+            <nav class="settings-nav" aria-label="Settings groups">
+              <span class="settings-nav-title d-none d-lg-block">Settings</span>
+              <button type="button" class="settings-nav-item active" data-group="store" aria-controls="settings-group-store" aria-current="true" onclick="showSettingsGroup('store')">
+                <i class="bi bi-shop"></i>
+                <span>Store profile<small>Branch, currency, language</small></span>
+              </button>
+              <button type="button" class="settings-nav-item" data-group="units" aria-controls="settings-group-units" onclick="showSettingsGroup('units')">
+                <i class="bi bi-rulers"></i>
+                <span>Units<small>Measures &amp; conversions</small></span>
+              </button>
+              <button type="button" class="settings-nav-item" data-group="receipt" aria-controls="settings-group-receipt" onclick="showSettingsGroup('receipt')">
+                <i class="bi bi-receipt"></i>
+                <span>Receipt &amp; branding<small>Logo, contacts, MMQR</small></span>
+              </button>
+              <button type="button" class="settings-nav-item" data-group="printing" aria-controls="settings-group-printing" onclick="showSettingsGroup('printing')">
+                <i class="bi bi-printer"></i>
+                <span>Printing<small>Paper &amp; label geometry</small></span>
+              </button>
+              <button type="button" class="settings-nav-item" data-group="ai" aria-controls="settings-group-ai" onclick="showSettingsGroup('ai')">
+                <i class="bi bi-robot"></i>
+                <span>AI assistant<small>Loli key &amp; autonomy</small></span>
+              </button>
+              <button type="button" class="settings-nav-item" data-group="data" aria-controls="settings-group-data" onclick="showSettingsGroup('data')">
+                <i class="bi bi-database"></i>
+                <span>Data &amp; backup<small>Download or restore</small></span>
+              </button>
+            </nav>
+          </div>
+
+          <div class="col-lg-9 col-xl-10">
+        <!-- Store profile group -->
+        <div id="settings-group-store" class="settings-group" role="group" aria-label="Store profile">
         <!-- Branch Selection -->
-        <div class="card mt-3 border-primary">
-          <div class="card-header bg-primary text-white">
-            <h5 class="mb-0"><i class="bi bi-building me-2"></i>Branch Selection</h5>
+        <div class="card settings-card">
+          <div class="card-header">
+            <span class="settings-icon-chip"><i class="bi bi-building"></i></span>
+            <div class="settings-card-header-title">
+              <h5>Branch Selection</h5>
+              <span class="settings-card-subtitle">Every tab shows data for the active branch</span>
+            </div>
           </div>
           <div class="card-body">
             <div class="mb-3">
@@ -2712,9 +2873,13 @@
           </div>
         </div>
 
-        <div class="card mt-3">
-          <div class="card-header bg-secondary text-white">
-            <h5 class="mb-0"><i class="bi bi-gear me-2"></i>General Settings</h5>
+        <div class="card settings-card">
+          <div class="card-header">
+            <span class="settings-icon-chip"><i class="bi bi-gear"></i></span>
+            <div class="settings-card-header-title">
+              <h5>General Settings</h5>
+              <span class="settings-card-subtitle">Currency and interface language</span>
+            </div>
           </div>
           <div class="card-body">
             <div class="mb-3">
@@ -2742,21 +2907,57 @@
           </div>
         </div>
 
+        <!-- Branch Management (moved here from the bottom of the old stack) -->
+        <div class="card settings-card">
+          <div class="card-header">
+            <span class="settings-icon-chip"><i class="bi bi-diagram-3"></i></span>
+            <div class="settings-card-header-title">
+              <h5>Branch Management</h5>
+              <span class="settings-card-subtitle">Each branch keeps separate inventory, sales and customers</span>
+            </div>
+            <button class="btn btn-outline-primary btn-sm" onclick="showBranchModal()">
+              <i class="bi bi-plus-circle me-1"></i>Add Branch
+            </button>
+          </div>
+          <div class="card-body">
+            <div class="table-responsive">
+              <table class="table table-hover" id="branches-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Code</th>
+                    <th>Contact</th>
+                    <th>Status</th>
+                    <th>Default</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="branches-tbody">
+                  <tr>
+                    <td colspan="6" class="text-center text-muted">Loading branches...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        </div><!-- /settings-group-store -->
+
+        <!-- Units group -->
+        <div id="settings-group-units" class="settings-group" role="group" aria-label="Units of measurement" style="display: none">
         <!-- Units of Measurement -->
-        <div class="card mt-3">
-          <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
-            <h5 class="mb-0"><i class="bi bi-rulers me-2"></i>Units of Measurement</h5>
-            <button type="button" class="btn btn-light btn-sm" id="add-unit-btn" onclick="openUnitModal()">
+        <div class="card settings-card">
+          <div class="card-header">
+            <span class="settings-icon-chip"><i class="bi bi-rulers"></i></span>
+            <div class="settings-card-header-title">
+              <h5>Units of Measurement</h5>
+              <span class="settings-card-subtitle">Same-type units convert through their base unit — 1 kg = 1000 g</span>
+            </div>
+            <button type="button" class="btn btn-outline-primary btn-sm" id="add-unit-btn" onclick="openUnitModal()">
               <i class="bi bi-plus-lg me-1"></i>Add Unit
             </button>
           </div>
           <div class="card-body">
-            <p class="text-muted small mb-3">
-              Units define how product quantities are counted (grams, pounds, liters, units...).
-              Units of the same type convert through their base unit &mdash; for example
-              1 kg = 1000 g. Assign a unit to each product; adjust the list and the
-              conversion factors here.
-            </p>
             <div class="table-responsive">
               <table class="table table-striped table-hover align-middle mb-3">
                 <thead>
@@ -2802,10 +3003,17 @@
             </div>
           </div>
         </div>
+        </div><!-- /settings-group-units -->
 
-        <div class="card mt-3">
-          <div class="card-header bg-primary text-white">
-            <h5 class="mb-0"><i class="bi bi-shop-window me-2"></i>Receipt Customization</h5>
+        <!-- Receipt & branding group -->
+        <div id="settings-group-receipt" class="settings-group" role="group" aria-label="Receipt and branding" style="display: none">
+        <div class="card settings-card">
+          <div class="card-header">
+            <span class="settings-icon-chip"><i class="bi bi-shop-window"></i></span>
+            <div class="settings-card-header-title">
+              <h5>Receipt Customization</h5>
+              <span class="settings-card-subtitle">Logo and contact details printed on every receipt</span>
+            </div>
           </div>
           <div class="card-body">
             <div class="receipt-customization-layout">
@@ -2876,12 +3084,16 @@
           </div>
         </div>
 
-        <div class="card mt-3">
-          <div class="card-header bg-success text-white">
-            <h5 class="mb-0"><i class="bi bi-qr-code me-2"></i>MMQR Mobile Payment</h5>
+        <div class="card settings-card">
+          <div class="card-header">
+            <span class="settings-icon-chip"><i class="bi bi-qr-code"></i></span>
+            <div class="settings-card-header-title">
+              <h5>MMQR Mobile Payment</h5>
+              <span class="settings-card-subtitle">Shown at checkout when Mobile Payment is selected</span>
+            </div>
           </div>
           <div class="card-body">
-            <p class="text-muted small">Upload the Myanmar MMQR image customers should scan at checkout. It will appear when Mobile Payment is selected in the POS.</p>
+            <p class="text-muted small">Upload the Myanmar MMQR image customers should scan at checkout.</p>
             <div class="d-flex align-items-center gap-3 flex-wrap">
               <div class="border rounded p-2 bg-light text-center" style="width: 180px; min-height: 180px;">
                 <img id="mmqr-preview" alt="MMQR payment QR" style="display: none; max-width: 160px; max-height: 160px;" />
@@ -2906,10 +3118,17 @@
             </div>
           </div>
         </div>
+        </div><!-- /settings-group-receipt -->
 
-        <div class="card mt-3">
-          <div class="card-header bg-dark text-white">
-            <h5 class="mb-0"><i class="bi bi-printer me-2"></i>Receipt Printer</h5>
+        <!-- Printing group -->
+        <div id="settings-group-printing" class="settings-group" role="group" aria-label="Printing" style="display: none">
+        <div class="card settings-card">
+          <div class="card-header">
+            <span class="settings-icon-chip"><i class="bi bi-printer"></i></span>
+            <div class="settings-card-header-title">
+              <h5>Receipt Printer</h5>
+              <span class="settings-card-subtitle">Shared thermal paper profile for every device</span>
+            </div>
           </div>
           <div class="card-body">
             <p class="text-muted mb-3">Choose the shared thermal paper profile used for checkout and Sales History receipts on every device.</p>
@@ -2946,12 +3165,16 @@
           </div>
         </div>
 
-        <div class="card mt-3">
-          <div class="card-header bg-dark text-white">
-            <h5 class="mb-0"><i class="bi bi-upc-scan me-2"></i>Label Printing</h5>
+        <div class="card settings-card">
+          <div class="card-header">
+            <span class="settings-icon-chip"><i class="bi bi-upc-scan"></i></span>
+            <div class="settings-card-header-title">
+              <h5>Label Printing</h5>
+              <span class="settings-card-subtitle">Sticker geometry for barcode labels from the Products tab</span>
+            </div>
           </div>
           <div class="card-body">
-            <p class="text-muted mb-3">Sticker geometry for barcode labels printed from the Products tab. Match these to your physical label roll — the print window paginates one row of labels per page.</p>
+            <p class="text-muted mb-3">Match these to your physical label roll — the print window paginates one row of labels per page.</p>
             <div class="row g-3">
               <div class="col-6 col-md-3">
                 <label class="form-label" for="label-width-mm">Label width (mm)</label>
@@ -2979,11 +3202,18 @@
             </div>
           </div>
         </div>
+        </div><!-- /settings-group-printing -->
 
+        <!-- AI assistant group -->
+        <div id="settings-group-ai" class="settings-group" role="group" aria-label="AI assistant" style="display: none">
         <!-- AI Agent Settings -->
-        <div class="card mt-4">
-          <div class="card-header bg-primary text-white">
-            <h5 class="mb-0"><i class="bi bi-robot"></i> AI Agent Settings</h5>
+        <div class="card settings-card">
+          <div class="card-header">
+            <span class="settings-icon-chip"><i class="bi bi-robot"></i></span>
+            <div class="settings-card-header-title">
+              <h5>AI Agent Settings</h5>
+              <span class="settings-card-subtitle">Loli answers from live data of the active branch</span>
+            </div>
           </div>
           <div class="card-body">
             <div class="mb-3">
@@ -3036,11 +3266,18 @@
             </div>
           </div>
         </div>
+        </div><!-- /settings-group-ai -->
 
+        <!-- Data & backup group -->
+        <div id="settings-group-data" class="settings-group" role="group" aria-label="Data and backup" style="display: none">
         <!-- Database Backup & Restore -->
-        <div class="card mt-4">
-          <div class="card-header bg-warning">
-            <h5 class="mb-0"><i class="bi bi-database me-2"></i>Database Backup & Restore</h5>
+        <div class="card settings-card">
+          <div class="card-header">
+            <span class="settings-icon-chip"><i class="bi bi-database"></i></span>
+            <div class="settings-card-header-title">
+              <h5>Database Backup &amp; Restore</h5>
+              <span class="settings-card-subtitle">Backup downloads a copy; restore replaces all current data</span>
+            </div>
           </div>
           <div class="card-body">
             <div class="alert alert-info mb-3">
@@ -3088,41 +3325,9 @@
             </div>
           </div>
         </div>
-
-        <!-- Branch Management -->
-        <div class="card mt-4">
-          <div class="card-header bg-info text-white">
-            <h5 class="mb-0"><i class="bi bi-building me-2"></i>Branch Management</h5>
-          </div>
-          <div class="card-body">
-            <div class="d-flex justify-content-between align-items-center mb-3">
-              <p class="text-muted mb-0">Manage multiple branches for your business. Each branch maintains separate inventory, sales, and customer data.</p>
-              <button class="btn btn-primary" onclick="showBranchModal()">
-                <i class="bi bi-plus-circle"></i> Add Branch
-              </button>
-            </div>
-            
-            <div class="table-responsive">
-              <table class="table table-hover" id="branches-table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Code</th>
-                    <th>Contact</th>
-                    <th>Status</th>
-                    <th>Default</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="branches-tbody">
-                  <tr>
-                    <td colspan="6" class="text-center text-muted">Loading branches...</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+        </div><!-- /settings-group-data -->
+          </div><!-- /settings content column -->
+        </div><!-- /settings-layout row -->
       </div>
     </div>
 
@@ -11423,6 +11628,25 @@
             console.error("Error converting units:", error);
             resultBox.innerHTML = '<span class="text-danger">Conversion failed. Check connection.</span>';
           });
+      }
+
+      // ===== Settings console groups =====
+      // One settings group is visible at a time; the nav rail keeps its place
+      // so a manager can jump straight to Printing or Data without scrolling
+      // through the whole stack of cards.
+      function showSettingsGroup(groupId) {
+        document.querySelectorAll("#settings-section .settings-group").forEach((pane) => {
+          pane.style.display = pane.id === `settings-group-${groupId}` ? "" : "none";
+        });
+        document.querySelectorAll("#settings-section .settings-nav-item").forEach((item) => {
+          const isActive = item.dataset.group === groupId;
+          item.classList.toggle("active", isActive);
+          if (isActive) {
+            item.setAttribute("aria-current", "true");
+          } else {
+            item.removeAttribute("aria-current");
+          }
+        });
       }
 
       // Color picker preview handlers
