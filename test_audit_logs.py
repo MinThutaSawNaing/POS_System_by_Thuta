@@ -2,7 +2,9 @@ import json
 import unittest
 import uuid
 from datetime import datetime
+from unittest import mock
 
+import app as app_module
 from app import (AuditLog, Branch, Product, User, app, audit_day_utc_bounds,
                  audit_local_datetime, db, decode_audit_changes,
                  encode_audit_changes, migrate_audit_detail_storage)
@@ -226,6 +228,54 @@ class AuditLogTests(unittest.TestCase):
         self.assertFalse(set(first_ids) & set(second_ids))
         self.assertEqual(first_ids, sorted(first_ids, reverse=True))
         self.assertEqual(second_ids, sorted(second_ids, reverse=True))
+
+    def test_txt_export_includes_every_match_not_just_one_page(self):
+        """The 30-row page limit is a view limit only; the TXT download is complete."""
+        marker = f'EXPORT-{uuid.uuid4().hex}'
+        with app.app_context():
+            rows = [AuditLog(
+                actor_username='exporter', category='System', action='create',
+                entity_type='Fixture', entity_id=f'{marker}-{index}',
+                summary=f'{marker} entry {index}',
+                changes_blob=encode_audit_changes({'sequence': index}),
+            ) for index in range(35)]
+            db.session.add_all(rows)
+            db.session.commit()
+            self.created_log_ids.extend(row.id for row in rows)
+
+        client = self.client_for(self.manager_id, 'manager', self.manager.username)
+        listing = client.get(f'/api/logs?q={marker}').get_json()
+        self.assertEqual(len(listing['items']), 30)
+        self.assertEqual(listing['total'], 35)
+
+        # No page/per_page is sent for the download, so every match is exported.
+        export = client.get(f'/api/logs/export.txt?q={marker}')
+        self.assertEqual(export.status_code, 200)
+        text = export.get_data(as_text=True)
+        self.assertEqual(text.count(f'{marker} entry'), 35)
+        self.assertIn('Filters: q=', text)
+
+    def test_txt_export_refuses_more_than_the_row_cap(self):
+        marker = f'CAP-{uuid.uuid4().hex}'
+        with app.app_context():
+            rows = [AuditLog(
+                actor_username='exporter', category='System', action='create',
+                entity_type='Fixture', summary=f'{marker} entry {index}',
+                changes_blob=encode_audit_changes({'sequence': index}),
+            ) for index in range(4)]
+            db.session.add_all(rows)
+            db.session.commit()
+            self.created_log_ids.extend(row.id for row in rows)
+
+        client = self.client_for(self.manager_id, 'manager', self.manager.username)
+        # A tiny cap keeps this fast; the real production cap is 10,000.
+        with mock.patch.object(app_module, 'AUDIT_EXPORT_LIMIT', 3):
+            response = client.get(f'/api/logs/export.txt?q={marker}')
+        self.assertEqual(response.status_code, 413)
+        self.assertIn('4 events match', response.get_json()['message'])
+        self.assertIn('3 events or fewer', response.get_json()['message'])
+        with mock.patch.object(app_module, 'AUDIT_EXPORT_LIMIT', 4):
+            self.assertEqual(client.get(f'/api/logs/export.txt?q={marker}').status_code, 200)
 
     def test_rollback_does_not_leave_a_false_log(self):
         marker = f'Rollback Product {uuid.uuid4().hex}'

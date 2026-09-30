@@ -1505,6 +1505,9 @@ AUDIT_LABEL_FIELDS = (
 )
 AUDIT_TIMEZONE = pytz.timezone('Asia/Yangon')
 AUDIT_PAGE_SIZE = 30
+# Upper bound on a single TXT download. Larger ranges must be narrowed so one
+# export cannot monopolise a Waitress worker thread.
+AUDIT_EXPORT_LIMIT = 10000
 
 
 def encode_audit_changes(changes):
@@ -5956,7 +5959,7 @@ def export_audit_logs_text():
         query = filtered_audit_log_query(request.args)
     except ValueError as error:
         return jsonify({'success': False, 'message': str(error)}), 400
-    export_limit = 10000
+    export_limit = AUDIT_EXPORT_LIMIT
     matching_count = query.count()
     if matching_count > export_limit:
         return jsonify({
