@@ -13339,6 +13339,7 @@
       // limiter. The gate is enforced by the API, not just this modal.
       let accountBarrierUnlocked = false;
       let accountBarrierOnUnlock = null;
+      let accountBarrierOnCancel = null;
 
       function barrierModalInstance() {
         const el = document.getElementById("accountBarrierModal");
@@ -13347,6 +13348,11 @@
 
       function addUserModalInstance() {
         const el = document.getElementById("addUserModal");
+        return bootstrap.Modal.getInstance(el) || new bootstrap.Modal(el);
+      }
+
+      function editUserModalInstance() {
+        const el = document.getElementById("editUserModal");
         return bootstrap.Modal.getInstance(el) || new bootstrap.Modal(el);
       }
 
@@ -13371,16 +13377,23 @@
         openAccountBarrier(showAddUserForm);
       }
 
-      function openAccountBarrier(onUnlock, warningMessage = "") {
+      function openAccountBarrier(onUnlock, warningMessage = "", onCancel = null) {
         if (accountBarrierUnlocked) {
           onUnlock();
           return;
         }
         accountBarrierOnUnlock = onUnlock;
+        accountBarrierOnCancel = onCancel;
         document.getElementById("account-barrier-username").value = "";
         document.getElementById("account-barrier-password").value = "";
         document.getElementById("account-barrier-captcha-answer").value = "";
         setAccountBarrierAlert(warningMessage);
+        const barrierElement = document.getElementById("accountBarrierModal");
+        barrierElement.addEventListener("hidden.bs.modal", () => {
+          const cancelAction = accountBarrierOnCancel;
+          accountBarrierOnCancel = null;
+          if (cancelAction) cancelAction();
+        }, { once: true });
         barrierModalInstance().show();
         refreshAccountBarrierCaptcha();
       }
@@ -13403,6 +13416,7 @@
               barrierModalInstance().hide();
               const onUnlock = accountBarrierOnUnlock;
               accountBarrierOnUnlock = null;
+              accountBarrierOnCancel = null;
               if (onUnlock) onUnlock();
               return;
             }
@@ -13446,6 +13460,7 @@
               barrierModalInstance().hide();
               const onUnlock = accountBarrierOnUnlock;
               accountBarrierOnUnlock = null;
+              accountBarrierOnCancel = null;
               if (onUnlock) onUnlock();
               return;
             }
@@ -13598,10 +13613,16 @@
             } else {
               if (data.code === "account_barrier_locked") {
                 accountBarrierUnlocked = false;
-                openAccountBarrier(
-                  updateUser,
-                  "Changing user roles is restricted. Unlock with the master credential or please contact WinterArcMyanmar."
-                );
+                const editModalElement = document.getElementById("editUserModal");
+                const reopenEditUser = () => editUserModalInstance().show();
+                editModalElement.addEventListener("hidden.bs.modal", () => {
+                  openAccountBarrier(
+                    updateUser,
+                    "Changing user roles is restricted. Unlock with the master credential or please contact WinterArcMyanmar.",
+                    reopenEditUser
+                  );
+                }, { once: true });
+                editUserModalInstance().hide();
                 return;
               }
               showToast(

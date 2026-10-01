@@ -337,7 +337,20 @@ class AgentBarrierBypassTests(unittest.TestCase):
         update_user = source[source.index('function updateUser()'):source.index(
             'function deleteUser(')]
         self.assertIn('data.code === "account_barrier_locked"', update_user)
-        self.assertIn('openAccountBarrier(\n                  updateUser,', update_user)
+        self.assertIn('editModalElement.addEventListener("hidden.bs.modal"', update_user)
+        self.assertIn('editUserModalInstance().hide()', update_user)
+        self.assertIn('openAccountBarrier(\n                    updateUser,', update_user)
+
+    def test_dashboard_sequences_nested_account_modals_without_overlap(self):
+        from pathlib import Path
+        source = (Path(__file__).parent / 'templates' / 'dashboard.html').read_text(
+            encoding='utf-8')
+        barrier = source[source.index('function openAccountBarrier('):source.index(
+            'function refreshAccountBarrierCaptcha()')]
+        self.assertIn('hidden.bs.modal', barrier)
+        self.assertIn('accountBarrierOnCancel', barrier)
+        self.assertIn('if (cancelAction) cancelAction();', barrier)
+        self.assertIn('function editUserModalInstance()', source)
 
     def test_dashboard_explains_role_restriction_and_support_contact(self):
         from pathlib import Path
