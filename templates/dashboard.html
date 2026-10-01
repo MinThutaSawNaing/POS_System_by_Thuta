@@ -2835,11 +2835,7 @@
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
             </button>
-            <button
-              class="btn btn-primary"
-              data-bs-toggle="modal"
-              data-bs-target="#addUserModal"
-            >
+            <button class="btn btn-primary" onclick="openAddUserGate()">
               <i class="bi bi-person-plus"></i> <span class="d-none d-sm-inline">Add User</span><span class="d-sm-none">Add</span>
             </button>
           </div>
@@ -4476,6 +4472,79 @@
             </button>
             <button type="button" class="btn btn-primary" onclick="saveUser()">
               Save User
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Account Creation Barrier Modal -->
+    <div class="modal fade" id="accountBarrierModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="bi bi-shield-lock me-1"></i>Account Creation Lock</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <p class="text-muted small mb-3">
+              Adding user accounts is protected. Enter the master credential and solve the sum to continue.
+            </p>
+            <div id="account-barrier-alert" class="alert alert-danger py-2 d-none" role="alert"></div>
+            <div class="mb-3">
+              <label class="form-label">Master Username <span class="text-danger">*</span></label>
+              <input
+                type="text"
+                class="form-control"
+                id="account-barrier-username"
+                autocomplete="off"
+              />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Master Password <span class="text-danger">*</span></label>
+              <input
+                type="password"
+                class="form-control"
+                id="account-barrier-password"
+                autocomplete="off"
+              />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Verification <span class="text-danger">*</span></label>
+              <div class="input-group">
+                <span class="input-group-text" id="account-barrier-captcha-question">Loading...</span>
+                <input
+                  type="number"
+                  class="form-control"
+                  id="account-barrier-captcha-answer"
+                  inputmode="numeric"
+                  placeholder="Answer"
+                />
+                <button
+                  class="btn btn-outline-secondary"
+                  type="button"
+                  onclick="refreshAccountBarrierCaptcha()"
+                  title="New sum"
+                >
+                  <i class="bi bi-arrow-repeat"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              id="account-barrier-submit"
+              onclick="submitAccountBarrier()"
+            >
+              <i class="bi bi-unlock me-1"></i>Unlock
             </button>
           </div>
         </div>
@@ -7164,6 +7233,9 @@
         // Authorization-sensitive reads only: explicitly accounted for but never
         // stored by the SPA cache or service worker.
         ["/api/logs", []],
+        // Account-creation barrier (challenge/unlock): security-sensitive and
+        // always fetched fresh, so it is accounted for but never cached.
+        ["/api/account_barrier", []],
         ["/api/products", ["products", "pos", "categories", "purchases", "warehouse", "promotions", "dashboard", "reports", "sales"]],
         ["/api/sales", ["pos", "sales", "products", "promotions", "customers", "debts", "warehouse", "dashboard", "reports"]],
         ["/api/returns_exchanges", ["pos", "sales", "products", "warehouse", "dashboard", "reports"]],
@@ -13254,6 +13326,122 @@
           });
       }
 
+      // Account-creation barrier: adding users is locked behind a master
+      // credential verified on the server, plus a numeric captcha and a rate
+      // limiter. The gate is enforced by the API, not just this modal.
+      let accountBarrierUnlocked = false;
+
+      function barrierModalInstance() {
+        const el = document.getElementById("accountBarrierModal");
+        return bootstrap.Modal.getInstance(el) || new bootstrap.Modal(el);
+      }
+
+      function addUserModalInstance() {
+        const el = document.getElementById("addUserModal");
+        return bootstrap.Modal.getInstance(el) || new bootstrap.Modal(el);
+      }
+
+      function setAccountBarrierAlert(message) {
+        const box = document.getElementById("account-barrier-alert");
+        if (!box) return;
+        if (message) {
+          box.textContent = message;
+          box.classList.remove("d-none");
+        } else {
+          box.textContent = "";
+          box.classList.add("d-none");
+        }
+      }
+
+      function showAddUserForm() {
+        document.getElementById("add-user-form").reset();
+        addUserModalInstance().show();
+      }
+
+      function openAddUserGate() {
+        if (accountBarrierUnlocked) {
+          showAddUserForm();
+          return;
+        }
+        document.getElementById("account-barrier-username").value = "";
+        document.getElementById("account-barrier-password").value = "";
+        document.getElementById("account-barrier-captcha-answer").value = "";
+        setAccountBarrierAlert("");
+        barrierModalInstance().show();
+        refreshAccountBarrierCaptcha();
+      }
+
+      function refreshAccountBarrierCaptcha() {
+        const questionEl = document.getElementById("account-barrier-captcha-question");
+        const answerEl = document.getElementById("account-barrier-captcha-answer");
+        if (answerEl) answerEl.value = "";
+        if (questionEl) questionEl.textContent = "Loading...";
+        fetch("/api/account_barrier/challenge")
+          .then((response) => response.json().then((data) => ({ ok: response.ok, data })))
+          .then(({ ok, data }) => {
+            if (!ok || !data.success) {
+              if (questionEl) questionEl.textContent = "—";
+              setAccountBarrierAlert(data.message || "Verification is unavailable.");
+              return;
+            }
+            if (data.unlocked) {
+              accountBarrierUnlocked = true;
+              barrierModalInstance().hide();
+              showAddUserForm();
+              return;
+            }
+            if (questionEl) questionEl.textContent = data.question;
+          })
+          .catch(() => {
+            if (questionEl) questionEl.textContent = "—";
+            setAccountBarrierAlert("Unable to start verification.");
+          });
+      }
+
+      function submitAccountBarrier() {
+        const username = document.getElementById("account-barrier-username").value.trim();
+        const password = document.getElementById("account-barrier-password").value;
+        const captchaAnswer = document
+          .getElementById("account-barrier-captcha-answer")
+          .value.trim();
+        if (!username || !password || !captchaAnswer) {
+          setAccountBarrierAlert("Please fill in every field.");
+          return;
+        }
+        const submitBtn = document.getElementById("account-barrier-submit");
+        submitBtn.disabled = true;
+        fetch("/api/account_barrier/unlock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: username,
+            password: password,
+            captcha_answer: captchaAnswer,
+          }),
+        })
+          .then((response) => response.json().then((data) => ({ ok: response.ok, data })))
+          .then(({ ok, data }) => {
+            if (ok && data.success) {
+              accountBarrierUnlocked = true;
+              setAccountBarrierAlert("");
+              document.getElementById("account-barrier-username").value = "";
+              document.getElementById("account-barrier-password").value = "";
+              document.getElementById("account-barrier-captcha-answer").value = "";
+              barrierModalInstance().hide();
+              showAddUserForm();
+              return;
+            }
+            setAccountBarrierAlert(data.message || "Unlock failed.");
+            if (data.refresh_captcha || data.retry_after) {
+              refreshAccountBarrierCaptcha();
+            }
+          })
+          .catch(() => setAccountBarrierAlert("Unlock failed. Please try again."))
+          .finally(() => {
+            submitBtn.disabled = false;
+          });
+      }
+
       // Update the saveUser function
       function saveUser() {
         const username = document.getElementById("add-username").value.trim();
@@ -13289,7 +13477,9 @@
           .then((response) => {
             if (!response.ok) {
               return response.json().then((error) => {
-                throw new Error(error.message || "Unknown error");
+                const failure = new Error(error.message || "Unknown error");
+                failure.code = error.code;
+                throw failure;
               });
             }
             return response.json();
@@ -13309,6 +13499,16 @@
           })
           .catch((error) => {
             console.error("Error saving user:", error);
+            if (error.code === "account_barrier_locked") {
+              accountBarrierUnlocked = false;
+              document.getElementById("add-user-form").reset();
+              bootstrap.Modal.getInstance(
+                document.getElementById("addUserModal")
+              )?.hide();
+              showToast("User creation is locked. Please unlock again.", "warning");
+              openAddUserGate();
+              return;
+            }
             showToast("Error saving user: " + error.message, "error");
           });
       }

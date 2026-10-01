@@ -10,6 +10,10 @@ import io
 import json
 import time
 import struct
+import hmac
+import math
+import random
+import threading
 from sqlalchemy import inspect, text, func, event, or_, and_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session as SQLAlchemySession
@@ -63,6 +67,36 @@ from cryptography.fernet import Fernet, InvalidToken
 
 # Import AI Agent modules
 from agent_orchestrator import get_orchestrator
+
+
+def _load_local_env(path=None):
+    """Populate os.environ from a local .env file without overriding real vars.
+
+    Deployment secrets (such as the account-creation barrier) are provisioned in
+    an untracked ``.env`` file so they never enter version control. Compose reads
+    that file on its own, but bare-metal launches did not, which left ``.env``
+    secrets unavailable outside Docker. Loading it here keeps a single source of
+    truth for every launch. Values already present in the real environment win.
+    """
+    env_path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    try:
+        with open(env_path, 'r', encoding='utf-8') as handle:
+            lines = handle.readlines()
+    except OSError:
+        return
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, _, value = line.partition('=')
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
+_load_local_env()
+
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'your_super_secret_key_here')
@@ -243,6 +277,170 @@ def set_setting(key, value):
         setting = AppSetting(key=key, value=value)
         db.session.add(setting)
     db.session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Account-creation barrier
+#
+# The product ships with a vendor-only master credential that gates the ability
+# to create additional user accounts, so a customer cannot mint their own users.
+# The plaintext credential is never committed: it is provisioned at deploy time
+# through POS_ACCOUNT_BARRIER_USERNAME / POS_ACCOUNT_BARRIER_PASSWORD (see .env)
+# and only the salted password hash is persisted in the database. A numeric
+# captcha and a per-client rate limiter guard the unlock endpoint.
+# ---------------------------------------------------------------------------
+ACCOUNT_BARRIER_USERNAME_SETTING = 'account_barrier_username'
+ACCOUNT_BARRIER_PASSWORD_SETTING = 'account_barrier_password_hash'
+
+# After _BARRIER_MAX_ATTEMPTS failed unlocks inside the rolling window the caller
+# is throttled until the oldest failure ages out.
+_BARRIER_MAX_ATTEMPTS = 5
+_BARRIER_ATTEMPT_WINDOW = 15 * 60  # seconds
+_BARRIER_UNLOCK_TTL = 15 * 60      # seconds a successful unlock stays valid
+_BARRIER_CAPTCHA_TTL = 5 * 60      # seconds a numeric captcha stays valid
+_BARRIER_MAX_CAPTCHAS = 512        # cap on live challenges kept in memory
+
+_barrier_lock = threading.Lock()
+_barrier_failures = {}   # client key -> list of failure timestamps
+_barrier_captchas = {}   # captcha token -> {'answer': int, 'expires': float}
+
+
+def _barrier_client_key():
+    """Rate-limit key for the barrier.
+
+    Prefers the signed-in account so the throttle follows the manager's identity
+    rather than the network address. That matters behind a reverse proxy, where
+    every request shares the proxy's address and an IP-only key would let one
+    caller lock out (or be masked by) everyone else. The address is only a
+    fallback for the unauthenticated case.
+    """
+    user_id = session.get('user_id')
+    if user_id is not None:
+        return f'user:{user_id}'
+    return 'ip:' + ((request.remote_addr or 'unknown').strip() or 'unknown')
+
+
+def _barrier_retry_after(client_key):
+    """Seconds the caller must wait before trying again (0 when allowed)."""
+    now = time.time()
+    with _barrier_lock:
+        recent = [t for t in _barrier_failures.get(client_key, [])
+                  if now - t < _BARRIER_ATTEMPT_WINDOW]
+        if recent:
+            _barrier_failures[client_key] = recent
+        else:
+            _barrier_failures.pop(client_key, None)
+        if len(recent) < _BARRIER_MAX_ATTEMPTS:
+            return 0
+        return max(int(math.ceil(recent[0] + _BARRIER_ATTEMPT_WINDOW - now)), 1)
+
+
+def _barrier_record_failure(client_key):
+    now = time.time()
+    with _barrier_lock:
+        recent = [t for t in _barrier_failures.get(client_key, [])
+                  if now - t < _BARRIER_ATTEMPT_WINDOW]
+        recent.append(now)
+        _barrier_failures[client_key] = recent[-_BARRIER_MAX_ATTEMPTS:]
+
+
+def _barrier_clear_failures(client_key):
+    with _barrier_lock:
+        _barrier_failures.pop(client_key, None)
+
+
+def _barrier_issue_captcha():
+    """Create a fresh numeric captcha; return (token, human-readable question)."""
+    left = random.randint(2, 9)
+    right = random.randint(2, 9)
+    token = uuid.uuid4().hex
+    now = time.time()
+    with _barrier_lock:
+        for stale in [t for t, entry in _barrier_captchas.items()
+                      if entry['expires'] < now]:
+            _barrier_captchas.pop(stale, None)
+        # Bound memory even under a burst of challenge requests.
+        while len(_barrier_captchas) >= _BARRIER_MAX_CAPTCHAS:
+            _barrier_captchas.pop(next(iter(_barrier_captchas)))
+        _barrier_captchas[token] = {'answer': left + right,
+                                    'expires': now + _BARRIER_CAPTCHA_TTL}
+    return token, f'What is {left} + {right}?'
+
+
+def _barrier_consume_captcha(token, answer):
+    """Validate a captcha once; it is destroyed whether or not it matches."""
+    if not token:
+        return False
+    now = time.time()
+    with _barrier_lock:
+        entry = _barrier_captchas.pop(token, None)
+    if not entry or entry['expires'] < now:
+        return False
+    try:
+        return int(str(answer).strip()) == entry['answer']
+    except (TypeError, ValueError):
+        return False
+
+
+def _account_barrier_configured():
+    """True once a master credential has been provisioned for this deployment."""
+    return bool(get_setting(ACCOUNT_BARRIER_PASSWORD_SETTING, '')
+                and get_setting(ACCOUNT_BARRIER_USERNAME_SETTING, ''))
+
+
+def _verify_account_barrier(username, password):
+    """Constant-time username check plus a salted-hash password check."""
+    stored_user = get_setting(ACCOUNT_BARRIER_USERNAME_SETTING, '') or ''
+    stored_hash = get_setting(ACCOUNT_BARRIER_PASSWORD_SETTING, '') or ''
+    if not stored_user or not stored_hash or not username or not password:
+        return False
+    if not hmac.compare_digest(str(stored_user), str(username)):
+        return False
+    return check_password_hash(stored_hash, password)
+
+
+def _account_barrier_is_unlocked():
+    """Whether this session may create users right now."""
+    if not session.get('account_barrier_unlocked'):
+        return False
+    unlocked_at = session.get('account_barrier_unlocked_at')
+    if unlocked_at is None:
+        return True
+    try:
+        return (time.time() - float(unlocked_at)) < _BARRIER_UNLOCK_TTL
+    except (TypeError, ValueError):
+        return False
+
+
+def unlock_account_barrier_session():
+    session['account_barrier_unlocked'] = True
+    session['account_barrier_unlocked_at'] = time.time()
+
+
+def seed_account_barrier_credential():
+    """Provision the vendor master credential from the deployment environment.
+
+    Only the salted password hash is written to the database; the plaintext is
+    read from POS_ACCOUNT_BARRIER_PASSWORD and never stored in source control.
+    Re-running is a no-op while the configured credential already matches, so a
+    restart neither rewrites the hash nor floods the audit log.
+    """
+    password = (os.environ.get('POS_ACCOUNT_BARRIER_PASSWORD') or '').strip()
+    username = (os.environ.get('POS_ACCOUNT_BARRIER_USERNAME') or '').strip()
+    if not password or not username:
+        if not _account_barrier_configured():
+            app.logger.warning(
+                'Account-creation barrier is not provisioned. Set '
+                'POS_ACCOUNT_BARRIER_USERNAME and POS_ACCOUNT_BARRIER_PASSWORD '
+                '(for example in .env) so a vendor can unlock user creation.')
+        return
+    stored_user = get_setting(ACCOUNT_BARRIER_USERNAME_SETTING, '') or ''
+    stored_hash = get_setting(ACCOUNT_BARRIER_PASSWORD_SETTING, '') or ''
+    if stored_user == username and stored_hash and check_password_hash(stored_hash, password):
+        return
+    set_setting(ACCOUNT_BARRIER_USERNAME_SETTING, username)
+    set_setting(ACCOUNT_BARRIER_PASSWORD_SETTING, generate_password_hash(password))
+
 
 def get_agent_autonomy_enabled():
     """Kill switch for AI agent autonomy. Default is OFF."""
@@ -2464,6 +2662,10 @@ with app.app_context():
         )
         db.session.add(admin_user)
         db.session.commit()
+
+    # Provision the vendor-only account-creation barrier from the deployment
+    # environment (POS_ACCOUNT_BARRIER_*). Only the password hash is stored.
+    seed_account_barrier_credential()
 
     if not AppSetting.query.filter_by(key='currency_code').first():
         db.session.add(AppSetting(key='currency_code', value='USD'))
@@ -5705,6 +5907,101 @@ def api_dashboard_top_products():
         for row in rows
     ])
 
+# Account-creation barrier API: unlocks the ability to add users for this
+# session after the vendor master credential, a numeric captcha and the rate
+# limiter all pass.
+@app.route('/api/account_barrier/status', methods=['GET'])
+@manager_required
+def api_account_barrier_status():
+    return jsonify({
+        'success': True,
+        'configured': _account_barrier_configured(),
+        'unlocked': _account_barrier_is_unlocked(),
+        'retry_after': _barrier_retry_after(_barrier_client_key()),
+        'max_attempts': _BARRIER_MAX_ATTEMPTS,
+    })
+
+
+@app.route('/api/account_barrier/challenge', methods=['GET'])
+@manager_required
+def api_account_barrier_challenge():
+    if not _account_barrier_configured():
+        return jsonify({
+            'success': False,
+            'configured': False,
+            'message': 'Account creation is not available on this deployment.',
+        }), 403
+    retry_after = _barrier_retry_after(_barrier_client_key())
+    if retry_after:
+        return jsonify({
+            'success': False,
+            'retry_after': retry_after,
+            'message': f'Too many attempts. Try again in {retry_after} seconds.',
+        }), 429
+    token, question = _barrier_issue_captcha()
+    session['account_barrier_captcha_token'] = token
+    return jsonify({
+        'success': True,
+        'configured': True,
+        'unlocked': _account_barrier_is_unlocked(),
+        'question': question,
+    })
+
+
+@app.route('/api/account_barrier/unlock', methods=['POST'])
+@manager_required
+def api_account_barrier_unlock():
+    if not _account_barrier_configured():
+        return jsonify({
+            'success': False,
+            'configured': False,
+            'message': 'Account creation is not available on this deployment.',
+        }), 403
+
+    client_key = _barrier_client_key()
+    retry_after = _barrier_retry_after(client_key)
+    if retry_after:
+        return jsonify({
+            'success': False,
+            'retry_after': retry_after,
+            'message': f'Too many attempts. Try again in {retry_after} seconds.',
+        }), 429
+
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+    captcha_answer = data.get('captcha_answer')
+    captcha_token = session.pop('account_barrier_captcha_token', None)
+
+    # The captcha is single-use and checked first, so a guessed credential cannot
+    # be replayed and every attempt costs a fresh human-solvable sum.
+    if not _barrier_consume_captcha(captcha_token, captcha_answer):
+        _barrier_record_failure(client_key)
+        return jsonify({
+            'success': False,
+            'refresh_captcha': True,
+            'message': 'Incorrect captcha answer. Please solve the new sum.',
+        }), 400
+
+    if not _verify_account_barrier(username, password):
+        _barrier_record_failure(client_key)
+        return jsonify({
+            'success': False,
+            'refresh_captcha': True,
+            'message': 'Incorrect master username or password.',
+        }), 400
+
+    _barrier_clear_failures(client_key)
+    unlock_account_barrier_session()
+    record_audit_event(
+        category='System', action='update', entity_type='User',
+        entity_label='Account creation barrier',
+        summary='Account-creation barrier unlocked for the current session.',
+    )
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'Unlocked. You can now add users.'})
+
+
 # User API Endpoints
 @app.route('/api/users', methods=['GET'])
 @manager_required
@@ -5747,6 +6044,16 @@ def api_users():
 @app.route('/api/users', methods=['POST'])
 @manager_required
 def api_create_user():
+    # Creating accounts stays locked until the vendor master credential unlocks
+    # it for this session, so a customer cannot mint their own users.
+    if not _account_barrier_is_unlocked():
+        return jsonify({
+            'success': False,
+            'code': 'account_barrier_locked',
+            'message': 'Adding users is locked. Unlock the account-creation '
+                       'barrier with the master credential first.',
+        }), 403
+
     data = request.get_json()
     if not data or not all(k in data for k in ['username', 'password', 'role']):
         return jsonify({'success': False, 'message': 'Missing required fields'}), 400
@@ -7923,10 +8230,13 @@ def print_debt_receipt(debt_id):
 # AI Agent API Endpoints
 # ============================================
 
-# Model registry for AI tools
+# Model registry for the AI tool container. This is an explicit allowlist of the
+# domain models tools may reach, and it is kept to business data only. AppSetting
+# is intentionally omitted: it stores credentials (the account-creation barrier
+# hash, the AI API key, ...) that no agent tool should ever read or rewrite, so
+# the Loli agent has no path to the barrier even if a future tool is added.
 AI_MODELS = {
     'User': User,
-    'AppSetting': AppSetting,
     'Branch': Branch,
     'Category': Category,
     'Product': Product,

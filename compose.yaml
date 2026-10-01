@@ -18,6 +18,10 @@ services:
       AI_MEMORY_MAX_RESULTS: "${AI_MEMORY_MAX_RESULTS:-5}"
       AI_MEMORY_MAX_CONTEXT_CHARS: "${AI_MEMORY_MAX_CONTEXT_CHARS:-1500}"
       AI_MEMORY_MEM0_CONFIG: "${AI_MEMORY_MEM0_CONFIG:-}"
+      # Vendor-only master credential that unlocks user creation. Values are
+      # sourced from .env (never committed); only the password hash is stored.
+      POS_ACCOUNT_BARRIER_USERNAME: "${POS_ACCOUNT_BARRIER_USERNAME:-}"
+      POS_ACCOUNT_BARRIER_PASSWORD: "${POS_ACCOUNT_BARRIER_PASSWORD:-}"
     volumes:
       - type: volume
         source: pos_instance
