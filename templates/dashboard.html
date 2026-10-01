@@ -13330,6 +13330,7 @@
       // credential verified on the server, plus a numeric captcha and a rate
       // limiter. The gate is enforced by the API, not just this modal.
       let accountBarrierUnlocked = false;
+      let accountBarrierOnUnlock = null;
 
       function barrierModalInstance() {
         const el = document.getElementById("accountBarrierModal");
@@ -13359,10 +13360,15 @@
       }
 
       function openAddUserGate() {
+        openAccountBarrier(showAddUserForm);
+      }
+
+      function openAccountBarrier(onUnlock) {
         if (accountBarrierUnlocked) {
-          showAddUserForm();
+          onUnlock();
           return;
         }
+        accountBarrierOnUnlock = onUnlock;
         document.getElementById("account-barrier-username").value = "";
         document.getElementById("account-barrier-password").value = "";
         document.getElementById("account-barrier-captcha-answer").value = "";
@@ -13387,7 +13393,9 @@
             if (data.unlocked) {
               accountBarrierUnlocked = true;
               barrierModalInstance().hide();
-              showAddUserForm();
+              const onUnlock = accountBarrierOnUnlock;
+              accountBarrierOnUnlock = null;
+              if (onUnlock) onUnlock();
               return;
             }
             if (questionEl) questionEl.textContent = data.question;
@@ -13428,7 +13436,9 @@
               document.getElementById("account-barrier-password").value = "";
               document.getElementById("account-barrier-captcha-answer").value = "";
               barrierModalInstance().hide();
-              showAddUserForm();
+              const onUnlock = accountBarrierOnUnlock;
+              accountBarrierOnUnlock = null;
+              if (onUnlock) onUnlock();
               return;
             }
             setAccountBarrierAlert(data.message || "Unlock failed.");
@@ -13568,9 +13578,9 @@
           },
           body: JSON.stringify(userData),
         })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
+          .then((response) => response.json().then((data) => ({ ok: response.ok, data })))
+          .then(({ ok, data }) => {
+            if (ok && data.success) {
               showToast("User updated successfully!", "success");
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("editUserModal")
@@ -13578,6 +13588,12 @@
               modal.hide();
               loadUsers();
             } else {
+              if (data.code === "account_barrier_locked") {
+                accountBarrierUnlocked = false;
+                showToast("Changing user roles is locked. Please unlock first.", "warning");
+                openAccountBarrier(updateUser);
+                return;
+              }
               showToast(
                 "Error updating user: " + (data.message || "Unknown error"),
                 "error"

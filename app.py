@@ -6088,6 +6088,22 @@ def api_single_user(user_id):
         data = request.get_json()
         if not data:
             return jsonify({'success': False, 'message': 'No data provided'}), 400
+
+        requested_role = data.get('role', user.role)
+        if requested_role not in {'cashier', 'manager', 'boss'}:
+            return jsonify({'success': False, 'message': 'Invalid user role'}), 400
+
+        # Changing an existing account's role can grant (or remove) manager
+        # access. Treat it with the same vendor-only barrier used for creating
+        # accounts; this is enforced here so neither the dashboard nor another
+        # client (including the AI agent) can bypass it.
+        if requested_role != user.role and not _account_barrier_is_unlocked():
+            return jsonify({
+                'success': False,
+                'code': 'account_barrier_locked',
+                'message': 'Changing user roles is locked. Unlock the account-'
+                           'creation barrier with the master credential first.',
+            }), 403
             
         # Check if username already exists (excluding current user)
         if 'username' in data and data['username'] != user.username:
@@ -6096,7 +6112,7 @@ def api_single_user(user_id):
                 return jsonify({'success': False, 'message': 'Username already exists'}), 400
                 
         user.username = data.get('username', user.username)
-        user.role = data.get('role', user.role)
+        user.role = requested_role
         
         # Update password if provided
         if 'password' in data and data['password']:

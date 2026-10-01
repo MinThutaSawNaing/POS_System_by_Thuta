@@ -43,7 +43,20 @@ class AccountBarrierTests(unittest.TestCase):
                         generate_password_hash(BARRIER_PASSWORD))
             self.manager = User.query.filter_by(role='manager').first()
             self.branch = Branch.query.filter_by(is_active=True).first()
+            self.manager_id = self.manager.id
+            self.manager_username = self.manager.username
+            self.branch_id = self.branch.id
             self.max_log_id = db.session.query(func.max(AuditLog.id)).scalar() or 0
+            self.role_target = User(
+                username=f'barrier_role_target_{uuid.uuid4().hex[:8]}',
+                password=generate_password_hash('UnusedTargetPass!123'),
+                role='cashier',
+            )
+            db.session.add(self.role_target)
+            db.session.commit()
+            self.created_user_ids.append(self.role_target.id)
+            self.role_target_id = self.role_target.id
+            self.role_target_username = self.role_target.username
 
     def tearDown(self):
         app_module._barrier_failures.clear()
@@ -74,10 +87,10 @@ class AccountBarrierTests(unittest.TestCase):
     def _client(self, role='manager'):
         client = app.test_client()
         with client.session_transaction() as current:
-            current['user_id'] = self.manager.id
-            current['username'] = self.manager.username
+            current['user_id'] = self.manager_id
+            current['username'] = self.manager_username
             current['role'] = role
-            current['branch_id'] = self.branch.id
+            current['branch_id'] = self.branch_id
         return client
 
     def _solve_captcha(self, client):
@@ -100,6 +113,48 @@ class AccountBarrierTests(unittest.TestCase):
             'username': f'barrier_{uuid.uuid4().hex[:8]}', 'password': 'x', 'role': 'cashier'})
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.get_json().get('code'), 'account_barrier_locked')
+
+    def test_role_change_is_locked_and_does_not_mutate_the_user(self):
+        client = self._client()
+        response = client.put(f'/api/users/{self.role_target_id}', json={
+            'username': self.role_target_username,
+            'role': 'manager',
+        })
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json().get('code'), 'account_barrier_locked')
+        with app.app_context():
+            target = db.session.get(User, self.role_target_id)
+            self.assertEqual(target.role, 'cashier')
+
+    def test_non_role_edits_remain_available_while_the_barrier_is_locked(self):
+        client = self._client()
+        new_username = f'barrier_rename_{uuid.uuid4().hex[:8]}'
+        response = client.put(f'/api/users/{self.role_target_id}', json={
+            'username': new_username,
+            'role': 'cashier',
+        })
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        with app.app_context():
+            target = db.session.get(User, self.role_target_id)
+            self.assertEqual(target.username, new_username)
+            self.assertEqual(target.role, 'cashier')
+
+    def test_unlocked_barrier_allows_a_role_change(self):
+        client = self._client()
+        answer = self._solve_captcha(client)
+        unlock = client.post('/api/account_barrier/unlock', json={
+            'username': BARRIER_USERNAME,
+            'password': BARRIER_PASSWORD,
+            'captcha_answer': answer,
+        })
+        self.assertEqual(unlock.status_code, 200, unlock.get_data(as_text=True))
+        response = client.put(f'/api/users/{self.role_target_id}', json={
+            'username': self.role_target_username,
+            'role': 'manager',
+        })
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        with app.app_context():
+            self.assertEqual(db.session.get(User, self.role_target_id).role, 'manager')
 
     def test_challenge_question_is_a_numeric_sum(self):
         client = self._client()
@@ -274,6 +329,15 @@ class AgentBarrierBypassTests(unittest.TestCase):
             for token in ('AppSetting', 'generate_password_hash', 'User('):
                 self.assertNotIn(token, source,
                                  f'tool {name!r} references {token!r}')
+
+    def test_dashboard_reuses_the_server_barrier_for_role_changes(self):
+        from pathlib import Path
+        source = (Path(__file__).parent / 'templates' / 'dashboard.html').read_text(
+            encoding='utf-8')
+        update_user = source[source.index('function updateUser()'):source.index(
+            'function deleteUser(')]
+        self.assertIn('data.code === "account_barrier_locked"', update_user)
+        self.assertIn('openAccountBarrier(updateUser)', update_user)
 
 
 if __name__ == '__main__':
