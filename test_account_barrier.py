@@ -337,7 +337,20 @@ class AgentBarrierBypassTests(unittest.TestCase):
         update_user = source[source.index('function updateUser()'):source.index(
             'function deleteUser(')]
         self.assertIn('data.code === "account_barrier_locked"', update_user)
-        self.assertIn('openAccountBarrier(updateUser)', update_user)
+        self.assertIn('openAccountBarrier(\n                  updateUser,', update_user)
+
+    def test_dashboard_explains_role_restriction_and_support_contact(self):
+        from pathlib import Path
+        source = (Path(__file__).parent / 'templates' / 'dashboard.html').read_text(
+            encoding='utf-8')
+        edit_modal = source[source.index('<!-- Edit User Modal -->'):source.index(
+            '<!-- Add Customer Modal -->')]
+        self.assertIn('Role changes are restricted.', edit_modal)
+        self.assertIn('WinterArcMyanmar', edit_modal)
+        self.assertIn('Creating user accounts and changing user roles are restricted.', source)
+        self.assertIn(
+            'Changing user roles is restricted. Unlock with the master credential '
+            'or please contact WinterArcMyanmar.', source)
 
 
 if __name__ == '__main__':

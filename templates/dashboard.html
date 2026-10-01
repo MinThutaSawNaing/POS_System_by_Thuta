@@ -4483,7 +4483,7 @@
       <div class="modal-dialog">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title"><i class="bi bi-shield-lock me-1"></i>Account Creation Lock</h5>
+            <h5 class="modal-title"><i class="bi bi-shield-lock me-1"></i>Restricted Account Action</h5>
             <button
               type="button"
               class="btn-close"
@@ -4493,8 +4493,12 @@
           </div>
           <div class="modal-body">
             <p class="text-muted small mb-3">
-              Adding user accounts is protected. Enter the master credential and solve the sum to continue.
+              Creating user accounts and changing user roles are restricted. Enter the master credential and solve the sum to continue.
             </p>
+            <div class="alert alert-warning py-2 small mb-3" role="note">
+              <i class="bi bi-info-circle-fill me-1"></i>
+              Need access to create accounts or change roles? Please contact <strong>WinterArcMyanmar</strong>.
+            </div>
             <div id="account-barrier-alert" class="alert alert-danger py-2 d-none" role="alert"></div>
             <div class="mb-3">
               <label class="form-label">Master Username <span class="text-danger">*</span></label>
@@ -4605,6 +4609,10 @@
                   <option value="manager">Manager</option>
                   <option value="boss">Boss</option>
                 </select>
+                <div class="alert alert-warning small py-2 mt-2 mb-0" role="note">
+                  <i class="bi bi-shield-lock-fill me-1"></i>
+                  Role changes are restricted. You must unlock the protection barrier, or please contact <strong>WinterArcMyanmar</strong>.
+                </div>
               </div>
             </form>
           </div>
@@ -13363,7 +13371,7 @@
         openAccountBarrier(showAddUserForm);
       }
 
-      function openAccountBarrier(onUnlock) {
+      function openAccountBarrier(onUnlock, warningMessage = "") {
         if (accountBarrierUnlocked) {
           onUnlock();
           return;
@@ -13372,7 +13380,7 @@
         document.getElementById("account-barrier-username").value = "";
         document.getElementById("account-barrier-password").value = "";
         document.getElementById("account-barrier-captcha-answer").value = "";
-        setAccountBarrierAlert("");
+        setAccountBarrierAlert(warningMessage);
         barrierModalInstance().show();
         refreshAccountBarrierCaptcha();
       }
@@ -13590,8 +13598,10 @@
             } else {
               if (data.code === "account_barrier_locked") {
                 accountBarrierUnlocked = false;
-                showToast("Changing user roles is locked. Please unlock first.", "warning");
-                openAccountBarrier(updateUser);
+                openAccountBarrier(
+                  updateUser,
+                  "Changing user roles is restricted. Unlock with the master credential or please contact WinterArcMyanmar."
+                );
                 return;
               }
               showToast(
