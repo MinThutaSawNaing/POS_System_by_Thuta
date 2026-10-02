@@ -1925,16 +1925,18 @@
               <span class="branch-name">-</span>
             </span>
           </div>
-          <div class="d-flex gap-2 flex-wrap">
-            <button class="btn btn-outline-primary" onclick="exportReturns('pdf')">
-              <i class="bi bi-file-earmark-pdf"></i> <span class="d-none d-sm-inline">PDF</span>
-            </button>
-            <button class="btn btn-outline-primary" onclick="exportReturns('xlsx')">
-              <i class="bi bi-file-earmark-spreadsheet"></i> <span class="d-none d-sm-inline">Excel</span>
-            </button>
+          <div class="d-flex gap-2">
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
             </button>
+            <div class="btn-group" role="group" aria-label="Download returns and exchanges report">
+              <button class="btn btn-outline-danger" onclick="exportReturns('pdf')" title="Download the returns and exchanges register as a PDF report">
+                <i class="bi bi-file-earmark-pdf"></i> <span class="d-none d-sm-inline">PDF</span>
+              </button>
+              <button class="btn btn-outline-success" onclick="exportReturns('xlsx')" title="Download the returns and exchanges register as an Excel workbook">
+                <i class="bi bi-file-earmark-excel"></i> <span class="d-none d-sm-inline">Excel</span>
+              </button>
+            </div>
           </div>
         </div>
 

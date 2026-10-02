@@ -133,6 +133,23 @@ def test_section_nav_and_cache_are_wired():
     assert "showReturnsForTransaction(" in source
 
 
+def test_export_buttons_use_the_shared_report_component():
+    """The Returns tab downloads must be the same button component the Warehouse
+    and Purchase & Receiving tabs use (danger PDF + success Excel in a btn-group)."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+    section = source[source.index('id="returns-section"'):source.index('id="reports-section"')]
+    assert ('<div class="btn-group" role="group" '
+            'aria-label="Download returns and exchanges report">') in section
+    assert 'onclick="exportReturns(\'pdf\')"' in section
+    assert 'onclick="exportReturns(\'xlsx\')"' in section
+    assert "bi-file-earmark-pdf" in section
+    assert "bi-file-earmark-excel" in section
+    assert "btn-outline-danger" in section
+    assert "btn-outline-success" in section
+    # The odd-one-out icon/style must be gone.
+    assert "bi-file-earmark-spreadsheet" not in section
+
+
 def test_export_sends_the_tab_filters():
     out = _run({
         "returns-start-filter": "2026-10-01",
