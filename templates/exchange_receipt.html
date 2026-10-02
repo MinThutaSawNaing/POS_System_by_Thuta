@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/public/photos/logo.ico" type="image/x-icon" />
+    <title>{{ exchange.document_title }} {{ exchange.workflow_number }} · {{ exchange.brand_name }}</title>
+    <style id="exchange-page-style">
+      @page { size: {{ exchange.paper.width_mm }}mm 20mm; margin: 0; }
+    </style>
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; background: #e9ecef; color: #111; }
+      body { font-family: Arial, "Padauk", "Myanmar Text", sans-serif; }
+      .toolbar {
+        position: sticky; top: 0; z-index: 2; display: flex; justify-content: center;
+        gap: 10px; padding: 12px; background: rgba(33, 37, 41, .96); color: white;
+      }
+      .toolbar button {
+        border: 1px solid rgba(255,255,255,.35); border-radius: 6px; padding: 9px 15px;
+        background: white; color: #212529; font: 600 14px/1 Arial, sans-serif; cursor: pointer;
+      }
+      .toolbar button.primary { background: #0d6efd; border-color: #0d6efd; color: white; }
+      .toolbar button:focus-visible { outline: 3px solid #ffc107; outline-offset: 2px; }
+      .print-help { margin: 10px auto; max-width: 520px; padding: 0 12px; text-align: center; color: #495057; font-size: 13px; }
+      .receipt-shell { width: {{ exchange.paper.width_mm }}mm; margin: 16px auto; background: white; box-shadow: 0 8px 30px rgba(0,0,0,.18); }
+      .receipt {
+        width: {{ exchange.paper.width_mm }}mm; padding: {% if exchange.is_narrow %}3mm{% else %}4mm{% endif %};
+        overflow: hidden; background: white; font-family: "Courier New", "Padauk", "Myanmar Text", monospace;
+        font-size: {% if exchange.is_narrow %}10.5px{% else %}12px{% endif %}; font-weight: 600; line-height: 1.32;
+      }
+      .center { text-align: center; }
+      .receipt-logo { display: block; max-width: {% if exchange.is_narrow %}26mm{% else %}34mm{% endif %}; max-height: {% if exchange.is_narrow %}12mm{% else %}15mm{% endif %}; margin: 0 auto 5px; object-fit: contain; filter: grayscale(1) contrast(1.35); }
+      .brand { margin: 0; font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if exchange.is_narrow %}16px{% else %}19px{% endif %}; font-weight: 800; letter-spacing: .4px; }
+      .branch-name { margin-top: 2px; font-weight: 700; }
+      .contact { margin-top: 2px; overflow-wrap: anywhere; font-size: .92em; }
+      .rule { border: 0; border-top: 1px dashed #111; margin: 6px 0; }
+      .rule.strong { border-top-style: solid; border-top-width: 2px; }
+      .doc-title { font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if exchange.is_narrow %}14px{% else %}16px{% endif %}; font-weight: 900; letter-spacing: 1.5px; margin: 2px 0; }
+      .meta-row, .total-row { display: flex; justify-content: space-between; gap: 8px; }
+      .meta-row span:first-child, .total-row span:first-child { flex: 0 0 auto; }
+      .meta-row span:last-child, .total-row span:last-child { text-align: right; overflow-wrap: anywhere; }
+      .block-label { font-weight: 800; letter-spacing: .8px; margin: 2px 0; }
+      .item { break-inside: avoid; page-break-inside: avoid; margin: 0 0 7px; }
+      .item-name { font-weight: 800; overflow-wrap: anywhere; }
+      .item-detail { display: flex; justify-content: space-between; gap: 6px; padding-left: {% if exchange.is_narrow %}4px{% else %}10px{% endif %}; }
+      .item-detail span:last-child { text-align: right; white-space: nowrap; }
+      .total-row { padding: 1px 0; }
+      .total-row.grand { padding: 4px 0; font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if exchange.is_narrow %}15px{% else %}17px{% endif %}; font-weight: 900; }
+      .footer { margin-top: 8px; text-align: center; font-size: .92em; }
+      .cut-line { margin-top: 8px; color: #555; letter-spacing: 1px; white-space: nowrap; overflow: hidden; }
+      @media print {
+        html, body { width: {{ exchange.paper.width_mm }}mm; min-height: 0; background: white; }
+        .toolbar, .print-help { display: none !important; }
+        .receipt-shell { margin: 0; box-shadow: none; }
+        .receipt { margin: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="toolbar" aria-label="Return / exchange receipt actions">
+      <button type="button" class="primary" id="print-button">Print receipt</button>
+      <button type="button" onclick="window.close()">Close</button>
+    </div>
+    <p class="print-help">Use {{ exchange.paper.label }}, 100% / Actual size, with browser headers and footers disabled.</p>
+    <main class="receipt-shell">
+      <article class="receipt" id="exchange-content">
+        <header class="center">
+          {% if exchange.logo_url %}<img class="receipt-logo" src="{{ exchange.logo_url }}" alt="{{ exchange.brand_name }} logo" />{% endif %}
+          <h1 class="brand">{{ exchange.brand_name }}</h1>
+          {% if exchange.branch.name %}<div class="branch-name">{{ exchange.branch.name }}</div>{% endif %}
+          {% for address_line in exchange.address_lines %}<div class="contact">{{ address_line }}</div>{% endfor %}
+          {% if exchange.phone or exchange.email %}<div class="contact">{{ exchange.phone }}{% if exchange.phone and exchange.email %} · {% endif %}{{ exchange.email }}</div>{% endif %}
+        </header>
+        <hr class="rule strong" />
+        <div class="doc-title center">{{ exchange.document_title }}</div>
+        <hr class="rule" />
+        <div class="meta-row"><span>Workflow #</span><span>{{ exchange.workflow_number }}</span></div>
+        {% if exchange.created_at %}<div class="meta-row"><span>Date</span><span>{{ exchange.created_at }}</span></div>{% endif %}
+        {% if exchange.original_transaction_id %}<div class="meta-row"><span>Original receipt</span><span>{{ exchange.original_transaction_id }}</span></div>{% endif %}
+        {% if exchange.adjustment_transaction_id %}<div class="meta-row"><span>New receipt</span><span>{{ exchange.adjustment_transaction_id }}</span></div>{% endif %}
+        {% if exchange.processed_by %}<div class="meta-row"><span>Processed by</span><span>{{ exchange.processed_by }}</span></div>{% endif %}
+
+        {% if exchange.has_return %}
+          <hr class="rule" />
+          <div class="block-label">RETURNED ITEMS</div>
+          {% for item in exchange.return_items %}
+            <section class="item">
+              <div class="item-name">{{ item.name }}</div>
+              <div class="item-detail"><span>{{ item.quantity }} &times; {{ item.unit_price_display }}</span><span>{{ item.line_subtotal_display }}</span></div>
+              {% if item.tax_amount %}<div class="item-detail"><span>Tax {{ item.tax_rate_display }}</span><span>{{ item.tax_amount_display }}</span></div>{% endif %}
+            </section>
+          {% endfor %}
+          <div class="total-row"><span>Returned total</span><span>{{ exchange.return_total_display }}</span></div>
+        {% endif %}
+
+        {% if exchange.has_exchange %}
+          <hr class="rule" />
+          <div class="block-label">NEW ITEMS</div>
+          {% for item in exchange.exchange_items %}
+            <section class="item">
+              <div class="item-name">{{ item.name }}</div>
+              <div class="item-detail"><span>{{ item.quantity }} &times; {{ item.unit_price_display }}</span><span>{{ item.line_subtotal_display }}</span></div>
+              {% if item.tax_amount %}<div class="item-detail"><span>Tax {{ item.tax_rate_display }}</span><span>{{ item.tax_amount_display }}</span></div>{% endif %}
+            </section>
+          {% endfor %}
+          <div class="total-row"><span>Exchanged total</span><span>{{ exchange.exchange_total_display }}</span></div>
+        {% endif %}
+
+        <hr class="rule strong" />
+        <div class="total-row grand"><span>NET</span><span>{{ exchange.net_total_display }}</span></div>
+        {% if exchange.is_refund %}<div class="total-row"><span>Refund to customer</span><span>{{ exchange.refund_amount_display }}</span></div>{% endif %}
+        {% if exchange.is_collect %}<div class="total-row"><span>Collected from customer</span><span>{{ exchange.collected_amount_display }}</span></div>{% endif %}
+        {% if exchange.settlement_label %}<div class="total-row"><span>Settlement</span><span>{{ exchange.settlement_label }}</span></div>{% endif %}
+        {% if exchange.notes %}<hr class="rule" /><div class="block-label">NOTES</div><div>{{ exchange.notes }}</div>{% endif %}
+
+        <hr class="rule" />
+        <footer class="footer">
+          {% for footer_line in exchange.footer_lines %}<div>{{ footer_line }}</div>{% endfor %}
+          <div class="cut-line">- - - - - - - - - - - - - - - - - -</div>
+        </footer>
+      </article>
+    </main>
+    <script>
+      (() => {
+        const widthMm = {{ exchange.paper.width_mm }};
+        const content = document.getElementById("exchange-content");
+        const printButton = document.getElementById("print-button");
+        let ready = false;
+
+        function preparePage() {
+          const heightPx = Math.max(0, content.scrollHeight);
+          const heightMm = Math.max(20, Math.ceil((heightPx / 96) * 25.4 + 3));
+          document.getElementById("exchange-page-style").textContent =
+            `@page { size: ${widthMm}mm ${heightMm}mm; margin: 0; }`;
+          ready = true;
+        }
+
+        async function printReceipt() {
+          preparePage();
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          window.print();
+        }
+
+        printButton.addEventListener("click", printReceipt);
+        window.addEventListener("beforeprint", preparePage);
+        window.addEventListener("load", async () => {
+          if (document.fonts?.ready) await document.fonts.ready;
+          const logo = content.querySelector(".receipt-logo");
+          if (logo && !logo.complete && logo.decode) {
+            try { await logo.decode(); } catch (error) { console.warn("Receipt logo could not be decoded", error); }
+          }
+          preparePage();
+          if (new URLSearchParams(window.location.search).get("autoprint") === "1" && ready) {
+            await printReceipt();
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

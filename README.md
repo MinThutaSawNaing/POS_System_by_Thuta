@@ -523,6 +523,13 @@ An admin account is auto-created if missing:
 - `GET /api/purchase_orders/export?format=pdf|xlsx` — PO register honouring search, status, supplier and date filters
 - Manager-only, branch-scoped and consistent with the rows shown in each tab
 
+### Returns & Exchanges
+- Dedicated **Returns** tab with refund/settlement KPIs, date range (defaults to today, with Today/This month/All time presets), type and search filters, and branch scope
+- `GET /api/returns_exchanges?start&end&mode&q&page&per_page` — branch-scoped, paginated list plus KPI `summary`
+- `GET /api/returns_exchanges/export?format=pdf|xlsx` — returns & exchanges register honouring the tab's filters
+- `GET /api/returns_exchanges/<workflow_id>/print` — thermal receipt (58/80 mm) for a return or exchange, showing returned items, new items, net, refund and amount collected
+- Sales History rows link straight to the tab for that transaction; branch-scoped and available to every role
+
 ### Debt Management
 - Customer debt tracking with payment history
 - Aging analysis reports

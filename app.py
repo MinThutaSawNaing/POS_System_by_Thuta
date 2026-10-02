@@ -16,7 +16,7 @@ import random
 import threading
 from sqlalchemy import inspect, text, func, event, or_, and_
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import Session as SQLAlchemySession
+from sqlalchemy.orm import Session as SQLAlchemySession, aliased
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -32,6 +32,7 @@ from receipt import (
     build_delivery_slip_view,
     build_receipt_snapshot,
     build_receipt_view,
+    build_return_exchange_view,
     detect_receipt_logo_extension,
     normalize_receipt_identity,
     normalize_receipt_paper_size,
@@ -44,6 +45,8 @@ from reports import (
     build_purchase_order_report,
     build_report_pdf,
     build_report_xlsx,
+    build_return_exchange_report,
+    build_return_exchange_rows,
     build_warehouse_stock_report,
     delivery_courier_performance,
     describe_filters,
@@ -5018,36 +5021,134 @@ def api_single_sale(transaction_id):
         })
     return jsonify(sale_data)
 
+def return_exchange_query(args):
+    """Branch-scoped, filterable query shared by the list, KPIs and exports.
+
+    Mirrors resolve_report_scope() so managers/bosses can widen to all branches
+    while everyone else stays on their own branch, exactly like the sales report.
+    """
+    scope, branch_id = resolve_report_scope()
+    adjustment = aliased(Sale)
+    query = ReturnExchange.query.join(Sale, ReturnExchange.original_sale_id == Sale.id)
+    query = query.outerjoin(adjustment, ReturnExchange.adjustment_sale_id == adjustment.id)
+    if branch_id:
+        query = query.filter(Sale.branch_id == branch_id)
+
+    mode = (args.get('mode') or '').strip().lower()
+    if mode in ('return', 'exchange'):
+        query = query.filter(ReturnExchange.mode == mode)
+
+    # created_at is stored as naive UTC (like the audit log), so a business-day
+    # filter is compared against the Asia/Yangon day converted to UTC bounds.
+    start_bounds = audit_day_utc_bounds(args.get('start'))
+    if start_bounds:
+        query = query.filter(ReturnExchange.created_at >= start_bounds[0])
+    end_bounds = audit_day_utc_bounds(args.get('end'))
+    if end_bounds:
+        query = query.filter(ReturnExchange.created_at < end_bounds[1])
+
+    search = (args.get('q') or '').strip()
+    if search:
+        like_search = f'%{search}%'
+        query = query.outerjoin(User, User.id == ReturnExchange.user_id).filter(or_(
+            ReturnExchange.workflow_id.ilike(like_search),
+            Sale.transaction_id.ilike(like_search),
+            adjustment.transaction_id.ilike(like_search),
+            User.username.ilike(like_search),
+        ))
+    return query
+
+
+def serialize_return_exchange(record):
+    """One workflow as JSON, matching the shape the Sales tab already consumed.
+
+    ``created_at`` is stored as naive UTC, so it is converted to the business
+    timezone (Asia/Yangon) before it leaves the API - the same rule the audit
+    log uses - so the tab, the exports and the receipt all show the local time
+    that the date filter actually selected.
+    """
+    local_created = audit_local_datetime(record.created_at)
+    return {
+        'workflow_id': record.workflow_id,
+        'mode': record.mode,
+        'original_transaction_id': record.original_sale.transaction_id if record.original_sale else None,
+        'adjustment_transaction_id': record.adjustment_sale.transaction_id if record.adjustment_sale else None,
+        'return_total': money_float(record.return_total),
+        'exchange_total': money_float(record.exchange_total),
+        'net_total': money_float(record.net_total),
+        'refund_amount': money_float(record.refund_amount),
+        'collected_amount': money_float(record.collected_amount),
+        'settlement_method': record.settlement_method,
+        'created_at': local_created.isoformat() if local_created else None,
+        'processed_by': record.user.username if record.user else 'Unknown',
+    }
+
+
+def summarize_return_exchanges(records):
+    """KPI totals for a filtered set of return/exchange workflows."""
+    return_total = exchange_total = net_total = Decimal('0.00')
+    refund_total = collected_total = Decimal('0.00')
+    returns = exchanges = 0
+    for record in records:
+        return_total += safe_to_decimal(record.return_total)
+        exchange_total += safe_to_decimal(record.exchange_total)
+        net_total += safe_to_decimal(record.net_total)
+        refund_total += safe_to_decimal(record.refund_amount)
+        collected_total += safe_to_decimal(record.collected_amount)
+        if (record.mode or '').strip().lower() == 'exchange':
+            exchanges += 1
+        else:
+            returns += 1
+    return {
+        'workflows': len(records),
+        'returns': returns,
+        'exchanges': exchanges,
+        'return_total': money_float(return_total),
+        'exchange_total': money_float(exchange_total),
+        'net_total': money_float(net_total),
+        'refund_amount': money_float(refund_total),
+        'collected_amount': money_float(collected_total),
+    }
+
+
 @app.route('/api/returns_exchanges', methods=['GET', 'POST'])
 def api_returns_exchanges():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
     if request.method == 'GET':
-        query = ReturnExchange.query
         sale_transaction_id = (request.args.get('sale_transaction_id') or '').strip()
-
         if sale_transaction_id:
+            # Sale-scoped history (used by the sale details modal): unpaginated.
             sale = Sale.query.filter_by(transaction_id=sale_transaction_id).first()
             if not sale:
                 return jsonify([])
-            query = query.filter(ReturnExchange.original_sale_id == sale.id)
+            records = (ReturnExchange.query
+                       .filter_by(original_sale_id=sale.id)
+                       .order_by(ReturnExchange.created_at.desc())
+                       .all())
+            return jsonify([serialize_return_exchange(record) for record in records])
 
-        records = query.order_by(ReturnExchange.created_at.desc()).all()
-        return jsonify([{
-            'workflow_id': r.workflow_id,
-            'mode': r.mode,
-            'original_transaction_id': r.original_sale.transaction_id if r.original_sale else None,
-            'adjustment_transaction_id': r.adjustment_sale.transaction_id if r.adjustment_sale else None,
-            'return_total': r.return_total,
-            'exchange_total': r.exchange_total,
-            'net_total': r.net_total,
-            'refund_amount': r.refund_amount,
-            'collected_amount': r.collected_amount,
-            'settlement_method': r.settlement_method,
-            'created_at': r.created_at.isoformat() if r.created_at else None,
-            'processed_by': r.user.username if r.user else 'Unknown'
-        } for r in records])
+        query = return_exchange_query(request.args).order_by(ReturnExchange.created_at.desc())
+        page = request.args.get('page', type=int)
+        per_page = request.args.get('per_page', type=int)
+        if 'page' in request.args or 'per_page' in request.args:
+            records = query.all()
+            page = max(page or 1, 1)
+            per_page = max(1, min(per_page or 20, 100))
+            total = len(records)
+            start_index = (page - 1) * per_page
+            return jsonify({
+                'items': [serialize_return_exchange(r) for r in records[start_index:start_index + per_page]],
+                'page': page,
+                'per_page': per_page,
+                'total': total,
+                'total_pages': max(1, math.ceil(total / per_page)),
+                'summary': summarize_return_exchanges(records),
+            })
+
+        records = query.all()
+        return jsonify([serialize_return_exchange(record) for record in records])
 
     data = request.get_json() or {}
     original_transaction_id = (data.get('original_transaction_id') or '').strip()
@@ -5289,6 +5390,111 @@ def api_single_return_exchange(workflow_id):
             'original_sale_item_id': item.original_sale_item_id
         } for item in workflow.items]
     })
+
+
+@app.route('/api/returns_exchanges/export', methods=['GET'])
+def export_returns_exchanges():
+    """Download the returns & exchanges register as a professional PDF or Excel report."""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    report_format = normalize_report_format(request.args.get('format'))
+    scope, branch_id = resolve_report_scope()
+    branch = db.session.get(Branch, branch_id) if branch_id else None
+
+    records = return_exchange_query(request.args).order_by(ReturnExchange.created_at.desc()).all()
+    rows = build_return_exchange_rows([serialize_return_exchange(record) for record in records])
+    report = build_return_exchange_report(
+        rows,
+        brand=get_receipt_identity(branch),
+        branch_name=branch.name if branch else 'All branches',
+        generated_by=session.get('username') or '',
+        filters_text=describe_filters({
+            'From': request.args.get('start'),
+            'To': request.args.get('end'),
+            'Type': request.args.get('mode'),
+            'Search': request.args.get('q'),
+        }),
+        currency_suffix=get_currency_suffix(),
+    )
+
+    payload = build_report_pdf(report) if report_format == 'pdf' else build_report_xlsx(report)
+    filename = report_filename(report['file_stem'], report_format)
+    response = make_response(payload)
+    response.headers['Content-Type'] = report_content_type(report_format)
+    response.headers['Content-Disposition'] = report_disposition(filename, report_format)
+    return response
+
+
+@app.route('/api/returns_exchanges/<string:workflow_id>/print', methods=['GET'])
+def print_return_exchange_receipt(workflow_id):
+    """Thermal receipt for one return/exchange workflow (both returns and exchanges)."""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    # Branch-scoped like the sales receipt: a workflow may only be printed when
+    # its original sale belongs to the caller's current branch.
+    branch_id = get_current_branch_id()
+    workflow = (ReturnExchange.query
+                .join(Sale, ReturnExchange.original_sale_id == Sale.id)
+                .filter(ReturnExchange.workflow_id == workflow_id,
+                        Sale.branch_id == branch_id)
+                .first())
+    if not workflow:
+        return jsonify({'success': False, 'message': 'Return/exchange workflow not found'}), 404
+
+    original_sale = workflow.original_sale
+    branch = db.session.get(Branch, original_sale.branch_id) if original_sale and original_sale.branch_id else None
+
+    def movement_lines(movement):
+        lines = []
+        for item in workflow.items:
+            if item.movement != movement:
+                continue
+            product = item.product
+            lines.append({
+                'name': product.name if product else DELETED_PRODUCT_LABEL,
+                'quantity': item.quantity,
+                'unit_price': item.unit_price,
+                'tax_rate': item.tax_rate,
+                'line_total': item.line_total,
+                'line_tax': item.line_tax,
+            })
+        return lines
+
+    view = build_return_exchange_view({
+        'currency_suffix': get_currency_suffix(),
+        'branch': {
+            'name': branch.name if branch else '',
+            'code': branch.code if branch else '',
+            'address': branch.address if branch else '',
+            'phone': branch.phone if branch else '',
+            'email': branch.email if branch else '',
+        },
+        'receipt_identity': get_receipt_identity(branch),
+        'workflow_id': workflow.workflow_id,
+        'mode': workflow.mode,
+        'original_transaction_id': original_sale.transaction_id if original_sale else '',
+        'adjustment_transaction_id': workflow.adjustment_sale.transaction_id if workflow.adjustment_sale else '',
+        'created_at': (audit_local_datetime(workflow.created_at).isoformat()
+                       if workflow.created_at else ''),
+        'processed_by': workflow.user.username if workflow.user else 'Unknown',
+        'notes': workflow.notes or '',
+        'settlement_method': workflow.settlement_method or '',
+        'return_items': movement_lines('return'),
+        'exchange_items': movement_lines('exchange'),
+        'return_total': workflow.return_total,
+        'exchange_total': workflow.exchange_total,
+        'net_total': workflow.net_total,
+        'refund_amount': workflow.refund_amount,
+        'collected_amount': workflow.collected_amount,
+    }, get_receipt_paper_size())
+    view['logo_url'] = receipt_logo_url(view.get('logo_filename'))
+
+    response = make_response(render_template('exchange_receipt.html', exchange=view))
+    response.headers['Cache-Control'] = 'private, no-store, max-age=0'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
 
 @app.route('/api/deliveries', methods=['GET', 'POST'])
 def api_deliveries():

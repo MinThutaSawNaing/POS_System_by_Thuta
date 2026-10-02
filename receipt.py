@@ -333,3 +333,110 @@ def build_receipt_view(snapshot: Mapping[str, Any], paper_size: Any) -> dict[str
         "cash_received_display": format_receipt_money(payment.get("cash_received"), suffix),
         "change_display": format_receipt_money(payment.get("change_given"), suffix),
     }
+
+
+def build_return_exchange_view(record: Mapping[str, Any], paper_size: Any) -> dict[str, Any]:
+    """Build the thermal print view for a return/exchange workflow.
+
+    ``record`` is a plain mapping assembled by the caller (workflow metadata,
+    returned lines, exchanged lines and money totals). Money values are
+    quantized with the same helper used for sale receipts so every document
+    stays consistent. Like :func:`build_delivery_slip_view` this is built on the
+    fly (no stored snapshot), so a reprint always reflects current catalog names
+    and the current branch identity.
+    """
+    record = record or {}
+    profile = get_paper_profile(paper_size)
+    suffix = str(record.get("currency_suffix") or "$")
+    branch = dict(record.get("branch") or {})
+    stored_identity = record.get("receipt_identity")
+    if stored_identity:
+        identity = normalize_receipt_identity(dict(stored_identity), branch)
+    else:
+        identity = normalize_receipt_identity(
+            {"brand_name": record.get("brand_name") or DEFAULT_RECEIPT_BRAND_NAME},
+            branch,
+        )
+
+    def _lines(raw_lines: Any) -> list[dict[str, Any]]:
+        lines = []
+        for raw_line in raw_lines or []:
+            line = dict(raw_line)
+            try:
+                quantity = int(line.get("quantity") or 0)
+            except (TypeError, ValueError):
+                quantity = 0
+            unit_price = _money(line.get("unit_price"))
+            tax_amount = _money(line.get("line_tax"))
+            line_subtotal = _money(line.get("line_total"))
+            tax_rate = _money(line.get("tax_rate"))
+            lines.append({
+                "name": str(line.get("name") or "Item"),
+                "quantity": quantity,
+                "unit_price_display": format_receipt_money(unit_price, suffix),
+                "line_subtotal_display": format_receipt_money(line_subtotal, suffix),
+                "tax_amount": tax_amount,
+                "tax_amount_display": format_receipt_money(tax_amount, suffix),
+                "tax_rate_display": f"{tax_rate:g}%",
+                "line_total_display": format_receipt_money(line_subtotal + tax_amount, suffix),
+            })
+        return lines
+
+    return_items = _lines(record.get("return_items"))
+    exchange_items = _lines(record.get("exchange_items"))
+    if return_items and exchange_items:
+        document_title = "RETURN & EXCHANGE"
+    elif exchange_items:
+        document_title = "EXCHANGE"
+    else:
+        document_title = "RETURN"
+
+    net_total = _money(record.get("net_total"))
+    refund_amount = _money(record.get("refund_amount"))
+    collected_amount = _money(record.get("collected_amount"))
+
+    settlement = str(record.get("settlement_method") or "").strip().replace("_", " ")
+    settlement_label = settlement.title() if settlement else ""
+
+    workflow_id = str(record.get("workflow_id") or "")
+    created_at = str(record.get("created_at") or "")
+    try:
+        created_at = datetime.fromisoformat(created_at).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        pass
+
+    return {
+        "paper_size": normalize_receipt_paper_size(paper_size),
+        "paper": profile,
+        "is_narrow": profile["width_mm"] == 58,
+        "brand_name": identity["brand_name"],
+        "logo_filename": identity["logo_filename"],
+        "email": identity["email"],
+        "phone": identity["phone"],
+        "address_lines": identity["address"].splitlines() if identity["address"] else [],
+        "footer_lines": identity["footer_message"].splitlines() if identity["footer_message"] else [],
+        "branch": branch,
+        "document_title": document_title,
+        "workflow_number": workflow_id[-8:].upper() if workflow_id else "UNKNOWN",
+        "mode": str(record.get("mode") or "").strip().lower(),
+        "original_transaction_id": str(record.get("original_transaction_id") or ""),
+        "adjustment_transaction_id": str(record.get("adjustment_transaction_id") or ""),
+        "created_at": created_at,
+        "processed_by": str(record.get("processed_by") or "Unknown"),
+        "notes": str(record.get("notes") or ""),
+        "settlement_label": settlement_label,
+        "return_items": return_items,
+        "exchange_items": exchange_items,
+        "return_total_display": format_receipt_money(record.get("return_total"), suffix),
+        "exchange_total_display": format_receipt_money(record.get("exchange_total"), suffix),
+        "net_total": net_total,
+        "net_total_display": format_receipt_money(net_total, suffix),
+        "refund_amount": refund_amount,
+        "refund_amount_display": format_receipt_money(refund_amount, suffix),
+        "collected_amount": collected_amount,
+        "collected_amount_display": format_receipt_money(collected_amount, suffix),
+        "has_return": bool(return_items),
+        "has_exchange": bool(exchange_items),
+        "is_refund": refund_amount > 0,
+        "is_collect": collected_amount > 0,
+    }

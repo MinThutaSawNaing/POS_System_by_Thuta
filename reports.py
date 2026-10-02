@@ -1366,3 +1366,101 @@ def build_delivery_performance_report(
         currency_suffix=currency_suffix,
     )
 
+
+RETURN_EXCHANGE_COLUMNS = (
+    column("created_at", "Date", width=13, align="center", kind="date"),
+    column("workflow_id", "Workflow #", width=15),
+    column("mode_label", "Type", width=10, align="center"),
+    column("original_transaction_id", "Original txn", width=20),
+    column("adjustment_transaction_id", "New txn", width=20),
+    column("return_total", "Returned", width=12, align="right", kind="money"),
+    column("exchange_total", "Exchanged", width=12, align="right", kind="money"),
+    column("net_total", "Net", width=12, align="right", kind="money"),
+    column("refund_amount", "Refund", width=11, align="right", kind="money"),
+    column("collected_amount", "Collected", width=11, align="right", kind="money"),
+    column("settlement_method", "Settlement", width=12, align="center"),
+    column("processed_by", "By", width=14),
+)
+
+
+def build_return_exchange_rows(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize serialized return/exchange records into printable report rows."""
+    rows = []
+    for record in records or []:
+        record = dict(record)
+        rows.append({
+            "created_at": record.get("created_at") or "",
+            "workflow_id": record.get("workflow_id") or EMPTY_CELL,
+            "mode": str(record.get("mode") or "").strip().lower(),
+            "mode_label": str(record.get("mode") or "").replace("_", " ").strip().title() or EMPTY_CELL,
+            "original_transaction_id": record.get("original_transaction_id") or EMPTY_CELL,
+            "adjustment_transaction_id": record.get("adjustment_transaction_id") or EMPTY_CELL,
+            "return_total": round_money_value(record.get("return_total")),
+            "exchange_total": round_money_value(record.get("exchange_total")),
+            "net_total": round_money_value(record.get("net_total")),
+            "refund_amount": round_money_value(record.get("refund_amount")),
+            "collected_amount": round_money_value(record.get("collected_amount")),
+            "settlement_method": str(record.get("settlement_method") or "").replace("_", " ").strip().title() or EMPTY_CELL,
+            "processed_by": record.get("processed_by") or EMPTY_CELL,
+        })
+    return rows
+
+
+def build_return_exchange_report(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    brand: Mapping[str, Any] | None = None,
+    branch_name: str = "",
+    generated_by: str = "",
+    filters_text: str = "",
+    currency_suffix: str = "$",
+    generated_at: Any = None,
+) -> dict[str, Any]:
+    """Returns & exchanges register with refund/settlement KPIs for the exports."""
+    rows = [dict(row) for row in rows or []]
+    totals = {
+        "return_total": 0.0,
+        "exchange_total": 0.0,
+        "net_total": 0.0,
+        "refund_amount": 0.0,
+        "collected_amount": 0.0,
+    }
+    returns = exchanges = 0
+    for row in rows:
+        for key in totals:
+            totals[key] = round_money_value(totals[key] + round_money_value(row.get(key)))
+        if str(row.get("mode") or "").strip().lower() == "exchange":
+            exchanges += 1
+        else:
+            returns += 1
+
+    summary = [
+        {"label": "Workflows", "value": f"{len(rows):,}"},
+        {"label": "Returns", "value": f"{returns:,}"},
+        {"label": "Exchanges", "value": f"{exchanges:,}"},
+        {"label": "Returned value", "value": format_report_cell(totals["return_total"], "money", currency_suffix)},
+        {"label": "Exchanged value", "value": format_report_cell(totals["exchange_total"], "money", currency_suffix)},
+        {"label": "Net", "value": format_report_cell(totals["net_total"], "money", currency_suffix)},
+        {"label": "Refunds paid", "value": format_report_cell(totals["refund_amount"], "money", currency_suffix)},
+        {"label": "Amounts collected", "value": format_report_cell(totals["collected_amount"], "money", currency_suffix)},
+    ]
+    return _common_report_fields(
+        title="Returns & Exchanges Report",
+        subtitle="Refunds and exchange settlements for the selected period",
+        sheet_name="Returns & Exchanges",
+        file_stem="returns_exchanges",
+        columns=RETURN_EXCHANGE_COLUMNS,
+        rows=rows,
+        totals=totals,
+        summary=summary,
+        meta=_report_meta(branch_name, generated_by, filters_text, generated_at),
+        notes=[
+            "Returned value is the value of goods taken back; Exchanged value is the new goods given out.",
+            "Net is Exchanged minus Returned. A positive Net was collected from the customer; a negative Net was refunded.",
+            "Amounts include tax where the original or exchanged product is taxed.",
+            "Sales and return/exchange records are kept forever; a deleted product only loses its catalog link.",
+        ],
+        brand=brand,
+        currency_suffix=currency_suffix,
+    )
+

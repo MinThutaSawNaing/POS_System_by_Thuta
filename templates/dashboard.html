@@ -1315,6 +1315,11 @@
           </a>
         </li>
         <li class="nav-item">
+          <a class="nav-link" href="#" onclick="showSection('returns')">
+            <i class="bi bi-arrow-left-right"></i>Returns
+          </a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link" href="#" onclick="showSection('reports')">
             <i class="bi bi-graph-up"></i>Reports
           </a>
@@ -1858,6 +1863,11 @@
               >
                 <i class="bi bi-filter"></i> <span class="d-none d-sm-inline">Filter</span>
               </button>
+              <div class="btn-group" role="group" aria-label="Quick date ranges">
+                <button class="btn btn-outline-secondary" type="button" onclick="setSalesRangePreset('today')">Today</button>
+                <button class="btn btn-outline-secondary" type="button" onclick="setSalesRangePreset('month')">This month</button>
+                <button class="btn btn-outline-secondary" type="button" onclick="setSalesRangePreset('all')">All time</button>
+              </div>
             </div>
           </div>
         </div>
@@ -1903,6 +1913,76 @@
             <div id="sales-pagination" class="d-flex justify-content-start mt-3"></div>
           </div>
         </div>
+      </div>
+
+      <!-- Returns & Exchanges Section -->
+      <div id="returns-section" style="display: none">
+        <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
+          <div class="d-flex align-items-center gap-3 flex-wrap">
+            <h2 class="mb-0">Returns &amp; Exchanges</h2>
+            <span class="branch-indicator" id="returns-branch-indicator">
+              <i class="bi bi-building"></i>
+              <span class="branch-name">-</span>
+            </span>
+          </div>
+          <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-outline-primary" onclick="exportReturns('pdf')">
+              <i class="bi bi-file-earmark-pdf"></i> <span class="d-none d-sm-inline">PDF</span>
+            </button>
+            <button class="btn btn-outline-primary" onclick="exportReturns('xlsx')">
+              <i class="bi bi-file-earmark-spreadsheet"></i> <span class="d-none d-sm-inline">Excel</span>
+            </button>
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="row g-3 mb-3">
+          <div class="col-6 col-lg-2"><div class="audit-stat-card"><div class="small text-muted">Workflows</div><div class="audit-stat-value" id="returns-kpi-count">—</div></div></div>
+          <div class="col-6 col-lg-2"><div class="audit-stat-card"><div class="small text-muted">Returns</div><div class="audit-stat-value" id="returns-kpi-returns">—</div></div></div>
+          <div class="col-6 col-lg-2"><div class="audit-stat-card"><div class="small text-muted">Exchanges</div><div class="audit-stat-value" id="returns-kpi-exchanges">—</div></div></div>
+          <div class="col-6 col-lg-2"><div class="audit-stat-card"><div class="small text-muted">Refunds paid</div><div class="audit-stat-value" id="returns-kpi-refund">—</div></div></div>
+          <div class="col-6 col-lg-2"><div class="audit-stat-card"><div class="small text-muted">Collected</div><div class="audit-stat-value" id="returns-kpi-collected">—</div></div></div>
+          <div class="col-6 col-lg-2"><div class="audit-stat-card"><div class="small text-muted">Net</div><div class="audit-stat-value" id="returns-kpi-net">—</div></div></div>
+        </div>
+
+        <div class="card mb-3"><div class="card-body">
+          <div class="row g-2 align-items-end">
+            <div class="col-6 col-md-3 col-lg-2"><label for="returns-start-filter" class="form-label small">Start</label><input type="date" id="returns-start-filter" class="form-control" /></div>
+            <div class="col-6 col-md-3 col-lg-2"><label for="returns-end-filter" class="form-label small">End</label><input type="date" id="returns-end-filter" class="form-control" /></div>
+            <div class="col-6 col-md-3 col-lg-2"><label for="returns-mode-filter" class="form-label small">Type</label><select id="returns-mode-filter" class="form-select"><option value="">All</option><option value="return">Return</option><option value="exchange">Exchange</option></select></div>
+            <div class="col-12 col-md-3 col-lg-3"><label for="returns-search" class="form-label small">Search</label><input id="returns-search" class="form-control" placeholder="Workflow, transaction or user" /></div>
+            <div class="col-12 col-md-auto"><button class="btn btn-primary" onclick="applyReturnFilters()"><i class="bi bi-funnel me-1"></i>Apply</button> <button class="btn btn-outline-secondary" onclick="clearReturnFilters()">Clear</button></div>
+          </div>
+          <div class="d-flex gap-2 flex-wrap mt-2">
+            <button class="btn btn-sm btn-outline-secondary" onclick="setReturnRangePreset('today')">Today</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="setReturnRangePreset('month')">This month</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="setReturnRangePreset('all')">All time</button>
+          </div>
+        </div></div>
+
+        <div class="card"><div class="card-body">
+          <div class="table-responsive">
+            <table class="table table-striped table-hover align-middle">
+              <thead><tr>
+                <th>Date</th><th>Workflow</th><th>Type</th>
+                <th class="d-none d-md-table-cell">Original txn</th>
+                <th class="d-none d-lg-table-cell">New txn</th>
+                <th class="text-end">Returned</th><th class="text-end">Exchanged</th>
+                <th class="text-end">Net</th><th class="text-end d-none d-sm-table-cell">Refund</th>
+                <th class="d-none d-md-table-cell">By</th><th>Actions</th>
+              </tr></thead>
+              <tbody id="returns-table">
+                <tr><td colspan="11" class="text-center py-4 text-muted">Open this tab to load returns and exchanges.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-3">
+            <small class="text-muted">Defaults to today. Use the filters or presets to widen the period.</small>
+            <div id="returns-pagination" class="d-flex justify-content-start"></div>
+          </div>
+        </div></div>
       </div>
 
       <!-- Reports Section -->
@@ -6833,7 +6913,8 @@
           "suppliers-branch-indicator",
           "purchases-branch-indicator",
           "warehouse-branch-indicator",
-          "deliveries-branch-indicator"
+          "deliveries-branch-indicator",
+          "returns-branch-indicator"
         ];
         
         indicatorIds.forEach(id => {
@@ -7133,6 +7214,7 @@
         warehouse: 1,
         deliveries: 1,
         logs: 1,
+        returns: 1,
       };
       const pageSize = {
         products: 10,
@@ -7146,6 +7228,7 @@
         warehouse: 10,
         deliveries: 10,
         logs: 30,
+        returns: 10,
       };
       
       // ===== SPA DATA CACHE =====
@@ -7171,6 +7254,7 @@
         dashboard: 30000,
         reports: 30000,
         sales: 30000,
+        returns: 30000,
         products: 60000,
         customers: 60000,
         debts: 60000,
@@ -7219,7 +7303,7 @@
         ["/api/purchase_orders", "purchases"],
         ["/api/purchase_orders/summary", "purchases"],
         ["/api/reports/sales", "reports"],
-        ["/api/returns_exchanges", "sales"],
+        ["/api/returns_exchanges", "returns"],
         ["/api/sales", "sales"],
         ["/api/settings", "settings"],
         ["/api/suppliers", "suppliers"],
@@ -7244,9 +7328,9 @@
         // Account-creation barrier (challenge/unlock): security-sensitive and
         // always fetched fresh, so it is accounted for but never cached.
         ["/api/account_barrier", []],
-        ["/api/products", ["products", "pos", "categories", "purchases", "warehouse", "promotions", "dashboard", "reports", "sales"]],
-        ["/api/sales", ["pos", "sales", "products", "promotions", "customers", "debts", "warehouse", "dashboard", "reports"]],
-        ["/api/returns_exchanges", ["pos", "sales", "products", "warehouse", "dashboard", "reports"]],
+        ["/api/products", ["products", "pos", "categories", "purchases", "warehouse", "promotions", "dashboard", "reports", "sales", "returns"]],
+        ["/api/sales", ["pos", "sales", "products", "promotions", "customers", "debts", "warehouse", "dashboard", "reports", "returns"]],
+        ["/api/returns_exchanges", ["pos", "sales", "products", "warehouse", "dashboard", "reports", "returns"]],
         ["/api/inventory", ["warehouse", "products", "pos", "purchases"]],
         ["/api/warehouse", ["warehouse", "products", "pos", "purchases", "dashboard"]],
         ["/api/purchase_orders", ["purchases", "warehouse", "products", "pos", "suppliers", "deliveries", "dashboard"]],
@@ -7554,6 +7638,7 @@
         products: () => loadProducts(),
         categories: () => loadCategories(),
         sales: () => loadSales(),
+        returns: () => loadReturns(),
         reports: () => { toggleReportScopeControls(); initSalesChart(); initPaymentChart(); },
         promotions: () => { loadPromotions(); loadProductsForPromotionModal(); },
         customers: () => loadCustomers(),
@@ -7577,6 +7662,7 @@
         // loadSales() reads /api/reports/sales, so the Sales tab is gated on the
         // reports group too.
         sales: ["sales", "reports"],
+        returns: ["returns"],
         reports: ["reports", "dashboard"],
         promotions: ["promotions", "products"],
         customers: ["customers"],
@@ -8086,10 +8172,13 @@
           renderReceiptCustomizationPreview();
         });
 
-        // Set today's date as the default sales-history date range
-        const today = new Date().toISOString().split("T")[0];
+        // Set today's date (Asia/Yangon) as the default sales-history range so
+        // the tab opens on today's sales; the operator can widen or clear it.
+        const today = yangonToday();
         document.getElementById("sales-start-date-filter").value = today;
         document.getElementById("sales-end-date-filter").value = today;
+        document.getElementById("returns-start-filter").value = today;
+        document.getElementById("returns-end-filter").value = today;
 
         // Set default date range for reports (last 7 days)
         const sevenDaysAgo = new Date();
@@ -9064,6 +9153,7 @@
           deliveries: "Deliveries",
           users: "Users",
           logs: "Logs",
+          returns: "Returns",
           settings: "Settings",
           logout: "Logout",
           
@@ -9187,6 +9277,7 @@
           deliveries: "ပို့ဆောင်မှု",
           users: "အသုံးပြုသူများ",
           logs: "စနစ်မှတ်တမ်းများ",
+          returns: "ပြန်အမ်း/လဲလှယ်မှုများ",
           settings: "ဆက်တင်များ",
           logout: "ထွက်ရန်",
           
@@ -9377,6 +9468,7 @@
           "warehouse-section h2": "warehouse",
           "deliveries-section h2": "deliveries",
           "reports-section h2": "reports",
+          "returns-section h2": "returns",
           "logs-section h2": "logs",
           "settings-section h2": "settings"
         };
@@ -12378,6 +12470,11 @@
                                         }')">
                                             <i class="bi bi-arrow-left-right"></i>
                                         </button>
+                                        <button class="btn btn-secondary" title="Returns &amp; Exchanges" onclick="showReturnsForTransaction('${
+                                          sale.transaction_id
+                                        }')">
+                                            <i class="bi bi-list-check"></i>
+                                        </button>
                                       </div>
                                   </td>
                               `;
@@ -12411,6 +12508,182 @@
 
         pageState.sales = 1;
         loadSales();
+      }
+
+      function setSalesRangePreset(preset) {
+        const startField = document.getElementById("sales-start-date-filter");
+        const endField = document.getElementById("sales-end-date-filter");
+        const today = yangonToday();
+        if (preset === "today") {
+          startField.value = today;
+          endField.value = today;
+        } else if (preset === "month") {
+          startField.value = `${today.slice(0, 7)}-01`;
+          endField.value = today;
+        } else {
+          startField.value = "";
+          endField.value = "";
+        }
+        filterSalesByDateRange();
+      }
+
+      // ===== Returns & Exchanges tab =====
+      // Asia/Yangon "today" as YYYY-MM-DD so early shifts are never a day off.
+      function yangonToday() {
+        try {
+          return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Yangon" }).format(new Date());
+        } catch (error) {
+          const now = new Date();
+          return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        }
+      }
+
+      function returnsFilterParams(includePaging) {
+        const params = new URLSearchParams();
+        const start = (document.getElementById("returns-start-filter")?.value || "").trim();
+        const end = (document.getElementById("returns-end-filter")?.value || "").trim();
+        const mode = (document.getElementById("returns-mode-filter")?.value || "").trim();
+        const search = (document.getElementById("returns-search")?.value || "").trim();
+        if (start) params.set("start", start);
+        if (end) params.set("end", end);
+        if (mode) params.set("mode", mode);
+        if (search) params.set("q", search);
+        if (includePaging) {
+          params.set("page", String(pageState.returns));
+          params.set("per_page", String(pageSize.returns));
+        }
+        return params;
+      }
+
+      function loadReturns() {
+        const table = document.getElementById("returns-table");
+        if (!table) return;
+        table.innerHTML = '<tr><td colspan="11" class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></td></tr>';
+
+        const params = returnsFilterParams(true);
+        fetch(`/api/returns_exchanges?${params.toString()}`)
+          .then((response) => {
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            return response.json();
+          })
+          .then((payload) => {
+            const data = parsePagedResponse(payload);
+            const summary = payload.summary || {};
+            document.getElementById("returns-kpi-count").textContent = summary.workflows ?? data.total ?? 0;
+            document.getElementById("returns-kpi-returns").textContent = summary.returns ?? 0;
+            document.getElementById("returns-kpi-exchanges").textContent = summary.exchanges ?? 0;
+            document.getElementById("returns-kpi-refund").textContent = formatCurrency(summary.refund_amount || 0);
+            document.getElementById("returns-kpi-collected").textContent = formatCurrency(summary.collected_amount || 0);
+            document.getElementById("returns-kpi-net").textContent = formatCurrency(summary.net_total || 0);
+
+            const items = data.items || [];
+            if (!items.length) {
+              table.innerHTML = '<tr><td colspan="11" class="text-center py-4 text-muted">No returns or exchanges for this period.</td></tr>';
+              renderPagination("returns", "returns-pagination", 1, loadReturns);
+              return;
+            }
+            table.innerHTML = items.map((row) => {
+              const isExchange = String(row.mode || "").toLowerCase() === "exchange";
+              const typeBadge = isExchange
+                ? '<span class="badge bg-info text-dark">Exchange</span>'
+                : '<span class="badge bg-warning text-dark">Return</span>';
+              return `<tr>
+                <td class="text-nowrap">${row.created_at ? new Date(row.created_at).toLocaleString() : "—"}</td>
+                <td>${escapeHtml(row.workflow_id || "—")}</td>
+                <td>${typeBadge}</td>
+                <td class="d-none d-md-table-cell">${escapeHtml(row.original_transaction_id || "—")}</td>
+                <td class="d-none d-lg-table-cell">${escapeHtml(row.adjustment_transaction_id || "—")}</td>
+                <td class="text-end">${formatCurrency(row.return_total || 0)}</td>
+                <td class="text-end">${formatCurrency(row.exchange_total || 0)}</td>
+                <td class="text-end fw-semibold">${formatCurrency(row.net_total || 0)}</td>
+                <td class="text-end d-none d-sm-table-cell">${formatCurrency(row.refund_amount || 0)}</td>
+                <td class="d-none d-md-table-cell">${escapeHtml(row.processed_by || "Unknown")}</td>
+                <td><button class="btn btn-sm btn-outline-secondary" title="Print receipt" onclick="openReturnExchangeReceipt('${row.workflow_id}')"><i class="bi bi-printer"></i></button></td>
+              </tr>`;
+            }).join("");
+            renderPagination("returns", "returns-pagination", data.total_pages || 1, loadReturns);
+          })
+          .catch((error) => {
+            console.error("Error loading returns/exchanges:", error);
+            table.innerHTML = '<tr><td colspan="11" class="text-center py-4 text-danger">Failed to load returns and exchanges.</td></tr>';
+            renderPagination("returns", "returns-pagination", 1, loadReturns);
+          });
+      }
+
+      function applyReturnFilters() {
+        pageState.returns = 1;
+        invalidateCacheGroups(["returns"], { resetRenderedSections: false });
+        loadReturns();
+      }
+
+      function clearReturnFilters() {
+        ["returns-start-filter", "returns-end-filter", "returns-mode-filter", "returns-search"].forEach((id) => {
+          const field = document.getElementById(id);
+          if (field) field.value = "";
+        });
+        applyReturnFilters();
+      }
+
+      function setReturnRangePreset(preset) {
+        const startField = document.getElementById("returns-start-filter");
+        const endField = document.getElementById("returns-end-filter");
+        const today = yangonToday();
+        if (preset === "today") {
+          startField.value = today;
+          endField.value = today;
+        } else if (preset === "month") {
+          startField.value = `${today.slice(0, 7)}-01`;
+          endField.value = today;
+        } else {
+          startField.value = "";
+          endField.value = "";
+        }
+        applyReturnFilters();
+      }
+
+      function openReturnExchangeReceipt(workflowId) {
+        const normalizedId = String(workflowId || "").trim();
+        if (!normalizedId) {
+          showToast("Workflow ID is missing", "error");
+          return false;
+        }
+        const url = `/api/returns_exchanges/${encodeURIComponent(normalizedId)}/print?autoprint=1`;
+        if (isStandalonePWA()) {
+          return loadUrlInPwaPrintFrame(url);
+        }
+        const receiptWindow = window.open("about:blank", "_blank");
+        if (!receiptWindow) {
+          showToast("Receipt window was blocked. Allow popups for this POS and try again.", "warning");
+          return false;
+        }
+        try {
+          receiptWindow.opener = null;
+          receiptWindow.location.replace(url);
+        } catch (error) {
+          receiptWindow.close();
+          console.error("Failed to open return/exchange receipt:", error);
+          showToast("Failed to open the receipt. Please try again.", "error");
+          return false;
+        }
+        return true;
+      }
+
+      function exportReturns(format) {
+        const params = returnsFilterParams(false);
+        params.set("format", format === "xlsx" ? "xlsx" : "pdf");
+        return openReportDownload(`/api/returns_exchanges/export?${params.toString()}`);
+      }
+
+      function showReturnsForTransaction(transactionId) {
+        const searchField = document.getElementById("returns-search");
+        if (searchField) searchField.value = transactionId || "";
+        ["returns-start-filter", "returns-end-filter"].forEach((id) => {
+          const field = document.getElementById(id);
+          if (field) field.value = "";
+        });
+        pageState.returns = 1;
+        invalidateCacheGroups(["returns"], { resetRenderedSections: false });
+        showSection("returns");
       }
 
       function viewSaleDetails(transactionId) {
@@ -12780,10 +13053,13 @@
             const modal = bootstrap.Modal.getInstance(document.getElementById("returnExchangeModal"));
             modal.hide();
             invalidateProductsCache();
+            sectionStateOf("returns").rendered = false;
             loadProducts();
             loadProductsForPOS();
             loadSales();
             loadDashboardStats();
+            if (currentSection === "returns") loadReturns();
+            openReturnExchangeReceipt(data.workflow_id);
           })
           .catch((e) => {
             showToast(`Failed to process return/exchange: ${e.message}`, "error");
