@@ -8807,6 +8807,29 @@
       // ============================================
       let confirmModalCallback = null;
 
+      // Bootstrap supports one modal at a time. Wait for the previous dialog's
+      // backdrop, focus trap and body scroll lock to finish cleaning up.
+      function showModalAfterHiding(modalId) {
+        const target = document.getElementById(modalId);
+        const modal = bootstrap.Modal.getOrCreateInstance(target);
+        const activeModals = Array.from(document.querySelectorAll(".modal.show"))
+          .filter((element) => element !== target);
+
+        if (activeModals.length === 0) {
+          modal.show();
+          return;
+        }
+
+        let remaining = activeModals.length;
+        activeModals.forEach((element) => {
+          element.addEventListener("hidden.bs.modal", () => {
+            remaining -= 1;
+            if (remaining === 0) modal.show();
+          }, { once: true });
+          bootstrap.Modal.getOrCreateInstance(element).hide();
+        });
+      }
+
       function showConfirmDialog(title, message, onConfirm) {
         document.getElementById("confirmModalTitle").textContent = title;
         document.getElementById("confirmModalMessage").textContent = message;
@@ -14684,8 +14707,7 @@
       }
 
       function bulkUpdateDueDate() {
-        bootstrap.Modal.getInstance(document.getElementById("bulkActionsModal")).hide();
-        new bootstrap.Modal(document.getElementById("updateDueDateModal")).show();
+        showModalAfterHiding("updateDueDateModal");
       }
 
       function confirmUpdateDueDate() {
@@ -14997,10 +15019,7 @@
             document.getElementById("payment-amount").value = debt.balance.toFixed(2);
             document.getElementById("payment-notes").value = "";
 
-            const modal = new bootstrap.Modal(
-              document.getElementById("makePaymentModal")
-            );
-            modal.show();
+            showModalAfterHiding("makePaymentModal");
           })
           .catch((error) => {
             console.error("Error loading debt details:", error);
