@@ -1261,6 +1261,28 @@
       .searchable-select-list .list-group-item:last-child {
         border-bottom: 0;
       }
+      /* Persistent cashier notices and high-contrast checkout information. */
+      #pos-section { --pos-ink: #243447; --pos-muted: #526172; --pos-surface: #f4f7fb; --pos-warning: #875900; --pos-danger: #b42318; }
+      .pos-notice { display: flex; align-items: flex-start; gap: .85rem; padding: 1rem; border: 1px solid #e3c77a; border-left: 4px solid var(--pos-warning); border-radius: .5rem; background: #fff8e6; color: var(--pos-ink); margin-bottom: 1rem; }
+      .pos-notice > .bi { font-size: 1.35rem; color: var(--pos-warning); }
+      .pos-notice[hidden] { display: none; }
+      .pos-notice p { margin: .25rem 0 0; line-height: 1.5; }
+      .pos-notice .btn { margin-left: auto; flex-shrink: 0; min-height: 44px; }
+      .pos-notice-danger { border-color: #f1b5b0; border-left-color: var(--pos-danger); background: #fff1f0; }
+      .pos-notice-danger > .bi { color: var(--pos-danger); }
+      .pos-grid-state { grid-column: 1 / -1; padding: 2.5rem 1rem; text-align: center; background: var(--pos-surface); border: 1px dashed #c6d1df; border-radius: .75rem; color: var(--pos-ink); }
+      .pos-grid-state > .bi { display: block; font-size: 2rem; margin-bottom: .75rem; color: var(--pos-muted); }
+      .pos-grid-state p { max-width: 36rem; margin: .5rem auto 1rem; color: var(--pos-muted); }
+      .pos-grid-state .btn { min-height: 44px; }
+      #pos-section .product-card .card-title { color: var(--pos-ink) !important; overflow-wrap: anywhere; }
+      #pos-section .product-card .card-text { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+      .pos-stock { display: inline-block; padding: .25rem .5rem; border-radius: .25rem; background: #edf3f9; color: var(--pos-muted); font-weight: 600; }
+      .pos-stock-unavailable { background: #fff1f0; color: var(--pos-danger); }
+      .pos-total-row { background: var(--pos-surface); border-top: 2px solid #c6d1df; padding: .85rem .65rem; font-size: 1.2rem; font-variant-numeric: tabular-nums; }
+      #pos-section .btn:focus-visible, #pos-section .form-control:focus-visible, #pos-section .form-select:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
+      #pos-connection-summary { color: var(--pos-muted); font-size: .875rem; }
+      #pos-customer-warning { color: var(--pos-warning); }
+      @media (max-width: 575.98px) { .pos-notice { flex-wrap: wrap; } .pos-notice .btn { margin-left: 0; width: 100%; } }
     </style>
   </head>
 
@@ -1502,6 +1524,8 @@
           </div>
         </div>
 
+        <div id="pos-connection-summary" class="mb-2" role="status" aria-live="polite">Connection status is shown in the sidebar.</div>
+        <div id="pos-catalog-notice" role="alert" hidden></div>
         <div class="row">
           <div class="col-12 col-lg-8 order-2 order-lg-1">
             <div class="input-group mb-3">
@@ -1510,6 +1534,7 @@
                 type="text"
                 id="product-search"
                 class="form-control"
+                aria-label="Scan barcode or search products"
                 placeholder="Scan barcode or search products..."
                 data-i18n-placeholder="scanBarcodeOrSearch"
               />
@@ -1540,10 +1565,14 @@
               </div>
               <div class="card-body">
                 <div class="mb-3">
-                  <label class="form-label small fw-semibold">Customer</label>
+                  <label class="form-label small fw-semibold" for="pos-customer-select">Customer</label>
                   <select class="form-select form-select-sm" id="pos-customer-select">
                     <option value="">Walk-in Customer</option>
                   </select>
+                </div>
+                <div id="pos-customer-warning" class="small mb-3" role="status" hidden>
+                  Customer list unavailable. Walk-in sales are still available; retry before charging to a customer.
+                  <button type="button" class="btn btn-sm btn-outline-secondary mt-1" onclick="loadCustomersForPOS()">Retry customer list</button>
                 </div>
                 <div id="cart-items" style="max-height: 35vh; overflow-y: auto;">
                   <!-- Cart items will be displayed here -->
@@ -1558,11 +1587,12 @@
                   <span>Tax</span>
                   <span id="tax">$0.00</span>
                 </div>
-                <div class="d-flex justify-content-between fw-bold mb-2">
+                <div class="d-flex justify-content-between fw-bold mb-2 pos-total-row">
                   <span>Total</span>
                   <span id="total">$0.00</span>
                 </div>
                 <div class="mb-2">
+                  <label for="payment-method" class="form-label small fw-semibold">Payment method</label>
                   <select id="payment-method" class="form-select form-select-sm" onchange="handlePaymentMethodChange()">
                     <option value="cash">Cash</option>
                     <option value="credit_card">Credit Card</option>
@@ -1623,7 +1653,7 @@
                   <div id="split-payment-remaining" class="text-muted mt-1">Enter two amounts equal to the total.</div>
                 </div>
                 <div class="mb-2" id="cash-payment-fields">
-                  <label class="form-label small fw-semibold">Cash Received</label>
+                  <label class="form-label small fw-semibold" for="cash-received">Cash Received</label>
                   <input
                     type="number"
                     min="0"
@@ -9990,6 +10020,49 @@
       }
 
       // POS functions
+      function posGridState(title, message, action = "catalog", loading = false) {
+        const button = action === "search"
+          ? '<button type="button" class="btn btn-primary" onclick="searchProducts()">Retry search</button>'
+          : '<button type="button" class="btn btn-outline-primary" onclick="loadProductsForPOS()">Reload products</button>';
+        return `<div class="pos-grid-state" role="status">${loading ? '<div class="spinner-border text-primary" aria-hidden="true"></div>' : '<i class="bi bi-box-seam" aria-hidden="true"></i>'}<h5>${escapeHtml(title)}</h5><p>${escapeHtml(message)}</p>${loading ? "" : button}</div>`;
+      }
+
+      function setPOSCatalogNotice(title = "", message = "", severity = "warning", action = "catalog") {
+        const notice = document.getElementById("pos-catalog-notice");
+        if (!notice) return;
+        notice.hidden = !title;
+        if (!title) { notice.innerHTML = ""; return; }
+        notice.className = "pos-notice" + (severity === "danger" ? " pos-notice-danger" : "");
+        const button = action === "login"
+          ? '<a class="btn btn-outline-danger" href="/login">Sign in</a>'
+          : action === "manager" ? ""
+          : `<button type="button" class="btn btn-outline-dark" onclick="${action === "search" ? "searchProducts()" : "loadProductsForPOS()"}">Try again</button>`;
+        notice.innerHTML = `<i class="bi bi-exclamation-triangle" aria-hidden="true"></i><div><strong>${escapeHtml(title)}</strong><p>${escapeHtml(message)}</p></div>${button}`;
+      }
+
+      function posResponseJSON(response) {
+        if (response.status === 401 || response.redirected) {
+          const error = new Error("Sign-in required"); error.status = 401; throw error;
+        }
+        if (!response.ok) { const error = new Error("Request failed"); error.status = response.status; throw error; }
+        return response.json();
+      }
+
+      function showPOSCatalogError(error, action = "catalog") {
+        if (error.status === 401) {
+          setPOSCatalogNotice("Sign in to continue", "Your session has ended. Sign in again before continuing this sale. Do not close this screen until you have noted the current sale items.", "danger", "login");
+        } else if (error.status === 403) {
+          setPOSCatalogNotice("Product access restricted", "Your account cannot access this branch's products. Ask a manager to check your branch assignment and permissions.", "danger", "manager");
+        } else {
+          setPOSCatalogNotice("Products are temporarily unavailable", "The product list could not be retrieved. Check your connection and try again. Your current sale has not been cleared.", "warning", action);
+        }
+      }
+
+      function posStockHtml(product) {
+        const unavailable = Number(product.stock) <= 0;
+        return `<small class="pos-stock${unavailable ? " pos-stock-unavailable" : ""}">${unavailable ? "Out of stock" : "Available: " + escapeHtml(String(product.stock))}${product.unit_symbol && !unavailable ? " " + escapeHtml(product.unit_symbol) : ""}</small>`;
+      }
+
       const POS_PER_PAGE = 50;
       let posProductCursor = null;
       let posProductsHaveMore = false;
@@ -10004,13 +10077,7 @@
         posProductsLoading = true;
         const productGrid = document.getElementById("product-grid");
         if (resetPage) {
-          productGrid.innerHTML = `
-                        <div style="grid-column: 1 / -1; text-align: center; padding: 3rem 0;">
-                            <div class="spinner-border text-primary" role="status">
-                                <span class="visually-hidden">Loading...</span>
-                            </div>
-                        </div>
-                    `;
+          productGrid.innerHTML = posGridState("Loading products", "Retrieving prices and stock for this branch…", "catalog", true);
         } else {
           const loadMoreButton = productGrid.querySelector(".pos-load-more-cell button");
           if (loadMoreButton) loadMoreButton.disabled = true;
@@ -10025,11 +10092,10 @@
         const url = `/api/products?${params.toString()}`;
 
         fetch(url)
-          .then((response) => {
-            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-            return response.json();
-          })
+          .then(posResponseJSON)
           .then((data) => {
+            if (!Array.isArray(data.items)) throw new Error("Invalid product list");
+            setPOSCatalogNotice();
             const products = data.items || [];
             posProductsHaveMore = Boolean(data.has_more);
             posProductCursor = data.next_cursor || null;
@@ -10044,7 +10110,7 @@
 
             if (products.length === 0 && resetPage) {
               productGrid.innerHTML =
-                '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #6c757d;">No products available.</div>';
+                posGridState("No products in this branch", "Ask a manager to add products or check the selected branch, then reload the catalog.");
               return;
             }
 
@@ -10060,10 +10126,10 @@
               <div class="card-body p-3">
                   ${getProductPhotoHtml(product.photo_url, product.name, "product-card-img")}
                   <h6 class="card-title fw-bold text-success mb-2">${
-                    product.name
+                    escapeHtml(product.name)
                   }</h6>
                   <p class="card-text mb-1">${formatCurrency(product.price)}</p>
-                  <small class="${Number(product.stock) === 0 ? "text-danger" : "text-muted"}">Stock: ${product.stock}${product.unit_symbol ? " " + escapeHtml(product.unit_symbol) : ""}</small>
+                  ${posStockHtml(product)}
               </div>
           </div>
       `;
@@ -10091,13 +10157,24 @@
           })
           .catch((error) => {
             console.error("Error loading products:", error);
+            if (error.status === 401 || error.status === 403) {
+              showPOSCatalogError(error);
+              if (resetPage) productGrid.innerHTML = posGridState("Catalog access unavailable", "Read the warning above before continuing.");
+              return;
+            }
+            if (!resetPage) {
+              showPOSCatalogError(error);
+              const button = productGrid.querySelector(".pos-load-more-cell button");
+              if (button) button.disabled = false;
+              return;
+            }
             const cached = getCachedProducts();
             if (cached.length > 0) {
               renderProductsFromCacheForPOS(cached, resetPage);
               return;
             }
-            productGrid.innerHTML =
-              '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #dc3545;">Failed to load products.</div>';
+            showPOSCatalogError(error);
+            productGrid.innerHTML = posGridState("Catalog not loaded", "Check the warning above and reload when the connection is available.");
           })
           .finally(() => {
             posProductsLoading = false;
@@ -10108,6 +10185,7 @@
       // client-side exactly like the online grid (including "Load More").
       function renderProductsFromCacheForPOS(products, resetPage) {
         const productGrid = document.getElementById("product-grid");
+        setPOSCatalogNotice("Using saved product data", "Live product data is unavailable. These saved prices and stock levels may have changed. Confirm availability before completing the sale.");
 
         if (resetPage) posProductPage = 1;
         posProductTotalPages = Math.max(1, Math.ceil(products.length / POS_PER_PAGE));
@@ -10122,7 +10200,7 @@
 
         if (products.length === 0) {
           productGrid.innerHTML =
-            '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #6c757d;">No products available.</div>';
+            posGridState("No saved products match", "Try a different name or barcode, or reload products when the connection is available.");
           return;
         }
 
@@ -10134,9 +10212,9 @@
           <div class="card product-card" onclick="addToCart(${product.id}, '${escapeHtml(product.name)}', ${product.price}, 1, ${product.tax_rate})">
             <div class="card-body p-3">
               ${getProductPhotoHtml(product.photo_url, product.name, "product-card-img")}
-              <h6 class="card-title fw-bold text-success mb-2">${product.name}</h6>
+              <h6 class="card-title fw-bold text-success mb-2">${escapeHtml(product.name)}</h6>
               <p class="card-text mb-1">${formatCurrency(product.price)}</p>
-              <small class="${Number(product.stock) === 0 ? "text-danger" : "text-muted"}">Stock: ${product.stock}${product.unit_symbol ? " " + escapeHtml(product.unit_symbol) : ""}</small>
+              ${posStockHtml(product)}
             </div>
           </div>
         `;
@@ -10156,7 +10234,6 @@
         }
 
         normalizeCurrencyDisplay(productGrid);
-        showToast("Offline — showing cached products", "warning");
       }
 
       function loadMorePOSProducts() {
@@ -10176,14 +10253,16 @@
           : "/api/products/search?q=" + encodeURIComponent(query);
 
         fetch(url)
-          .then((response) => response.json())
+          .then(posResponseJSON)
           .then((data) => {
             const productGrid = document.getElementById("product-grid");
+            if (!Array.isArray(data)) throw new Error("Invalid search results");
+            setPOSCatalogNotice();
             productGrid.innerHTML = "";
 
             if (data.length === 0) {
               productGrid.innerHTML =
-                '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #6c757d;">No products found matching your search.</div>';
+                posGridState("No matching products", "Check the barcode or spelling, or clear the search to browse all products.");
               return;
             }
 
@@ -10200,12 +10279,10 @@
                                       <div class="card-body">
                                           ${getProductPhotoHtml(product.photo_url, product.name, "product-card-img")}
                                           <h6 class="card-title fw-bold text-success mb-2">${
-                                            product.name
+                                            escapeHtml(product.name)
                                           }</h6>
                                           <p class="card-text">${formatCurrency(product.price)}</p>
-                                          <small class="${Number(product.stock) === 0 ? "text-danger" : "text-muted"}">Stock: ${
-                                            product.stock
-                                          }${product.unit_symbol ? " " + escapeHtml(product.unit_symbol) : ""}</small>
+                                          ${posStockHtml(product)}
                                       </div>
                                   </div>
                               `;
@@ -10219,6 +10296,11 @@
           })
           .catch((error) => {
             console.error("Error searching products:", error);
+            if (error.status === 401 || error.status === 403) {
+              showPOSCatalogError(error, "search");
+              document.getElementById("product-grid").innerHTML = posGridState("Search unavailable", "Read the warning above before continuing.", "search");
+              return;
+            }
             const cached = getCachedProducts();
             if (cached.length > 0) {
               // Offline fallback: filter the cached catalog client-side.
@@ -10232,8 +10314,8 @@
               renderProductsFromCacheForPOS(matches, true);
               return;
             }
-            document.getElementById("product-grid").innerHTML =
-              '<div style="grid-column: 1 / -1; text-align: center; padding: 2rem 0; color: #dc3545;">Failed to search products.</div>';
+            showPOSCatalogError(error, "search");
+            document.getElementById("product-grid").innerHTML = posGridState("Search could not finish", "Your search has been kept. Check the connection and retry.", "search");
           });
       }
 
@@ -10734,6 +10816,13 @@
       };
 
       function setConnectionStatus(status) {
+        const summary = document.getElementById("pos-connection-summary");
+        if (summary) summary.textContent = {
+          online: "Network available · Product warnings below indicate whether live data is available.",
+          offline: "Offline · Eligible sales can be saved on this device for later sync. Keep this device's data until sync completes.",
+          syncing: "Syncing saved sales · Keep this screen open until syncing finishes.",
+          synced: "Saved sales synced · Check any remaining pending-sale warnings before leaving.",
+        }[status] || "Check connection status in the sidebar.";
         const indicator = document.getElementById("connection-status-indicator");
         if (!indicator) return;
         if (connectionStatusTimer) {
@@ -15104,20 +15193,26 @@
       // POS functions for customer selection
       function loadCustomersForPOS() {
         const select = document.getElementById("pos-customer-select");
-        select.innerHTML = '<option value="">Walk-in Customer</option>';
+        const selectedCustomer = select.value;
+        const warning = document.getElementById("pos-customer-warning");
 
         fetch("/api/customers")
-          .then((response) => response.json())
+          .then(posResponseJSON)
           .then((data) => {
+            if (!Array.isArray(data)) throw new Error("Invalid customer list");
+            select.innerHTML = '<option value="">Walk-in Customer</option>';
             data.forEach((customer) => {
               const option = document.createElement("option");
               option.value = customer.id;
               option.textContent = `${customer.name} (${customer.phone || "No Phone"})`;
               select.appendChild(option);
             });
+            select.value = selectedCustomer;
+            if (warning) warning.hidden = true;
           })
           .catch((error) => {
             console.error("Error loading customers for POS:", error);
+            if (warning) warning.hidden = false;
           });
       }
 
