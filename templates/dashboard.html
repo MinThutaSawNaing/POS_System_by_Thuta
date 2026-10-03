@@ -2479,7 +2479,7 @@
             <div class="card bg-light summary-card">
               <div class="card-body py-2">
                 <small class="text-muted d-block" style="font-size: 0.75rem;">Quality</small>
-                <h5 id="supplier-avg-quality" class="mb-0 fs-6">0.0</h5>
+                <h5 id="supplier-avg-quality" class="mb-0 fs-6">Not rated</h5>
               </div>
             </div>
           </div>
@@ -2487,7 +2487,7 @@
             <div class="card bg-light summary-card">
               <div class="card-body py-2">
                 <small class="text-muted d-block" style="font-size: 0.75rem;">Delivery</small>
-                <h5 id="supplier-avg-delivery" class="mb-0 fs-6">0.0</h5>
+                <h5 id="supplier-avg-delivery" class="mb-0 fs-6">Not rated</h5>
               </div>
             </div>
           </div>
@@ -2503,7 +2503,7 @@
                     <th class="d-none d-md-table-cell">Category</th>
                     <th class="d-none d-lg-table-cell">Contact</th>
                     <th class="d-none d-sm-table-cell">Phone</th>
-                    <th class="d-none d-lg-table-cell">Perf</th>
+                    <th class="d-none d-lg-table-cell">Supplier Rating</th>
                     <th class="d-none d-md-table-cell">Lead</th>
                     <th>Status</th>
                     <th>Actions</th>
@@ -2604,7 +2604,7 @@
             <div class="card bg-light summary-card">
               <div class="card-body py-2">
                 <small class="text-muted d-block" style="font-size: 0.7rem;">Amount</small>
-                <h5 id="po-monthly-amount" class="mb-0 fs-6">0</h5>
+                <h5 id="po-monthly-amount" class="mb-0 fs-6">0.0</h5>
               </div>
             </div>
           </div>
@@ -5684,6 +5684,38 @@
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manual supplier assessment: zero preserves the legacy unrated value. -->
+    <div class="modal fade" id="supplierRatingsModal" tabindex="-1" aria-labelledby="supplier-ratings-title" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="supplier-ratings-title">Rate supplier</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <form onsubmit="event.preventDefault(); saveSupplierRatings();">
+            <div class="modal-body">
+              <input type="hidden" id="rating-supplier-id">
+              <p class="fw-semibold" id="rating-supplier-name"></p>
+              <p class="small text-muted" id="supplier-rating-help">Your manual assessment, not an automatic delivery score. The overall rating averages only rated categories. Enter 0 (Not rated) to clear a score.</p>
+              <div class="mb-3">
+                <label class="form-label" for="rating-quality">Product quality</label>
+                <input type="number" class="form-control" id="rating-quality" min="0" max="5" step="0.5" required aria-describedby="supplier-rating-scale">
+              </div>
+              <div class="mb-3">
+                <label class="form-label" for="rating-delivery">Delivery reliability</label>
+                <input type="number" class="form-control" id="rating-delivery" min="0" max="5" step="0.5" required aria-describedby="supplier-rating-scale">
+              </div>
+              <p class="small text-muted" id="supplier-rating-scale">0 = Not rated · 1 = Poor · 2 = Fair · 3 = Good · 4 = Very good · 5 = Excellent. Half-point scores are allowed.</p>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+              <button type="submit" class="btn btn-primary" id="save-supplier-ratings">Save ratings</button>
+            </div>
+          </form>
         </div>
       </div>
     </div>
@@ -15176,11 +15208,7 @@
                 ? '<span class="badge bg-success">Active</span>'
                 : '<span class="badge bg-secondary">Inactive</span>';
               
-              // Performance rating stars
-              const qualityRating = supplier.quality_rating || 0;
-              const deliveryRating = supplier.delivery_rating || 0;
-              const avgRating = (qualityRating + deliveryRating) / 2;
-              const stars = '★'.repeat(Math.round(avgRating)) + '☆'.repeat(5 - Math.round(avgRating));
+              const rating = supplierRatingSummary(supplier);
               
               const row = document.createElement("tr");
               row.innerHTML = `
@@ -15189,7 +15217,9 @@
                 <td>${supplier.contact_person || "-"}</td>
                 <td>${supplier.phone || "-"}</td>
                 <td>
-                  <span class="text-warning" title="Quality: ${qualityRating}/5, Delivery: ${deliveryRating}/5">${stars}</span>
+                  <button type="button" class="btn btn-sm btn-outline-secondary" onclick="showSupplierRatingsModal(${supplier.id})" title="Rate supplier. Manual assessment; average of rated categories." aria-label="Rate supplier: ${escapeHtml(supplier.name)}">
+                    <span class="text-warning" aria-hidden="true">${rating.stars}</span> ${rating.label}
+                  </button>
                 </td>
                 <td>${supplier.lead_time_days != null ? `${supplier.lead_time_days} days` : "-"}</td>
                 <td>${statusBadge}</td>
@@ -15225,6 +15255,74 @@
           });
       }
 
+      function supplierRatingSummary(supplier) {
+        const scores = [supplier.quality_rating, supplier.delivery_rating]
+          .map(Number).filter((score) => Number.isFinite(score) && score > 0 && score <= 5);
+        const average = scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null;
+        const filled = average === null ? 0 : Math.round(average);
+        return {
+          average,
+          label: average === null ? "Not rated" : `${average.toFixed(1)}/5`,
+          stars: average === null ? "" : '★'.repeat(filled) + '☆'.repeat(5 - filled),
+        };
+      }
+
+      let supplierRatingRequest = 0;
+
+      async function showSupplierRatingsModal(supplierId) {
+        if (document.getElementById("save-supplier-ratings").disabled) {
+          showToast("Please wait for the current rating to finish saving", "info");
+          return;
+        }
+        const requestId = ++supplierRatingRequest;
+        try {
+          const response = await fetch(`/api/suppliers/${supplierId}`);
+          const supplier = await response.json();
+          if (requestId !== supplierRatingRequest) return;
+          if (!response.ok || !supplier.id) throw new Error(supplier.message || supplier.error || "Failed to load supplier");
+          document.getElementById("rating-supplier-id").value = supplier.id;
+          document.getElementById("rating-supplier-name").textContent = supplier.name;
+          document.getElementById("rating-quality").value = supplier.quality_rating || 0;
+          document.getElementById("rating-delivery").value = supplier.delivery_rating || 0;
+          showModalAfterHiding("supplierRatingsModal");
+        } catch (error) {
+          if (requestId === supplierRatingRequest) showToast(error.message || "Failed to load supplier", "error");
+        }
+      }
+
+      async function saveSupplierRatings() {
+        const button = document.getElementById("save-supplier-ratings");
+        if (button.disabled) return;
+        const supplierId = document.getElementById("rating-supplier-id").value;
+        const qualityRaw = document.getElementById("rating-quality").value;
+        const deliveryRaw = document.getElementById("rating-delivery").value;
+        const quality = Number(qualityRaw);
+        const delivery = Number(deliveryRaw);
+        if (!supplierId || qualityRaw === "" || deliveryRaw === "" ||
+            ![quality, delivery].every((score) => Number.isFinite(score) && (score === 0 || (score >= 1 && score <= 5)))) {
+          showToast("Use 1–5 for a rating, or 0 for Not rated", "warning");
+          return;
+        }
+        button.disabled = true;
+        supplierRatingRequest += 1;
+        try {
+          const response = await fetch(`/api/suppliers/${supplierId}/ratings`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ quality_rating: quality, delivery_rating: delivery }),
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) throw new Error(data.message || data.error || "Failed to save ratings");
+          bootstrap.Modal.getInstance(document.getElementById("supplierRatingsModal"))?.hide();
+          loadSuppliers();
+          showToast("Supplier ratings saved", "success");
+        } catch (error) {
+          showToast(error.message || "Failed to save ratings", "error");
+        } finally {
+          button.disabled = false;
+        }
+      }
+
       function updateSupplierSummaryCards(suppliers) {
         const total = suppliers.length;
         const active = suppliers.filter((s) => s.is_active).length;
@@ -15239,8 +15337,8 @@
         // Calculate average ratings
         const qualityRatings = suppliers.filter(s => s.quality_rating > 0).map(s => s.quality_rating);
         const deliveryRatings = suppliers.filter(s => s.delivery_rating > 0).map(s => s.delivery_rating);
-        const avgQuality = qualityRatings.length ? (qualityRatings.reduce((a, b) => a + b, 0) / qualityRatings.length).toFixed(1) : '0.0';
-        const avgDelivery = deliveryRatings.length ? (deliveryRatings.reduce((a, b) => a + b, 0) / deliveryRatings.length).toFixed(1) : '0.0';
+        const avgQuality = qualityRatings.length ? (qualityRatings.reduce((a, b) => a + Number(b), 0) / qualityRatings.length).toFixed(1) : 'Not rated';
+        const avgDelivery = deliveryRatings.length ? (deliveryRatings.reduce((a, b) => a + Number(b), 0) / deliveryRatings.length).toFixed(1) : 'Not rated';
 
         document.getElementById("supplier-total-count").textContent = total;
         document.getElementById("supplier-active-count").textContent = active;
@@ -15262,10 +15360,7 @@
           fetch(`/api/suppliers/${supplierId}/communications`).then(r => r.json())
         ]).then(([supplier, orders, communications]) => {
           const statusBadge = supplier.is_active ? '<span class="badge bg-success">Active</span>' : '<span class="badge bg-secondary">Inactive</span>';
-          const qualityRating = supplier.quality_rating || 0;
-          const deliveryRating = supplier.delivery_rating || 0;
-          const avgRating = (qualityRating + deliveryRating) / 2;
-          const stars = '★'.repeat(Math.round(avgRating)) + '☆'.repeat(5 - Math.round(avgRating));
+          const rating = supplierRatingSummary(supplier);
 
           content.innerHTML = `
             <div class="row mb-3">
@@ -15308,9 +15403,10 @@
             </div>
             <div class="row mb-3">
               <div class="col-md-6">
-                <h6 class="text-muted">Performance Rating</h6>
-                <p><span class="text-warning fs-5">${stars}</span> <small class="text-muted">(${avgRating.toFixed(1)}/5 avg)</small></p>
-                <small>Quality: ${qualityRating}/5 | Delivery: ${deliveryRating}/5</small>
+                <h6 class="text-muted">Supplier Rating (manual)</h6>
+                <p><span class="text-warning fs-5" aria-hidden="true">${rating.stars}</span> ${rating.label}</p>
+                <small>Quality: ${supplier.quality_rating > 0 ? supplier.quality_rating + '/5' : 'Not rated'} | Delivery: ${supplier.delivery_rating > 0 ? supplier.delivery_rating + '/5' : 'Not rated'}</small>
+                <div class="mt-2"><button type="button" class="btn btn-outline-primary btn-sm" onclick="showSupplierRatingsModal(${supplier.id})">Rate supplier</button></div>
               </div>
               <div class="col-md-3">
                 <h6 class="text-muted">Total Orders</h6>

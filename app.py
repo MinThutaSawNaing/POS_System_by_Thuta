@@ -7529,32 +7529,36 @@ def api_supplier_communications(supplier_id):
 @manager_required
 def api_supplier_ratings(supplier_id):
     """Update supplier ratings"""
-    supplier = db.session.get(Supplier, supplier_id)
+    supplier = Supplier.query.filter_by(
+        id=supplier_id, branch_id=get_default_branch_id()
+    ).first()
     if not supplier:
         return jsonify({'success': False, 'message': 'Supplier not found'}), 404
     
-    data = request.get_json() or {}
-    
-    if 'quality_rating' in data:
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not any(
+        field in data for field in ('quality_rating', 'delivery_rating')
+    ):
+        return jsonify({'success': False, 'message': 'Provide quality or delivery ratings'}), 400
+
+    ratings = {}
+    for field, label in (('quality_rating', 'Quality'), ('delivery_rating', 'Delivery')):
+        if field not in data:
+            continue
         try:
-            quality = float(data['quality_rating'])
-            if 0 <= quality <= 5:
-                supplier.quality_rating = quality
-            else:
-                return jsonify({'success': False, 'message': 'Quality rating must be between 0 and 5'}), 400
+            if isinstance(data[field], bool):
+                raise ValueError('Boolean is not a rating')
+            value = float(data[field])
         except (TypeError, ValueError):
-            return jsonify({'success': False, 'message': 'Invalid quality rating'}), 400
-    
-    if 'delivery_rating' in data:
-        try:
-            delivery = float(data['delivery_rating'])
-            if 0 <= delivery <= 5:
-                supplier.delivery_rating = delivery
-            else:
-                return jsonify({'success': False, 'message': 'Delivery rating must be between 0 and 5'}), 400
-        except (TypeError, ValueError):
-            return jsonify({'success': False, 'message': 'Invalid delivery rating'}), 400
-    
+            return jsonify({'success': False, 'message': f'Invalid {label.lower()} rating'}), 400
+        if not math.isfinite(value) or not (value == 0 or 1 <= value <= 5):
+            return jsonify({'success': False, 'message': f'{label} rating must be 1–5, or 0 for Not rated'}), 400
+        ratings[field] = value
+
+    # Validate the entire request before mutating either score.
+    for field, value in ratings.items():
+        setattr(supplier, field, value)
+    supplier.updated_at = datetime.utcnow()
     db.session.commit()
     return jsonify({'success': True, 'message': 'Ratings updated'})
 
