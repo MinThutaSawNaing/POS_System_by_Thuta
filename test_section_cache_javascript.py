@@ -59,6 +59,8 @@ let network = null;
 let cachedProducts = [];
 let productsCacheTimestamp = 0;
 let cachedProductsBranchId = null;
+// These cache/repaint scenarios run with manager access; permissions are tested separately.
+function hasCapability() { return true; }
 function isBrowserOffline() { return false; }
 function offlineCacheRemove() {}
 function cachedProductsKey() { return "pos_products_all_cache"; }

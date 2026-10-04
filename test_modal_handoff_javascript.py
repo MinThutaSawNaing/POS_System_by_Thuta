@@ -76,6 +76,8 @@ class Modal {
   hide() { pending.push(() => { this.el.visible = false; this.el.emit('hidden.bs.modal'); }); }
 }
 globalThis.bootstrap = { Modal };
+// Modal transition scenarios assume an authorized manager, not a permission denial.
+function requireCapability(capability) { return capability === 'debts'; }
 function showToast(message) { toasts.push(message); }
 console.error = () => {};
 globalThis.fetch = () => __FAIL__ ? Promise.reject(new Error('offline')) :

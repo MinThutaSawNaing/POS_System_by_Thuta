@@ -36,7 +36,9 @@ class FullCoverageToolsTestBase(unittest.TestCase):
         self._extra_branch_ids = []  # branches created via tools during a test
 
         self.tools = AITools(db, AI_MODELS)
-        self.tools.set_context({"branch_id": self.branch_id, "user_id": self.admin_id})
+        # Direct callers supply authorization from their trusted fixture boundary.
+        self.tools.set_context({"branch_id": self.branch_id, "user_id": self.admin_id,
+                                "role": db.session.get(User, self.admin_id).role})
 
     def _track_tool_branch(self, result):
         """Remember branches created via create_branch so tearDown can remove them."""

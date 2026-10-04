@@ -657,7 +657,7 @@ def product_photo_url(filename):
     return url_for('product_image', filename=filename) if filename else None
 
 def serialize_product(product):
-    return {
+    data = {
         'id': product.id,
         'barcode': product.barcode,
         'name': product.name,
@@ -676,6 +676,11 @@ def serialize_product(product):
         'photo_filename': product.photo_filename,
         'photo_url': product_photo_url(product.photo_filename)
     }
+    if has_request_context() and session.get('role') == 'cashier':
+        data.pop('cost', None)
+        for key in ('reorder_point', 'reorder_quantity', 'reorder_enabled'):
+            data.pop(key, None)
+    return data
 
 # --- Unit system helpers ---
 
@@ -842,6 +847,109 @@ def manager_or_boss_required(f):
             return jsonify({'error': 'Manager access required'}), 403
         return f(*args, **kwargs)
     return decorated_function
+
+
+# Deny by default: a newly added API must not silently become cashier-accessible.
+CASHIER_API_METHODS = {
+    'api_settings': {'GET'}, 'api_current_branch': {'GET'},
+    'api_categories': {'GET'}, 'api_single_category': {'GET'},
+    'api_units': {'GET'}, 'api_units_convert': {'GET'},
+    'api_products': {'GET'}, 'api_single_product': {'GET'}, 'api_search_products': {'GET'},
+    'api_create_sale': {'POST'}, 'api_sales': {'GET'}, 'api_single_sale': {'GET'},
+    'print_receipt': {'GET'}, 'api_report_sales': {'GET'},
+    'api_returns_exchanges': {'GET', 'POST'}, 'api_single_return_exchange': {'GET'},
+    'print_return_exchange_receipt': {'GET'}, 'export_returns_exchanges': {'GET'},
+    'api_deliveries': {'GET'}, 'api_single_delivery': {'GET'},
+    'api_delivery_stats': {'GET'}, 'print_delivery_slip': {'GET'},
+    'api_delivery_report': {'GET'}, 'api_pos_customers': {'GET'},
+    'agent_chat': {'POST'}, 'api_agent_memories': {'GET', 'POST'},
+    'api_delete_agent_memory': {'DELETE'}, 'api_forget_agent_memory': {'POST'},
+    'api_forget_all_agent_memories': {'POST'}, 'api_agent_approve_step': {'POST'},
+    'api_agent_reject_step': {'POST'}, 'api_agent_advance_task': {'POST'},
+    'api_agent_get_task': {'GET'}, 'api_agent_autonomy_get': {'GET'},
+}
+
+
+@app.before_request
+def enforce_dashboard_session_identity():
+    """Rendered tabs may not act using a different account's current cookie.
+
+    Headers/query parameters are consistency checks, never authentication.
+    Identity-less clients remain supported. Every supplied pair must match;
+    matching headers cannot mask stale navigation parameters (or vice versa).
+    """
+    if request.path in ('/', '/delivery-report'):
+        from flask import after_this_request
+
+        @after_this_request
+        def prevent_identity_page_storage(response):
+            response.headers['Cache-Control'] = 'private, no-store, max-age=0'
+            return response
+
+    if not (request.path.startswith('/api/') or request.path == '/delivery-report'):
+        return None
+    pairs = []
+    for values, user_key, role_key in (
+            (request.headers, 'X-POS-User-ID', 'X-POS-Role'),
+            (request.args, 'pos_user_id', 'pos_role')):
+        if user_key in values or role_key in values:
+            pairs.append((values.get(user_key), values.get(role_key)))
+    if not pairs:
+        return None
+    if any(session.get('user_id') is None or user != str(session.get('user_id'))
+           or role != session.get('role') for user, role in pairs):
+        response = jsonify(success=False, code='stale_session',
+                           message='This screen belongs to a different sign-in. Reload or sign in again. Offline sales have been kept on this device.')
+        response.status_code = 409
+        response.headers['X-POS-Session-Mismatch'] = '1'
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+
+
+@app.after_request
+def prevent_api_response_storage(response):
+    if request.path.startswith('/api/'):
+        # Keep stronger route-specific directives used by receipts/audit exports.
+        if 'no-store' not in response.headers.get('Cache-Control', '').lower():
+            response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.before_request
+def enforce_cashier_api_permissions():
+    """Enforce capabilities before handlers, including mixed-method routes."""
+    if not request.path.startswith('/api/') or not request.endpoint:
+        return None
+    if 'user_id' not in session or session.get('role') in ('manager', 'boss'):
+        return None
+    if session.get('role') != 'cashier':
+        return jsonify({'success': False, 'message': 'Account role is not authorized'}), 403
+    if request.method not in CASHIER_API_METHODS.get(request.endpoint, set()):
+        return jsonify({'success': False, 'message': 'Manager access required'}), 403
+    # Never allow a missing/inactive scope to widen a query to all branches.
+    branch_id = session.get('branch_id')
+    branch = db.session.get(Branch, branch_id) if branch_id else None
+    if not branch or not branch.is_active:
+        return jsonify({'success': False, 'message': 'No active branch assigned. Ask a manager to sign you in to an active branch.'}), 403
+    payload = request.get_json(silent=True) if request.is_json else None
+    for raw in (request.args.get('branch_id'), (payload or {}).get('branch_id') if isinstance(payload, dict) else None):
+        if raw not in (None, '', 'current') and str(raw) != str(branch_id):
+            return jsonify({'success': False, 'message': 'Access is limited to your current branch'}), 403
+
+
+def cashier_can_access_sale(sale):
+    """Object-level rule shared by receipts, workflows and idempotent replay."""
+    return bool(sale) and (session.get('role') != 'cashier' or (
+        sale.branch_id == session.get('branch_id') and sale.user_id == session.get('user_id')
+    ))
+
+
+def operational_delivery_query():
+    if session.get('role') == 'cashier':
+        return Delivery.query.join(Sale, Delivery.sale_id == Sale.id).filter(
+            Delivery.branch_id == session.get('branch_id'),
+            Sale.branch_id == session.get('branch_id'), Sale.user_id == session.get('user_id'))
+    return Delivery.query.filter_by(branch_id=get_default_branch_id())
 
 def resolve_report_scope():
     """Resolve report scope and branch filtering based on role and query params."""
@@ -2807,6 +2915,7 @@ def login():
         password = request.form['password']
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password, password):
+            session.clear()
             session.permanent = request.form.get('remember') == 'on'
             session['user_id'] = user.id
             session['username'] = user.username
@@ -3425,7 +3534,7 @@ def api_categories():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    branch_id = get_default_branch_id()
+    branch_id = get_current_branch_id() if session.get('role') == 'cashier' else get_default_branch_id()
 
     if request.method == 'GET':
         # Get all categories with optional filtering
@@ -3434,7 +3543,11 @@ def api_categories():
         if active_only:
             query = query.filter_by(is_active=True)
         categories = query.order_by(Category.sort_order, Category.name).all()
-        return jsonify([c.to_dict() for c in categories])
+        rows = [c.to_dict() for c in categories]
+        if session.get('role') == 'cashier':
+            for row in rows:
+                row.pop('supplier_count', None)
+        return jsonify(rows)
 
     elif request.method == 'POST':
         # Create new category
@@ -3466,12 +3579,16 @@ def api_single_category(category_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    category = Category.query.filter_by(id=category_id, branch_id=get_default_branch_id()).first()
+    branch_id = get_current_branch_id() if session.get('role') == 'cashier' else get_default_branch_id()
+    category = Category.query.filter_by(id=category_id, branch_id=branch_id).first()
     if not category:
         return jsonify({'success': False, 'message': 'Category not found'}), 404
 
     if request.method == 'GET':
-        return jsonify(category.to_dict())
+        data = category.to_dict()
+        if session.get('role') == 'cashier':
+            data.pop('supplier_count', None)
+        return jsonify(data)
 
     elif request.method == 'PUT':
         data = request.get_json() or {}
@@ -3987,32 +4104,15 @@ def api_single_product(product_id):
         return jsonify({'success': False, 'message': 'Product not found'}), 404
 
     if request.method == 'GET':
-        return jsonify({
-            'id': product.id,
-            'barcode': product.barcode,
-            'name': product.name,
-            'price': product.price,
-            'cost': product.cost,
-            'stock': product.stock,
-            'category': product.category_ref.name if product.category_ref else product.category,
-            'category_id': product.category_id,
-            'unit_id': product.unit_id,
-            'unit_name': product.unit_ref.name if product.unit_ref else None,
-            'unit_symbol': product.unit_ref.symbol if product.unit_ref else None,
-            'tax_rate': product.tax_rate,
-            'reorder_point': product.reorder_point,
-            'reorder_quantity': product.reorder_quantity,
-            'reorder_enabled': bool(product.reorder_enabled),
-            'photo_filename': product.photo_filename,
-            'photo_url': product_photo_url(product.photo_filename),
-            'promotions': [{
+        data = serialize_product(product)
+        data['promotions'] = [{
                 'id': p.id,
                 'discount_type': p.discount_type,
                 'discount_value': p.discount_value,
                 'start_date': p.start_date.isoformat(),
                 'end_date': p.end_date.isoformat()
             } for p in product.promotions]
-        })
+        return jsonify(data)
 
     elif request.method == 'PUT':
         is_multipart = request.content_type and 'multipart/form-data' in request.content_type.lower()
@@ -4615,6 +4715,8 @@ def api_create_sale():
 
 def _sale_replay_response(existing):
     """Idempotent replay response for a sale that already exists."""
+    if not cashier_can_access_sale(existing):
+        return jsonify({'success': False, 'message': 'Sale not found'}), 404
     response = {
         'success': True,
         'message': 'Sale already synced',
@@ -4634,6 +4736,15 @@ def _sale_replay_response(existing):
 def _create_sale_transaction(data):
     """Run a single sale transaction. Raises OperationalError on DB lock so the caller can retry."""
     try:
+        branch_id = get_current_branch_id()
+        customer_id = data.get('customer_id')
+        if customer_id:
+            customer = Customer.query.filter_by(id=customer_id, branch_id=branch_id).first()
+            if not customer:
+                return jsonify({'success': False, 'message': 'Customer not found in current branch'}), 404
+        payment_method = str(data.get('payment_method') or 'cash').strip().lower()
+        if session.get('role') == 'cashier' and payment_method == 'debt':
+            return jsonify({'success': False, 'message': 'Manager access required for credit sales'}), 403
         # Idempotency guard for offline sales: if the client already sent this
         # transaction_id (e.g. a retried sync after a lost response), return the
         # original sale instead of creating a duplicate.
@@ -4649,7 +4760,7 @@ def _create_sale_transaction(data):
         items = []
 
         for item in data['items']:
-            product = db.session.get(Product, item['product_id'])
+            product = Product.query.filter_by(id=item['product_id'], branch_id=branch_id).first()
             if not product:
                 return jsonify({'success': False, 'message': f'Product {item["product_id"]} not found'}), 404
 
@@ -4689,7 +4800,6 @@ def _create_sale_transaction(data):
         total = subtotal + tax_total
         total_rounded = round_money(total)
 
-        payment_method = str(data.get('payment_method', 'cash') or 'cash').strip().lower()
         allowed_payment_methods = {'cash', 'credit_card', 'debit_card', 'mobile_payment', 'debt', 'split_payment'}
         if payment_method not in allowed_payment_methods:
             return jsonify({'success': False, 'message': 'Invalid payment method'}), 400
@@ -4777,7 +4887,7 @@ def _create_sale_transaction(data):
             )
 
         # Handle debt transactions if customer_id is provided
-        if 'customer_id' in data and data['customer_id']:
+        if payment_method == 'debt' and data.get('customer_id'):
             customer_id = data['customer_id']
             customer = db.session.get(Customer, customer_id)
             if not customer:
@@ -4968,7 +5078,7 @@ def api_single_sale(transaction_id):
 
     branch_id = get_current_branch_id()
     sale = Sale.query.filter_by(transaction_id=transaction_id, branch_id=branch_id).first()
-    if not sale:
+    if not cashier_can_access_sale(sale):
         return jsonify({'success': False, 'message': 'Sale not found'}), 404
 
     items = SaleItem.query.filter_by(sale_id=sale.id).all()
@@ -5030,6 +5140,8 @@ def return_exchange_query(args):
     scope, branch_id = resolve_report_scope()
     adjustment = aliased(Sale)
     query = ReturnExchange.query.join(Sale, ReturnExchange.original_sale_id == Sale.id)
+    if session.get('role') == 'cashier':
+        query = query.filter(Sale.user_id == session.get('user_id'))
     query = query.outerjoin(adjustment, ReturnExchange.adjustment_sale_id == adjustment.id)
     if branch_id:
         query = query.filter(Sale.branch_id == branch_id)
@@ -5120,8 +5232,8 @@ def api_returns_exchanges():
         sale_transaction_id = (request.args.get('sale_transaction_id') or '').strip()
         if sale_transaction_id:
             # Sale-scoped history (used by the sale details modal): unpaginated.
-            sale = Sale.query.filter_by(transaction_id=sale_transaction_id).first()
-            if not sale:
+            sale = Sale.query.filter_by(transaction_id=sale_transaction_id, branch_id=get_current_branch_id()).first()
+            if not cashier_can_access_sale(sale):
                 return jsonify([])
             records = (ReturnExchange.query
                        .filter_by(original_sale_id=sale.id)
@@ -5155,8 +5267,8 @@ def api_returns_exchanges():
     if not original_transaction_id:
         return jsonify({'success': False, 'message': 'Original transaction ID is required'}), 400
 
-    original_sale = Sale.query.filter_by(transaction_id=original_transaction_id).first()
-    if not original_sale:
+    original_sale = Sale.query.filter_by(transaction_id=original_transaction_id, branch_id=get_current_branch_id()).first()
+    if not cashier_can_access_sale(original_sale):
         return jsonify({'success': False, 'message': 'Original sale not found'}), 404
 
     original_sale_items = SaleItem.query.filter_by(sale_id=original_sale.id).all()
@@ -5189,7 +5301,7 @@ def api_returns_exchanges():
             if quantity > available_qty:
                 return jsonify({'success': False, 'message': f'Return qty exceeds available qty for item #{sale_item_id}. Available: {available_qty}'}), 400
 
-            product = db.session.get(Product, sale_item.product_id)
+            product = Product.query.filter_by(id=sale_item.product_id, branch_id=original_sale.branch_id).first()
             if not product:
                 return jsonify({'success': False, 'message': 'Product not found for return item'}), 404
 
@@ -5223,7 +5335,7 @@ def api_returns_exchanges():
             if product_id <= 0 or quantity <= 0:
                 return jsonify({'success': False, 'message': 'Invalid exchange item values'}), 400
 
-            product = db.session.get(Product, product_id)
+            product = Product.query.filter_by(id=product_id, branch_id=original_sale.branch_id).first()
             if not product:
                 return jsonify({'success': False, 'message': f'Exchange product {product_id} not found'}), 404
 
@@ -5234,6 +5346,9 @@ def api_returns_exchanges():
             unit_price = to_decimal(raw_price)
             if unit_price < 0:
                 return jsonify({'success': False, 'message': 'Exchange item price cannot be negative'}), 400
+            if session.get('role') == 'cashier' and unit_price != to_decimal(product.price):
+                if not any(abs(unit_price - price) <= Decimal('0.01') for price in active_promotion_prices(product)):
+                    return jsonify({'success': False, 'message': 'Invalid price or expired promotion'}), 400
 
             line_total = (unit_price * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
             line_tax = (line_total * to_decimal(product.tax_rate or 0) / Decimal('100')).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
@@ -5360,7 +5475,7 @@ def api_single_return_exchange(workflow_id):
         return jsonify({'error': 'Unauthorized'}), 401
 
     workflow = ReturnExchange.query.filter_by(workflow_id=workflow_id).first()
-    if not workflow:
+    if not workflow or not cashier_can_access_sale(workflow.original_sale):
         return jsonify({'success': False, 'message': 'Return/exchange workflow not found'}), 404
 
     return jsonify({
@@ -5440,7 +5555,7 @@ def print_return_exchange_receipt(workflow_id):
                 .filter(ReturnExchange.workflow_id == workflow_id,
                         Sale.branch_id == branch_id)
                 .first())
-    if not workflow:
+    if not workflow or not cashier_can_access_sale(workflow.original_sale):
         return jsonify({'success': False, 'message': 'Return/exchange workflow not found'}), 404
 
     original_sale = workflow.original_sale
@@ -5504,7 +5619,7 @@ def api_deliveries():
     branch_id = get_default_branch_id()
 
     if request.method == 'GET':
-        query = Delivery.query.filter_by(branch_id=branch_id)
+        query = operational_delivery_query()
         stage = normalize_delivery_stage(request.args.get('stage'))
         priority = normalize_delivery_priority(request.args.get('priority') or 'normal') if request.args.get('priority') else None
         q = (request.args.get('q') or '').strip().lower()
@@ -5576,7 +5691,7 @@ def api_single_delivery(delivery_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    delivery = Delivery.query.filter_by(id=delivery_id, branch_id=get_default_branch_id()).first()
+    delivery = operational_delivery_query().filter(Delivery.id == delivery_id).first()
     if not delivery:
         return jsonify({'success': False, 'message': 'Delivery not found'}), 404
 
@@ -5619,7 +5734,7 @@ def api_delivery_stats():
         return jsonify({'error': 'Unauthorized'}), 401
 
     branch_id = get_default_branch_id()
-    deliveries = Delivery.query.filter_by(branch_id=branch_id).all()
+    deliveries = operational_delivery_query().all()
     stage_counts = {key: 0 for key in DELIVERY_STAGE_FLOW.keys()}
     for d in deliveries:
         if d.stage in stage_counts:
@@ -5638,7 +5753,7 @@ def print_delivery_slip(delivery_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    delivery = Delivery.query.filter_by(id=delivery_id, branch_id=get_default_branch_id()).first()
+    delivery = operational_delivery_query().filter(Delivery.id == delivery_id).first()
     if not delivery:
         return jsonify({'success': False, 'message': 'Delivery not found'}), 404
 
@@ -5746,7 +5861,7 @@ def delivery_report_records(date_from=None, date_to=None, branch_id=None):
     """
     if branch_id is None:
         branch_id = get_default_branch_id()
-    query = Delivery.query.filter_by(branch_id=branch_id)
+    query = operational_delivery_query() if session.get('role') == 'cashier' else Delivery.query.filter_by(branch_id=branch_id)
     start = parse_delivery_report_date(date_from)
     end = parse_delivery_report_date(date_to, end_of_day=True)
     if start:
@@ -5841,7 +5956,7 @@ def print_receipt(transaction_id):
 
     branch_id = get_current_branch_id()
     sale = Sale.query.filter_by(transaction_id=transaction_id, branch_id=branch_id).first()
-    if not sale:
+    if not cashier_can_access_sale(sale):
         return jsonify({'success': False, 'message': 'Sale not found'}), 404
 
     snapshot = None
@@ -6642,6 +6757,14 @@ def api_single_promotion(promo_id):
             return jsonify({'success': False, 'message': str(e)}), 500
 
 # Customer API Endpoints
+@app.route('/api/pos/customers', methods=['GET'])
+@login_required
+def api_pos_customers():
+    """Checkout lookup, not a customer-management or credit-account endpoint."""
+    customers = Customer.query.filter_by(branch_id=get_current_branch_id()).order_by(Customer.name).all()
+    return jsonify([{'id': customer.id, 'name': customer.name, 'phone': customer.phone} for customer in customers])
+
+
 @app.route('/api/customers', methods=['GET', 'POST'])
 @manager_required
 def api_customers():

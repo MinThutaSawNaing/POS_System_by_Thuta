@@ -199,7 +199,7 @@ class ProductDeletionTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertFalse(response.get_json()['success'])
-        self.assertIn('manager', response.get_json()['message'])
+        self.assertIn('manager', response.get_json()['message'].lower())
         self.assertIsNotNone(db.session.get(Product, product.id))
 
     def test_cashier_cannot_read_dependency_summary(self):

@@ -1,17 +1,15 @@
 /* Parrot POS — Offline Service Worker.
  *
- * Provides a PWA app shell so the dashboard can be reloaded without a network
- * connection. Data freshness is network-first: when online the app always gets
- * live responses (and the cache is refreshed), when offline the last cached
- * copies are served. Only works in secure contexts (HTTPS or localhost); on a
- * plain-HTTP LAN the browser ignores this file and the localStorage data caches
- * in dashboard.html still provide offline POS data.
+ * Cache only public static assets, never authenticated HTML or API responses.
+ * Offline reload of the dashboard intentionally requires a network connection:
+ * a shared device must not restore the previous user's role-sensitive shell.
+ * An already-open screen can still use its account-scoped localStorage data.
+ * Service workers require HTTPS or localhost.
  */
-const SW_VERSION = "1.1.1";
+const SW_VERSION = "1.2.0";
 const CACHE_NAME = "parrot-pos-" + SW_VERSION;
 
 const PRECACHE_URLS = [
-  "/login",
   "/public/photos/logo.png",
   "/public/photos/logo.ico",
   "/public/manifest.webmanifest",
@@ -47,7 +45,8 @@ self.addEventListener("install", (event) => {
           PRECACHE_URLS.map((url) =>
             fetch(url, { cache: "reload" })
               .then((response) => {
-                if (response && response.status === 200) {
+                if (response && response.status === 200 && !response.redirected &&
+                    !/no-store|private/i.test(response.headers.get("Cache-Control") || "")) {
                   return cache.put(url, response.clone());
                 }
               })
@@ -81,58 +80,25 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(request.url);
 
-  // Audit history is authorization-sensitive and must never survive logout or
-  // a role change in persistent Cache Storage. TXT exports also stay streamed.
-  if (url.origin === self.location.origin && url.pathname.startsWith("/api/logs")) {
+  // Default deny: all navigation (including /), API, receipts and reports use
+  // the network only and bypass the HTTP cache as well as Cache Storage.
+  // Explicitly allow only known public assets; query variants are not cached.
+  if (url.origin !== self.location.origin || request.mode === "navigate" ||
+      url.search || !PRECACHE_URLS.includes(url.pathname)) {
     event.respondWith(fetch(request, { cache: "no-store" }));
     return;
   }
 
-  // Cross-origin (e.g. Google Fonts): cache-first with runtime population.
-  if (url.origin !== self.location.origin) {
-    event.respondWith(
-      caches.match(request).then((cached) => {
-        if (cached) return cached;
-        return fetch(request)
-          .then((response) => {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-            return response;
-          })
-          .catch(() => cached);
-      })
-    );
-    return;
-  }
-
-  // Navigation: network-first, fall back to the cached shell offline.
-  if (request.mode === "navigate") {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          if (response.ok) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-          }
-          return response;
-        })
-        .catch(() =>
-          caches.match(request).then((cached) => cached || caches.match("/"))
-        )
-    );
-    return;
-  }
-
-  // Same-origin GET (static assets + API): network-first with cache fallback.
   event.respondWith(
-    fetch(request)
-      .then((response) => {
-        if (response.ok) {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-        }
-        return response;
-      })
-      .catch(() => caches.match(request))
+    caches.open(CACHE_NAME).then(async (cache) => {
+      const cached = await cache.match(request);
+      if (cached) return cached;
+      const response = await fetch(request);
+      if (response.ok && !response.redirected &&
+          !/no-store|private/i.test(response.headers.get("Cache-Control") || "")) {
+        await cache.put(request, response.clone());
+      }
+      return response;
+    })
   );
 });

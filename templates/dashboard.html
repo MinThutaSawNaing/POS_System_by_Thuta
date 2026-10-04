@@ -21,6 +21,14 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Padauk:wght@400;700&display=swap" rel="stylesheet">
     <style>
+      [hidden] { display: none !important; }
+      .operational-workspace [data-capability="admin"],
+      .operational-workspace [data-capability="catalog.write"],
+      .operational-workspace [data-capability="labels"],
+      .operational-workspace [data-capability="branches.switch"],
+      .operational-workspace [data-capability="debts"] { display: none !important; }
+      .workspace-scope-note { border-left: 3px solid var(--bs-primary); }
+
       :root {
         --sidebar-width: 250px;
         --sidebar-min-width: 220px;
@@ -1286,7 +1294,7 @@
     </style>
   </head>
 
-  <body>
+  <body class="{% if session.role not in ('manager', 'boss') %}operational-workspace{% endif %}">
     <!-- Sidebar Overlay for Mobile -->
     <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
 
@@ -1311,7 +1319,7 @@
           <a
             class="nav-link active"
             href="#"
-            onclick="showSection('dashboard')"
+            data-capability="admin" onclick="showSection('dashboard')"
           >
             <i class="bi bi-speedometer2"></i>Dashboard
           </a>
@@ -1347,32 +1355,32 @@
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('promotions')">
+          <a class="nav-link" href="#" data-capability="admin" onclick="showSection('promotions')">
             <i class="bi bi-tag"></i> Promotions
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('customers')">
+          <a class="nav-link" href="#" data-capability="admin" onclick="showSection('customers')">
             <i class="bi bi-people"></i> Customers
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('debts')">
+          <a class="nav-link" href="#" data-capability="admin" onclick="showSection('debts')">
             <i class="bi bi-credit-card"></i> Debts
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('suppliers')">
+          <a class="nav-link" href="#" data-capability="admin" onclick="showSection('suppliers')">
             <i class="bi bi-truck"></i> Suppliers
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('purchases')">
+          <a class="nav-link" href="#" data-capability="admin" onclick="showSection('purchases')">
             <i class="bi bi-box-arrow-in-down"></i> Purchases
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('warehouse')">
+          <a class="nav-link" href="#" data-capability="admin" onclick="showSection('warehouse')">
             <i class="bi bi-house-door"></i> Warehouse
           </a>
         </li>
@@ -1382,19 +1390,19 @@
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('users')">
+          <a class="nav-link" href="#" data-capability="admin" onclick="showSection('users')">
             <i class="bi bi-people"></i>Users
           </a>
         </li>
         {% if session.role in ('manager', 'boss') %}
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('logs')">
+          <a class="nav-link" href="#" data-capability="admin" onclick="showSection('logs')">
             <i class="bi bi-journal-text"></i>Logs
           </a>
         </li>
         {% endif %}
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('settings')">
+          <a class="nav-link" href="#" data-capability="admin" onclick="showSection('settings')">
             <i class="bi bi-gear"></i>Settings
           </a>
         </li>
@@ -1424,8 +1432,12 @@
 
     <!-- Main Content -->
     <div class="main-content" id="main-content">
+      <div id="operational-scope-note" class="workspace-scope-note bg-light rounded p-3 mb-3" {% if session.role in ('manager', 'boss') %}hidden{% endif %}>
+        <strong><i class="bi bi-shop me-2"></i>Cashier workspace</strong>
+        <span class="d-block small text-muted mt-1">Checkout, browse the catalog, and manage your own sales, returns and deliveries. Sales history and reports show your sales only.</span>
+      </div>
       <!-- Dashboard Section -->
-      <div id="dashboard-section">
+      <div data-capability="admin" id="dashboard-section">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Dashboard</h2>
@@ -1696,17 +1708,17 @@
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
             </button>
-            <button class="btn btn-outline-primary" onclick="showSection('warehouse')">
+            <button class="btn btn-outline-primary" data-capability="admin" onclick="showSection('warehouse')">
               <i class="bi bi-house-door"></i> <span class="d-none d-sm-inline">Manage Stock</span><span class="d-sm-none">Stock</span>
             </button>
             <button
               class="btn btn-primary"
               data-bs-toggle="modal"
-              data-bs-target="#addProductModal"
+              data-capability="catalog.write" data-bs-target="#addProductModal"
             >
               <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Add Product</span><span class="d-sm-none">Add</span>
             </button>
-            <button class="btn btn-success" onclick="showBarcodeLabelDialog()">
+            <button data-capability="labels" class="btn btn-success" onclick="showBarcodeLabelDialog()">
               <i class="bi bi-upc-scan"></i> <span class="d-none d-sm-inline">Print Labels</span><span class="d-sm-none">Labels</span>
             </button>
           </div>
@@ -1736,7 +1748,7 @@
                     <th class="d-none d-md-table-cell">Unit</th>
                     <th class="d-none d-md-table-cell">Category</th>
                     <th class="d-none d-lg-table-cell">Tax Rate</th>
-                    <th>Actions</th>
+                    <th data-capability="catalog.write">Actions</th>
                   </tr>
                 </thead>
                 <tbody id="products-table">
@@ -1773,7 +1785,7 @@
             <button
               class="btn btn-primary"
               data-bs-toggle="modal"
-              data-bs-target="#addCategoryModal"
+              data-capability="catalog.write" data-bs-target="#addCategoryModal"
             >
               <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Add Category</span><span class="d-sm-none">Add</span>
             </button>
@@ -1806,7 +1818,7 @@
               </div>
             </div>
           </div>
-          <div class="col-6 col-md-3 mb-2">
+          <div data-capability="admin" class="col-6 col-md-3 mb-2">
             <div class="card bg-light summary-card">
               <div class="card-body py-2">
                 <small class="text-muted d-block" style="font-size: 0.7rem;">Suppliers Linked</small>
@@ -1843,9 +1855,9 @@
                     <th>Name</th>
                     <th class="d-none d-md-table-cell">Description</th>
                     <th class="text-center">Products</th>
-                    <th class="text-center">Suppliers</th>
+                    <th data-capability="admin" class="text-center">Suppliers</th>
                     <th class="text-center">Status</th>
-                    <th>Actions</th>
+                    <th data-capability="catalog.write">Actions</th>
                   </tr>
                 </thead>
                 <tbody id="categories-table">
@@ -2110,7 +2122,7 @@
       </div>
 
       <!-- Promotions Section -->
-      <div id="promotions-section" style="display: none">
+      <div data-capability="admin" id="promotions-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Promotions Management</h2>
@@ -2174,7 +2186,7 @@
       </div>
 
       <!-- Customers Section -->
-      <div id="customers-section" style="display: none">
+      <div data-capability="admin" id="customers-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Customer Management</h2>
@@ -2239,7 +2251,7 @@
       </div>
 
       <!-- Debts Section -->
-      <div id="debts-section" style="display: none">
+      <div data-capability="admin" id="debts-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Debt Management</h2>
@@ -2409,7 +2421,7 @@
       </div>
 
       <!-- Suppliers Section -->
-      <div id="suppliers-section" style="display: none">
+      <div data-capability="admin" id="suppliers-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Supplier Management</h2>
@@ -2556,7 +2568,7 @@
       </div>
 
       <!-- Purchases Section -->
-      <div id="purchases-section" style="display: none">
+      <div data-capability="admin" id="purchases-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Purchase & Receiving</h2>
@@ -2721,7 +2733,7 @@
       </div>
 
       <!-- Warehouse Section -->
-      <div id="warehouse-section" style="display: none">
+      <div data-capability="admin" id="warehouse-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Warehouse Management</h2>
@@ -2869,7 +2881,7 @@
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
             </button>
-            <button class="btn btn-primary" onclick="openCreateDeliveryModal()">
+            <button class="btn btn-primary" data-capability="deliveries.write" onclick="openCreateDeliveryModal()">
               <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Create Delivery</span><span class="d-sm-none">New</span>
             </button>
           </div>
@@ -2940,7 +2952,7 @@
       </div>
 
       <!-- Users Section -->
-      <div id="users-section" style="display: none">
+      <div data-capability="admin" id="users-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">User Management</h2>
           <div class="d-flex gap-2">
@@ -2995,7 +3007,7 @@
 
       <!-- System Audit Logs Section -->
       {% if session.role in ('manager', 'boss') %}
-      <div id="logs-section" style="display: none">
+      <div data-capability="admin" id="logs-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div>
             <h2 class="mb-0">System Logs</h2>
@@ -3040,7 +3052,7 @@
       {% endif %}
 
       <!-- Settings Section -->
-      <div id="settings-section" style="display: none">
+      <div data-capability="admin" id="settings-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <h2 class="mb-0">Settings</h2>
           <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
@@ -3093,7 +3105,7 @@
           <div class="card-body">
             <div class="mb-3">
               <label class="form-label">Current Branch</label>
-              <select class="form-select" id="branch-selector" onchange="switchBranch(this.value)">
+              <select class="form-select" data-capability="branches.switch" id="branch-selector" onchange="switchBranch(this.value)">
                 <option value="">Loading branches...</option>
               </select>
               <div class="form-text">
@@ -6026,6 +6038,59 @@
         return role === "manager" || role === "boss";
       }
 
+      // Backend remains the security boundary. This allowlist keeps the operational
+      // workspace deliberate and prevents stale navigation from invoking admin loaders.
+      const CASHIER_SECTIONS = new Set(["pos", "products", "categories", "sales", "returns", "deliveries", "reports"]);
+      const MANAGER_CAPABILITIES = new Set(["catalog.write", "deliveries.write", "labels", "debts", "branches.switch", "admin"]);
+      const MANAGER_MODAL_IDS = new Set(["addProductModal", "editProductModal", "addCategoryModal", "editCategoryModal", "barcodeLabelModal", "addDebtModal", "makePaymentModal", "debtDetailsModal", "addCommunicationModal", "createDeliveryModal", "updateDeliveryModal"]);
+
+      function hasCapability(capability) {
+        if (capability.startsWith("section.")) {
+          const section = capability.slice(8);
+          return Object.prototype.hasOwnProperty.call(SECTION_LOADERS, section) &&
+            (hasManagerOrBossAccess() || CASHIER_SECTIONS.has(section));
+        }
+        return MANAGER_CAPABILITIES.has(capability) && hasManagerOrBossAccess();
+      }
+
+      function requireCapability(capability) {
+        if (hasCapability(capability)) return true;
+        showToast("This action requires manager access.", "warning");
+        return false;
+      }
+
+      function applyWorkspacePermissions() {
+        document.body.classList.toggle("operational-workspace", !hasManagerOrBossAccess());
+        const scopeNote = document.getElementById("operational-scope-note");
+        if (scopeNote) scopeNote.hidden = hasManagerOrBossAccess();
+        document.querySelectorAll('[onclick^="showSection("]').forEach((link) => {
+          const section = link.getAttribute("onclick").match(/showSection\(['"]([^'"]+)/)?.[1];
+          if (section && !hasCapability(`section.${section}`)) {
+            link.hidden = true;
+            link.closest(".nav-item")?.setAttribute("hidden", "");
+          }
+        });
+        document.querySelectorAll("[data-capability]").forEach((element) => {
+          element.hidden = !hasCapability(element.dataset.capability);
+        });
+        document.querySelectorAll("[data-bs-target]").forEach((trigger) => {
+          if (MANAGER_MODAL_IDS.has(trigger.getAttribute("data-bs-target").slice(1))) {
+            trigger.hidden = !hasCapability("catalog.write");
+          }
+        });
+        // Bootstrap events also cover old modal triggers and direct modal.show().
+        document.addEventListener("show.bs.modal", (event) => {
+          if (MANAGER_MODAL_IDS.has(event.target.id) && !hasCapability("catalog.write")) {
+            event.preventDefault();
+          }
+        });
+        if (!hasCapability("debts")) {
+          document.querySelectorAll('option[value="debt"]').forEach((option) => option.remove());
+          const payment = document.getElementById("payment-method");
+          if (payment?.value === "debt") payment.value = "cash";
+        }
+      }
+
       function hasManagerAccess() {
         return String(CURRENT_USER_ROLE || "").toLowerCase() === "manager";
       }
@@ -6225,7 +6290,7 @@
             };
             applySettingsUI();
             offlineCacheSet(SETTINGS_CACHE_KEY, data);
-            loadAISettings();
+            if (hasCapability("admin")) loadAISettings();
           })
           .catch((error) => {
             console.error("Error loading settings:", error);
@@ -6484,6 +6549,7 @@
 
       // AI Agent Settings Functions
       function loadAISettings() {
+        if (!requireCapability("admin")) return;
         fetch("/api/settings")
           .then((response) => response.json())
           .then((data) => {
@@ -6765,6 +6831,7 @@
       }
 
       function saveSettingsPayload(payload, buttonId, successMessage, onSuccess) {
+        if (!requireCapability("admin")) return;
         const button = document.getElementById(buttonId);
         const originalButtonContent = button?.innerHTML;
         if (button) {
@@ -6866,6 +6933,19 @@
       let branchesList = [];
 
       function loadBranchSelector() {
+        if (!hasCapability("branches.switch")) {
+          return fetch("/api/branches/current")
+            .then((response) => {
+              if (!response.ok) throw new Error("No active branch is available");
+              return response.json();
+            })
+            .then((current) => {
+              currentBranch = current;
+              offlineCacheSet(CURRENT_BRANCH_CACHE_KEY, current);
+              bindCurrentBranchUI(current);
+            })
+            .catch(() => applyCachedCurrentBranch());
+        }
         fetch("/api/branches")
           .then((response) => {
             if (!response.ok) throw new Error("Unable to load branches");
@@ -7030,6 +7110,7 @@
       }
 
       function switchBranch(branchId) {
+        if (!requireCapability("branches.switch")) return;
         if (!branchId) return;
         
         fetch(`/api/branches/switch/${branchId}`, { method: "POST" })
@@ -7041,6 +7122,7 @@
               return;
             }
             currentBranch = data.branch;
+            updatePendingSalesBadge();
             // Update all branch indicators
             updateBranchIndicators(data.branch);
             showToast(data.message, "success");
@@ -7063,6 +7145,7 @@
       }
 
       function loadBranches() {
+        if (!requireCapability("admin")) return;
         const tbody = document.getElementById("branches-tbody");
         if (!tbody) return;
         
@@ -7358,6 +7441,7 @@
         ["/api/products", "products"],
         ["/api/products/search", "pos"],
         ["/api/categories", "categories"],
+        ["/api/pos/customers", "customers"],
         ["/api/customers", "customers"],
         ["/api/debts", "debts"],
         ["/api/debts/summary", "debts"],
@@ -7430,10 +7514,71 @@
       // two layers independent: the cache never has to reach into the tab state
       // directly, so neither block depends on the other being declared first.
       let notifyCacheInvalidated = null;
-      const nativeFetch =
+      let dashboardSessionStale = false;
+
+      function blockStaleDashboard() {
+        dashboardSessionStale = true;
+        cacheStore.clear();
+        cacheInflight.clear();
+        // Do not clear persistent snapshots or queued transactions.
+        if (typeof document === "undefined" || !document.body ||
+            document.getElementById("stale-session-overlay")) return;
+        const overlay = document.createElement("div");
+        overlay.id = "stale-session-overlay";
+        overlay.setAttribute("role", "alertdialog");
+        overlay.setAttribute("aria-modal", "true");
+        overlay.setAttribute("aria-label", "Sign-in changed");
+        overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:#fff;color:#222;display:grid;place-content:center;padding:2rem;text-align:center";
+        overlay.innerHTML = '<h2>Sign-in changed</h2><p>This screen belongs to a different sign-in. Requests and offline checkout are blocked.</p><p>Saved offline sales are still on this device. Sign in as their original owner to sync them.</p><p><a href="/">Reload dashboard</a> · <a href="/login">Sign in again</a></p>';
+        for (const child of Array.from(document.body.children)) child.inert = true;
+        document.body.appendChild(overlay);
+        overlay.tabIndex = -1;
+        overlay.focus();
+      }
+
+      function staleDashboardResponse() {
+        return new Response(JSON.stringify({success: false, code: "stale_session",
+          message: "Sign-in changed. Reload or sign in again. Saved offline sales have been kept."}),
+          {status: 409, headers: {"content-type": "application/json", "x-pos-session-mismatch": "1"}});
+      }
+
+      function dashboardApiUrl(input) {
+        const raw = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+        const url = new URL(raw, window.location.origin);
+        return url.origin === window.location.origin && url.pathname.startsWith("/api/") ? url : null;
+      }
+
+      function dashboardIdentityInit(input, init) {
+        if (!dashboardApiUrl(input)) return init;
+        // Keep Request headers as well as init headers (init wins), then pin
+        // identity to the rendered page, never the mutable browser cookie.
+        const headers = new Headers(input && input.headers);
+        new Headers(init && init.headers).forEach((value, key) => headers.set(key, value));
+        if (typeof CACHE_USER_ID !== "undefined" && typeof CACHE_USER_ROLE !== "undefined") {
+          headers.set("x-pos-user-id", String(CACHE_USER_ID));
+          headers.set("x-pos-role", String(CACHE_USER_ROLE));
+        }
+        return {...(init || {}), headers};
+      }
+
+      const rawNativeFetch =
         typeof window !== "undefined" && typeof window.fetch === "function"
           ? window.fetch.bind(window)
           : null;
+      // All network paths, including background revalidation and the AI widget's
+      // global fetch, go through this response check. Return JSON, not a rejected
+      // promise: checkout's network-error handler must never queue a refused sale.
+      const nativeFetch = rawNativeFetch ? (input, init) => {
+        const api = dashboardApiUrl(input);
+        if (api && dashboardSessionStale) return Promise.resolve(staleDashboardResponse());
+        return rawNativeFetch(input, init).then((response) => {
+          if (api && response.status === 409 && response.headers.get("x-pos-session-mismatch") === "1") {
+            blockStaleDashboard();
+            return staleDashboardResponse();
+          }
+          return api && dashboardSessionStale ? staleDashboardResponse() : response;
+        });
+      } : null;
 
       function cacheScope() {
         // The server resolves the active branch from the session when a request
@@ -7642,6 +7787,8 @@
       // Replacement for window.fetch: serves allowlisted list GETs from memory and
       // clears the groups a successful write touches.
       function smartFetch(input, init) {
+        if (dashboardApiUrl(input) && dashboardSessionStale) return Promise.resolve(staleDashboardResponse());
+        init = dashboardIdentityInit(input, init);
         let plan = null;
         let writeUrl = null;
         try {
@@ -7789,6 +7936,7 @@
       // Paint a tab's data. Returns true when loaders actually ran so the caller
       // can tell a real reload from a cache-still-fresh no-op.
       function renderSection(section) {
+        if (!hasCapability(`section.${section}`)) return false;
         const loader = SECTION_LOADERS[section];
         if (!loader) return false;
         loader();
@@ -7828,6 +7976,8 @@
           const url = activeBranchId ? `/api/products?branch_id=${activeBranchId}` : "/api/products";
           const res = await fetch(url);
           const data = await res.json();
+          if (!res.ok || !Array.isArray(data)) throw new Error("Product catalog unavailable");
+          if ((currentBranch?.id || null) !== activeBranchId) return [];
           cachedProducts = data;
           productsCacheTimestamp = now;
           cachedProductsBranchId = activeBranchId;
@@ -7835,9 +7985,11 @@
           return data;
         } catch (error) {
           console.error("Error loading products:", error);
+          if (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) return [];
           // Offline fallback: revive the persistent snapshot so callers still
           // get a usable product list (the in-memory cache may be empty).
-          if (!cachedProducts.length) {
+          if ((currentBranch?.id || null) !== activeBranchId) return [];
+          if (!cachedProducts.length || cachedProductsBranchId !== activeBranchId) {
             cachedProducts = getCachedProducts();
             cachedProductsBranchId = activeBranchId;
           }
@@ -7851,7 +8003,18 @@
       // ===== OFFLINE PERSISTENT CACHE HELPERS =====
       // Small localStorage-backed store that keeps the data the POS needs to
       // work without a connection: products, categories, settings, branches.
-      // (A Service Worker supplies the app shell; these supply the data.)
+      // Offline use is supported in an already-open screen, not a cached HTML shell.
+      // Identity comes only from the server-rendered session, never localStorage.
+      const CACHE_USER_ID = {{ session.get('user_id') | tojson }};
+      const CACHE_USER_ROLE = {{ session.get('role') | tojson }};
+
+      function scopedOfflineCacheKey(key) {
+        const user = typeof CACHE_USER_ID === "undefined" ? null : CACHE_USER_ID;
+        const role = typeof CACHE_USER_ROLE === "undefined" ? null : CACHE_USER_ROLE;
+        if (user == null || !role) return null;
+        return "pos_account_v2:" + encodeURIComponent(user) + ":" +
+          encodeURIComponent(role) + ":" + key;
+      }
       const PRODUCT_CACHE_KEY = "pos_products_all_cache";
       const CATEGORY_CACHE_KEY = "pos_categories_cache";
       const CATEGORY_ACTIVE_CACHE_KEY = "pos_categories_active_cache";
@@ -7860,6 +8023,8 @@
       const CURRENT_BRANCH_CACHE_KEY = "pos_current_branch_cache";
 
       function offlineCacheSet(key, data) {
+        key = scopedOfflineCacheKey(key);
+        if (!key) return;
         try {
           localStorage.setItem(
             key,
@@ -7871,6 +8036,8 @@
       }
 
       function offlineCacheGet(key) {
+        key = scopedOfflineCacheKey(key);
+        if (!key) return null;
         try {
           const raw = localStorage.getItem(key);
           if (!raw) return null;
@@ -7882,6 +8049,8 @@
       }
 
       function offlineCacheRemove(key) {
+        key = scopedOfflineCacheKey(key);
+        if (!key) return;
         try {
           localStorage.removeItem(key);
         } catch (e) { /* ignore */ }
@@ -7894,12 +8063,10 @@
       }
 
       function getCachedProducts() {
-        // Branch-scoped cache first, then the generic snapshot written before a
-        // branch was selected (e.g. during the initial app boot).
+        // Never borrow a generic or different branch's stock snapshot.
+        if (!currentBranch?.id) return [];
         const entry = offlineCacheGet(cachedProductsKey());
-        if (entry && Array.isArray(entry.data)) return entry.data;
-        const generic = offlineCacheGet(PRODUCT_CACHE_KEY);
-        return generic && Array.isArray(generic.data) ? generic.data : [];
+        return entry && Array.isArray(entry.data) ? entry.data : [];
       }
 
       function saveCachedProducts(products) {
@@ -7927,8 +8094,9 @@
       // Uses the shared in-memory cache when warm to avoid extra fetches.
       async function refreshPersistentProductCache() {
         try {
+          const branchId = currentBranch?.id || null;
           const data = await loadProductsCached();
-          if (Array.isArray(data)) saveCachedProducts(data);
+          if (Array.isArray(data) && (currentBranch?.id || null) === branchId) saveCachedProducts(data);
         } catch (e) { /* offline — keep the last snapshot */ }
       }
       // ===== END OFFLINE PERSISTENT CACHE HELPERS =====
@@ -8209,9 +8377,10 @@
         }
         initPwaInstallPrompt();
         initResizableSidebar();
+        applyWorkspacePermissions();
         applySettingsUI();
         loadSettings();
-        loadUnits();
+        if (hasCapability("catalog.write")) loadUnits();
         loadBranchSelector();
         startCurrencyObserver();
         ["receipt-brand-name", "receipt-email", "receipt-phone", "receipt-address", "receipt-footer-message"].forEach((id) => {
@@ -9107,8 +9276,36 @@
         return frame;
       }
 
+      // Navigation cannot carry fetch headers. Bind it to this rendered tab,
+      // never to caller-supplied identity or another origin.
+      function dashboardIdentityUrl(url) {
+        if (dashboardSessionStale) return null;
+        try {
+          const target = new URL(url, window.location.href);
+          if (target.origin !== window.location.origin) return null;
+          target.searchParams.set("pos_user_id", String(CACHE_USER_ID));
+          target.searchParams.set("pos_role", String(CACHE_USER_ROLE));
+          return target.pathname + target.search + target.hash;
+        } catch (error) {
+          return null;
+        }
+      }
+
       function loadUrlInPwaPrintFrame(url) {
+        url = dashboardIdentityUrl(url);
+        if (!url) return false;
         const frame = createPwaPrintFrame();
+        frame.addEventListener("load", () => {
+          try {
+            const result = JSON.parse(frame.contentDocument.body.textContent);
+            if (result.code === "stale_session") {
+              blockStaleDashboard();
+              frame.remove();
+            }
+          } catch (error) {
+            // Normal receipt HTML is not JSON; it handles its own printing.
+          }
+        });
         frame.src = url;
         return true;
       }
@@ -9198,7 +9395,8 @@
 
         const standalone = isStandalonePWA();
         const suffix = autoPrint || standalone ? "?autoprint=1" : "";
-        const url = `/api/sales/${encodeURIComponent(normalizedId)}/print${suffix}`;
+        const url = dashboardIdentityUrl(`/api/sales/${encodeURIComponent(normalizedId)}/print${suffix}`);
+        if (!url) return false;
         if (standalone) {
           return loadUrlInPwaPrintFrame(url);
         }
@@ -9640,6 +9838,7 @@
       // The tab to open on boot: the last one the operator used, provided it still
       // exists and they are still allowed to see it - otherwise the dashboard.
       function resolveStartSection() {
+        if (!hasManagerOrBossAccess()) return "pos";
         const savedSection = localStorage.getItem(ACTIVE_SECTION_STORAGE_KEY);
         // Audit history is intentionally fetched only after an explicit user
         // action; never auto-open it merely because it was last viewed.
@@ -9655,6 +9854,7 @@
       // on a first visit, once a group's TTL has lapsed, or after a write touched
       // the data that tab shows (see invalidateCacheGroups / sectionNeedsRender).
       function showSection(sectionId) {
+        if (!requireCapability(`section.${sectionId}`)) return;
         const previousSection = currentSection;
         const previousElement = document.getElementById(previousSection + "-section");
         if (previousElement && sectionId !== previousSection) {
@@ -9733,6 +9933,7 @@
 
       // Dashboard functions
       function loadDashboardStats() {
+        if (!hasCapability("section.dashboard")) return;
         // Today's sales
         fetch(
           "/api/reports/sales?start=" + new Date().toISOString().split("T")[0]
@@ -10533,6 +10734,8 @@
       }
 
       function handlePaymentMethodChange() {
+        const select = document.getElementById("payment-method");
+        if (select?.value === "debt" && !hasCapability("debts")) select.value = "cash";
         toggleCashPaymentFields();
         updateCashRefundDisplay();
         const paymentMethod = document.getElementById("payment-method")?.value;
@@ -10666,7 +10869,13 @@
 
       function getPendingSales() {
         try {
-          const raw = localStorage.getItem("pos_pending_sales");
+          // Standalone Node extraction harnesses omit rendered constants. Never
+          // fall back to the legacy key, even in that isolated test context.
+          const user = typeof CACHE_USER_ID === "undefined" ? "harness" : CACHE_USER_ID;
+          const branch = typeof currentBranch === "undefined" ? "harness" : currentBranch?.id;
+          if (user == null || branch == null) return [];
+          const key = "pos_pending_sales_v2:" + encodeURIComponent(user) + ":" + encodeURIComponent(branch);
+          const raw = localStorage.getItem(key);
           const list = raw ? JSON.parse(raw) : [];
           return Array.isArray(list) ? list : [];
         } catch (e) {
@@ -10676,7 +10885,11 @@
 
       function setPendingSales(list) {
         try {
-          localStorage.setItem("pos_pending_sales", JSON.stringify(list));
+          const user = typeof CACHE_USER_ID === "undefined" ? "harness" : CACHE_USER_ID;
+          const branch = typeof currentBranch === "undefined" ? "harness" : currentBranch?.id;
+          if (user == null || branch == null) return false;
+          const key = "pos_pending_sales_v2:" + encodeURIComponent(user) + ":" + encodeURIComponent(branch);
+          localStorage.setItem(key, JSON.stringify(list));
           return true;
         } catch (e) {
           // Storage can reject the write when the quota is full or when storage
@@ -10772,6 +10985,7 @@
       }
 
       function queueOfflineSale(saleData, receiptSnapshot) {
+        if (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) return false;
         saleData.transaction_id = generateClientTxnId();
         if (receiptSnapshot) receiptSnapshot.transactionId = saleData.transaction_id;
         const pending = getPendingSales();
@@ -10797,8 +11011,24 @@
       function updatePendingSalesBadge() {
         const badge = document.getElementById("pending-sales-badge");
         if (!badge) return;
+        // Do not adopt, delete or sync ownerless pre-upgrade sales. Keep a
+        // persistent warning without exposing their receipt/customer contents.
+        let legacyPending = false;
+        try {
+          const raw = localStorage.getItem("pos_pending_sales");
+          if (raw) {
+            try {
+              const legacy = JSON.parse(raw);
+              legacyPending = !Array.isArray(legacy) || legacy.length > 0;
+            } catch (e) { legacyPending = true; }
+          }
+        } catch (e) { /* storage unavailable */ }
         const count = getPendingSales().length;
-        if (count > 0) {
+        if (legacyPending) {
+          badge.textContent = "Legacy offline sales need manager reconciliation. They have not been synced or moved. Do not clear browser data." +
+            (count ? " " + count + " account sales waiting to sync." : "");
+          badge.style.display = "block";
+        } else if (count > 0) {
           badge.textContent = count + (count === 1 ? " sale" : " sales") + " waiting to sync";
           badge.style.display = "block";
         } else {
@@ -10886,9 +11116,11 @@
       }
 
       async function syncPendingSales() {
+        if (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) return;
         if (isSyncingPendingSales) return;
         const pending = getPendingSales();
         if (pending.length === 0) return;
+        const syncBranch = typeof currentBranch === "undefined" ? "harness" : currentBranch?.id;
         isSyncingPendingSales = true;
         setConnectionStatus("syncing");
         let stopSync = false;
@@ -10898,6 +11130,7 @@
         try {
           for (const entry of pending.slice()) {
             if (stopSync) break;
+            if (typeof currentBranch !== "undefined" && currentBranch?.id !== syncBranch) break;
             try {
               const response = await fetch("/api/sales", {
                 method: "POST",
@@ -10910,7 +11143,8 @@
                 stopSync = true;
                 return;
               }
-              if (response.status === 401 || response.status === 403) {
+              if (response.status === 401 || response.status === 403 ||
+                  (response.status === 409 && response.headers.get("x-pos-session-mismatch") === "1")) {
                 // Session expired / not authorized: the server never accepted or
                 // rejected this sale, so keep it queued and retry after login.
                 // Dropping it here would lose money taken at the counter.
@@ -10918,6 +11152,9 @@
                 return;
               }
               const data = await response.json();
+              // Do not dequeue from a different branch if the selector changed
+              // while this request was in flight. Replay is idempotent later.
+              if (typeof currentBranch !== "undefined" && currentBranch?.id !== syncBranch) break;
               if (data.success) {
                 const current = getPendingSales();
                 if (!setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id))) {
@@ -11037,6 +11274,7 @@
       }
 
       function completeSale(mmqrConfirmed = false) {
+        if (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) return;
         // Rate limiting check
         if (isSaleProcessing) {
           showToast(t("pleaseWait"), "warning");
@@ -11049,6 +11287,7 @@
         }
 
         const paymentMethod = document.getElementById("payment-method").value;
+        if (paymentMethod === "debt" && !requireCapability("debts")) return;
         const customerId = document.getElementById("pos-customer-select").value;
 
         if ((paymentMethod === "mobile_payment" || (paymentMethod === "split_payment" && splitUsesMobilePayment())) && !mmqrConfirmed) {
@@ -11212,6 +11451,7 @@
 
       // Barcode Label functions
       function showBarcodeLabelDialog() {
+        if (!requireCapability("labels")) return;
         clearBarcodeLabelSearch();
         const modal = new bootstrap.Modal(
           document.getElementById("barcodeLabelModal")
@@ -11221,6 +11461,7 @@
       }
 
       function loadProductsForBarcodeLabels() {
+        if (!requireCapability("labels")) return;
         const table = document.getElementById("barcode-products-table");
         const resultCount = document.getElementById("barcode-product-result-count");
         const selectAll = document.getElementById("select-all-products");
@@ -11368,6 +11609,9 @@
       }
 
       function generateBarcodeLabels() {
+        if (!requireCapability("labels")) return;
+        const printUrl = dashboardIdentityUrl("/api/products/barcode_labels/print?autoprint=1");
+        if (!printUrl) return false;
         const selectedProducts = [];
         const quantities = {};
         document
@@ -11393,7 +11637,7 @@
           const pwaPrintFrame = isStandalonePWA() ? createPwaPrintFrame() : null;
           const form = document.createElement("form");
           form.method = "POST";
-          form.action = "/api/products/barcode_labels/print?autoprint=1";
+          form.action = printUrl;
           form.target = pwaPrintFrame?.name || "_blank";
 
           const idsInput = document.createElement("input");
@@ -11492,11 +11736,11 @@
                 <td><strong>${escapeHtml(cat.name)}</strong></td>
                 <td class="d-none d-md-table-cell">${escapeHtml(cat.description || '-')}</td>
                 <td class="text-center"><span class="badge bg-primary">${cat.product_count || 0}</span></td>
-                <td class="text-center"><span class="badge bg-info">${cat.supplier_count || 0}</span></td>
+                <td data-capability="admin" ${hasCapability("admin") ? "" : "hidden"} class="text-center"><span class="badge bg-info">${cat.supplier_count || 0}</span></td>
                 <td class="text-center">
                   <span class="badge ${cat.is_active ? 'bg-success' : 'bg-secondary'}">${cat.is_active ? 'Active' : 'Inactive'}</span>
                 </td>
-                <td>
+                <td ${hasCapability("catalog.write") ? "" : "hidden"}>
                   <div class="btn-group btn-group-sm">
                     <button class="btn btn-outline-primary" onclick="editCategory(${cat.id})" title="Edit">
                       <i class="bi bi-pencil"></i>
@@ -11574,11 +11818,11 @@
             <td><strong>${escapeHtml(cat.name)}</strong></td>
             <td class="d-none d-md-table-cell">${escapeHtml(cat.description || '-')}</td>
             <td class="text-center"><span class="badge bg-primary">${cat.product_count || 0}</span></td>
-            <td class="text-center"><span class="badge bg-info">${cat.supplier_count || 0}</span></td>
+            <td data-capability="admin" ${hasCapability("admin") ? "" : "hidden"} class="text-center"><span class="badge bg-info">${cat.supplier_count || 0}</span></td>
             <td class="text-center">
               <span class="badge ${cat.is_active ? 'bg-success' : 'bg-secondary'}">${cat.is_active ? 'Active' : 'Inactive'}</span>
             </td>
-            <td>
+            <td ${hasCapability("catalog.write") ? "" : "hidden"}>
               <div class="btn-group btn-group-sm">
                 <button class="btn btn-outline-primary" onclick="editCategory(${cat.id})" title="Edit">
                   <i class="bi bi-pencil"></i>
@@ -11594,6 +11838,7 @@
       }
 
       function saveCategory() {
+        if (!requireCapability("catalog.write")) return;
         const name = (document.getElementById("add-category-name").value || "").trim();
         const description = (document.getElementById("add-category-description").value || "").trim();
         const color = document.getElementById("add-category-color").value || "#6c757d";
@@ -11654,6 +11899,7 @@
       }
 
       function editCategory(categoryId) {
+        if (!requireCapability("catalog.write")) return;
         fetch(`/api/categories/${categoryId}`)
           .then((r) => r.json())
           .then((cat) => {
@@ -11673,6 +11919,7 @@
       }
 
       function updateCategory() {
+        if (!requireCapability("catalog.write")) return;
         const categoryId = document.getElementById("edit-category-id").value;
         const name = (document.getElementById("edit-category-name").value || "").trim();
         const description = (document.getElementById("edit-category-description").value || "").trim();
@@ -11731,6 +11978,7 @@
       }
 
       function deleteCategory(categoryId, categoryName) {
+        if (!requireCapability("catalog.write")) return;
         showConfirmDialog(
           "Delete Category",
           `Are you sure you want to delete the category "${categoryName}"? This action cannot be undone if the category is not in use.`,
@@ -11813,6 +12061,7 @@
       }
 
       function loadUnits() {
+        if (!requireCapability("admin")) return;
         fetch("/api/units")
           .then((response) => {
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -12129,29 +12378,20 @@
           });
         }
         
-        // Initialize category dropdowns
-        loadCategoryDropdowns();
+        // These dropdowns belong to manager catalog/supplier forms, not POS.
+        if (hasCapability("catalog.write")) loadCategoryDropdowns();
       });
 
       // Product management functions
       // Offline product cache helpers
       function saveProductsCache(payload) {
-        try {
-          localStorage.setItem("pos_products_cache", JSON.stringify({ cached_at: new Date().toISOString(), data: payload }));
-        } catch (e) {
-          console.error("Failed to cache products:", e);
-        }
+        if (!currentBranch?.id) return;
+        offlineCacheSet("pos_products_cache_" + currentBranch.id, payload);
       }
 
       function getProductsCache() {
-        try {
-          const raw = localStorage.getItem("pos_products_cache");
-          if (!raw) return null;
-          const parsed = JSON.parse(raw);
-          return parsed && parsed.data ? parsed : null;
-        } catch (e) {
-          return null;
-        }
+        if (!currentBranch?.id) return null;
+        return offlineCacheGet("pos_products_cache_" + currentBranch.id);
       }
 
       function renderProductsResponse(payload) {
@@ -12188,7 +12428,7 @@
                                   <td class="d-none d-md-table-cell">${product.unit_symbol ? escapeHtml(product.unit_symbol) : "—"}</td>
                                   <td>${product.category || "N/A"}</td>
                                   <td>${product.tax_rate}%</td>
-                                  <td>
+                                  <td ${hasCapability("catalog.write") ? "" : "hidden"}>
                                       <button class="btn btn-sm btn-primary me-1" onclick="editProduct(${
                                         product.id
                                       })">
@@ -12256,6 +12496,7 @@
       }
 
       function saveProduct() {
+        if (!requireCapability("catalog.write")) return;
         const barcode = document.getElementById("add-barcode").value.trim();
         const name = document.getElementById("add-product-name").value.trim();
         const price = parseFloat(document.getElementById("add-price").value);
@@ -12317,6 +12558,7 @@
       }
 
       function editProduct(productId) {
+        if (!requireCapability("catalog.write")) return;
         fetch("/api/products/" + productId)
           .then((response) => response.json())
           .then((product) => {
@@ -12368,6 +12610,7 @@
       }
 
       function updateProduct() {
+        if (!requireCapability("catalog.write")) return;
         if (!currentProduct) {
           showToast("No product selected for update", "warning");
           return;
@@ -12793,7 +13036,8 @@
           showToast("Workflow ID is missing", "error");
           return false;
         }
-        const url = `/api/returns_exchanges/${encodeURIComponent(normalizedId)}/print?autoprint=1`;
+        const url = dashboardIdentityUrl(`/api/returns_exchanges/${encodeURIComponent(normalizedId)}/print?autoprint=1`);
+        if (!url) return false;
         if (isStandalonePWA()) {
           return loadUrlInPwaPrintFrame(url);
         }
@@ -14299,7 +14543,7 @@
         }
 
         const query = buildReportQuery(startDate, endDate);
-        window.open(`/api/reports/sales/export?${query}`, "_blank");
+        return openReportDownload(`/api/reports/sales/export?${query}`);
       }
 
       // Customer management functions
@@ -14635,6 +14879,7 @@
       let currentDebtId = null;
 
       function loadDebtsSummary() {
+        if (!requireCapability("debts")) return;
         fetch("/api/debts/summary")
           .then((r) => r.json())
           .then((summary) => {
@@ -14647,6 +14892,7 @@
       }
 
       function loadDebts() {
+        if (!requireCapability("debts")) return;
         const debtsTable = document.getElementById("debts-table");
         debtsTable.innerHTML = `
           <tr>
@@ -14860,6 +15106,7 @@
       }
 
       function bulkDeleteDebts() {
+        if (!requireCapability("debts")) return;
         showConfirmDialog(
           "Delete Debt Records",
           `Are you sure you want to delete ${selectedDebts.length} debt record(s)? Debts with existing payments will be skipped.`,
@@ -14888,6 +15135,7 @@
       }
 
       function exportDebts() {
+        if (!requireCapability("debts")) return;
         const status = document.getElementById("debts-status-filter")?.value || "";
         const customer = document.getElementById("debts-customer-filter")?.value || "";
         
@@ -14895,10 +15143,11 @@
         if (status) params.set("status", status);
         if (customer) params.set("customer_id", customer);
         
-        window.open(`/api/debts/export${params.toString() ? `?${params.toString()}` : ""}`, "_blank");
+        return openReportDownload(`/api/debts/export${params.toString() ? `?${params.toString()}` : ""}`);
       }
 
       function viewDebtDetails(debtId) {
+        if (!requireCapability("debts")) return;
         currentDebtId = debtId;
         const content = document.getElementById("debt-details-content");
         content.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div></div>';
@@ -15016,11 +15265,12 @@
 
       function printDebtReceipt() {
         if (currentDebtId) {
-          window.open(`/api/debts/${currentDebtId}/print`, "_blank");
+          return openReportDownload(`/api/debts/${currentDebtId}/print`);
         }
       }
 
       function showCommunicationModal(debtId, customerName) {
+        if (!requireCapability("debts")) return;
         document.getElementById("communication-debt-id").value = debtId;
         document.getElementById("communication-customer-name").value = customerName;
         document.getElementById("communication-notes").value = "";
@@ -15055,6 +15305,7 @@
       }
 
       function saveDebt() {
+        if (!requireCapability("debts")) return;
         const customerId = document.getElementById("debt-customer-id").value;
         const amount = parseFloat(document.getElementById("debt-amount").value);
         const dueDate = document.getElementById("debt-due-date").value;
@@ -15104,6 +15355,7 @@
       }
 
       function deleteDebt(debtId) {
+        if (!requireCapability("debts")) return;
         showConfirmDialog(
           "Delete Debt Record",
           "Are you sure you want to delete this debt record?",
@@ -15130,6 +15382,7 @@
       }
 
       function showMakePaymentModal(debtId) {
+        if (!requireCapability("debts")) return;
         fetch("/api/debts/" + debtId)
           .then((response) => response.json())
           .then((debt) => {
@@ -15196,7 +15449,7 @@
         const selectedCustomer = select.value;
         const warning = document.getElementById("pos-customer-warning");
 
-        fetch("/api/customers")
+        fetch("/api/pos/customers")
           .then(posResponseJSON)
           .then((data) => {
             if (!Array.isArray(data)) throw new Error("Invalid customer list");
@@ -15217,6 +15470,7 @@
       }
 
       function loadCustomersForDebtModal() {
+        if (!requireCapability("debts")) return;
         const select = document.getElementById("debt-customer-id");
         select.innerHTML = '<option value="">Select a customer</option>';
         
@@ -16162,12 +16416,12 @@
 
       function printPurchaseOrder() {
         if (currentPOId) {
-          window.open(`/api/purchase_orders/${currentPOId}/print`, '_blank');
+          return openReportDownload(`/api/purchase_orders/${currentPOId}/print`);
         }
       }
 
       function printPurchaseOrderDirect(poId) {
-        window.open(`/api/purchase_orders/${poId}/print`, '_blank');
+        return openReportDownload(`/api/purchase_orders/${poId}/print`);
       }
 
       function preparePurchaseOrderModal() {
@@ -16480,8 +16734,8 @@
                 <td>${formatCurrency(d.delivery_fee || 0)}</td>
                 <td>
                   <button class="btn btn-sm btn-outline-secondary me-1" onclick="printDeliverySlip(${d.id})" title="Print Delivery Slip"><i class="bi bi-printer"></i></button>
-                  <button class="btn btn-sm btn-outline-primary me-1" onclick="openUpdateDeliveryModal(${d.id})"><i class="bi bi-pencil"></i></button>
-                  ${d.can_transition_to && d.can_transition_to.length ? `<button class="btn btn-sm btn-outline-success" onclick="advanceDeliveryStage(${d.id}, '${d.can_transition_to[0]}')">Next</button>` : ""}
+                  ${hasCapability("deliveries.write") ? `<button class="btn btn-sm btn-outline-primary me-1" onclick="openUpdateDeliveryModal(${d.id})"><i class="bi bi-pencil"></i></button>` : ""}
+                  ${hasCapability("deliveries.write") && d.can_transition_to && d.can_transition_to.length ? `<button class="btn btn-sm btn-outline-success" onclick="advanceDeliveryStage(${d.id}, '${d.can_transition_to[0]}')">Next</button>` : ""}
                 </td>
               `;
               table.appendChild(row);
@@ -16496,6 +16750,7 @@
       }
 
       function openCreateDeliveryModal() {
+        if (!requireCapability("deliveries.write")) return;
         document.getElementById("delivery-sale-transaction-id").value = "";
         document.getElementById("delivery-recipient-name").value = "";
         document.getElementById("delivery-recipient-phone").value = "";
@@ -16508,6 +16763,7 @@
       }
 
       function saveDelivery() {
+        if (!requireCapability("deliveries.write")) return;
         const payload = {
           sale_transaction_id: document.getElementById("delivery-sale-transaction-id").value.trim(),
           recipient_name: document.getElementById("delivery-recipient-name").value.trim(),
@@ -16547,6 +16803,7 @@
       }
 
       function openUpdateDeliveryModal(deliveryId) {
+        if (!requireCapability("deliveries.write")) return;
         fetch(`/api/deliveries/${deliveryId}`)
           .then((r) => r.json())
           .then((d) => {
@@ -16566,6 +16823,7 @@
       }
 
       function updateDelivery() {
+        if (!requireCapability("deliveries.write")) return;
         const id = document.getElementById("update-delivery-id").value;
         const payload = {
           stage: document.getElementById("update-delivery-stage").value,
@@ -16599,6 +16857,7 @@
       }
 
       function advanceDeliveryStage(deliveryId, nextStage) {
+        if (!requireCapability("deliveries.write")) return;
         fetch(`/api/deliveries/${deliveryId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -16623,7 +16882,8 @@
           showToast("Delivery ID is missing", "error");
           return;
         }
-        const url = `/api/deliveries/${encodeURIComponent(deliveryId)}/print?autoprint=1`;
+        const url = dashboardIdentityUrl(`/api/deliveries/${encodeURIComponent(deliveryId)}/print?autoprint=1`);
+        if (!url) return false;
         if (isStandalonePWA()) {
           loadUrlInPwaPrintFrame(url);
           return;
@@ -16649,7 +16909,9 @@
       // Deliveries tab's Reporting button.
 
       function openDeliveryReportWindow() {
-        const reportWindow = window.open("/delivery-report", "_blank");
+        const url = dashboardIdentityUrl("/delivery-report");
+        if (!url) return false;
+        const reportWindow = window.open(url, "_blank");
         if (!reportWindow) {
           showToast("Report window was blocked. Allow popups for this POS and try again.", "warning");
           return false;
@@ -16734,6 +16996,8 @@
       // Report downloads open in a new tab: PDFs render for review/printing,
       // Excel workbooks go straight to the browser's download folder.
       function openReportDownload(url) {
+        url = dashboardIdentityUrl(url);
+        if (!url) return false;
         const reportWindow = window.open(url, "_blank");
         if (!reportWindow) {
           showToast("Report window was blocked. Allow popups for this POS and try again.", "warning");
@@ -16758,6 +17022,7 @@
       }
 
       function showRestockModal(productId, productName, availableQty, mainStock, batchNumber) {
+        if (!requireCapability("admin")) return;
         document.getElementById("restock-product-id").value = productId;
         document.getElementById("restock-product-name").value = productName;
         document.getElementById("restock-available-qty").value = availableQty;

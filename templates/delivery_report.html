@@ -42,6 +42,22 @@
     <script>
       (() => {
         const root = document.getElementById("report-root");
+        const REPORT_USER_ID = {{ session.get('user_id') | tojson }};
+        const REPORT_USER_ROLE = {{ session.get('role') | tojson }};
+        const identityHeaders = {
+          "X-POS-User-ID": String(REPORT_USER_ID),
+          "X-POS-Role": String(REPORT_USER_ROLE),
+        };
+        let sessionStale = false;
+
+        function blockStaleReport() {
+          sessionStale = true;
+          root.innerHTML = '<div class="alert alert-warning">This report belongs to a different sign-in. Reload or sign in again.</div>';
+          for (const id of ["load-button", "export-pdf", "export-xlsx"]) {
+            const button = document.getElementById(id);
+            if (button) button.disabled = true;
+          }
+        }
 
         function escapeHtml(unsafe) {
           return String(unsafe === null || unsafe === undefined ? "" : unsafe)
@@ -74,11 +90,19 @@
         }
 
         async function loadReport() {
+          if (sessionStale) return;
           ensureDefaults();
           root.innerHTML = '<div class="text-center py-5"><div class="spinner-border text-primary" role="status"></div></div>';
           try {
-            const response = await fetch(`/api/deliveries/report?${dateParams().toString()}`, { cache: "no-store" });
+            const response = await fetch(`/api/deliveries/report?${dateParams().toString()}`, {
+              cache: "no-store", headers: identityHeaders,
+            });
+            if (response.status === 409 && response.headers.get("X-POS-Session-Mismatch") === "1") {
+              blockStaleReport();
+              return;
+            }
             const data = await response.json();
+            if (sessionStale) return;
             if (!response.ok || !data.kpis) {
               throw new Error(data.message || data.error || "Failed to load the delivery report.");
             }
@@ -163,8 +187,11 @@
         }
 
         function exportReport(format) {
+          if (sessionStale) return;
           ensureDefaults();
           const params = dateParams();
+          params.set("pos_user_id", String(REPORT_USER_ID));
+          params.set("pos_role", String(REPORT_USER_ROLE));
           params.set("format", format === "xlsx" ? "xlsx" : "pdf");
           const exportWindow = window.open(`/api/deliveries/export?${params.toString()}`, "_blank");
           if (!exportWindow) {

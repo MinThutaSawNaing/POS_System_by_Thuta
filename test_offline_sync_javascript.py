@@ -304,14 +304,13 @@ def test_offline_pwa_assets_vendored_and_helpers_exist():
         assert helper in source, f"missing helper {helper}"
 
 
-def test_offline_product_cache_branch_fallback():
-    """The offline product cache must fall back to the generic snapshot when the
-    branch-scoped key is missing (boot order: loadProductsCached runs before the
-    current branch is fetched), so the POS grid/barcode fallbacks still work."""
+def test_offline_product_cache_never_falls_back_across_branches():
+    """Only the active branch's account-scoped snapshot may supply stock;
+    generic boot snapshots and other branches must never be borrowed."""
     source = DASHBOARD.read_text(encoding="utf-8")
     helpers = "\n".join(
         _function(source, name)
-        for name in ("offlineCacheSet", "offlineCacheGet", "cachedProductsKey",
+        for name in ("scopedOfflineCacheKey", "offlineCacheSet", "offlineCacheGet", "cachedProductsKey",
                      "getCachedProducts", "findCachedProduct")
     )
     script = f"""
@@ -322,35 +321,53 @@ globalThis.localStorage = {{
 }};
 const storage = {{}};
 {helpers}
+const CACHE_USER_ID = 3;
+const CACHE_USER_ROLE = "cashier";
 const PRODUCT_CACHE_KEY = "pos_products_all_cache";
 const PRODUCTS = [
   {{ id: 1, name: "Cola", barcode: "111", price: 1.5, stock: 10, tax_rate: 0 }},
   {{ id: 2, name: "Chips", barcode: "222", price: 2.0, stock: 5, tax_rate: 5 }},
 ];
-// Boot: currentBranch not set yet -> snapshot lands on the generic key.
+// A generic boot snapshot is stored but cannot supply branch stock.
 let currentBranch = null;
 offlineCacheSet(cachedProductsKey(), PRODUCTS);
-// Later: branch selected, branch-scoped key not yet written.
+const beforeBranchCount = getCachedProducts().length;
 currentBranch = {{ id: 7 }};
 const fromGenericFallback = getCachedProducts();
-const found = findCachedProduct(1);
-// Now the branch-scoped key is written (refreshPersistentProductCache path).
+const foundBeforeSnapshot = findCachedProduct(1);
+// The active branch snapshot still supports the grid and product lookup.
 offlineCacheSet(cachedProductsKey(), PRODUCTS);
 const branchKey = cachedProductsKey();
 const fromBranch = getCachedProducts();
+const found = findCachedProduct(1);
+currentBranch = {{ id: 8 }};
+const otherBranchCount = getCachedProducts().length;
+const otherBranchFound = findCachedProduct(1);
 console.log(JSON.stringify({{
+  beforeBranchCount,
   genericFallbackCount: fromGenericFallback.length,
+  foundBeforeSnapshot,
   branchKey,
+  storedBranchKey: scopedOfflineCacheKey(branchKey),
+  branchSnapshotStored: scopedOfflineCacheKey(branchKey) in storage,
   branchCount: fromBranch.length,
   found: found ? found.name : null,
+  otherBranchCount,
+  otherBranchFound,
 }}));
 process.exit(0);
 """
     out = _run_node_script(script)
-    assert out["genericFallbackCount"] == 2, "generic fallback must return cached products"
+    assert out["beforeBranchCount"] == 0
+    assert out["genericFallbackCount"] == 0, "generic stock must not leak into a branch"
+    assert out["foundBeforeSnapshot"] is None
     assert out["branchKey"] == "pos_products_all_cache_7"
+    assert out["storedBranchKey"] == "pos_account_v2:3:cashier:pos_products_all_cache_7"
+    assert out["branchSnapshotStored"] is True
     assert out["branchCount"] == 2
     assert out["found"] == "Cola"
+    assert out["otherBranchCount"] == 0
+    assert out["otherBranchFound"] is None
 
 
 def test_pwa_manifest_and_install_prompt_are_wired():
@@ -406,7 +423,8 @@ globalThis.document = {{
   getElementById: (id) => id === "username-display" ? {{ textContent: "Cashier One" }} : null,
 }};
 const APP_SETTINGS = {{ posName: "Parrot POS", currencySuffix: "MMK", receiptPaperSize: "THERMAL_58MM" }};
-let currentBranch = {{ name: "Main", address: "1 Main St", phone: "555", email: "main@example.com" }};
+const CACHE_USER_ID = 3;
+let currentBranch = {{ id: 7, name: "Main", address: "1 Main St", phone: "555", email: "main@example.com" }};
 let cart = [
   {{ product_id: 1, name: "Coffee", price: 100, quantity: 2, tax_rate: 5 }},
   {{ product_id: 2, name: "Tea", price: 50, quantity: 1, tax_rate: 0 }},
@@ -873,6 +891,9 @@ def test_storage_failure_is_reported_to_callers_but_success_still_silent():
     helpers = _function(source, "setPendingSales")
     script = f"""
 const storage = {{}};
+const CACHE_USER_ID = 3;
+const currentBranch = {{ id: 7 }};
+const queueKey = "pos_pending_sales_v2:3:7";
 let mode = "ok";
 globalThis.localStorage = {{
   getItem: (k) => (k in storage ? storage[k] : null),
@@ -884,10 +905,10 @@ globalThis.localStorage = {{
 {helpers}
 
 const okResult = setPendingSales([{{ transaction_id: "a" }}]);
-const storedValue = localStorage.getItem("pos_pending_sales");
+const storedValue = localStorage.getItem(queueKey);
 mode = "fail";
 const failResult = setPendingSales([{{ transaction_id: "b" }}]);
-const survivedValue = localStorage.getItem("pos_pending_sales");
+const survivedValue = localStorage.getItem(queueKey);
 
 console.log(JSON.stringify({{
   okResult,

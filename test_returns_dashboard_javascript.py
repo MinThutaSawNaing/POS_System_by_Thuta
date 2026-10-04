@@ -60,7 +60,10 @@ const loads = [];
 const standalone = __STANDALONE__;
 const pageState = { returns: 1 };
 const pageSize = { returns: 10 };
+const CACHE_USER_ID = 7, CACHE_USER_ROLE = 'manager';
+let dashboardSessionStale = false;
 globalThis.window = {
+  location: {href: 'https://pos.test/', origin: 'https://pos.test'},
   open: (url, target) => {
     opened.push({ url, target });
     return { closed: false, opener: null, location: { replace: (u) => opened.push({ replaced: u }) } };
@@ -110,7 +113,7 @@ def _run(field_values=None, standalone=False):
         for name in (
             "yangonToday", "returnsFilterParams", "applyReturnFilters",
             "setReturnRangePreset", "openReturnExchangeReceipt", "exportReturns",
-            "showReturnsForTransaction", "openReportDownload",
+            "showReturnsForTransaction", "openReportDownload", "dashboardIdentityUrl",
         )
     )
     script = HARNESS.replace("__FIELDS__", json.dumps(field_values or {}))
@@ -159,20 +162,20 @@ def test_export_sends_the_tab_filters():
     })
     urls = [entry["url"] for entry in out["opened"] if "url" in entry]
     expected = ("/api/returns_exchanges/export?start=2026-10-01&end=2026-10-31"
-                "&mode=exchange&q=txn-1&format=pdf")
+                "&mode=exchange&q=txn-1&format=pdf&pos_user_id=7&pos_role=manager")
     assert urls[0] == expected
     assert out["results"]["exportExcel"] is True
-    urls_xlsx = [e["url"] for e in out["opened"] if e.get("url", "").endswith("format=xlsx")]
+    urls_xlsx = [e["url"] for e in out["opened"] if e.get("url", "").endswith("format=xlsx&pos_user_id=7&pos_role=manager")]
     assert urls_xlsx[0] == expected.replace("format=pdf", "format=xlsx")
     # Unknown formats fall back to PDF rather than a broken download.
-    urls_pdf = [e["url"] for e in out["opened"] if e.get("url", "").endswith("format=pdf")]
+    urls_pdf = [e["url"] for e in out["opened"] if e.get("url", "").endswith("format=pdf&pos_user_id=7&pos_role=manager")]
     assert urls_pdf[-1] == expected
 
 
 def test_export_omits_empty_filters():
     out = _run({"returns-start-filter": "  ", "returns-search": ""})
     urls = [entry["url"] for entry in out["opened"] if "url" in entry]
-    assert urls[0] == "/api/returns_exchanges/export?format=pdf"
+    assert urls[0] == "/api/returns_exchanges/export?format=pdf&pos_user_id=7&pos_role=manager"
 
 
 def test_presets_set_and_clear_the_range():
@@ -188,14 +191,14 @@ def test_presets_set_and_clear_the_range():
 def test_receipt_button_opens_the_print_url():
     out = _run()
     replaced = [e["replaced"] for e in out["opened"] if "replaced" in e]
-    assert replaced and replaced[0] == "/api/returns_exchanges/wf-1/print?autoprint=1"
+    assert replaced and replaced[0] == "/api/returns_exchanges/wf-1/print?autoprint=1&pos_user_id=7&pos_role=manager"
     assert out["results"]["receipt"] is True
 
 
 def test_receipt_uses_pwa_frame_in_standalone_mode():
     out = _run(standalone=True)
     frames = [e["pwaFrame"] for e in out["opened"] if "pwaFrame" in e]
-    assert frames == ["/api/returns_exchanges/wf-1/print?autoprint=1"]
+    assert frames == ["/api/returns_exchanges/wf-1/print?autoprint=1&pos_user_id=7&pos_role=manager"]
 
 
 def test_sales_row_routes_to_returns_tab_with_the_transaction():

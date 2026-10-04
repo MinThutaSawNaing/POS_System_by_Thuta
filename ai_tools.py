@@ -34,6 +34,7 @@ Safety rails every WRITE tool (mutates=True) must follow:
 
 import json
 import uuid
+from functools import wraps
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from decimal import Decimal, ROUND_HALF_UP
@@ -872,6 +873,55 @@ _TOOL_META = {
     "deactivate_branch":               ("system",      True,  'manager', "Deactivate a branch; refuses the default branch.", "small"),
 }
 
+# Explicit allowlist: new tools are managerial until reviewed for cashier safety.
+CASHIER_SAFE_TOOLS = frozenset({
+    'get_inventory_status', 'get_low_stock_items', 'search_products',
+    'get_product_details', 'get_current_branch_context',
+})
+_ROLE_LEVELS = {'staff': 1, 'cashier': 1, 'manager': 2, 'boss': 3}
+
+
+def tool_authorization_error(name, context):
+    """Authorize trusted execution scope, never model-provided arguments.
+
+    Empty context remains supported for standalone legacy/test callers. A Flask
+    request is never such a caller: derive its authenticated session if needed.
+    """
+    context = trusted_tool_context(context)
+    if not context:
+        return None
+    meta = TOOL_METADATA.get(name)
+    if not meta:
+        return f"Tool '{name}' has no authorization policy"
+    role = context.get('role')
+    if _ROLE_LEVELS.get(role, 0) < 1:
+        return "A valid authenticated role is required"
+    if _ROLE_LEVELS.get(role, 0) < 2:
+        if name not in CASHIER_SAFE_TOOLS:
+            return f"Tool '{name}' requires the 'manager' role"
+        branch_id = context.get('branch_id')
+        if (not context.get('user_id') or isinstance(branch_id, bool)
+                or not isinstance(branch_id, int) or branch_id <= 0):
+            return "Authenticated cashier requires a trusted active branch and user"
+    required = meta.get('requires_role')
+    if required and _ROLE_LEVELS.get(role, 0) < _ROLE_LEVELS.get(required, 99):
+        return f"Tool '{name}' requires the '{required}' role"
+    return None
+
+
+def trusted_tool_context(context=None):
+    from flask import g, has_request_context, session
+    if has_request_context():
+        # HTTP session always wins over cached or partial caller context.
+        # The orchestrator captures scope before app helpers can default a branch.
+        return getattr(g, '_ai_authenticated_scope', None) or {
+            'user_id': session.get('user_id'), 'role': session.get('role'),
+            'branch_id': session.get('branch_id')}
+    if context and ('role' in context or 'user_id' in context):
+        return context
+    return {}
+
+
 TOOL_METADATA: Dict[str, Dict[str, Any]] = {}
 for _name, _schema in _BASE_TOOL_PARAMETER_SCHEMAS.items():
     _category, _mutates, _role, _one_line, _size = _TOOL_META[_name]
@@ -879,7 +929,7 @@ for _name, _schema in _BASE_TOOL_PARAMETER_SCHEMAS.items():
         **_schema,
         "category": _category,
         "mutates": _mutates,
-        "requires_role": _role,
+        "requires_role": _role if _name in CASHIER_SAFE_TOOLS else (_role if _role == 'boss' else 'manager'),
         "description_one_line": _one_line,
         "result_size_hint": _size,
         "autonomy": "auto" if _name in _AUTO_EXECUTE_TOOLS else "approval",
@@ -903,9 +953,11 @@ class AITools:
     def set_context(self, context: Optional[Dict[str, Any]] = None):
         """Set trusted request context; model-controlled tool arguments never choose branch scope."""
         self.context = dict(context or {})
+        # Identity-to-role resolution is the trusted caller's responsibility.
 
     def _branch_id(self):
-        return self.context.get('branch_id')
+        scope = trusted_tool_context(self.context)
+        return scope.get('branch_id') if scope else self.context.get('branch_id')
 
     def _branch_filter(self, query, model):
         branch_id = self._branch_id()
@@ -1445,6 +1497,14 @@ class AITools:
         if not product:
             return {"error": "Product not found"}
             
+        if trusted_tool_context(self.context).get('role') in ('cashier', 'staff'):
+            return self._scope({
+                'product_id': product.id, 'name': product.name,
+                'barcode': product.barcode, 'category': product.category,
+                'price': money_str(product.price or 0), 'stock': product.stock or 0,
+                'tax_rate': float(product.tax_rate or 0),
+            })
+
         # Get supplier price agreements
         supplier_prices = []
         for sp in product.supplier_prices:
@@ -2976,6 +3036,44 @@ class AITools:
 
 
 
+
+
+# Defense in depth for direct tool calls as well as both agent executors.
+# Projection is an allowlist, so future result fields cannot leak financial data.
+_CASHIER_RESULT_FIELDS = frozenset({
+    'branch_id', 'message', 'name', 'code', 'is_default', 'error',
+    'total_products', 'inventory', 'summary', 'items', 'low_stock_count',
+    'out_of_stock_count', 'product_id', 'barcode', 'category', 'current_stock',
+    'stock', 'status', 'price', 'tax_rate',
+})
+
+
+def minimize_cashier_result(result, context):
+    if trusted_tool_context(context).get('role') not in ('cashier', 'staff'):
+        return result
+    def project(value):
+        if isinstance(value, dict):
+            return {key: project(item) for key, item in value.items()
+                    if key in _CASHIER_RESULT_FIELDS}
+        if isinstance(value, list):
+            return [project(item) for item in value]
+        return value
+    return project(result)
+
+
+def _authorized_tool(name, function):
+    @wraps(function)
+    def execute(self, *args, **kwargs):
+        error = tool_authorization_error(name, self.context)
+        if error:
+            return {'error': error}
+        return minimize_cashier_result(function(self, *args, **kwargs), self.context)
+    return execute
+
+
+for _tool_name in TOOL_METADATA:
+    setattr(AITools, _tool_name,
+            _authorized_tool(_tool_name, getattr(AITools, _tool_name)))
 
 
 def get_all_tools(read_only: bool = False) -> Dict[str, Dict]:

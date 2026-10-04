@@ -57,14 +57,17 @@ def _run_export(field_values, blocked=False):
     source = DASHBOARD.read_text(encoding="utf-8")
     helpers = "\n".join(
         _function(source, name)
-        for name in ("openReportDownload", "exportWarehouseStock", "exportPurchaseOrders")
+        for name in ("dashboardIdentityUrl", "openReportDownload", "exportWarehouseStock", "exportPurchaseOrders")
     )
     script = f"""
 const fieldValues = {json.dumps(field_values)};
 const opened = [];
 const toasts = [];
 const blocked = {"true" if blocked else "false"};
+const CACHE_USER_ID = 7, CACHE_USER_ROLE = 'manager';
+let dashboardSessionStale = false;
 globalThis.window = {{
+  location: {{href: 'https://pos.test/', origin: 'https://pos.test'}},
   open: (url, target) => {{
     opened.push({{ url, target }});
     return blocked ? null : {{ closed: false }};
@@ -121,17 +124,17 @@ def test_warehouse_stock_report_sends_the_tab_filters():
         "warehouse-low-stock-filter": "true",
     })
     urls = [entry["url"] for entry in out["opened"]]
-    assert urls[0] == "/api/warehouse/export?format=pdf&q=coffee&low_stock=true"
-    assert urls[1] == "/api/warehouse/export?format=xlsx&q=coffee&low_stock=true"
+    assert urls[0] == "/api/warehouse/export?format=pdf&q=coffee&low_stock=true&pos_user_id=7&pos_role=manager"
+    assert urls[1] == "/api/warehouse/export?format=xlsx&q=coffee&low_stock=true&pos_user_id=7&pos_role=manager"
     assert all(entry["target"] == "_blank" for entry in out["opened"])
     assert out["results"]["warehousePdf"] is True
     # Unknown formats fall back to PDF rather than producing a broken download.
-    assert urls[4] == "/api/warehouse/export?format=pdf&q=coffee&low_stock=true"
+    assert urls[4] == "/api/warehouse/export?format=pdf&q=coffee&low_stock=true&pos_user_id=7&pos_role=manager"
 
 
 def test_warehouse_stock_report_omits_empty_filters():
     out = _run_export({"warehouse-search": "  ", "warehouse-low-stock-filter": ""})
-    assert out["opened"][0]["url"] == "/api/warehouse/export?format=pdf"
+    assert out["opened"][0]["url"] == "/api/warehouse/export?format=pdf&pos_user_id=7&pos_role=manager"
 
 
 def test_purchase_order_report_sends_the_tab_filters():
@@ -145,7 +148,7 @@ def test_purchase_order_report_sends_the_tab_filters():
     urls = [entry["url"] for entry in out["opened"]]
     expected = (
         "/api/purchase_orders/export?format=xlsx&q=po-2&status=pending"
-        "&supplier_id=7&start_date=2026-09-01&end_date=2026-09-30"
+        "&supplier_id=7&start_date=2026-09-01&end_date=2026-09-30&pos_user_id=7&pos_role=manager"
     )
     assert urls[3] == expected
     assert urls[2] == expected.replace("format=xlsx", "format=pdf")

@@ -12,7 +12,8 @@ from typing import Dict, List, Any, Optional, Set
 from datetime import datetime
 
 from ai_agent import AIAgent, ChatResponse, ToolCall
-from ai_tools import create_tools_instance, get_all_tools, money_dec, money_str
+from ai_tools import (create_tools_instance, get_all_tools, money_dec, money_str,
+                      tool_authorization_error, minimize_cashier_result)
 
 # Lightweight registry introspection. TOOL_METADATA is the single source of
 # truth for tool capabilities (including the "mutates" write flag); if a future
@@ -261,8 +262,22 @@ class AgentOrchestrator:
 
     def set_request_context(self, context: Optional[Dict[str, Any]] = None):
         """Refresh trusted request scope for cached per-user orchestrators."""
+        from flask import has_request_context
+        from ai_tools import trusted_tool_context
+
         self.request_context = dict(context or {})
+        if has_request_context():
+            self.request_context = dict(trusted_tool_context(self.request_context))
+        elif 'role' not in self.request_context and self.request_context.get('user_id'):
+            # Legacy non-HTTP callers provide a server-side identity. Resolve it
+            # here, before distributing the same scope to both execution layers.
+            User = self.ai_tools.models.get('User')
+            if User is not None:
+                user = User.query.filter_by(id=self.request_context['user_id']).first()
+                if user is not None:
+                    self.request_context['role'] = user.role
         self.ai_tools.set_context(self.request_context)
+        self.agent.set_request_context(self.request_context)
 
     @staticmethod
     def _get_memory_service():
@@ -355,6 +370,7 @@ class AgentOrchestrator:
             return [
                 t for t in tool_schemas
                 if not _TOOL_METADATA.get(t["function"]["name"], {}).get("mutates")
+                and not tool_authorization_error(t["function"]["name"], self.request_context)
             ]
 
         categories = self._detect_relevant_categories(command)
@@ -653,7 +669,8 @@ class AgentOrchestrator:
                 "one_line": fn.get("description", ""),
                 "params": fn.get("parameters", {}) or {},
             }
-        return registry
+        return {name: meta for name, meta in registry.items()
+                if not tool_authorization_error(name, self.request_context)}
 
     def _build_planning_catalog(self, registry: Dict[str, Dict[str, Any]]) -> str:
         """Compact one-line-per-tool catalog for the planning prompt."""
@@ -1282,23 +1299,12 @@ class AgentOrchestrator:
                 })
                 continue
 
-            # Defence-in-depth: enforce the registry's requires_role gate at
-            # execution time (approval alone must never grant a low-role user
-            # a manager-only mutation).
-            required_role = _TOOL_METADATA.get(tc.function_name, {}).get("requires_role")
-            if required_role:
-                acting_level = _ROLE_LEVELS.get(self.request_context.get('role'), 0)
-                needed_level = _ROLE_LEVELS.get(required_role, 1)
-                if acting_level < needed_level:
-                    results.append({
-                        "tool_call_id": tc.id,
-                        "function_name": tc.function_name,
-                        "result": None,
-                        "error": (f"Tool '{tc.function_name}' requires the "
-                                  f"'{required_role}' role")
-                    })
-                    continue
-
+            authorization_error = tool_authorization_error(tc.function_name, self.request_context)
+            if authorization_error:
+                results.append({"tool_call_id": tc.id, "function_name": tc.function_name,
+                                "result": None, "error": authorization_error})
+                self.agent.add_tool_result(tc.id, json.dumps({"error": authorization_error}))
+                continue
             try:
                 func = self.agent.tool_functions[tc.function_name]
                 
@@ -1309,6 +1315,7 @@ class AgentOrchestrator:
                 else:
                     result = func(**tc.arguments)
                     
+                result = minimize_cashier_result(result, self.request_context)
                 results.append({
                     "tool_call_id": tc.id,
                     "function_name": tc.function_name,
@@ -2272,6 +2279,12 @@ _orchestrator_instances_lock = threading.RLock()
 def get_orchestrator(db=None, models=None, get_setting_func=None, app=None,
                      conversation_id=None) -> AgentOrchestrator:
     """Get an isolated, bounded-LRU orchestrator for one conversation owner."""
+    from flask import g, has_request_context, session
+    if has_request_context() and not hasattr(g, '_ai_authenticated_scope'):
+        g._ai_authenticated_scope = {
+            'user_id': session.get('user_id'), 'role': session.get('role'),
+            'branch_id': session.get('branch_id'),
+        }
     key = str(conversation_id if conversation_id is not None else "default")
     with _orchestrator_instances_lock:
         orchestrator = _orchestrator_instances.pop(key, None)

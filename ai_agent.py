@@ -64,6 +64,11 @@ class AIAgent:
         self.conversation_history: List[Message] = []
         self.tools: List[Dict] = []
         self.tool_functions: Dict[str, Callable] = {}
+        self.request_context = {}
+
+    def set_request_context(self, context=None):
+        """Set authenticated scope supplied by the server, never the model."""
+        self.request_context = dict(context or {})
 
     def trim_history(self, max_messages: int = 40):
         """Bound retained chat data while preserving the system prompt.
@@ -320,8 +325,12 @@ class AIAgent:
                 continue
                 
             try:
+                from ai_tools import tool_authorization_error, minimize_cashier_result
+                error = tool_authorization_error(tc.function_name, self.request_context)
+                if error:
+                    raise PermissionError(error)
                 func = self.tool_functions[tc.function_name]
-                result = func(**tc.arguments)
+                result = minimize_cashier_result(func(**tc.arguments), self.request_context)
                 results.append({
                     "tool_call_id": tc.id,
                     "function_name": tc.function_name,
