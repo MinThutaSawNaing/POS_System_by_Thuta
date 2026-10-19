@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app import AppSetting, app, db
+from app import AppSetting, app, branch_setting_key, db, get_default_branch_id
 
 
 VALID_PNG = (
@@ -30,22 +30,25 @@ class MMQRPaymentTests(unittest.TestCase):
         self.test_mmqr_folder = tempfile.mkdtemp(prefix='pos-mmqr-test-')
         app.config['MMQR_FOLDER'] = self.test_mmqr_folder
         self.client = app.test_client()
+        self.branch_id = get_default_branch_id()
         with self.client.session_transaction() as session:
             session['user_id'] = 1
             session['role'] = 'manager'
+            session['branch_id'] = self.branch_id
 
-        self.previous = AppSetting.query.filter_by(key='mmqr_filename').first()
+        self.setting_key = branch_setting_key(self.branch_id, 'mmqr_filename')
+        self.previous = AppSetting.query.filter_by(key=self.setting_key).first()
         self.previous_value = self.previous.value if self.previous else None
 
     def tearDown(self):
-        setting = AppSetting.query.filter_by(key='mmqr_filename').first()
+        setting = AppSetting.query.filter_by(key=self.setting_key).first()
         if self.previous_value is None:
             if setting:
                 db.session.delete(setting)
         elif setting:
             setting.value = self.previous_value
         else:
-            db.session.add(AppSetting(key='mmqr_filename', value=self.previous_value))
+            db.session.add(AppSetting(key=self.setting_key, value=self.previous_value))
         db.session.commit()
         app.config['MMQR_FOLDER'] = self.original_mmqr_folder
         shutil.rmtree(self.test_mmqr_folder, ignore_errors=True)

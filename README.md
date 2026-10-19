@@ -194,8 +194,9 @@ Parrot POS supports managing multiple store locations from a single installation
 
 ### Features
 
-- **Complete Data Isolation**: Products, sales, customers, suppliers, debts, purchase orders, and warehouse inventory are all scoped to individual branches
-- **Easy Branch Switching**: Change active branch from the Settings page - all data updates automatically
+- **Branch-scoped operations**: Products, categories, sales, returns, customers, debts, deliveries, and promotions follow the active branch. Suppliers, purchases, and the warehouse are shared across branches.
+- **Easy Branch Switching**: Save the branch in Settings to reload the dashboard with that branch's data
+- **Branch-specific receipt templates**: Each branch can save its own receipt branding, logo, MMQR image, receipt paper size, and barcode label geometry. Select a branch in Settings → Store profile before editing Receipt & branding or Printing.
 - **Default Branch**: Set a default branch for automatic selection on login
 - **Session Persistence**: Selected branch is maintained across page navigations
 - **Branch Indicators**: Visual indicators show the current active branch in every section
@@ -206,7 +207,7 @@ Parrot POS supports managing multiple store locations from a single installation
    - Go to **Settings** in the dashboard
    - Find the **Branch Selection** section at the top
    - Select your desired branch from the dropdown
-   - All data will automatically refresh for the selected branch
+   - Click **Save Branch**; the dashboard reloads with that branch's operational data
 
 2. **Set Default Branch** (Manager only):
    - Navigate to **Branches** section
@@ -506,13 +507,14 @@ An admin account is auto-created if missing:
 ### Purchase Order System
 - Create purchase orders from suppliers
 - Multi-item support with automatic total calculation
+- Shared purchase register across branches; the creation form can select catalog products from every branch
 - Approval workflow with status tracking
 - Cancel orders with reason logging
 - Download the filtered register as a branded PDF or Excel workbook (Excel adds a line-item sheet)
 
 ### Warehouse Management
-- Separate warehouse inventory tracking
-- Transfer items to main store stock
+- One shared warehouse stock list and summary for every branch
+- Transfer warehouse items to a selected branch's product stock
 - Manage unstocked products
 - Batch transfer operations
 - Download the current stock list (PDF/Excel) with stock value totals and low-stock KPIs
@@ -521,7 +523,7 @@ An admin account is auto-created if missing:
 - Shared report builders in `reports.py`: letterhead, KPI summary, striped tables, totals and page numbers
 - `GET /api/warehouse/export?format=pdf|xlsx` — stock list honouring the tab's search and low-stock filters
 - `GET /api/purchase_orders/export?format=pdf|xlsx` — PO register honouring search, status, supplier and date filters
-- Manager-only, branch-scoped and consistent with the rows shown in each tab
+- Manager-only and consistent with the rows shown in each tab; warehouse and purchase order exports include all branches
 
 ### Returns & Exchanges
 - Dedicated **Returns** tab with refund/settlement KPIs, date range (defaults to today, with Today/This month/All time presets), type and search filters, and branch scope
@@ -538,6 +540,8 @@ An admin account is auto-created if missing:
 
 ### Category Management
 - Centralized category system for products and suppliers
+- Categories are managed per active branch; separate branches may use the same category name
+- Product categories remain branch-specific; shared supplier category choices include categories from every branch
 - Color-coded categories for visual organization
 - Hierarchical category support
 - Automatic synchronization across the system

@@ -164,7 +164,8 @@ def _slug(value: str) -> str:
 
 
 WAREHOUSE_STOCK_COLUMNS = (
-    column("product_name", "Product", width=34),
+    column("product_name", "Product Name", width=34),
+    column("product_branch", "Catalog Branch", width=20),
     column("barcode", "Barcode", width=18),
     column("location", "Location", width=14),
     column("batch_number", "Batch", width=16),
@@ -179,6 +180,7 @@ WAREHOUSE_STOCK_COLUMNS = (
 PURCHASE_ORDER_COLUMNS = (
     column("po_number", "PO number", width=24),
     column("supplier_name", "Supplier", width=26),
+    column("product_branch", "Product Branch", width=20),
     column("status_label", "Status", width=16, align="center"),
     column("total_amount", "Amount", width=15, align="right", kind="money"),
     column("items_count", "Lines", width=8, align="right", kind="int"),
@@ -192,7 +194,8 @@ PURCHASE_ORDER_COLUMNS = (
 
 PURCHASE_ORDER_ITEM_COLUMNS = (
     column("po_number", "PO number", width=24),
-    column("product_name", "Product", width=34),
+    column("product_branch", "Product Branch", width=20),
+    column("product_name", "Product Name", width=34),
     column("ordered_qty", "Ordered", width=10, align="right", kind="int"),
     column("received_qty", "Received", width=10, align="right", kind="int"),
     column("progress_percent", "Progress", width=12, align="right", kind="percent"),
@@ -316,6 +319,7 @@ def build_warehouse_stock_report(
 
         rows.append({
             "product_name": str(record.get("product_name") or "Unknown"),
+            "product_branch": str(record.get("product_branch") or ""),
             "barcode": record.get("barcode"),
             "location": record.get("location"),
             "batch_number": record.get("batch_number"),
@@ -359,6 +363,53 @@ def build_warehouse_stock_report(
     )
 
 
+def build_product_catalog_report(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    brand: Mapping[str, Any] | None = None,
+    branch_name: str = "",
+    generated_by: str = "",
+    filters_text: str = "",
+    currency_suffix: str = "$",
+    generated_at: Any = None,
+) -> dict[str, Any]:
+    """Build a simple catalog list for checking products outside the dashboard."""
+    rows = [{
+        "barcode": record.get("barcode"),
+        "product_name": str(record.get("product_name") or ""),
+        "category": record.get("category"),
+        "price": round_money_value(record.get("price")),
+        "stock": int(round(number_value(record.get("stock")))),
+        "unit": record.get("unit"),
+        "tax_rate": number_value(record.get("tax_rate")),
+    } for record in records]
+    return _common_report_fields(
+        title="Product List",
+        subtitle="Product catalog for reference",
+        sheet_name="Products",
+        file_stem="product_list",
+        columns=(
+            column("barcode", "Barcode", width=18),
+            column("product_name", "Product Name", width=32),
+            column("category", "Category", width=18),
+            column("price", "Price", width=13, align="right", kind="money"),
+            column("stock", "Stock", width=10, align="right", kind="int"),
+            column("unit", "Unit", width=10, align="center"),
+            column("tax_rate", "Tax rate", width=10, align="right", kind="percent"),
+        ),
+        rows=rows,
+        totals={"stock": sum(row["stock"] for row in rows)},
+        summary=[
+            {"label": "Products", "value": f"{len(rows):,}"},
+            {"label": "Total stock", "value": f"{sum(row['stock'] for row in rows):,}"},
+        ],
+        meta=_report_meta(branch_name, generated_by, filters_text, generated_at),
+        notes=[],
+        brand=brand,
+        currency_suffix=currency_suffix,
+    )
+
+
 def build_purchase_order_report(
     records: Iterable[Mapping[str, Any]],
     *,
@@ -389,6 +440,7 @@ def build_purchase_order_report(
         rows.append({
             "po_number": str(record.get("po_number") or EMPTY_CELL),
             "supplier_name": str(record.get("supplier_name") or "Unknown supplier"),
+            "product_branch": str(record.get("product_branch") or ""),
             "status": status,
             "status_label": purchase_order_status_label(status),
             "total_amount": amount,
@@ -460,6 +512,7 @@ def build_purchase_order_item_rows(
             )
             rows.append({
                 "po_number": po_number,
+                "product_branch": str(record.get("product_branch") or ""),
                 "product_name": str(item.get("product_name") or "Unknown product"),
                 "ordered_qty": ordered,
                 "received_qty": received,

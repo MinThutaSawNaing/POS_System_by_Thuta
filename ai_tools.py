@@ -488,7 +488,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "phone": {"type": "string", "description": "Optional phone number."},
                 "email": {"type": "string", "description": "Optional email address."},
                 "address": {"type": "string", "description": "Optional address."},
-                "category": {"type": "string", "description": "Optional legacy supplier category label."}
+                "category": {"type": "string", "description": "Optional category name in the active branch."}
             },
             "required": ["name"]
         }
@@ -504,7 +504,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "phone": {"type": "string", "description": "New phone number."},
                 "email": {"type": "string", "description": "New email address."},
                 "address": {"type": "string", "description": "New address."},
-                "category": {"type": "string", "description": "New legacy supplier category label."},
+                "category": {"type": "string", "description": "New category name in the active branch."},
                 "active": {"type": "boolean", "description": "Set the supplier active/inactive (is_active)."}
             },
             "required": ["supplier_id"]
@@ -1744,6 +1744,7 @@ class AITools:
                        product_id: int = None) -> Dict[str, Any]:
         """Create a product or update an existing one (manager only)."""
         Product = self._get_model('Product')
+        Category = self._get_model('Category')
         if not isinstance(name, str) or not name.strip():
             return {"error": "Product name is required"}
         name = name.strip()
@@ -1768,6 +1769,14 @@ class AITools:
         if stock_val < 0 or reorder_point_val < 0 or reorder_quantity_val < 0:
             return {"error": "stock, reorder_point and reorder_quantity must be >= 0"}
 
+        category_record = None
+        if category is not None and str(category).strip():
+            category_record = self._branch_filter(Category.query.filter(
+                self.db.func.lower(Category.name) == str(category).strip().lower()
+            ), Category).first()
+            if not category_record:
+                return {"error": f"Category '{category}' not found in the active branch"}
+
         changed_fields = ["name", "price", "cost", "tax_rate", "stock", "category",
                           "reorder_point", "reorder_quantity", "barcode"]
         if product_id is not None:
@@ -1779,7 +1788,9 @@ class AITools:
             product.cost = float(cost_dec) if cost_dec is not None else product.cost
             product.tax_rate = tax_rate_val
             product.stock = stock_val
-            product.category = category if category is not None else product.category
+            if category is not None:
+                product.category_id = category_record.id if category_record else None
+                product.category = category_record.name if category_record else None
             product.reorder_point = reorder_point_val
             product.reorder_quantity = reorder_quantity_val
             product.barcode = barcode if barcode is not None else product.barcode
@@ -1794,7 +1805,8 @@ class AITools:
                 cost=float(cost_dec) if cost_dec is not None else None,
                 tax_rate=tax_rate_val,
                 stock=stock_val,
-                category=category,
+                category=category_record.name if category_record else None,
+                category_id=category_record.id if category_record else None,
                 reorder_point=reorder_point_val,
                 reorder_quantity=reorder_quantity_val,
                 barcode=barcode,
@@ -2025,6 +2037,7 @@ class AITools:
                         category: str = None) -> Dict[str, Any]:
         """Create a new supplier in the active branch (manager only)."""
         Supplier = self._get_model('Supplier')
+        Category = self._get_model('Category')
         if not isinstance(name, str) or not name.strip():
             return {"error": "Supplier name is required"}
         name = name.strip()
@@ -2035,13 +2048,21 @@ class AITools:
             email = str(email).strip() or None
             if email and '@' not in email:
                 return {"error": "email must be a valid email address"}
+        category_record = None
+        if category and str(category).strip():
+            category_record = self._branch_filter(Category.query.filter(
+                self.db.func.lower(Category.name) == str(category).strip().lower()
+            ), Category).first()
+            if not category_record:
+                return {"error": f"Category '{category}' not found in the active branch"}
         supplier = Supplier(
             name=name,
             contact_person=str(contact_person).strip() if contact_person else None,
             phone=str(phone).strip() if phone else None,
             email=email,
             address=str(address).strip() if address else None,
-            category=str(category).strip() if category else None,
+            category=category_record.name if category_record else None,
+            category_id=category_record.id if category_record else None,
             branch_id=self._branch_id()
         )
         self.db.session.add(supplier)
@@ -2059,6 +2080,7 @@ class AITools:
                         active: bool = None) -> Dict[str, Any]:
         """Partially update a supplier; only provided fields change (manager only)."""
         Supplier = self._get_model('Supplier')
+        Category = self._get_model('Category')
         supplier = self._branch_filter(Supplier.query.filter_by(id=supplier_id), Supplier).first()
         if not supplier:
             return {"error": f"Supplier with ID {supplier_id} not found in the active branch"}
@@ -2079,7 +2101,15 @@ class AITools:
             supplier.address = str(address).strip() or None
             changed_fields.append("address")
         if category is not None:
-            supplier.category = str(category).strip() or None
+            category_record = None
+            if str(category).strip():
+                category_record = self._branch_filter(Category.query.filter(
+                    self.db.func.lower(Category.name) == str(category).strip().lower()
+                ), Category).first()
+                if not category_record:
+                    return {"error": f"Category '{category}' not found in the active branch"}
+            supplier.category_id = category_record.id if category_record else None
+            supplier.category = category_record.name if category_record else None
             changed_fields.append("category")
         if active is not None:
             supplier.is_active = bool(active)
@@ -2139,7 +2169,9 @@ class AITools:
         if not isinstance(name, str) or not name.strip():
             return {"error": "Category name is required"}
         name = name.strip()
-        duplicate = self._branch_filter(Category.query.filter_by(name=name), Category).first()
+        duplicate = self._branch_filter(
+            Category.query.filter(self.db.func.lower(Category.name) == name.lower()), Category
+        ).first()
         if duplicate:
             return {"error": f"A category named '{name}' already exists in the active branch (ID {duplicate.id})"}
         try:
@@ -2756,8 +2788,8 @@ class AITools:
 
         # Keep the denormalized legacy category strings in sync with the
         # canonical category record (by foreign key).
-        Product.query.filter_by(category_id=category.id).update({'category': name})
-        Supplier.query.filter_by(category_id=category.id).update({'category': name})
+        Product.query.filter_by(category_id=category.id, branch_id=category.branch_id).update({'category': name})
+        Supplier.query.filter_by(category_id=category.id, branch_id=category.branch_id).update({'category': name})
         changed.append("product_supplier_names")
         self.db.session.commit()
 

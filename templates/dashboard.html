@@ -1317,7 +1317,7 @@
       <ul class="nav flex-column">
         <li class="nav-item">
           <a
-            class="nav-link active"
+            class="nav-link"
             href="#"
             data-capability="admin" onclick="showSection('dashboard')"
           >
@@ -1437,7 +1437,7 @@
         <span class="d-block small text-muted mt-1">Checkout, browse the catalog, and manage your own sales, returns and deliveries. Sales history and reports show your sales only.</span>
       </div>
       <!-- Dashboard Section -->
-      <div data-capability="admin" id="dashboard-section">
+      <div data-capability="admin" id="dashboard-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Dashboard</h2>
@@ -1734,6 +1734,14 @@
                   class="form-control"
                   placeholder="Search by barcode, name or category"
                 />
+              </div>
+              <div class="col-12 col-md-7 d-flex flex-wrap gap-2 justify-content-md-end">
+                <button class="btn btn-outline-success" onclick="exportProductList('xlsx')" title="Export product list to Excel">
+                  <i class="bi bi-file-earmark-spreadsheet"></i> <span data-i18n="exportExcel">Export Excel</span>
+                </button>
+                <button class="btn btn-outline-danger" onclick="exportProductList('pdf')" title="Export product list to PDF">
+                  <i class="bi bi-file-earmark-pdf"></i> <span data-i18n="exportPdf">Export PDF</span>
+                </button>
               </div>
             </div>
             <div class="table-responsive">
@@ -2425,9 +2433,9 @@
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Supplier Management</h2>
-            <span class="branch-indicator" id="suppliers-branch-indicator">
-              <i class="bi bi-building"></i>
-              <span class="branch-name">-</span>
+            <span class="branch-indicator">
+              <i class="bi bi-people"></i>
+              <span>Shared Suppliers</span>
             </span>
           </div>
           <div class="d-flex gap-2 flex-wrap">
@@ -2572,9 +2580,9 @@
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Purchase & Receiving</h2>
-            <span class="branch-indicator" id="purchases-branch-indicator">
-              <i class="bi bi-building"></i>
-              <span class="branch-name">-</span>
+            <span class="branch-indicator">
+              <i class="bi bi-file-earmark-text"></i>
+              <span>All Branches</span>
             </span>
           </div>
           <div class="d-flex gap-2">
@@ -2708,6 +2716,7 @@
                   <tr>
                     <th>PO #</th>
                     <th class="d-none d-md-table-cell">Supplier</th>
+                    <th class="d-none d-md-table-cell">Product Branch</th>
                     <th>Amount</th>
                     <th>Status</th>
                     <th class="d-none d-lg-table-cell">Expected</th>
@@ -2718,7 +2727,7 @@
                 </thead>
                 <tbody id="purchase-orders-table">
                   <tr>
-                    <td colspan="8" class="text-center py-4">
+                    <td colspan="9" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                       </div>
@@ -2737,9 +2746,9 @@
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Warehouse Management</h2>
-            <span class="branch-indicator" id="warehouse-branch-indicator">
-              <i class="bi bi-building"></i>
-              <span class="branch-name">-</span>
+            <span class="branch-indicator">
+              <i class="bi bi-box-seam"></i>
+              <span>Shared Warehouse</span>
             </span>
           </div>
           <div class="d-flex gap-2">
@@ -2840,9 +2849,10 @@
                 <thead>
                   <tr>
                     <th>Product</th>
+                    <th class="d-none d-md-table-cell">Catalog Branch</th>
                     <th class="d-none d-md-table-cell">Barcode</th>
                     <th>Warehouse</th>
-                    <th class="d-none d-sm-table-cell">Stock</th>
+                    <th class="d-none d-sm-table-cell">Catalog Stock</th>
                     <th class="d-none d-lg-table-cell">Cost</th>
                     <th class="d-none d-lg-table-cell">Value</th>
                     <th class="d-none d-md-table-cell">Batch</th>
@@ -2852,7 +2862,7 @@
                 </thead>
                 <tbody id="warehouse-table">
                   <tr>
-                    <td colspan="9" class="text-center py-4">
+                    <td colspan="10" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status"></div>
                     </td>
                   </tr>
@@ -2954,7 +2964,13 @@
       <!-- Users Section -->
       <div data-capability="admin" id="users-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
-          <h2 class="mb-0">User Management</h2>
+          <div class="d-flex align-items-center gap-3 flex-wrap">
+            <h2 class="mb-0">User Management</h2>
+            <span class="branch-indicator" id="users-branch-indicator">
+              <i class="bi bi-building"></i>
+              <span class="branch-name">-</span>
+            </span>
+          </div>
           <div class="d-flex gap-2">
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
@@ -3099,18 +3115,21 @@
             <span class="settings-icon-chip"><i class="bi bi-building"></i></span>
             <div class="settings-card-header-title">
               <h5>Branch Selection</h5>
-              <span class="settings-card-subtitle">Every tab shows data for the active branch</span>
+              <span class="settings-card-subtitle">The selected branch also controls its receipt branding and print settings</span>
             </div>
           </div>
           <div class="card-body">
-            <div class="mb-3">
-              <label class="form-label">Current Branch</label>
-              <select class="form-select" data-capability="branches.switch" id="branch-selector" onchange="switchBranch(this.value)">
+            <label class="form-label" for="branch-selector">Choose Branch</label>
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+              <select class="form-select" style="width: min(100%, 320px)" data-capability="branches.switch" id="branch-selector" aria-describedby="branch-selection-help" onchange="updateBranchSaveButton()">
                 <option value="">Loading branches...</option>
               </select>
-              <div class="form-text">
-                <i class="bi bi-info-circle me-1"></i>Select the branch you want to work with. All data (products, sales, customers, etc.) will be filtered by this branch.
-              </div>
+              <button type="button" class="btn btn-primary" data-capability="branches.switch" id="save-branch-selection-btn" onclick="saveSelectedBranch()" disabled>
+                <i class="bi bi-floppy me-1"></i>Save Branch
+              </button>
+            </div>
+            <div class="form-text mb-3" id="branch-selection-help">
+              <i class="bi bi-info-circle me-1"></i>Choose a branch, then click Save Branch. Products, sales, customers, and branch settings will update after saving.
             </div>
             <div id="current-branch-info" class="alert alert-info mb-0">
               <i class="bi bi-geo-alt me-2"></i><strong>Active Branch:</strong> <span id="current-branch-name">-</span>
@@ -3252,6 +3271,7 @@
 
         <!-- Receipt & branding group -->
         <div id="settings-group-receipt" class="settings-group" role="group" aria-label="Receipt and branding" style="display: none">
+        <div class="alert alert-info">Receipt branding for <strong class="settings-active-branch-name">the active branch</strong></div>
         <div class="card settings-card">
           <div class="card-header">
             <span class="settings-icon-chip"><i class="bi bi-shop-window"></i></span>
@@ -3367,16 +3387,17 @@
 
         <!-- Printing group -->
         <div id="settings-group-printing" class="settings-group" role="group" aria-label="Printing" style="display: none">
+        <div class="alert alert-info">Print settings for <strong class="settings-active-branch-name">the active branch</strong></div>
         <div class="card settings-card">
           <div class="card-header">
             <span class="settings-icon-chip"><i class="bi bi-printer"></i></span>
             <div class="settings-card-header-title">
               <h5>Receipt Printer</h5>
-              <span class="settings-card-subtitle">Shared thermal paper profile for every device</span>
+              <span class="settings-card-subtitle">Thermal paper profile for this branch</span>
             </div>
           </div>
           <div class="card-body">
-            <p class="text-muted mb-3">Choose the shared thermal paper profile used for checkout and Sales History receipts on every device.</p>
+            <p class="text-muted mb-3">Choose the thermal paper profile used for this branch's checkout and Sales History receipts.</p>
             <fieldset id="receipt-paper-options">
               <legend class="visually-hidden">Receipt paper size</legend>
               <div class="row g-3">
@@ -3405,7 +3426,7 @@
               <i class="bi bi-save me-1"></i>Save receipt printer
             </button>
             <div class="alert alert-light border mt-3 mb-0 py-2" id="receipt-paper-access-note" style="display: none;">
-              Manager access is required to change the shared printer profile.
+              Manager access is required to change this branch's printer profile.
             </div>
           </div>
         </div>
@@ -4540,6 +4561,9 @@
             ></button>
           </div>
           <div class="modal-body">
+            <div class="alert alert-info py-2">
+              This user will belong to <strong class="users-active-branch-name">the active branch</strong>.
+            </div>
             <form id="add-user-form">
               <div class="mb-3">
                 <label class="form-label"
@@ -5819,7 +5843,7 @@
                 <input type="text" class="form-control" id="restock-available-qty" readonly />
               </div>
               <div class="col-md-6">
-                <label class="form-label">Current Main Stock</label>
+                <label class="form-label">Catalog Branch Stock</label>
                 <input type="text" class="form-control" id="restock-main-stock" readonly />
               </div>
             </div>
@@ -5861,6 +5885,7 @@
                   <tr>
                     <th>Date</th>
                     <th>Product</th>
+                    <th>Target Branch</th>
                     <th>Qty</th>
                     <th>Batch</th>
                     <th>By</th>
@@ -5868,7 +5893,7 @@
                   </tr>
                 </thead>
                 <tbody id="transfer-history-table">
-                  <tr><td colspan="6" class="text-center py-3">Loading...</td></tr>
+                  <tr><td colspan="7" class="text-center py-3">Loading...</td></tr>
                 </tbody>
               </table>
             </div>
@@ -6273,8 +6298,12 @@
 
       function loadSettings() {
         fetch("/api/settings")
-          .then((response) => response.json())
+          .then((response) => {
+            if (!response.ok) throw new Error("Unable to load settings");
+            return response.json();
+          })
           .then((data) => {
+            if (currentBranch?.id && String(data.branch_id) !== String(currentBranch.id)) return;
             APP_SETTINGS.posName = data.pos_name || APP_SETTINGS.posName;
             APP_SETTINGS.currencyCode = data.currency_code || APP_SETTINGS.currencyCode;
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(APP_SETTINGS.currencyCode);
@@ -6289,14 +6318,14 @@
               ...(data.receipt_customization || {}),
             };
             applySettingsUI();
-            offlineCacheSet(SETTINGS_CACHE_KEY, data);
+            offlineCacheSet(settingsCacheKey(data.branch_id), data);
             if (hasCapability("admin")) loadAISettings();
           })
           .catch((error) => {
             console.error("Error loading settings:", error);
             // Offline fallback: apply the last cached settings so currency and
             // receipt formatting still work without a connection.
-            const cached = offlineCacheGet(SETTINGS_CACHE_KEY);
+            const cached = offlineCacheGet(settingsCacheKey());
             if (cached && cached.data) {
               const data = cached.data;
               APP_SETTINGS.posName = data.pos_name || APP_SETTINGS.posName;
@@ -6376,6 +6405,7 @@
 
       async function saveMMQRConfiguration() {
         if (!hasManagerAccess() || (!pendingMMQRFile && !pendingMMQRRemoval)) return;
+        const branchId = currentBranch?.id;
         const button = document.getElementById("save-mmqr-btn");
         const originalContent = button.innerHTML;
         button.disabled = true;
@@ -6383,17 +6413,19 @@
         try {
           let response;
           if (pendingMMQRRemoval) {
-            response = await fetch("/api/settings/mmqr", { method: "DELETE" });
+            response = await fetch(`/api/settings/mmqr?branch_id=${encodeURIComponent(branchId || "")}`, { method: "DELETE" });
           } else {
             const formData = new FormData();
             formData.append("mmqr", pendingMMQRFile);
+            formData.append("branch_id", String(branchId || ""));
             response = await fetch("/api/settings/mmqr", { method: "POST", body: formData });
           }
           const data = await response.json();
           if (!response.ok || !data.success) throw new Error(data.message || "Failed to save MMQR");
+          if (currentBranch?.id && String(data.branch_id) !== String(currentBranch.id)) return;
           APP_SETTINGS.mmqrUrl = data.mmqr_url || null;
           clearPendingMMQR();
-          offlineCacheSet(SETTINGS_CACHE_KEY, { ...(offlineCacheGet(SETTINGS_CACHE_KEY)?.data || {}), mmqr_url: APP_SETTINGS.mmqrUrl });
+          offlineCacheSet(settingsCacheKey(), { ...(offlineCacheGet(settingsCacheKey())?.data || {}), mmqr_url: APP_SETTINGS.mmqrUrl });
           renderMMQRPreview();
           updateMMQRControls();
           showToast(APP_SETTINGS.mmqrUrl ? "MMQR saved" : "MMQR removed", "success");
@@ -6466,6 +6498,7 @@
         if (!pendingReceiptLogoFile) return null;
         const formData = new FormData();
         formData.append("logo", pendingReceiptLogoFile);
+        formData.append("branch_id", String(currentBranch?.id || ""));
         const response = await fetch("/api/settings/receipt-logo", { method: "POST", body: formData });
         const data = await response.json();
         if (!response.ok || !data.success) throw new Error(data.message || "Failed to upload receipt logo");
@@ -6474,6 +6507,7 @@
 
       async function saveReceiptCustomization() {
         if (!hasManagerAccess()) return;
+        const branchId = currentBranch?.id;
         const values = getReceiptCustomizationFormValues();
         if (!values.brand_name) {
           showToast("Receipt brand name is required", "warning");
@@ -6488,15 +6522,17 @@
           const response = await fetch("/api/settings", {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ receipt_customization: values }),
+            body: JSON.stringify({ branch_id: branchId, receipt_customization: values }),
           });
           const data = await response.json();
           if (!response.ok || !data.success) throw new Error(data.message || "Failed to save receipt customization");
+          if (currentBranch?.id && String(data.branch_id) !== String(currentBranch.id)) return;
           APP_SETTINGS.receiptCustomization = {
             ...APP_SETTINGS.receiptCustomization,
             ...(data.receipt_customization || {}),
           };
           const logoData = await uploadPendingReceiptLogo();
+          if (logoData && currentBranch?.id && String(logoData.branch_id) !== String(currentBranch.id)) return;
           if (logoData) {
             APP_SETTINGS.receiptCustomization.logo_filename = logoData.logo_filename;
             APP_SETTINGS.receiptCustomization.logo_url = logoData.logo_url;
@@ -6505,6 +6541,10 @@
           if (pendingReceiptLogoObjectUrl) URL.revokeObjectURL(pendingReceiptLogoObjectUrl);
           pendingReceiptLogoObjectUrl = null;
           document.getElementById("receipt-logo-file").value = "";
+          offlineCacheSet(settingsCacheKey(), {
+            ...(offlineCacheGet(settingsCacheKey())?.data || {}),
+            receipt_customization: APP_SETTINGS.receiptCustomization,
+          });
           applySettingsUI();
           showToast("Receipt customization saved", "success");
         } catch (error) {
@@ -6532,14 +6572,19 @@
 
       async function performReceiptLogoRemoval() {
         try {
-          const response = await fetch("/api/settings/receipt-logo", { method: "DELETE" });
+          const response = await fetch(`/api/settings/receipt-logo?branch_id=${encodeURIComponent(currentBranch?.id || "")}`, { method: "DELETE" });
           const data = await response.json();
           if (!response.ok || !data.success) throw new Error(data.message || "Failed to remove receipt logo");
+          if (currentBranch?.id && String(data.branch_id) !== String(currentBranch.id)) return;
           APP_SETTINGS.receiptCustomization.logo_filename = "";
           APP_SETTINGS.receiptCustomization.logo_url = null;
           pendingReceiptLogoFile = null;
           if (pendingReceiptLogoObjectUrl) URL.revokeObjectURL(pendingReceiptLogoObjectUrl);
           pendingReceiptLogoObjectUrl = null;
+          offlineCacheSet(settingsCacheKey(), {
+            ...(offlineCacheGet(settingsCacheKey())?.data || {}),
+            receipt_customization: APP_SETTINGS.receiptCustomization,
+          });
           applySettingsUI();
           showToast("Receipt logo removed from future receipts", "success");
         } catch (error) {
@@ -6841,11 +6886,14 @@
         return fetch("/api/settings", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ ...payload, branch_id: currentBranch?.id }),
         })
           .then(async (response) => {
             const data = await response.json();
             if (!response.ok || !data.success) throw new Error(data.message || "Failed to save settings");
+            const cacheKey = settingsCacheKey(data.branch_id);
+            offlineCacheSet(cacheKey, { ...(offlineCacheGet(cacheKey)?.data || {}), ...data });
+            if (currentBranch?.id && String(data.branch_id) !== String(currentBranch.id)) return data;
             onSuccess?.(data);
             showToast(successMessage, "success");
             return data;
@@ -7008,6 +7056,22 @@
             reportBranchSelector.appendChild(reportOption);
           }
         });
+        if (currentBranch) selector.value = currentBranch.id;
+        updateBranchSaveButton();
+      }
+
+      function updateBranchSaveButton() {
+        const selector = document.getElementById("branch-selector");
+        const button = document.getElementById("save-branch-selection-btn");
+        if (button) {
+          button.disabled = !hasCapability("branches.switch") || !currentBranch || !selector?.value ||
+            String(selector.value) === String(currentBranch?.id);
+        }
+      }
+
+      function saveSelectedBranch() {
+        const branchId = document.getElementById("branch-selector")?.value;
+        if (currentBranch && branchId && String(branchId) !== String(currentBranch.id)) switchBranch(branchId);
       }
 
       function bindCurrentBranchUI(current) {
@@ -7017,6 +7081,8 @@
         if (reportBranchSelector) reportBranchSelector.value = "";
         updateBranchIndicators(current);
         toggleReportScopeControls();
+        updateBranchSaveButton();
+        if (hasCapability("catalog.write")) loadCategoryDropdowns();
       }
 
       function applyCachedCurrentBranch() {
@@ -7027,16 +7093,24 @@
           if (selector) selector.value = currentBranch.id;
           updateBranchIndicators(currentBranch);
           toggleReportScopeControls();
+          if (hasCapability("catalog.write")) loadCategoryDropdowns();
         } else {
           currentBranch = null;
           updateBranchIndicators(null);
         }
+        updateBranchSaveButton();
       }
 
       // Update all branch indicators across the UI
       function updateBranchIndicators(branch) {
         const branchLabel = branch ? `${branch.name}${branch.code ? ` (${branch.code})` : ""}` : "No active branch";
-        
+        document.querySelectorAll(".settings-active-branch-name").forEach((label) => {
+          label.textContent = branchLabel;
+        });
+        document.querySelectorAll(".users-active-branch-name").forEach((label) => {
+          label.textContent = branchLabel;
+        });
+
         // Update sidebar branch name
         const sidebarBranchName = document.getElementById("current-branch-name");
         if (sidebarBranchName) {
@@ -7054,10 +7128,8 @@
           "promotions-branch-indicator",
           "customers-branch-indicator",
           "debts-branch-indicator",
-          "suppliers-branch-indicator",
-          "purchases-branch-indicator",
-          "warehouse-branch-indicator",
           "deliveries-branch-indicator",
+          "users-branch-indicator",
           "returns-branch-indicator"
         ];
         
@@ -7112,7 +7184,9 @@
       function switchBranch(branchId) {
         if (!requireCapability("branches.switch")) return;
         if (!branchId) return;
-        
+        const saveButton = document.getElementById("save-branch-selection-btn");
+        if (saveButton) saveButton.disabled = true;
+
         fetch(`/api/branches/switch/${branchId}`, { method: "POST" })
           .then((response) => response.json())
           .then((data) => {
@@ -7122,26 +7196,36 @@
               return;
             }
             currentBranch = data.branch;
+            offlineCacheSet(CURRENT_BRANCH_CACHE_KEY, data.branch);
+            clearPendingMMQR();
+            pendingReceiptLogoFile = null;
+            if (pendingReceiptLogoObjectUrl) URL.revokeObjectURL(pendingReceiptLogoObjectUrl);
+            pendingReceiptLogoObjectUrl = null;
+            const logoInput = document.getElementById("receipt-logo-file");
+            if (logoInput) logoInput.value = "";
             updatePendingSalesBadge();
-            // Update all branch indicators
-            updateBranchIndicators(data.branch);
+            bindCurrentBranchUI(data.branch);
+            cachedCategories = null;
             showToast(data.message, "success");
             // Everything cached belongs to the previous branch: the write to
             // /api/branches/switch already dropped the memory cache, this drops
             // the product snapshot too - before anything is re-rendered.
             invalidateProductsCache();
-            // Refresh current section data
-            refreshCurrentSection();
-
-            const selector = document.getElementById("warehouse-target-branch");
-            if (selector) {
-              selector.value = branchId;
-            }
+            // Reload every workflow and form with the newly saved branch.
+            try {
+              sessionStorage.setItem(BRANCH_SWITCH_RETURN_SECTION_KEY, "settings");
+            } catch (error) { /* The normal saved section remains the fallback. */ }
+            try {
+              localStorage.setItem(ACTIVE_SECTION_STORAGE_KEY, "settings");
+            } catch (error) { /* The one-time return marker remains available. */ }
+            window.location.reload();
           })
           .catch((error) => {
             console.error("Error switching branch:", error);
             showToast("Failed to switch branch", "error");
-          });
+            if (currentBranch) bindCurrentBranchUI(currentBranch);
+          })
+          .finally(updateBranchSaveButton);
       }
 
       function loadBranches() {
@@ -7343,6 +7427,7 @@
       let cart = [];
       let currentSection = "dashboard";
       const ACTIVE_SECTION_STORAGE_KEY = "pos_active_section";
+      const BRANCH_SWITCH_RETURN_SECTION_KEY = "pos_branch_switch_return_section";
       let currentProduct = null;
       let currentSupplier = null;
       let dashboardChart = null;
@@ -7558,6 +7643,7 @@
           headers.set("x-pos-user-id", String(CACHE_USER_ID));
           headers.set("x-pos-role", String(CACHE_USER_ROLE));
         }
+        if (currentBranch?.id != null) headers.set("x-pos-branch-id", String(currentBranch.id));
         return {...(init || {}), headers};
       }
 
@@ -7575,6 +7661,9 @@
           if (api && response.status === 409 && response.headers.get("x-pos-session-mismatch") === "1") {
             blockStaleDashboard();
             return staleDashboardResponse();
+          }
+          if (api && response.status === 409 && response.headers.get("x-pos-branch-mismatch") === "1") {
+            window.location.reload();
           }
           return api && dashboardSessionStale ? staleDashboardResponse() : response;
         });
@@ -7854,7 +7943,7 @@
         promotions: () => { loadPromotions(); loadProductsForPromotionModal(); },
         customers: () => loadCustomers(),
         debts: () => { loadDebts(); loadCustomersForDebtModal(); },
-        suppliers: () => loadSuppliers(),
+        suppliers: () => { loadSupplierCategoryFilter(); loadSuppliers(); },
         purchases: () => { loadPOSupplierFilter(); loadPurchaseOrders(); },
         warehouse: () => { loadWarehouseSummary(); loadWarehouseInventory(); },
         deliveries: () => { loadDeliveryStats(); loadDeliveries(); },
@@ -8022,6 +8111,16 @@
       const BRANCHES_CACHE_KEY = "pos_branches_cache";
       const CURRENT_BRANCH_CACHE_KEY = "pos_current_branch_cache";
 
+      function categoryCacheKey(activeOnly = false) {
+        const base = activeOnly ? CATEGORY_ACTIVE_CACHE_KEY : CATEGORY_CACHE_KEY;
+        return `${base}:${currentBranch?.id || "unknown"}`;
+      }
+
+      function settingsCacheKey(branchId = currentBranch?.id) {
+        const id = branchId || offlineCacheGet(CURRENT_BRANCH_CACHE_KEY)?.data?.id;
+        return `${SETTINGS_CACHE_KEY}:${id || "unknown"}`;
+      }
+
       function offlineCacheSet(key, data) {
         key = scopedOfflineCacheKey(key);
         if (!key) return;
@@ -8055,6 +8154,14 @@
           localStorage.removeItem(key);
         } catch (e) { /* ignore */ }
       }
+
+      window.addEventListener("storage", (event) => {
+        if (event.key !== scopedOfflineCacheKey(CURRENT_BRANCH_CACHE_KEY) || !event.newValue || !currentBranch?.id) return;
+        try {
+          const branchId = JSON.parse(event.newValue)?.data?.id;
+          if (branchId != null && String(branchId) !== String(currentBranch.id)) window.location.reload();
+        } catch (error) { /* Ignore incomplete cache writes. */ }
+      });
 
       function cachedProductsKey() {
         return currentBranch?.id
@@ -8432,9 +8539,6 @@
         initAutoBarcodeScannerToggle();
 
         const startSection = resolveStartSection();
-        if (startSection !== "dashboard") {
-          document.getElementById("dashboard-section").style.display = "none";
-        }
         showSection(startSection);
 
         // Add an exact barcode match on Enter; retain normal product searches.
@@ -9285,6 +9389,7 @@
           if (target.origin !== window.location.origin) return null;
           target.searchParams.set("pos_user_id", String(CACHE_USER_ID));
           target.searchParams.set("pos_role", String(CACHE_USER_ROLE));
+          if (currentBranch?.id != null) target.searchParams.set("pos_branch_id", String(currentBranch.id));
           return target.pathname + target.search + target.hash;
         } catch (error) {
           return null;
@@ -9488,6 +9593,8 @@
           manageStockWarehouse: "Manage Stock",
           addProduct: "Add Product",
           printBarcodeLabels: "Print Labels",
+          exportExcel: "Export Excel",
+          exportPdf: "Export PDF",
           searchBarcodeNameCategory: "Search by barcode, name or category",
           photo: "Photo",
           barcode: "Barcode",
@@ -9612,6 +9719,8 @@
           manageStockWarehouse: "ကုန်လက်ကျန်စီမံရန်",
           addProduct: "ကုန်ပစ္စည်းထည့်ရန်",
           printBarcodeLabels: "ဘားကုတ်စာရင်းထုတ်ရန်",
+          exportExcel: "Excel ဖိုင်ထုတ်ရန်",
+          exportPdf: "PDF ဖိုင်ထုတ်ရန်",
           searchBarcodeNameCategory: "ဘားကုတ်၊ အမည် သို့ အမျိုးအစားဖြင့်ရှာရန်",
           photo: "ဓာတ်ပုံ",
           barcode: "ဘားကုတ်",
@@ -9839,7 +9948,12 @@
       // exists and they are still allowed to see it - otherwise the dashboard.
       function resolveStartSection() {
         if (!hasManagerOrBossAccess()) return "pos";
-        const savedSection = localStorage.getItem(ACTIVE_SECTION_STORAGE_KEY);
+        let returnSection = null;
+        try {
+          returnSection = sessionStorage.getItem(BRANCH_SWITCH_RETURN_SECTION_KEY);
+          sessionStorage.removeItem(BRANCH_SWITCH_RETURN_SECTION_KEY);
+        } catch (error) { /* Fall back to the last saved section. */ }
+        const savedSection = returnSection || localStorage.getItem(ACTIVE_SECTION_STORAGE_KEY);
         // Audit history is intentionally fetched only after an explicit user
         // action; never auto-open it merely because it was last viewed.
         if (!savedSection || savedSection === "dashboard" || savedSection === "logs") return "dashboard";
@@ -11673,6 +11787,7 @@
       let cachedCategories = null;
 
       function loadCategories() {
+        const branchId = currentBranch?.id;
         const table = document.getElementById("categories-table");
         table.innerHTML = `
           <tr>
@@ -11690,8 +11805,9 @@
         fetch("/api/categories")
           .then((r) => r.json())
           .then((categories) => {
+            if (currentBranch?.id !== branchId) return;
             cachedCategories = categories;
-            offlineCacheSet(CATEGORY_CACHE_KEY, categories);
+            offlineCacheSet(categoryCacheKey(), categories);
             table.innerHTML = "";
 
             // Filter categories
@@ -11755,9 +11871,10 @@
             });
           })
           .catch((err) => {
+            if (currentBranch?.id !== branchId) return;
             console.error("Error loading categories:", err);
             // Offline fallback: re-fill the table from the cached category list.
-            const cached = offlineCacheGet(CATEGORY_CACHE_KEY);
+            const cached = offlineCacheGet(categoryCacheKey());
             if (cached && Array.isArray(cached.data)) {
               cachedCategories = cached.data;
               renderCategoriesView(cached.data, search, statusFilter);
@@ -12005,16 +12122,19 @@
 
       // Load category dropdowns for product and supplier forms
       function loadCategoryDropdowns() {
+        const branchId = currentBranch?.id;
         fetch("/api/categories?active_only=true")
           .then((r) => r.json())
           .then((categories) => {
-            offlineCacheSet(CATEGORY_ACTIVE_CACHE_KEY, categories);
+            if (currentBranch?.id !== branchId) return;
+            offlineCacheSet(categoryCacheKey(true), categories);
             fillCategoryDropdowns(categories);
           })
           .catch((err) => {
+            if (currentBranch?.id !== branchId) return;
             console.error("Error loading category dropdowns:", err);
             // Offline fallback: use the cached category list to fill dropdowns.
-            const cached = offlineCacheGet(CATEGORY_ACTIVE_CACHE_KEY) || offlineCacheGet(CATEGORY_CACHE_KEY);
+            const cached = offlineCacheGet(categoryCacheKey(true)) || offlineCacheGet(categoryCacheKey());
             if (cached && Array.isArray(cached.data)) {
               fillCategoryDropdowns(cached.data);
             }
@@ -12023,7 +12143,7 @@
 
       function fillCategoryDropdowns(categories) {
         const dropdowns = [
-          "add-category", "edit-product-category", "add-supplier-category", "edit-supplier-category", "supplier-category-filter"
+          "add-category", "edit-product-category", "add-supplier-category", "edit-supplier-category"
         ];
         dropdowns.forEach((id) => {
           const select = document.getElementById(id);
@@ -12379,7 +12499,6 @@
         }
         
         // These dropdowns belong to manager catalog/supplier forms, not POS.
-        if (hasCapability("catalog.write")) loadCategoryDropdowns();
       });
 
       // Product management functions
@@ -12493,6 +12612,14 @@
                           `;
             renderPagination("products", "products-pagination", 1, loadProducts);
           });
+      }
+
+      function exportProductList(format) {
+        const params = new URLSearchParams();
+        params.set("format", format === "xlsx" ? "xlsx" : "pdf");
+        const search = (document.getElementById("products-search")?.value || "").trim();
+        if (search) params.set("q", search);
+        return openReportDownload(`/api/products/export?${params.toString()}`);
       }
 
       function saveProduct() {
@@ -13791,6 +13918,7 @@
       // User management functions
       // Update the loadUsers function to properly handle the response
       function loadUsers() {
+        const branchId = currentBranch?.id;
         const usersTable = document.getElementById("users-table");
         usersTable.innerHTML = `
           <tr>
@@ -13817,6 +13945,7 @@
             return response.json();
           })
           .then((payload) => {
+            if (currentBranch?.id !== branchId) return;
             const data = parsePagedResponse(payload);
             usersTable.innerHTML = "";
 
@@ -13861,6 +13990,7 @@
             );
           })
           .catch((error) => {
+            if (currentBranch?.id !== branchId) return;
             console.error("Error loading users:", error);
             usersTable.innerHTML = `
               <tr>
@@ -14214,7 +14344,10 @@
 
       function editUser(userId) {
         fetch("/api/users/" + userId)
-          .then((response) => response.json())
+          .then((response) => response.json().then((data) => {
+            if (!response.ok) throw new Error(data.message || "Failed to load user");
+            return data;
+          }))
           .then((user) => {
             document.getElementById("edit-user-id").value = user.id;
             document.getElementById("edit-username").value = user.username;
@@ -15509,6 +15642,33 @@
       }
 
       // Supplier management functions
+      function loadSupplierCategoryFilter() {
+        fetch("/api/suppliers/categories")
+          .then((response) => response.json())
+          .then((categories) => {
+            if (!Array.isArray(categories)) return;
+            for (const id of ["add-supplier-category", "edit-supplier-category"]) {
+              const select = document.getElementById(id);
+              if (!select) continue;
+              const selected = select.value;
+              select.innerHTML = '<option value="">Select category</option>';
+              categories.forEach((category) =>
+                select.add(new Option(`${category.name} (${category.branch_name})`, String(category.id)))
+              );
+              if (selected) select.value = selected;
+            }
+            const filter = document.getElementById("supplier-category-filter");
+            if (!filter) return;
+            const selected = filter.value;
+            filter.innerHTML = '<option value="">All Categories</option>';
+            [...new Set(categories.map((category) => category.name))].sort().forEach((name) =>
+              filter.add(new Option(name, name))
+            );
+            if (selected) filter.value = selected;
+          })
+          .catch((error) => console.error("Error loading supplier categories:", error));
+      }
+
       function loadSuppliers() {
         const suppliersTable = document.getElementById("suppliers-table");
         const searchInput = document.getElementById("supplier-search");
@@ -15522,7 +15682,7 @@
         const queryParams = new URLSearchParams();
         if (searchQuery) queryParams.set("q", searchQuery);
         if (activeFilter) queryParams.set("active", activeFilter);
-        if (categoryQuery) queryParams.set("category_id", categoryQuery);
+        if (categoryQuery) queryParams.set("category", categoryQuery);
         const endpoint = `/api/suppliers${queryParams.toString() ? `?${queryParams.toString()}` : ""}`;
 
         suppliersTable.innerHTML = `
@@ -15915,6 +16075,7 @@
               const modal = bootstrap.Modal.getInstance(document.getElementById("addSupplierModal"));
               modal.hide();
               document.getElementById("add-supplier-form").reset();
+              loadSupplierCategoryFilter();
               loadSuppliers();
             } else {
               showToast("Error adding supplier: " + (data.message || "Unknown error"), "error");
@@ -15937,7 +16098,11 @@
             document.getElementById("edit-supplier-phone").value = supplier.phone || "";
             document.getElementById("edit-supplier-email").value = supplier.email || "";
             document.getElementById("edit-supplier-address").value = supplier.address || "";
-            document.getElementById("edit-supplier-category").value = supplier.category_id || "";
+            const categorySelect = document.getElementById("edit-supplier-category");
+            if (supplier.category_id && !Array.from(categorySelect.options).some((option) => option.value === String(supplier.category_id))) {
+              categorySelect.add(new Option(supplier.category || "Current category", String(supplier.category_id)));
+            }
+            categorySelect.value = supplier.category_id || "";
             document.getElementById("edit-supplier-tax-id").value = supplier.tax_id || "";
             document.getElementById("edit-supplier-website").value = supplier.website || "";
             document.getElementById("edit-supplier-bank-name").value = supplier.bank_name || "";
@@ -15986,6 +16151,7 @@
               showToast("Supplier updated successfully!", "success");
               const modal = bootstrap.Modal.getInstance(document.getElementById("editSupplierModal"));
               modal.hide();
+              loadSupplierCategoryFilter();
               loadSuppliers();
             } else {
               showToast("Error updating supplier: " + (data.message || "Unknown error"), "error");
@@ -16007,6 +16173,7 @@
               .then((data) => {
                 if (data.success) {
                   showToast("Supplier deleted successfully!", "success");
+                  loadSupplierCategoryFilter();
                   loadSuppliers();
                 } else {
                   showToast("Error deleting supplier: " + (data.message || "Unknown error"), "error");
@@ -16047,7 +16214,7 @@
         const table = document.getElementById("purchase-orders-table");
         table.innerHTML = `
           <tr>
-            <td colspan="8" class="text-center py-4">
+            <td colspan="9" class="text-center py-4">
               <div class="spinner-border text-primary" role="status"></div>
             </td>
           </tr>
@@ -16086,7 +16253,7 @@
             table.innerHTML = "";
 
             if (!data || data.length === 0) {
-              table.innerHTML = '<tr><td colspan="8" class="text-center py-4 text-muted">No purchase orders found.</td></tr>';
+              table.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-muted">No purchase orders found.</td></tr>';
               renderPagination("purchases", "purchase-orders-pagination", 1, loadPurchaseOrders);
               return;
             }
@@ -16112,6 +16279,7 @@
               row.innerHTML = `
                 <td><strong>${po.po_number}</strong></td>
                 <td>${po.supplier_name}</td>
+                <td class="d-none d-md-table-cell">${escapeHtml(po.product_branch || '-')}</td>
                 <td>${formatCurrency(po.total_amount || 0)}</td>
                 <td><span class="badge bg-${badgeClass}">${statusLabel}</span></td>
                 <td>${expDelivery}</td>
@@ -16155,7 +16323,7 @@
           })
           .catch((err) => {
             console.error("Error loading purchase orders:", err);
-            table.innerHTML = '<tr><td colspan="8" class="text-center py-4 text-danger">Failed to load purchase orders.</td></tr>';
+            table.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-danger">Failed to load purchase orders.</td></tr>';
           });
       }
 
@@ -16222,6 +16390,10 @@
                   <h6 class="text-muted">Supplier</h6>
                   <p><strong>${po.supplier_name}</strong><br>
                   <small>${po.supplier_phone || ''} ${po.supplier_email ? '<br>' + po.supplier_email : ''}</small></p>
+                </div>
+                <div class="col-md-6">
+                  <h6 class="text-muted">Product Branch</h6>
+                  <p>${escapeHtml(po.product_branch || '-')}</p>
                 </div>
                 <div class="col-md-6">
                   <h6 class="text-muted">Total Amount</h6>
@@ -16469,14 +16641,14 @@
 
         const productSelect = row.querySelector(".po-item-product");
         productSelect.innerHTML = '<option value="">Select product</option>';
-        loadProductsCached().then((products) => {
+        fetch("/api/purchase_orders/products").then((response) => response.json()).then((products) => {
           products.forEach((p) => {
             const opt = document.createElement("option");
             opt.value = p.id;
-            opt.textContent = `${p.name} (${formatCurrency(p.price)})`;
+            opt.textContent = `${p.name} — ${p.branch_name} (${formatCurrency(p.price)})`;
             productSelect.appendChild(opt);
           });
-        });
+        }).catch((error) => console.error("Error loading purchase products:", error));
         makeSelectSearchable(productSelect);
       }
 
@@ -16562,7 +16734,7 @@
             }
 
             selectedReceivePO = po;
-            document.getElementById("receive-po-number").textContent = po.po_number;
+            document.getElementById("receive-po-number").textContent = `${po.po_number} — ${po.product_branch || 'Unassigned'}`;
             const container = document.getElementById("receive-po-items-container");
             container.innerHTML = "";
 
@@ -16937,7 +17109,7 @@
 
       function loadWarehouseInventory() {
         const table = document.getElementById("warehouse-table");
-        table.innerHTML = '<tr><td colspan="9" class="text-center py-4"><div class="spinner-border text-primary"></div></td></tr>';
+        table.innerHTML = '<tr><td colspan="10" class="text-center py-4"><div class="spinner-border text-primary"></div></td></tr>';
 
         const params = new URLSearchParams();
         const search = (document.getElementById("warehouse-search")?.value || "").trim();
@@ -16952,7 +17124,7 @@
             table.innerHTML = "";
 
             if (!data || data.length === 0) {
-              table.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-muted">No warehouse inventory found.</td></tr>';
+              table.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-muted">No warehouse inventory found.</td></tr>';
               renderPagination("warehouse", "warehouse-pagination", 1, () => loadWarehouseInventory());
               return;
             }
@@ -16961,20 +17133,24 @@
             page.items.forEach((item) => {
               const row = document.createElement("tr");
               row.innerHTML = `
-                <td><strong>${item.product_name}</strong></td>
-                <td>${item.barcode || '-'}</td>
+                <td><strong>${escapeHtml(item.product_name)}</strong></td>
+                <td class="d-none d-md-table-cell">${escapeHtml(item.product_branch || '-')}</td>
+                <td class="d-none d-md-table-cell">${escapeHtml(item.barcode || '-')}</td>
                 <td><span class="badge ${item.quantity <= 5 ? 'bg-warning' : 'bg-primary'}">${item.quantity}</span></td>
-                <td>${item.main_stock}</td>
-                <td>${formatCurrency(item.unit_cost || 0)}</td>
-                <td>${formatCurrency(item.total_value || 0)}</td>
-                <td><small>${item.batch_number || '-'}</small></td>
-                <td><small>${item.received_date ? new Date(item.received_date).toLocaleDateString() : '-'}</small></td>
+                <td class="d-none d-sm-table-cell">${item.main_stock}</td>
+                <td class="d-none d-lg-table-cell">${formatCurrency(item.unit_cost || 0)}</td>
+                <td class="d-none d-lg-table-cell">${formatCurrency(item.total_value || 0)}</td>
+                <td class="d-none d-md-table-cell"><small>${escapeHtml(item.batch_number || '-')}</small></td>
+                <td class="d-none d-lg-table-cell"><small>${item.received_date ? new Date(item.received_date).toLocaleDateString() : '-'}</small></td>
                 <td>
-                  <button class="btn btn-sm btn-success" onclick="showRestockModal(${item.product_id}, '${escapeHtml(item.product_name)}', ${item.total_warehouse_qty}, ${item.main_stock}, '${item.batch_number || ''}')" title="Restock to Main">
-                    <i class="bi bi-box-arrow-in-up"></i> Restock
+                  <button class="btn btn-sm btn-success warehouse-restock-btn" title="Transfer to a branch">
+                    <i class="bi bi-box-arrow-in-up"></i> Transfer
                   </button>
                 </td>
               `;
+              row.querySelector(".warehouse-restock-btn").addEventListener("click", () =>
+                showRestockModal(item.product_id, item.product_name, item.quantity, item.main_stock, item.batch_number)
+              );
               table.appendChild(row);
             });
 
@@ -16982,7 +17158,7 @@
           })
           .catch((e) => {
             console.error("Error loading warehouse inventory", e);
-            table.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-danger">Failed to load warehouse inventory.</td></tr>';
+            table.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-danger">Failed to load warehouse inventory.</td></tr>';
           });
       }
 
@@ -17119,31 +17295,32 @@
 
       function showTransferHistoryModal() {
         const table = document.getElementById("transfer-history-table");
-        table.innerHTML = '<tr><td colspan="6" class="text-center py-3">Loading...</td></tr>';
+        table.innerHTML = '<tr><td colspan="7" class="text-center py-3">Loading...</td></tr>';
 
         fetch("/api/warehouse/transfers")
           .then((r) => r.json())
           .then((data) => {
             const transfers = data.items || data;
             if (!transfers || transfers.length === 0) {
-              table.innerHTML = '<tr><td colspan="6" class="text-center py-3 text-muted">No transfer history.</td></tr>';
+              table.innerHTML = '<tr><td colspan="7" class="text-center py-3 text-muted">No transfer history.</td></tr>';
               return;
             }
 
             table.innerHTML = transfers.slice(0, 50).map((t) => `
               <tr>
                 <td><small>${new Date(t.created_at).toLocaleString()}</small></td>
-                <td>${t.product_name}</td>
+                <td>${escapeHtml(t.product_name)}</td>
+                <td>${escapeHtml(t.target_branch_name || '-')}</td>
                 <td><span class="badge bg-success">${t.quantity}</span></td>
-                <td><small>${t.batch_number || '-'}</small></td>
-                <td><small>${t.performed_by || '-'}</small></td>
-                <td><small>${t.notes || '-'}</small></td>
+                <td><small>${escapeHtml(t.batch_number || '-')}</small></td>
+                <td><small>${escapeHtml(t.performed_by || '-')}</small></td>
+                <td><small>${escapeHtml(t.notes || '-')}</small></td>
               </tr>
             `).join("");
           })
           .catch((e) => {
             console.error("Error loading transfer history", e);
-            table.innerHTML = '<tr><td colspan="6" class="text-center py-3 text-danger">Failed to load history.</td></tr>';
+            table.innerHTML = '<tr><td colspan="7" class="text-center py-3 text-danger">Failed to load history.</td></tr>';
           });
 
         new bootstrap.Modal(document.getElementById("transferHistoryModal")).show();

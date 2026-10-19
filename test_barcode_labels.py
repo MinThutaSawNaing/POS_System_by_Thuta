@@ -191,7 +191,7 @@ class LabelGeometrySettingsTests(unittest.TestCase):
     """
 
     def setUp(self):
-        from app import AppSetting, User, app, db, get_default_branch_id
+        from app import AppSetting, User, app, branch_setting_key, db, get_default_branch_id
         self.app = app
         self.db = db
         app.config.update(TESTING=True)
@@ -199,7 +199,9 @@ class LabelGeometrySettingsTests(unittest.TestCase):
         self.context.push()
         self.user = User.query.filter_by(username='admin').first()
         self.branch_id = get_default_branch_id()
-        self.keys = ('label_width_mm', 'label_height_mm', 'label_gap_mm', 'label_columns')
+        self.keys = tuple(branch_setting_key(self.branch_id, key) for key in (
+            'label_width_mm', 'label_height_mm', 'label_gap_mm', 'label_columns'
+        ))
         self.originals = {
             key: (AppSetting.query.filter_by(key=key).first().value
                   if AppSetting.query.filter_by(key=key).first() else None)
@@ -269,14 +271,15 @@ class LabelGeometrySettingsTests(unittest.TestCase):
         self.assertEqual(invalid.status_code, 400)
         self.assertIn('Invalid label', invalid.get_json()['message'])
         # the rejected save must not change the stored value
-        from app import get_label_geometry
-        self.assertEqual(get_label_geometry()['label_width_mm'], 40.0)
+        from app import Branch, get_label_geometry
+        branch = self.db.session.get(Branch, self.branch_id)
+        self.assertEqual(get_label_geometry(branch)['label_width_mm'], 40.0)
 
     def test_print_route_follows_configured_geometry(self):
-        from app import Product, set_setting
+        from app import Product, set_branch_setting
         import uuid
-        set_setting('label_columns', '2')
-        set_setting('label_width_mm', '40')
+        set_branch_setting('label_columns', '2', self.branch_id)
+        set_branch_setting('label_width_mm', '40', self.branch_id)
         product = Product(
             name='Geometry Test Product', price=1000, stock=0, tax_rate=0,
             branch_id=self.branch_id, barcode='GEO-' + uuid.uuid4().hex[:10],
