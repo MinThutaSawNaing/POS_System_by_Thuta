@@ -51,6 +51,7 @@ class AccountBarrierTests(unittest.TestCase):
                 username=f'barrier_role_target_{uuid.uuid4().hex[:8]}',
                 password=generate_password_hash('UnusedTargetPass!123'),
                 role='cashier',
+                branch_id=self.branch_id,
             )
             db.session.add(self.role_target)
             db.session.commit()

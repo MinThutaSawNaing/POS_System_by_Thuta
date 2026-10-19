@@ -16,10 +16,10 @@ class AuditLogTests(unittest.TestCase):
         with app.app_context():
             self.branch = Branch.query.filter_by(is_active=True).first()
             self.manager = User.query.filter_by(role='manager').first()
-            self.cashier = User.query.filter_by(role='cashier').first()
+            self.cashier = User.query.filter_by(role='cashier', branch_id=self.branch.id).first()
             if not self.cashier:
                 self.cashier = User(username=f'audit_cashier_{uuid.uuid4().hex[:8]}',
-                                    password='unused', role='cashier')
+                                    password='unused', role='cashier', branch_id=self.branch.id)
                 db.session.add(self.cashier)
                 db.session.commit()
             self.branch_id = self.branch.id

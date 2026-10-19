@@ -1,4 +1,4 @@
-"""Ratings API validates atomically and respects manager/branch boundaries."""
+"""Ratings API validates atomically; shared suppliers remain manager-only."""
 import uuid
 
 import pytest
@@ -50,7 +50,7 @@ def test_invalid_rating_does_not_save_either_score(supplier_client, value):
     assert (supplier.quality_rating, supplier.delivery_rating) == (3, 2)
 
 
-def test_other_branch_cannot_rate_supplier(supplier_client):
+def test_manager_can_rate_shared_supplier_from_other_branch(supplier_client):
     client, supplier_id = supplier_client
     branch = Branch(name=f'Rating branch {uuid.uuid4().hex}', code=uuid.uuid4().hex[:10],
                     is_active=True, is_default=False)
@@ -62,7 +62,9 @@ def test_other_branch_cannot_rate_supplier(supplier_client):
     db.session.commit()
     try:
         response = client.post(f'/api/suppliers/{supplier_id}/ratings', json={'quality_rating': 5})
-        assert response.status_code == 404
+        assert response.status_code == 200
+        db.session.refresh(supplier)
+        assert supplier.quality_rating == 5
     finally:
         supplier.branch_id = original_branch
         db.session.delete(branch)

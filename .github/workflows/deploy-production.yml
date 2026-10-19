@@ -14,8 +14,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test:
+    name: Verify POS regressions before deployment
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install application and test dependencies
+        run: python -m pip install -r requirements.txt pytest
+      - name: Run tests without production data or secrets
+        run: python run_tests.py
+
   deploy:
     name: Deploy to production VPS
+    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:

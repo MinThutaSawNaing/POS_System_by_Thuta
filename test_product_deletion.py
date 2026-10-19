@@ -113,8 +113,12 @@ class ProductDeletionTests(unittest.TestCase):
         self.sale_item_ids.append(item.id)
         return sale, item
 
-    def _attach_catalog_records(self, product):
-        """Wire the product into warehouse, promotions, prices and a PO pair."""
+    def _attach_catalog_records(self, product, warehouse_quantity=0):
+        """Wire catalog dependencies, with an emptied warehouse batch by default.
+
+        Live shared warehouse stock must be transferred before catalog deletion;
+        empty batches still exercise the confirmed cascade cleanup.
+        """
         supplier = Supplier(name=f'Del Sup {uuid.uuid4().hex[:6]}',
                             branch_id=self.branch.id)
         db.session.add(supplier)
@@ -123,7 +127,7 @@ class ProductDeletionTests(unittest.TestCase):
 
         now = datetime.utcnow()
         warehouse = WarehouseInventory(
-            product_id=product.id, quantity=5, location='A1',
+            product_id=product.id, quantity=warehouse_quantity, location='A1',
             branch_id=self.branch.id,
         )
         transfer = WarehouseTransfer(
@@ -285,6 +289,23 @@ class ProductDeletionTests(unittest.TestCase):
         self.assertTrue(body['can_delete'])
         self.assertTrue(body['has_sales_history'])
         self.assertGreater(body['removable_count'], 0)
+
+    def test_live_shared_warehouse_stock_blocks_even_confirmed_deletion(self):
+        product = self._product('Stocked Warehouse Product')
+        self._attach_catalog_records(product, warehouse_quantity=5)
+        client = self._client()
+
+        summary = client.get(f'/api/products/{product.id}/dependencies').get_json()
+        warehouse = next(group for group in summary['groups']
+                         if group['key'] == 'warehouse_inventory')
+        self.assertEqual(warehouse['action'], 'block')
+        self.assertEqual(warehouse['quantity'], 5)
+        self.assertFalse(summary['can_delete'])
+
+        response = client.delete(f'/api/products/{product.id}?force=1&cascade=1')
+        self.assertEqual(response.status_code, 409)
+        self.assertIsNotNone(db.session.get(Product, product.id))
+        self.assertEqual(WarehouseInventory.query.filter_by(product_id=product.id).one().quantity, 5)
 
     def test_other_tab_records_require_the_cascade_confirmation(self):
         product = self._product('Wired Product')

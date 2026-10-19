@@ -200,6 +200,8 @@ Parrot POS supports managing multiple store locations from a single installation
 - **Default Branch**: Set a default branch for automatic selection on login
 - **Session Persistence**: Selected branch is maintained across page navigations
 - **Branch Indicators**: Visual indicators show the current active branch in every section
+- **Safe warehouse transfers**: Physical barcodes are preserved across branches; same-name products are never silently merged. Retrying the same transfer request uses an idempotency key to avoid moving stock twice.
+- **Protected branch switching**: Unsaved carts, staged branding changes and edited forms require confirmation before switching. Queued offline sales remain saved under their original branch; return to that branch to sync them.
 
 ### How to Use
 
@@ -497,7 +499,7 @@ An admin account is auto-created if missing:
 - Purchase orders go through a workflow: Draft → Pending → Approved → Received.
 - Debt management includes aging analysis (0-30, 31-60, 61-90, 90+ days).
 - Warehouse transfers automatically update main stock levels when confirmed.
-- Multi-branch system isolates all data by branch - ensure you're on the correct branch before making changes.
+- Operational records are branch-specific; suppliers, purchasing and warehouse stock are shared manager workflows. Ensure you're on the correct branch before making changes.
 - First branch is auto-created on initial setup; additional branches can be added from the Branches section.
 
 ---
@@ -553,6 +555,28 @@ An admin account is auto-created if missing:
 - Purchase history per supplier
 
 ---
+
+## Testing and safe upgrades
+
+Install the application requirements and `pytest`; Node.js is needed for the
+executed dashboard JavaScript regressions. Run the complete suite without
+touching the working database, uploaded files or deployment secrets:
+
+```bash
+python run_tests.py
+```
+
+Specific modules can be passed as pytest arguments, for example:
+
+```bash
+python run_tests.py -q test_branch_stabilization.py test_branch_switch_javascript.py test_ai_shared_workflows.py
+```
+
+Before upgrading an existing installation, read `MIGRATION_NOTES.md`. Use
+`python backup_database.py --database instance/pos.db --output /safe/path/pos-backup.db`
+to create a verified, WAL-aware backup without importing the application.
+Back up uploads separately and rehearse the upgrade/restart on a staging copy.
+The production workflow runs tests before deploying pushes to `main`.
 
 ## Maintainer
 

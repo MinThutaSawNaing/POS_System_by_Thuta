@@ -3129,7 +3129,7 @@
               </button>
             </div>
             <div class="form-text mb-3" id="branch-selection-help">
-              <i class="bi bi-info-circle me-1"></i>Choose a branch, then click Save Branch. Products, sales, customers, and branch settings will update after saving.
+              <i class="bi bi-info-circle me-1"></i>Choose a branch, then click Save Branch. The dashboard will reload. Unsaved work is discarded only after confirmation. Queued offline sales stay on this device under their original branch; switch back to that branch to sync them.
             </div>
             <div id="current-branch-info" class="alert alert-info mb-0">
               <i class="bi bi-geo-alt me-2"></i><strong>Active Branch:</strong> <span id="current-branch-name">-</span>
@@ -5859,6 +5859,7 @@
               <label class="form-label">Notes</label>
               <textarea class="form-control" id="restock-notes" rows="2" placeholder="Optional notes"></textarea>
             </div>
+            <div id="warehouse-transfer-status" class="alert alert-warning mb-0" role="status" hidden></div>
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -6323,6 +6324,8 @@
           })
           .catch((error) => {
             console.error("Error loading settings:", error);
+            if ((typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) ||
+                (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale)) return;
             // Offline fallback: apply the last cached settings so currency and
             // receipt formatting still work without a connection.
             const cached = offlineCacheGet(settingsCacheKey());
@@ -6550,11 +6553,8 @@
         } catch (error) {
           console.error("Error saving receipt customization:", error);
           showToast(error.message || "Failed to save receipt customization", "error");
-          pendingReceiptLogoFile = null;
-          if (pendingReceiptLogoObjectUrl) URL.revokeObjectURL(pendingReceiptLogoObjectUrl);
-          pendingReceiptLogoObjectUrl = null;
-          document.getElementById("receipt-logo-file").value = "";
-          applySettingsUI();
+          // Keep the draft and staged logo available for retry/copy. A failed
+          // request (including a branch mismatch) did not save this work.
         } finally {
           button.disabled = !hasManagerAccess();
           button.innerHTML = originalContent;
@@ -6664,7 +6664,6 @@
           })
           .catch((error) => {
             console.error("Error updating agent autonomy:", error);
-            autonomyToggle.checked = savedAgentAutonomy;
             showToast(error.message || "Failed to update Agent Autonomy", "error");
           })
           .finally(() => {
@@ -6980,6 +6979,124 @@
       let currentBranch = null;
       let branchesList = [];
 
+      // ===== BRANCH UNSAVED WORK =====
+      // Track values, not a sticky "changed" flag. Capture before the first user
+      // edit so asynchronously populated edit forms are not mistaken for drafts.
+      const branchDraftBaselines = new Map();
+      const branchClosedDraftValues = new WeakMap();
+      let branchSwitchInFlight = false;
+
+      function branchDraftValue(field) {
+        if (field.type === "checkbox" || field.type === "radio") return String(field.checked);
+        if (field.type === "file") return JSON.stringify(Array.from(field.files || [],
+          (file) => [file.name, file.size, file.lastModified]));
+        if (field.multiple && field.options) return JSON.stringify(Array.from(field.options,
+          (option) => [option.value, option.selected]));
+        return String(field.value ?? "");
+      }
+
+      function isBranchDraftField(field) {
+        return field?.matches?.("input, select, textarea") && !field.disabled && !field.readOnly &&
+          !["hidden", "button", "submit", "reset"].includes(field.type) &&
+          Boolean(field.closest(".modal:not(#confirmModal):not(#barcodeLabelModal)"));
+      }
+
+      function rememberBranchDraft(event) {
+        const field = event.target;
+        if (isBranchDraftField(field) && !branchDraftBaselines.has(field)) {
+          branchDraftBaselines.set(field, branchDraftValue(field));
+        }
+      }
+
+      function markBranchFormSaved(modalId) {
+        const root = document.getElementById(modalId);
+        if (!root) return;
+        for (const field of branchDraftBaselines.keys()) {
+          if (root.contains(field)) {
+            branchDraftBaselines.delete(field);
+            branchClosedDraftValues.delete(field);
+          }
+        }
+      }
+
+      document.addEventListener("focusin", rememberBranchDraft);
+      document.addEventListener("beforeinput", rememberBranchDraft);
+      document.addEventListener("pointerdown", rememberBranchDraft, true);
+      document.addEventListener("keydown", rememberBranchDraft, true);
+      document.addEventListener("reset", (event) => {
+        // reset fires before the browser restores the form's default values.
+        queueMicrotask(() => {
+          for (const field of branchDraftBaselines.keys()) {
+            if (event.target.contains(field)) branchDraftBaselines.delete(field);
+          }
+        });
+      });
+      document.addEventListener("shown.bs.modal", (event) => {
+        event.target.querySelectorAll("input, select, textarea").forEach((field) => {
+          // Opening a different record repopulates the same controls. Keep a
+          // cancelled draft only when the loader left its values intact.
+          const repopulated = branchClosedDraftValues.has(field) &&
+            branchClosedDraftValues.get(field) !== branchDraftValue(field);
+          if (isBranchDraftField(field) && (!branchDraftBaselines.has(field) || repopulated)) {
+            branchDraftBaselines.set(field, branchDraftValue(field));
+          }
+          branchClosedDraftValues.delete(field);
+        });
+      });
+      document.addEventListener("hidden.bs.modal", (event) => {
+        // Closing is not saving: retain changed drafts, forget untouched controls.
+        for (const [field, baseline] of branchDraftBaselines) {
+          if (!event.target.contains(field)) continue;
+          const value = branchDraftValue(field);
+          if (value === baseline) branchDraftBaselines.delete(field);
+          else branchClosedDraftValues.set(field, value);
+        }
+      });
+
+      function getUnsavedBranchWork() {
+        const work = [];
+        if (cart.length) work.push("the current unsaved cart");
+        const differs = (id, saved) => {
+          const field = document.getElementById(id);
+          return field && !field.disabled && String(field.value) !== String(saved ?? "");
+        };
+        const receipt = APP_SETTINGS.receiptCustomization;
+        const settingsChanged = differs("settings-currency-code", APP_SETTINGS.currencyCode) ||
+          differs("settings-language", currentLanguage) ||
+          differs("receipt-brand-name", receipt.brand_name) || differs("receipt-email", receipt.email) ||
+          differs("receipt-phone", receipt.phone) || differs("receipt-address", receipt.address) ||
+          differs("receipt-footer-message", receipt.footer_message) ||
+          Object.entries({"label-width-mm": "label_width_mm", "label-height-mm": "label_height_mm",
+            "label-gap-mm": "label_gap_mm", "label-columns": "label_columns"}).some(([id, key]) => {
+              const field = document.getElementById(id);
+              return field && !field.disabled && (field.value === "" ||
+                Number(field.value) !== Number(APP_SETTINGS.labelGeometry[key]));
+            }) ||
+          Array.from(document.querySelectorAll('input[name="receipt-paper-size"]')).some((field) =>
+            !field.disabled && field.checked !== (field.value === APP_SETTINGS.receiptPaperSize)) ||
+          Boolean(document.getElementById("settings-ai-api-key")?.value.trim()) ||
+          Boolean(document.getElementById("agent-autonomy-toggle") &&
+            document.getElementById("agent-autonomy-toggle").checked !== savedAgentAutonomy);
+        if (settingsChanged) work.push("unsaved settings");
+        if (pendingReceiptLogoFile) work.push("the staged receipt logo");
+        if (pendingMMQRFile || pendingMMQRRemoval) work.push("staged MMQR changes");
+        for (const [field, baseline] of branchDraftBaselines) {
+          if (!field.isConnected) { branchDraftBaselines.delete(field); continue; }
+          if (branchDraftValue(field) !== baseline) {
+            work.push("changed forms");
+            break;
+          }
+        }
+        return work;
+      }
+
+      function branchDiscardMessage(work) {
+        return `This will discard ${work.join(", ")} and reload the dashboard. ` +
+          "Cancel to keep your work. Queued offline sales are already saved on this device and will NOT be discarded. " +
+          "They remain under their original branch; return to that branch with the same account to sync them. Continue?";
+      }
+      // ===== END BRANCH UNSAVED WORK =====
+
       function loadBranchSelector() {
         if (!hasCapability("branches.switch")) {
           return fetch("/api/branches/current")
@@ -6988,6 +7105,12 @@
               return response.json();
             })
             .then((current) => {
+              if ((typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) ||
+                (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale)) return;
+              if (currentBranch && String(current.id) !== String(currentBranch.id)) {
+                handleStaleBranch();
+                return;
+              }
               currentBranch = current;
               offlineCacheSet(CURRENT_BRANCH_CACHE_KEY, current);
               bindCurrentBranchUI(current);
@@ -7012,6 +7135,12 @@
                 return res.json();
               })
               .then((current) => {
+                if ((typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) ||
+                (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale)) return;
+                if (currentBranch && String(current.id) !== String(currentBranch.id)) {
+                  handleStaleBranch();
+                  return;
+                }
                 currentBranch = current;
                 offlineCacheSet(CURRENT_BRANCH_CACHE_KEY, current);
                 bindCurrentBranchUI(current);
@@ -7064,14 +7193,14 @@
         const selector = document.getElementById("branch-selector");
         const button = document.getElementById("save-branch-selection-btn");
         if (button) {
-          button.disabled = !hasCapability("branches.switch") || !currentBranch || !selector?.value ||
+          button.disabled = branchSwitchInFlight || dashboardBranchStale || !hasCapability("branches.switch") || !currentBranch || !selector?.value ||
             String(selector.value) === String(currentBranch?.id);
         }
       }
 
       function saveSelectedBranch() {
         const branchId = document.getElementById("branch-selector")?.value;
-        if (currentBranch && branchId && String(branchId) !== String(currentBranch.id)) switchBranch(branchId);
+        if (currentBranch && branchId && String(branchId) !== String(currentBranch.id)) return switchBranch(branchId);
       }
 
       function bindCurrentBranchUI(current) {
@@ -7086,8 +7215,14 @@
       }
 
       function applyCachedCurrentBranch() {
+        if ((typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) ||
+                (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale)) return;
         const cached = offlineCacheGet(CURRENT_BRANCH_CACHE_KEY);
         if (cached && cached.data && cached.data.id !== undefined) {
+          if (currentBranch && String(cached.data.id) !== String(currentBranch.id)) {
+            handleStaleBranch();
+            return;
+          }
           currentBranch = cached.data;
           const selector = document.getElementById("branch-selector");
           if (selector) selector.value = currentBranch.id;
@@ -7181,20 +7316,37 @@
         return params.toString();
       }
 
-      function switchBranch(branchId) {
+      function switchBranch(branchId, discardConfirmed = false) {
         if (!requireCapability("branches.switch")) return;
-        if (!branchId) return;
+        if (!branchId || !currentBranch || String(branchId) === String(currentBranch.id) ||
+            branchSwitchInFlight || dashboardBranchStale) return;
+        if (isSaleProcessing || isSyncingPendingSales ||
+            (typeof warehouseTransferInFlight !== "undefined" && warehouseTransferInFlight)) {
+          showToast("Please wait for sale processing, offline sale syncing or the warehouse transfer to finish before switching branches.", "warning");
+          return;
+        }
+        const work = getUnsavedBranchWork();
+        if (work.length && !discardConfirmed) {
+          const sourceBranchId = currentBranch.id;
+          showConfirmDialog("Discard unsaved work and switch branch?", branchDiscardMessage(work), () => {
+            if (String(currentBranch?.id) === String(sourceBranchId)) return switchBranch(branchId, true);
+          }, true);
+          return;
+        }
+        branchSwitchInFlight = true;
         const saveButton = document.getElementById("save-branch-selection-btn");
         if (saveButton) saveButton.disabled = true;
 
-        fetch(`/api/branches/switch/${branchId}`, { method: "POST" })
-          .then((response) => response.json())
+        return fetch(`/api/branches/switch/${encodeURIComponent(branchId)}`, { method: "POST" })
+          .then(async (response) => {
+            const data = await response.json();
+            if (!response.ok || !data.success) throw new Error(data.message || "Failed to switch branch");
+            return data;
+          })
           .then((data) => {
-            if (!data.success) {
-              showToast(data.message || "Failed to switch branch", "error");
-              loadBranchSelector(); // Reset selector
-              return;
-            }
+            // Invalidate the OLD branch snapshot before changing the cache scope.
+            // Do not repaint new-branch widgets while old forms/cart still exist.
+            invalidateProductsCache();
             currentBranch = data.branch;
             offlineCacheSet(CURRENT_BRANCH_CACHE_KEY, data.branch);
             clearPendingMMQR();
@@ -7204,13 +7356,8 @@
             const logoInput = document.getElementById("receipt-logo-file");
             if (logoInput) logoInput.value = "";
             updatePendingSalesBadge();
-            bindCurrentBranchUI(data.branch);
             cachedCategories = null;
             showToast(data.message, "success");
-            // Everything cached belongs to the previous branch: the write to
-            // /api/branches/switch already dropped the memory cache, this drops
-            // the product snapshot too - before anything is re-rendered.
-            invalidateProductsCache();
             // Reload every workflow and form with the newly saved branch.
             try {
               sessionStorage.setItem(BRANCH_SWITCH_RETURN_SECTION_KEY, "settings");
@@ -7222,10 +7369,11 @@
           })
           .catch((error) => {
             console.error("Error switching branch:", error);
-            showToast("Failed to switch branch", "error");
-            if (currentBranch) bindCurrentBranchUI(currentBranch);
+            showToast(error.message || "Failed to switch branch", "error");
+            // Leave drafts and the selected target intact so a failed switch can
+            // be retried without reloading settings or replacing form values.
           })
-          .finally(updateBranchSaveButton);
+          .finally(() => { branchSwitchInFlight = false; updateBranchSaveButton(); });
       }
 
       function loadBranches() {
@@ -7373,6 +7521,7 @@
               return;
             }
             
+            if (typeof markBranchFormSaved === "function") markBranchFormSaved("branchModal");
             bootstrap.Modal.getInstance(document.getElementById("branchModal")).hide();
             showToast(`Branch ${id ? "updated" : "created"} successfully`, "success");
             loadBranches();
@@ -7600,6 +7749,43 @@
       // directly, so neither block depends on the other being declared first.
       let notifyCacheInvalidated = null;
       let dashboardSessionStale = false;
+      let dashboardBranchStale = false;
+
+      function staleBranchResponse() {
+        return new Response(JSON.stringify({success: false, code: "stale_branch",
+          message: "Active branch changed. Your unsaved work is still on this screen. Reload when ready; queued offline sales are retained."}),
+          {status: 409, headers: {"content-type": "application/json", "x-pos-branch-mismatch": "1"}});
+      }
+
+      function handleStaleBranch() {
+        if (dashboardBranchStale) return;
+        dashboardBranchStale = true;
+        cacheStore.clear();
+        cacheInflight.clear();
+        const work = typeof getUnsavedBranchWork === "function" ? getUnsavedBranchWork() : [];
+        if (!work.length) { window.location.reload(); return; }
+        // No automatic reload and no modal over the draft: users can inspect or
+        // copy their work, but requests/checkout are blocked until a fresh page.
+        const notice = document.createElement("div");
+        notice.id = "stale-branch-notice";
+        notice.className = "alert alert-warning sticky-top m-3";
+        notice.setAttribute("role", "alert");
+        const message = document.createElement("p");
+        message.textContent = "Active branch changed in another tab. Your unsaved work is still on this screen; copy it before reloading. " +
+          "Saving, checkout and syncing are paused. Queued offline sales are retained on this device under their original branch; return there with the same account to sync.";
+        const reload = document.createElement("button");
+        reload.type = "button";
+        reload.className = "btn btn-warning";
+        reload.textContent = "Reload active branch…";
+        reload.addEventListener("click", () => {
+          const remaining = getUnsavedBranchWork();
+          if (!remaining.length) { window.location.reload(); return; }
+          showConfirmDialog("Discard unsaved work and reload?", branchDiscardMessage(remaining), () => window.location.reload(), true);
+        });
+        notice.appendChild(message);
+        notice.appendChild(reload);
+        document.body.prepend(notice);
+      }
 
       function blockStaleDashboard() {
         dashboardSessionStale = true;
@@ -7657,15 +7843,18 @@
       const nativeFetch = rawNativeFetch ? (input, init) => {
         const api = dashboardApiUrl(input);
         if (api && dashboardSessionStale) return Promise.resolve(staleDashboardResponse());
+        if (api && dashboardBranchStale) return Promise.resolve(staleBranchResponse());
         return rawNativeFetch(input, init).then((response) => {
           if (api && response.status === 409 && response.headers.get("x-pos-session-mismatch") === "1") {
             blockStaleDashboard();
             return staleDashboardResponse();
           }
           if (api && response.status === 409 && response.headers.get("x-pos-branch-mismatch") === "1") {
-            window.location.reload();
+            handleStaleBranch();
+            return staleBranchResponse();
           }
-          return api && dashboardSessionStale ? staleDashboardResponse() : response;
+          if (api && dashboardSessionStale) return staleDashboardResponse();
+          return api && dashboardBranchStale ? staleBranchResponse() : response;
         });
       } : null;
 
@@ -7877,6 +8066,7 @@
       // clears the groups a successful write touches.
       function smartFetch(input, init) {
         if (dashboardApiUrl(input) && dashboardSessionStale) return Promise.resolve(staleDashboardResponse());
+        if (dashboardApiUrl(input) && dashboardBranchStale) return Promise.resolve(staleBranchResponse());
         init = dashboardIdentityInit(input, init);
         let plan = null;
         let writeUrl = null;
@@ -8155,13 +8345,14 @@
         } catch (e) { /* ignore */ }
       }
 
-      window.addEventListener("storage", (event) => {
+      function handleBranchStorageChange(event) {
         if (event.key !== scopedOfflineCacheKey(CURRENT_BRANCH_CACHE_KEY) || !event.newValue || !currentBranch?.id) return;
         try {
           const branchId = JSON.parse(event.newValue)?.data?.id;
-          if (branchId != null && String(branchId) !== String(currentBranch.id)) window.location.reload();
+          if (branchId != null && String(branchId) !== String(currentBranch.id)) handleStaleBranch();
         } catch (error) { /* Ignore incomplete cache writes. */ }
-      });
+      }
+      window.addEventListener("storage", handleBranchStorageChange);
 
       function cachedProductsKey() {
         return currentBranch?.id
@@ -9165,7 +9356,7 @@
         });
       }
 
-      function showConfirmDialog(title, message, onConfirm) {
+      function showConfirmDialog(title, message, onConfirm, handoff = false) {
         document.getElementById("confirmModalTitle").textContent = title;
         document.getElementById("confirmModalMessage").textContent = message;
         confirmModalCallback = onConfirm;
@@ -9173,7 +9364,8 @@
         const modal = bootstrap.Modal.getOrCreateInstance(
           document.getElementById("confirmModal")
         );
-        modal.show();
+        if (handoff) showModalAfterHiding("confirmModal");
+        else modal.show();
       }
 
       // Handle confirm button click
@@ -9384,6 +9576,7 @@
       // never to caller-supplied identity or another origin.
       function dashboardIdentityUrl(url) {
         if (dashboardSessionStale) return null;
+        if (typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) return null;
         try {
           const target = new URL(url, window.location.href);
           if (target.origin !== window.location.origin) return null;
@@ -11100,6 +11293,7 @@
 
       function queueOfflineSale(saleData, receiptSnapshot) {
         if (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) return false;
+        if (typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) return false;
         saleData.transaction_id = generateClientTxnId();
         if (receiptSnapshot) receiptSnapshot.transactionId = saleData.transaction_id;
         const pending = getPendingSales();
@@ -11231,6 +11425,8 @@
 
       async function syncPendingSales() {
         if (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) return;
+        if (typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) return;
+        if (typeof branchSwitchInFlight !== "undefined" && branchSwitchInFlight) return;
         if (isSyncingPendingSales) return;
         const pending = getPendingSales();
         if (pending.length === 0) return;
@@ -11258,7 +11454,8 @@
                 return;
               }
               if (response.status === 401 || response.status === 403 ||
-                  (response.status === 409 && response.headers.get("x-pos-session-mismatch") === "1")) {
+                  (response.status === 409 && (response.headers.get("x-pos-session-mismatch") === "1" ||
+                    response.headers.get("x-pos-branch-mismatch") === "1"))) {
                 // Session expired / not authorized: the server never accepted or
                 // rejected this sale, so keep it queued and retry after login.
                 // Dropping it here would lose money taken at the counter.
@@ -11389,6 +11586,8 @@
 
       function completeSale(mmqrConfirmed = false) {
         if (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) return;
+        if (typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) return;
+        if (typeof branchSwitchInFlight !== "undefined" && branchSwitchInFlight) return;
         // Rate limiting check
         if (isSaleProcessing) {
           showToast(t("pleaseWait"), "warning");
@@ -11989,6 +12188,7 @@
           .then((data) => {
             if (data.success) {
               showToast(`Category "${name}" created successfully!`, "success");
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("addCategoryModal");
               bootstrap.Modal.getInstance(document.getElementById("addCategoryModal")).hide();
               document.getElementById("add-category-form").reset();
               document.getElementById("add-category-color").value = "#6c757d";
@@ -12071,6 +12271,7 @@
           .then((data) => {
             if (data.success) {
               showToast(`Category updated successfully!`, "success");
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("editCategoryModal");
               bootstrap.Modal.getInstance(document.getElementById("editCategoryModal")).hide();
               cachedCategories = null; // Invalidate cache
               loadCategories();
@@ -12394,6 +12595,7 @@
             const data = await response.json();
             if (!response.ok || !data.success) throw new Error(data.message || "Failed to save unit");
             showToast(unitId ? "Unit updated" : "Unit added", "success");
+            if (typeof markBranchFormSaved === "function") markBranchFormSaved("unitModal");
             bootstrap.Modal.getInstance(document.getElementById("unitModal"))?.hide();
             loadUnits();
           })
@@ -12664,6 +12866,7 @@
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("addProductModal")
               );
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("addProductModal");
               modal.hide();
               document.getElementById("add-product-form").reset();
               clearImagePreview("add-photo-preview");
@@ -12787,6 +12990,7 @@
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("editProductModal")
               );
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("editProductModal");
               modal.hide();
               // Invalidate cache since products have changed
               invalidateProductsCache();
@@ -13568,6 +13772,7 @@
             }
             showToast(`Workflow completed. ID: ${data.workflow_id}`, "success");
             const modal = bootstrap.Modal.getInstance(document.getElementById("returnExchangeModal"));
+            if (typeof markBranchFormSaved === "function") markBranchFormSaved("returnExchangeModal");
             modal.hide();
             invalidateProductsCache();
             sectionStateOf("returns").rendered = false;
@@ -14319,6 +14524,7 @@
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("addUserModal")
               );
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("addUserModal");
               modal.hide();
               document.getElementById("add-user-form").reset();
               loadUsers();
@@ -14407,6 +14613,7 @@
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("editUserModal")
               );
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("editUserModal");
               modal.hide();
               loadUsers();
             } else {
@@ -14516,6 +14723,7 @@
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("addPromotionModal")
               );
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("addPromotionModal");
               modal.hide();
               loadPromotions();
             } else {
@@ -14621,6 +14829,7 @@
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("addPromotionModal")
               );
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("addPromotionModal");
               modal.hide();
               loadPromotions();
 
@@ -14785,6 +14994,7 @@
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("addCustomerModal")
               );
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("addCustomerModal");
               modal.hide();
               document.getElementById("add-customer-form").reset();
               loadCustomers();
@@ -14854,6 +15064,7 @@
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("editCustomerModal")
               );
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("editCustomerModal");
               modal.hide();
               loadCustomers();
               loadCustomersForPOS();
@@ -15197,6 +15408,7 @@
         .then((data) => {
           if (data.success) {
             showToast(data.message, "success");
+            if (typeof markBranchFormSaved === "function") markBranchFormSaved("bulkActionsModal");
             bootstrap.Modal.getInstance(document.getElementById("bulkActionsModal")).hide();
             loadDebts();
           } else {
@@ -15229,6 +15441,7 @@
         .then((data) => {
           if (data.success) {
             showToast(data.message, "success");
+            if (typeof markBranchFormSaved === "function") markBranchFormSaved("updateDueDateModal");
             bootstrap.Modal.getInstance(document.getElementById("updateDueDateModal")).hide();
             loadDebts();
           } else {
@@ -15256,6 +15469,7 @@
             .then((data) => {
               if (data.success) {
                 showToast(data.message, "success");
+                if (typeof markBranchFormSaved === "function") markBranchFormSaved("bulkActionsModal");
                 bootstrap.Modal.getInstance(document.getElementById("bulkActionsModal")).hide();
                 loadDebts();
               } else {
@@ -15428,6 +15642,7 @@
         .then((data) => {
           if (data.success) {
             showToast("Communication logged successfully", "success");
+            if (typeof markBranchFormSaved === "function") markBranchFormSaved("addCommunicationModal");
             bootstrap.Modal.getInstance(document.getElementById("addCommunicationModal")).hide();
             loadDebts();
           } else {
@@ -15473,6 +15688,7 @@
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("addDebtModal")
               );
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("addDebtModal");
               modal.hide();
               document.getElementById("add-debt-form").reset();
               loadDebts();
@@ -15563,6 +15779,7 @@
               const modal = bootstrap.Modal.getInstance(
                 document.getElementById("makePaymentModal")
               );
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("makePaymentModal");
               modal.hide();
               loadDebts();
               loadCustomers();
@@ -15822,6 +16039,7 @@
           });
           const data = await response.json();
           if (!response.ok || !data.success) throw new Error(data.message || data.error || "Failed to save ratings");
+          if (typeof markBranchFormSaved === "function") markBranchFormSaved("supplierRatingsModal");
           bootstrap.Modal.getInstance(document.getElementById("supplierRatingsModal"))?.hide();
           loadSuppliers();
           showToast("Supplier ratings saved", "success");
@@ -16009,6 +16227,7 @@
           .then(r => r.json())
           .then(data => {
             if (data.success) {
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("supplierCommunicationModal");
               bootstrap.Modal.getInstance(document.getElementById("supplierCommunicationModal")).hide();
               showToast('Communication logged', 'success');
             } else {
@@ -16073,6 +16292,7 @@
             if (data.success) {
               showToast("Supplier added successfully!", "success");
               const modal = bootstrap.Modal.getInstance(document.getElementById("addSupplierModal"));
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("addSupplierModal");
               modal.hide();
               document.getElementById("add-supplier-form").reset();
               loadSupplierCategoryFilter();
@@ -16150,6 +16370,7 @@
             if (data.success) {
               showToast("Supplier updated successfully!", "success");
               const modal = bootstrap.Modal.getInstance(document.getElementById("editSupplierModal"));
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("editSupplierModal");
               modal.hide();
               loadSupplierCategoryFilter();
               loadSuppliers();
@@ -16565,6 +16786,7 @@
           .then((r) => r.json())
           .then((data) => {
             if (data.success) {
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("cancelPurchaseOrderModal");
               bootstrap.Modal.getInstance(document.getElementById("cancelPurchaseOrderModal")).hide();
               showToast('Purchase order cancelled successfully', 'success');
               loadPurchaseOrders();
@@ -16711,6 +16933,7 @@
             }
             showToast("Purchase order created successfully!", "success");
             const modal = bootstrap.Modal.getInstance(document.getElementById("addPurchaseOrderModal"));
+            if (typeof markBranchFormSaved === "function") markBranchFormSaved("addPurchaseOrderModal");
             modal.hide();
             loadPurchaseOrders();
           })
@@ -16818,6 +17041,7 @@
                 }
                 showToast("Stock received successfully! Inventory has been updated.", "success");
                 const modal = bootstrap.Modal.getInstance(document.getElementById("receivePurchaseOrderModal"));
+                if (typeof markBranchFormSaved === "function") markBranchFormSaved("receivePurchaseOrderModal");
                 modal.hide();
                 selectedReceivePO = null;
                 invalidateProductsCache();
@@ -16964,6 +17188,7 @@
               return;
             }
             showToast("Delivery created successfully", "success");
+            if (typeof markBranchFormSaved === "function") markBranchFormSaved("createDeliveryModal");
             bootstrap.Modal.getInstance(document.getElementById("createDeliveryModal")).hide();
             loadDeliveryStats();
             loadDeliveries();
@@ -17018,6 +17243,7 @@
               return;
             }
             showToast("Delivery updated", "success");
+            if (typeof markBranchFormSaved === "function") markBranchFormSaved("updateDeliveryModal");
             bootstrap.Modal.getInstance(document.getElementById("updateDeliveryModal")).hide();
             loadDeliveryStats();
             loadDeliveries();
@@ -17197,15 +17423,57 @@
         return openReportDownload(`/api/warehouse/export?${params.toString()}`);
       }
 
+      // ===== WAREHOUSE TRANSFER RETRY =====
+      let warehouseTransferInFlight = false;
+
+      function warehouseTransferStorageKey() {
+        return `pos_transfer_retry_v1:${CACHE_USER_ID}`;
+      }
+
+      function readWarehouseTransferRetry() {
+        const raw = sessionStorage.getItem(warehouseTransferStorageKey());
+        if (!raw) return null;
+        const retry = JSON.parse(raw);
+        if (!retry?.key || !retry.payload || !retry.view) throw new Error("Invalid saved transfer retry");
+        return retry;
+      }
+
+      function warehouseTransferNotice(message = "") {
+        const status = document.getElementById("warehouse-transfer-status");
+        if (status) { status.textContent = message; status.hidden = !message; }
+      }
+
       function showRestockModal(productId, productName, availableQty, mainStock, batchNumber) {
         if (!requireCapability("admin")) return;
+        if (warehouseTransferInFlight) return;
+        let retry;
+        try { retry = readWarehouseTransferRetry(); }
+        catch (error) {
+          showToast("Cannot read the previous transfer status. Reconcile transfer history before starting another transfer.", "error");
+          return;
+        }
+        if (retry?.rejected) {
+          // A structured validation rejection is definitive, unlike a timeout,
+          // server error or conflict. A new modal may start a corrected intent.
+          try { sessionStorage.removeItem(warehouseTransferStorageKey()); retry = null; }
+          catch (error) { showToast("Cannot clear the rejected transfer retry record.", "error"); return; }
+        }
+        if (retry) {
+          // Closing/reopening is not reconciliation. Restore the original request
+          // even if a different product's Transfer button was clicked.
+          productId = retry.payload.product_id;
+          productName = retry.view.productName;
+          availableQty = retry.view.availableQty;
+          mainStock = retry.view.mainStock;
+          batchNumber = retry.payload.batch_number;
+        }
         document.getElementById("restock-product-id").value = productId;
         document.getElementById("restock-product-name").value = productName;
         document.getElementById("restock-available-qty").value = availableQty;
         document.getElementById("restock-main-stock").value = mainStock;
-        document.getElementById("restock-batch-number").value = batchNumber;
-        document.getElementById("restock-quantity").value = "";
-        document.getElementById("restock-notes").value = "";
+        document.getElementById("restock-batch-number").value = batchNumber || "";
+        document.getElementById("restock-quantity").value = retry ? retry.payload.quantity : "";
+        document.getElementById("restock-notes").value = retry?.payload.notes || "";
         document.getElementById("restock-quantity").max = availableQty;
 
         const branchSelect = document.getElementById("warehouse-target-branch");
@@ -17215,17 +17483,25 @@
             .map((branch) => `<option value="${branch.id}">${escapeHtml(branch.name)}</option>`)
             .join("");
 
-          if (currentBranch && currentBranch.id) {
+          if (retry) {
+            branchSelect.value = String(retry.payload.target_branch_id);
+          } else if (currentBranch && currentBranch.id) {
             branchSelect.value = String(currentBranch.id);
           }
         }
 
+        warehouseTransferNotice(retry ? "A previous transfer is not yet confirmed. Retry this original request safely before starting another transfer; it may already have completed. Do not change its fields." : "");
         new bootstrap.Modal(document.getElementById("warehouseRestockModal")).show();
       }
 
       function confirmRestock() {
+        if (!requireCapability("admin")) return;
+        if (warehouseTransferInFlight) return;
+        if ((typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) ||
+            (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) ||
+            (typeof branchSwitchInFlight !== "undefined" && branchSwitchInFlight)) return;
         const productId = document.getElementById("restock-product-id").value;
-        const quantity = parseInt(document.getElementById("restock-quantity").value || "0", 10);
+        const quantity = Number(document.getElementById("restock-quantity").value);
         const batchNumber = document.getElementById("restock-batch-number").value;
         const notes = document.getElementById("restock-notes").value.trim();
         const targetBranchId = document.getElementById("warehouse-target-branch")?.value;
@@ -17236,37 +17512,74 @@
           return;
         }
 
-        if (!quantity || quantity <= 0) {
+        if (!Number.isSafeInteger(quantity) || quantity <= 0 || !targetBranchId || !Number.isSafeInteger(Number(productId)) || Number(productId) <= 0) {
           showToast("Please enter a valid quantity.", "warning");
           return;
         }
 
-        if (quantity > availableQty) {
-          showToast(`Quantity cannot exceed available warehouse stock (${availableQty}).`, "warning");
+        const payload = {
+          product_id: Number(productId), quantity,
+          batch_number: batchNumber || null,
+          target_branch_id: String(targetBranchId), notes: notes || null,
+        };
+        let retry;
+        try {
+          retry = readWarehouseTransferRetry();
+          if (retry?.rejected && JSON.stringify(retry.payload) !== JSON.stringify(payload)) retry = null;
+          if (retry && JSON.stringify(retry.payload) !== JSON.stringify(payload)) {
+            const message = "Previous transfer outcome is unconfirmed and may already be committed. Reopen Transfer to restore and retry the original request before changing product, quantity, branch, batch or notes.";
+            warehouseTransferNotice(message);
+            showToast(message, "warning");
+            return;
+          }
+          // An exact retry must reach the server even if a refreshed stock count
+          // is lower now: the transfer may already have consumed that stock.
+          if (!retry && quantity > availableQty) {
+            showToast(`Quantity cannot exceed available warehouse stock (${availableQty}).`, "warning");
+            return;
+          }
+          if (!retry) {
+            retry = {key: generateClientTxnId(), payload,
+              view: {productName: document.getElementById("restock-product-name").value,
+                availableQty, mainStock: document.getElementById("restock-main-stock").value}};
+            // Persist BEFORE sending: a reload after an ambiguous response must
+            // not manufacture a fresh key and duplicate a committed transfer.
+            sessionStorage.setItem(warehouseTransferStorageKey(), JSON.stringify(retry));
+          }
+        } catch (error) {
+          showToast("Cannot safely retain the transfer retry key. No transfer was sent. Check transfer history and browser storage before continuing.", "error");
           return;
         }
 
+        warehouseTransferInFlight = true;
         if (confirmBtn) {
           confirmBtn.disabled = true;
           confirmBtn.dataset.originalHtml = confirmBtn.innerHTML;
           confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Processing...';
         }
 
-        fetch("/api/warehouse/transfer", {
+        return fetch("/api/warehouse/transfer", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            product_id: parseInt(productId, 10),
-            quantity: quantity,
-            batch_number: batchNumber || null,
-            target_branch_id: targetBranchId || null,
-            notes: notes || null
-          })
+          body: JSON.stringify({...retry.payload, idempotency_key: retry.key})
         })
-          .then((r) => r.json())
+          .then(async (response) => {
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+              if (data.success === false && [400, 404, 422].includes(response.status)) {
+                retry.rejected = true;
+                sessionStorage.setItem(warehouseTransferStorageKey(), JSON.stringify(retry));
+              }
+              throw new Error(data.message || "Transfer was not confirmed");
+            }
+            return data;
+          })
           .then((data) => {
             if (data.success) {
+              sessionStorage.removeItem(warehouseTransferStorageKey());
+              warehouseTransferNotice();
               showToast(data.message || "Items restocked successfully!", "success");
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("warehouseRestockModal");
               bootstrap.Modal.getInstance(document.getElementById("warehouseRestockModal")).hide();
               invalidateProductsCache();
               loadWarehouseSummary();
@@ -17283,15 +17596,21 @@
           })
           .catch((e) => {
             console.error("Error transferring from warehouse", e);
-            showToast("Failed to process transfer. Please try again.", "error");
+            const message = retry.rejected
+              ? "Transfer was rejected without completion. Correct the fields or reopen Transfer to start again. " + (e.message || "")
+              : "Transfer outcome is unconfirmed; it may already have completed. Retry the SAME request safely. Do not start a replacement transfer. " + (e.message || "");
+            warehouseTransferNotice(message);
+            showToast(message, "error");
           })
           .finally(() => {
+            warehouseTransferInFlight = false;
             if (confirmBtn) {
               confirmBtn.disabled = false;
               confirmBtn.innerHTML = confirmBtn.dataset.originalHtml || '<i class="bi bi-box-arrow-in-up"></i> Transfer to Stock';
             }
           });
       }
+      // ===== END WAREHOUSE TRANSFER RETRY =====
 
       function showTransferHistoryModal() {
         const table = document.getElementById("transfer-history-table");

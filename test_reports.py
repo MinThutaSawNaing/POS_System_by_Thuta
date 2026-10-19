@@ -24,7 +24,7 @@ class WarehouseReportBuilderTests(unittest.TestCase):
         return [
             {
                 "id": 1, "product_id": 1, "product_name": "Coffee Beans",
-                "barcode": "BC-1", "location": "Shelf A1", "batch_number": "PO-100",
+                "barcode": "BC-1", "product_branch": "Downtown", "location": "Shelf A1", "batch_number": "PO-100",
                 "quantity": 3, "unit_cost": 2.5, "total_value": 7.5,
                 "main_stock": 12, "received_date": "2026-09-01T08:00:00",
                 "expiry_date": None,
@@ -57,11 +57,12 @@ class WarehouseReportBuilderTests(unittest.TestCase):
         report = self._report()
         self.assertEqual(
             [entry["label"] for entry in report["columns"]],
-            ["Product", "Barcode", "Location", "Batch", "Qty", "Unit cost",
+            ["Product Name", "Catalog Branch", "Barcode", "Location", "Batch", "Qty", "Unit cost",
              "Stock value", "Shop stock", "Received", "Expiry"],
         )
         first = report["rows"][0]
         self.assertEqual(first["product_name"], "Coffee Beans")
+        self.assertEqual(first["product_branch"], "Downtown")
         self.assertEqual(first["quantity"], 3)
         self.assertEqual(first["unit_cost"], 2.5)
         self.assertEqual(first["total_value"], 7.5)
@@ -319,7 +320,7 @@ class ReportRendererTests(unittest.TestCase):
         sheet = parts["xl/worksheets/sheet1.xml"]
         # Header on row 4, two data rows, then the totals row: the filter must
         # cover the data rows only, and the totals must not overwrite them.
-        self.assertIn('autoFilter ref="A4:J6"', sheet)
+        self.assertIn('autoFilter ref="A4:K6"', sheet)
         self.assertIn('<row r="7"', sheet)
         self.assertIn("<v>7.5</v>", sheet)     # first line stock value
         self.assertIn("<v>40</v>", sheet)      # second line quantity (data row)
@@ -357,12 +358,43 @@ class ReportRendererTests(unittest.TestCase):
         self.assertIn("Purchase Order Report", shared)
         self.assertIn("Coffee Beans", shared)
         item_sheet = archive.read("xl/worksheets/sheet2.xml").decode("utf-8")
-        self.assertIn('autoFilter ref="A4:G5"', item_sheet)
+        self.assertIn('autoFilter ref="A4:H5"', item_sheet)
         # Progress and money are numeric cells so the columns can be summed.
         self.assertIn("<v>100</v>", item_sheet)   # 3 of 3 received
         self.assertIn("<v>90</v>", item_sheet)    # line total + line total total
         self.assertIn('<row r="6"', item_sheet)   # totals row below the single line
 
+
+
+class ProductCatalogReportTests(unittest.TestCase):
+    def test_untrusted_catalog_text_is_not_an_excel_formula_or_link(self):
+        report = reports.build_product_catalog_report([
+            {'barcode': '=1+1', 'product_name': '=HYPERLINK("https://example.com", "click")',
+             'category': 'https://example.com', 'price': 12.50, 'stock': 3},
+        ], generated_by='=1+2', filters_text='=1+3')
+        archive = zipfile.ZipFile(io.BytesIO(reports.build_report_xlsx(report)))
+        for name in archive.namelist():
+            if name.startswith('xl/worksheets/') and name.endswith('.xml'):
+                sheet = archive.read(name).decode('utf-8')
+                self.assertNotIn('<f>', sheet)
+                self.assertNotIn('<hyperlink ', sheet)
+        strings = archive.read('xl/sharedStrings.xml').decode('utf-8')
+        self.assertIn('=1+1', strings)
+        self.assertIn('=1+3', strings)
+
+    def test_catalog_has_public_columns_and_stock_totals(self):
+        report = reports.build_product_catalog_report([
+            {'barcode': '1234567890123', 'product_name': 'Coffee',
+             'price': 12.50, 'stock': 3, 'tax_rate': 5, 'cost': 7.25},
+            {'product_name': 'Tea', 'price': 4, 'stock': 2},
+        ], branch_name='Downtown')
+        self.assertEqual(report['totals']['stock'], 5)
+        self.assertEqual([entry['key'] for entry in report['columns']],
+                         ['barcode', 'product_name', 'category', 'price', 'stock', 'unit', 'tax_rate'])
+        self.assertEqual(report['rows'][0]['barcode'], '1234567890123')
+        self.assertNotIn('cost', report['rows'][0])
+        self.assertTrue(reports.build_report_pdf(report).startswith(b'%PDF'))
+        self.assertTrue(reports.build_report_xlsx(report).startswith(b'PK'))
 
 
 class ReportExportEndpointTests(unittest.TestCase):

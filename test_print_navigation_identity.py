@@ -82,6 +82,7 @@ def test_dashboard_navigation_real_helpers():
     helpers = '\n'.join(_function(source, name) for name in names)
     out = _run_node_script('''
 const CACHE_USER_ID = 7, CACHE_USER_ROLE = 'cashier';
+const currentBranch = {id: 3};
 let dashboardSessionStale = false, standalone = false;
 let calls = [];
 const window = {location: {href:'https://pos.test/', origin:'https://pos.test'},
@@ -116,11 +117,12 @@ console.log(JSON.stringify({external, override, calls, count, removed, stale: da
 ''')
     assert out['removed'] and out['stale']
     assert out['external'] is None
-    assert out['override'] == '/api/export?pos_user_id=7&pos_role=cashier&format=xlsx#top'
+    assert out['override'] == '/api/export?pos_user_id=7&pos_role=cashier&format=xlsx&pos_branch_id=3#top'
     assert len(out['calls']) == out['count']
     navigations = [url for url in out['calls'] if url != 'about:blank']
     assert len(navigations) == 11
-    assert all('pos_user_id=7' in url and 'pos_role=cashier' in url for url in navigations)
+    assert all('pos_user_id=7' in url and 'pos_role=cashier' in url and 'pos_branch_id=3' in url
+               for url in navigations)
 
 
 @pytest.mark.skipif(shutil.which('node') is None, reason='Node required')

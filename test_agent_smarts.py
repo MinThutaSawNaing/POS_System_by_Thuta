@@ -52,6 +52,13 @@ class SystemPromptPolicyTests(SmartsTestBase):
 
 
 class ToolExposureTests(SmartsTestBase):
+    def test_shared_procurement_lookups_survive_narrow_manager_filter(self):
+        for query, tool in (("show supplier categories", "get_supplier_categories"),
+                            ("show purchase order products", "get_purchase_order_products")):
+            names = {schema['function']['name'] for schema in
+                     self.orchestrator._filter_tools_for_query(query)}
+            self.assertIn(tool, names)
+
     def test_core_tools_survive_narrow_category_filter(self):
         # "cancel purchase order" matches only the purchase_order category,
         # which alone would hide every inventory/product lookup tool.

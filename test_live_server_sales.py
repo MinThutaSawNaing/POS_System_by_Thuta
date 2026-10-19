@@ -8,40 +8,49 @@ validation, concurrent writers, and connection-refused behaviour.
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
 import uuid
 
 import requests
+from werkzeug.security import generate_password_hash
 
 from app import app, db, Branch, Product, Sale, SaleItem, User
 
 BASE = "http://127.0.0.1:5057"
 _server = None
+_server_log = None
 
 
 def _start_server():
-    global _server
+    global _server, _server_log
+    _server_log = tempfile.TemporaryFile(mode='w+b')
     _server = subprocess.Popen(
         [sys.executable, "-c",
          "from app import app; app.run(host='127.0.0.1', port=5057, threaded=True)"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=_server_log,
+        stderr=subprocess.STDOUT,
     )
     for _ in range(50):
+        if _server.poll() is not None:
+            break
         try:
             socket.create_connection(("127.0.0.1", 5057), timeout=0.5).close()
             return
         except OSError:
             time.sleep(0.2)
-    raise RuntimeError("Test server did not start")
+    _server_log.seek(0)
+    raise RuntimeError("Test server did not start:\n" + _server_log.read().decode('utf-8', errors='replace'))
 
 
 def _stop_server():
-    if _server:
+    if _server and _server.poll() is None:
         _server.terminate()
         _server.wait(timeout=10)
+    if _server_log and not _server_log.closed:
+        _server_log.close()
 
 
 class LiveServerSaleTests(unittest.TestCase):
@@ -49,10 +58,14 @@ class LiveServerSaleTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        _start_server()
+        cls.addClassCleanup(_stop_server)
         with app.app_context():
-            cls.user_id = User.query.filter_by(username='admin').first().id
             cls.branch_id = Branch.query.filter_by(is_active=True).first().id
+            cls.username = 'live_user_' + uuid.uuid4().hex[:12]
+            cls.password = 'LiveTestOnly!123'
+            user = User(username=cls.username, password=generate_password_hash(cls.password),
+                        role='manager', branch_id=cls.branch_id)
+            db.session.add(user)
             cls.product = Product(
                 barcode='LIVE-' + uuid.uuid4().hex[:10],
                 name='Live Server Test Product',
@@ -61,14 +74,19 @@ class LiveServerSaleTests(unittest.TestCase):
             )
             db.session.add(cls.product)
             db.session.commit()
+            cls.user_id = user.id
             cls.product_id = cls.product.id
-            # Real login to get a session cookie over actual HTTP
-            cls.session = requests.Session()
-            resp = cls.session.post(BASE + '/login', data={
-                'username': 'admin',
-                'password': 'admin123',
-            }, allow_redirects=False)
-            cls.logged_in = resp.status_code in (200, 302)
+        _start_server()
+        # Real login with dedicated credentials, not a seeded admin whose
+        # password or existence may have been changed by another test module.
+        cls.session = requests.Session()
+        cls.addClassCleanup(cls.session.close)
+        resp = cls.session.post(BASE + '/login', data={
+            'username': cls.username,
+            'password': cls.password,
+        }, allow_redirects=False, timeout=10)
+        if resp.status_code != 302 or cls.session.get(BASE + '/api/products', timeout=10).status_code != 200:
+            raise AssertionError(f'Live test login failed: {resp.status_code} {resp.text}')
 
     @classmethod
     def tearDownClass(cls):
@@ -94,6 +112,7 @@ class LiveServerSaleTests(unittest.TestCase):
             product = db.session.get(Product, cls.product_id)
             if product:
                 db.session.delete(product)
+            db.session.delete(db.session.get(User, cls.user_id))
             db.session.commit()
         _stop_server()
 

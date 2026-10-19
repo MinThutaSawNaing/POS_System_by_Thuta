@@ -931,7 +931,13 @@ def build_report_xlsx(
 ) -> bytes:
     """Render a report dict as a filterable workbook with a Report Info sheet."""
     output = io.BytesIO()
-    workbook = xlsxwriter.Workbook(output, {"in_memory": True})
+    # Names, barcodes and filter text are untrusted data, never spreadsheet
+    # formulas or automatic hyperlinks. Numeric columns still use write_number.
+    workbook = xlsxwriter.Workbook(output, {
+        "in_memory": True,
+        "strings_to_formulas": False,
+        "strings_to_urls": False,
+    })
     try:
         _write_worksheet(workbook, str(report.get("sheet_name") or "Report"), report)
         for sheet in extra_sheets or []:

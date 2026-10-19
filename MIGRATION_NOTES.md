@@ -1,4 +1,88 @@
-# MIGRATION NOTES — Float → NUMERIC(12,2) Money Columns
+# Migration notes
+
+## October 2026 branch stabilization (v2)
+
+This release changes database structure. Rehearse it on a copy of the existing
+database before deploying, and use a maintenance window with only one starting
+application process. Pushing `main` runs the regression-test gate before the
+existing production deployment job.
+
+### Backup and rollout
+
+1. Stop writes and save a verified database backup outside the deployment volume:
+   `python backup_database.py --database instance/pos.db --output /safe/path/pos-before-branch-v2.db`.
+   This standalone command does **not** import the application or run migrations.
+   It uses SQLite's backup API, includes committed WAL data, checks integrity,
+   and refuses to overwrite an existing destination. Back up `uploads/` as well.
+   For Docker, run the command against the mounted database inside the container,
+   then copy the backup to independent storage before replacing the container.
+2. Run the new version against a staging copy. Startup performs the migration;
+   verify counts, category links, units, branch assignments, and representative
+   sales/debt/warehouse records before allowing production writes.
+3. Existing databases receive an additional automatic pre-upgrade snapshot next
+   to the database, normally `pos.db.pre-branch-v2.bak`. An existing unmarked
+   snapshot is never overwritten; a unique filename is used instead. Keep an
+   external backup too: a snapshot on the same disk is not disaster recovery.
+4. Startup records `branch_stabilization_v2` in `schema_migration` only after
+   initialization succeeds. Restart the staging app a second time and verify
+   that the migration is repeatable and records remain unchanged.
+5. Run `python run_tests.py` before release. It copies source into a disposable
+   directory, excludes local databases/uploads/secrets, and also isolates the
+   live-server test subprocess. Python test dependencies plus Node are required.
+
+### What changes
+
+- Product barcodes are unique **within a branch**, not across all branches.
+  Transfers preserve physical barcodes and never identify a product by its name.
+  An internal `catalog_id` maintains transfer identity, including products with
+  no barcode. Same-name products are not automatically merged.
+- Legacy category/product uniqueness is rebuilt transactionally while retaining
+  existing columns, indexes, triggers and record IDs. This avoids the previous
+  hard-coded product rebuild dropping the unit-of-measure link or extra columns.
+  New foreign-key errors abort the rebuild; pre-existing errors are not silently
+  repaired by guessing relationships.
+- Transfer metadata supports `idempotency_key` (or `Idempotency-Key` header).
+  A retried identical request returns the recorded result; reuse for a different
+  transfer is rejected. Stock deductions and destination increments commit
+  together under a SQLite writer transaction. An independent `transfer_request`
+  ledger retains deduplication results even after product/transfer-history
+  cleanup. Existing keyed transfer records are backfilled on startup.
+  The dashboard persists the outstanding request in per-user **tab session**
+  storage: retry in that same tab after an uncertain result. Closing the tab or
+  clearing its storage can lose that client key; check transfer history before
+  starting a replacement transfer. External API clients must retain their keys.
+  A catalog-linked destination whose physical barcode was changed is rejected
+  until a manager explicitly reconciles its identity.
+- Purchase receiving uses one shared transaction implementation for HTTP and AI:
+  only approved/partially received orders can be received, concurrent receipts
+  cannot exceed ordered quantities, duplicate lines are aggregated, and supplier
+  order statistics count an order once rather than once per partial delivery.
+- Product images shared by transferred catalog copies are retained while any
+  branch still references them; failed edits no longer delete the old image
+  before the database commit succeeds.
+- Users and operational data remain branch-specific; suppliers, purchase orders,
+  and warehouse stock are shared manager workflows. Existing unassigned users
+  are attached to the active default/fallback branch; verify those assignments.
+- Currency and AI configuration remain installation-wide. Receipt branding,
+  logos, MMQR and printing geometry are branch overrides with legacy fallback.
+
+### Rollback and existing data limitations
+
+Stop **every** application process before restoring. Preserve a copy of the
+failed/new database and uploads for diagnosis. Restore the verified pre-upgrade
+database and matching uploads, remove/move aside that database's stale `-wal`
+and `-shm` files while all connections are closed, and deploy the matching prior
+application version. Restart and verify before reopening writes. A restore loses
+transactions recorded after the backup; reconcile them before resuming trade.
+
+This patch cannot reconstruct fields already lost by a previous migration. If
+the October 19 update has already removed unit assignments, recover them from a
+known-good backup. Likewise, existing branch-suffixed barcodes or same-name
+products are **not** automatically merged or renamed: review their identity and
+stock history explicitly before reconciling them. Do not infer identity from
+names or barcode suffixes alone.
+
+## Earlier Float → NUMERIC(12,2) money migration
 
 ## Scope
 

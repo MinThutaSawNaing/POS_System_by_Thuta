@@ -73,11 +73,11 @@ TOOL_CATEGORIES = {
                      "in stock", "out of stock", "remaining", "left", "run out"]
     },
     "supplier": {
-        "tools": ["get_supplier_list", "get_supplier_details", "get_supplier_price_for_product"],
+        "tools": ["get_supplier_list", "get_supplier_details", "get_supplier_price_for_product", "get_supplier_categories"],
         "keywords": ["supplier", "vendor", "supply", "contact", "price agreement", "distributor", "who supplies"]
     },
     "purchase_order": {
-        "tools": ["get_purchase_orders", "create_purchase_order", "approve_purchase_order", "cancel_purchase_order", "receive_purchase_order"],
+        "tools": ["get_purchase_orders", "get_purchase_order_products", "create_purchase_order", "approve_purchase_order", "cancel_purchase_order", "receive_purchase_order"],
         "keywords": ["purchase order", "po", "order", "approve", "cancel", "create order", "buy", "procurement", "receive"]
     },
     "warehouse": {

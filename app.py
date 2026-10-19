@@ -67,6 +67,8 @@ from reportlab.graphics.barcode import createBarcodeDrawing
 import base64
 import hashlib
 import zlib
+import sqlite3
+from contextlib import closing
 from cryptography.fernet import Fernet, InvalidToken
 
 # Import AI Agent modules
@@ -673,7 +675,11 @@ def save_product_image(file_storage):
     return unique_name
 
 def delete_product_image(filename):
-    if not filename:
+    if not filename or os.path.basename(filename) != filename:
+        return
+    # Warehouse clones intentionally share the same immutable image file.
+    # Never remove a file still referenced by any branch's product.
+    if Product.query.filter_by(photo_filename=filename).first():
         return
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     if os.path.exists(file_path):
@@ -938,6 +944,8 @@ def enforce_dashboard_branch_identity():
     """Reject requests from an open dashboard tab after another tab switches branch."""
     if not request.path.startswith('/api/') or 'user_id' not in session:
         return None
+    if get_current_branch_id() is None:
+        return jsonify(success=False, message='Your branch is inactive or unavailable. Sign in again.'), 403
     expected_branch = request.headers.get('X-POS-Branch-ID') or request.args.get('pos_branch_id')
     if expected_branch and str(expected_branch) != str(get_current_branch_id()):
         response = jsonify(success=False, code='stale_branch',
@@ -1117,9 +1125,17 @@ def get_current_branch_id():
         branch = Branch.query.get(branch_id)
         if branch and branch.is_active:
             return branch_id
+        # An invalid assignment must never silently become another store.
+        if session.get('user_id'):
+            return None
         # Branch no longer valid, clear from session
         session.pop('branch_id', None)
     
+    if session.get('user_id'):
+        # Login establishes the selected branch explicitly. A missing session
+        # identity is not permission to silently select a store for an API call.
+        return None
+
     # Get default branch
     default_branch = Branch.query.filter_by(is_default=True, is_active=True).first()
     if default_branch:
@@ -1148,24 +1164,7 @@ def get_default_branch_id():
         return default_branch.id
 
     first_branch = Branch.query.filter_by(is_active=True).first()
-    if first_branch:
-        return first_branch.id
-
-    return None
-
-def build_branch_scoped_barcode(base_barcode, branch):
-    """Create a unique fallback barcode when the same product barcode is reused across branches."""
-    cleaned = (base_barcode or '').strip()
-    if not cleaned:
-        return None
-
-    branch_code = (branch.code or f'B{branch.id}').strip().upper()
-    candidate = f"{cleaned}-{branch_code}"
-    suffix = 1
-    while Product.query.filter_by(barcode=candidate).first():
-        candidate = f"{cleaned}-{branch_code}-{suffix}"
-        suffix += 1
-    return candidate
+    return first_branch.id if first_branch else None
 
 def get_requested_branch_id(default_to_current=False):
     """Resolve an optional branch_id from query string or JSON payload."""
@@ -1466,8 +1465,11 @@ class Unit(db.Model):
         }
 
 class Product(db.Model):
+    __table_args__ = (db.UniqueConstraint('branch_id', 'barcode', name='uq_product_branch_barcode'),
+                      db.UniqueConstraint('branch_id', 'catalog_id', name='uq_product_branch_catalog'))
     id = db.Column(db.Integer, primary_key=True)
-    barcode = db.Column(db.String(50))  # Branch-scoped: uniqueness enforced per (barcode, branch_id) at app level
+    barcode = db.Column(db.String(50))  # Physical scan value; unique inside a branch.
+    catalog_id = db.Column(db.String(64), default=lambda: uuid.uuid4().hex)
     name = db.Column(db.String(100), nullable=False)
     price = db.Column(db.Float, nullable=False)
     cost = db.Column(db.Float)
@@ -1589,9 +1591,26 @@ class WarehouseInventory(db.Model):
     
     product = db.relationship('Product', backref='warehouse_items')
 
+class TransferRequest(db.Model):
+    """Durable retry result, independent of deletable catalog/history rows.
+
+    Historical identifiers intentionally have no foreign keys. Never cascade or
+    prune these tombstones when products or warehouse transfer history is purged.
+    """
+    key = db.Column(db.String(128), primary_key=True)
+    fingerprint = db.Column(db.String(64), nullable=False)
+    target_product_id = db.Column(db.Integer)
+    resulting_stock = db.Column(db.Integer)
+    transfer_id = db.Column(db.Integer)
+
+
 class WarehouseTransfer(db.Model):
     """Records transfers from the shared warehouse into a target branch's stock."""
     id = db.Column(db.Integer, primary_key=True)
+    idempotency_key = db.Column(db.String(128), unique=True)
+    request_fingerprint = db.Column(db.String(64))
+    target_product_id = db.Column(db.Integer)  # Historical destination (may later be deleted).
+    resulting_stock = db.Column(db.Integer)
     product_id = db.Column(db.Integer, db.ForeignKey('product.id'), nullable=False)
     quantity = db.Column(db.Integer, nullable=False)
     from_warehouse = db.Column(db.Boolean, default=True)  # True = warehouse to stock
@@ -2278,6 +2297,111 @@ def serialize_delivery(delivery):
         'can_transition_to': DELIVERY_STAGE_FLOW.get(delivery.stage, [])
     }
 
+def _branch_upgrade_backup():
+    """Take a WAL-aware, consistent pre-upgrade snapshot, never a live file copy."""
+    path = db.engine.url.database
+    if not path or path == ':memory:' or not os.path.isfile(path):
+        return
+    with closing(sqlite3.connect(path)) as source:
+        tables = {row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'product' not in tables:
+            return
+        if 'schema_migration' in tables and source.execute(
+                "SELECT 1 FROM schema_migration WHERE version='branch_stabilization_v2'").fetchone():
+            return
+        backup_path = path + '.pre-branch-v2.bak'
+        if os.path.exists(backup_path):
+            # An interrupted/previous deployment's snapshot is not evidence
+            # that today's database has been backed up.
+            backup_path = path + '.pre-branch-v2.' + uuid.uuid4().hex + '.bak'
+        temporary = backup_path + '.' + uuid.uuid4().hex + '.tmp'
+        try:
+            # Restrict financial/credential data from the first byte written;
+            # chmod after sqlite creates a file would leave an exposure window.
+            descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(descriptor)
+            with closing(sqlite3.connect(temporary)) as destination:
+                source.backup(destination)
+                if destination.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                    raise RuntimeError('Pre-upgrade backup failed integrity check')
+            os.replace(temporary, backup_path)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+
+
+def _migrate_branch_unique(table, column):
+    """Replace only legacy global uniqueness, preserving all columns/indexes/triggers.
+
+    DDL is explicitly transactional (pysqlite otherwise autocommits CREATE).
+    Foreign-key enforcement is restored even when rebuilding fails.
+    """
+    db.session.commit()
+    with db.engine.connect() as connection:
+        indexes = connection.exec_driver_sql(f'PRAGMA index_list("{table}")').fetchall()
+        global_indexes = [index for index in indexes if index[2] and [row[2] for row in
+            connection.exec_driver_sql(f'PRAGMA index_info("{index[1]}")')] == [column]]
+        if not global_indexes:
+            return
+        enabled = connection.exec_driver_sql('PRAGMA foreign_keys').scalar()
+        connection.commit()
+        connection.exec_driver_sql('PRAGMA foreign_keys=OFF')
+        connection.commit()
+        try:
+            connection.exec_driver_sql('BEGIN IMMEDIATE')
+            old_fk_errors = set(connection.exec_driver_sql('PRAGMA foreign_key_check').fetchall())
+            if any(index[3] == 'u' for index in global_indexes):
+                schema = connection.exec_driver_sql(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).scalar()
+                sequence = None
+                if re.search(r'\bAUTOINCREMENT\b', schema, flags=re.I):
+                    sequence = connection.exec_driver_sql(
+                        'SELECT seq FROM sqlite_sequence WHERE name=?', (table,)).scalar()
+                # SQLAlchemy's historical schema uses a table-level UNIQUE.
+                schema, count = re.subn(
+                    rf',\s*(?:CONSTRAINT\s+\S+\s+)?UNIQUE\s*\(\s*["`\[]?{column}["`\]]?\s*\)',
+                    '', schema, flags=re.I)
+                if not count:
+                    schema, count = re.subn(
+                        rf'(\b{column}\s+[^,\n]*?)\s+UNIQUE\b',
+                        r'\1', schema, count=1, flags=re.I)
+                if not count:
+                    raise RuntimeError(f'Unsupported legacy {table} uniqueness; restore backup and migrate manually')
+                saved = connection.exec_driver_sql(
+                    "SELECT type, name, sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL",
+                    (table,)).fetchall()
+                schema = re.sub(r'^CREATE TABLE\s+(?:"[^"]+"|\w+)',
+                                f'CREATE TABLE "{table}_branch_new"', schema, count=1, flags=re.I)
+                connection.exec_driver_sql(schema)
+                connection.exec_driver_sql(f'INSERT INTO "{table}_branch_new" SELECT * FROM "{table}"')
+                connection.exec_driver_sql(f'DROP TABLE "{table}"')
+                connection.exec_driver_sql(f'ALTER TABLE "{table}_branch_new" RENAME TO "{table}"')
+                if sequence is not None:
+                    connection.exec_driver_sql(
+                        'UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name=?', (sequence, table))
+                    if not connection.exec_driver_sql(
+                            'SELECT 1 FROM sqlite_sequence WHERE name=?', (table,)).first():
+                        connection.exec_driver_sql(
+                            'INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)', (table, sequence))
+                for kind, name, sql in saved:
+                    if name not in {index[1] for index in global_indexes}:
+                        connection.exec_driver_sql(sql)
+            else:
+                for index in global_indexes:
+                    connection.exec_driver_sql(f'DROP INDEX "{index[1]}"')
+            connection.exec_driver_sql(
+                f'CREATE UNIQUE INDEX IF NOT EXISTS "uq_{table}_branch_{column}" ON "{table}" (branch_id, "{column}")')
+            if set(connection.exec_driver_sql('PRAGMA foreign_key_check').fetchall()) - old_fk_errors:
+                raise RuntimeError(f'{table} migration introduced broken foreign-key references')
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.exec_driver_sql(f'PRAGMA foreign_keys={int(enabled)}')
+            connection.commit()
+
+
 # Create database tables and admin user
 with app.app_context():
     # Harden SQLite for concurrent POS writes: WAL journaling plus a busy timeout
@@ -2288,6 +2412,7 @@ with app.app_context():
         cursor.execute('PRAGMA busy_timeout=5000')
         cursor.close()
 
+    _branch_upgrade_backup()
     db.session.execute(text('PRAGMA journal_mode=WAL'))
     db.session.execute(text('PRAGMA busy_timeout=5000'))
     db.create_all()
@@ -2405,45 +2530,9 @@ with app.app_context():
         '''))
         db.session.commit()
 
-    # Older databases made category names unique across the entire store. SQLite
-    # cannot drop that inline constraint, so preserve IDs and references while
-    # rebuilding the table with uniqueness limited to one branch.
-    category_indexes = db.session.execute(text('PRAGMA index_list("category")')).fetchall()
-    global_category_name_index = next((index for index in category_indexes
-        if index[2] and [column[2] for column in db.session.execute(
-            text(f'PRAGMA index_info("{index[1]}")')).fetchall()] == ['name']), None)
-    if global_category_name_index and global_category_name_index[3] == 'u':
-        db.session.execute(text('''
-            CREATE TABLE category_branch_new (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name VARCHAR(50) NOT NULL,
-                description VARCHAR(200),
-                color VARCHAR(7) DEFAULT '#6c757d',
-                is_active BOOLEAN DEFAULT 1,
-                sort_order INTEGER DEFAULT 0,
-                branch_id INTEGER REFERENCES branch (id),
-                created_at DATETIME,
-                updated_at DATETIME,
-                UNIQUE (branch_id, name)
-            )
-        '''))
-        db.session.execute(text('''
-            INSERT INTO category_branch_new
-                (id, name, description, color, is_active, sort_order, branch_id, created_at, updated_at)
-            SELECT id, name, description, color, is_active, sort_order, branch_id, created_at, updated_at
-            FROM category
-        '''))
-        db.session.execute(text('DROP TABLE category'))
-        db.session.execute(text('ALTER TABLE category_branch_new RENAME TO category'))
-        db.session.commit()
-    elif global_category_name_index:
-        db.session.execute(text(f'DROP INDEX "{global_category_name_index[1]}"'))
-        db.session.commit()
-    if not any(index[2] and [column[2] for column in db.session.execute(
-            text(f'PRAGMA index_info("{index[1]}")')).fetchall()] == ['branch_id', 'name']
-            for index in db.session.execute(text('PRAGMA index_list("category")')).fetchall()):
-        db.session.execute(text('CREATE UNIQUE INDEX uq_category_branch_name ON category (branch_id, name)'))
-        db.session.commit()
+    _migrate_branch_unique('category', 'name')
+    db.session.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_category_branch_name ON category (branch_id, name)'))
+    db.session.commit()
 
     if default_branch:
         db.session.execute(text('UPDATE category SET branch_id = :branch_id WHERE branch_id IS NULL'),
@@ -2533,95 +2622,35 @@ with app.app_context():
     db.session.execute(text('UPDATE product SET reorder_enabled = 1 WHERE reorder_enabled IS NULL'))
     db.session.commit()
 
-    # Barcode migration for branch-scoped uniqueness.
-    # The Product.barcode column no longer declares a global UNIQUE constraint;
-    # uniqueness is enforced per (barcode, branch_id) at the application level.
-    #
-    # Two legacy schema variants must be handled:
-    #   1. A standalone unique index named ix_product_barcode (created by the old
-    #      model definition via SQLAlchemy). Droppable with DROP INDEX.
-    #   2. An inline "UNIQUE (barcode)" table constraint (SQLite autoindex, e.g.
-    #      sqlite_autoindex_product_1) baked into the CREATE TABLE statement.
-    #      SQLite cannot drop such a constraint with ALTER TABLE, so the product
-    #      table must be rebuilt without it (standard SQLite migration pattern).
-    #      FK enforcement is OFF for this app's SQLite connection, so dropping
-    #      and renaming the table is safe; child tables reference it by name.
-    try:
-        db.session.execute(text('DROP INDEX IF EXISTS ix_product_barcode'))
-        db.session.commit()
-    except Exception as e:
-        app.logger.warning(f"Could not drop legacy barcode unique index: {str(e)}")
-
-    product_indexes = [idx[0] for idx in db.session.execute(text(
-        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'product'"
-    )).fetchall()]
-
-    barcode_unique_index = None
-    for idx_name in product_indexes:
-        idx_cols = [col[2] for col in db.session.execute(
-            text(f'PRAGMA index_info("{idx_name}")')
-        ).fetchall()]
-        if idx_cols == ['barcode']:
-            idx_list = db.session.execute(text('PRAGMA index_list("product")')).fetchall()
-            for row in idx_list:
-                # row: (seq, name, unique, origin, partial); origin 'u' = UNIQUE constraint
-                if row[1] == idx_name and row[2] == 1 and row[3] == 'u':
-                    barcode_unique_index = idx_name
-                    break
-        if barcode_unique_index:
-            break
-
-    if barcode_unique_index:
-        app.logger.warning(
-            f"Rebuilding product table to remove global UNIQUE constraint on barcode ({barcode_unique_index})"
-        )
-        db.session.execute(text('PRAGMA foreign_keys=OFF'))
-        db.session.execute(text('''
-            CREATE TABLE product_new (
-                id INTEGER NOT NULL PRIMARY KEY,
-                barcode VARCHAR(50),
-                name VARCHAR(100) NOT NULL,
-                price FLOAT NOT NULL,
-                cost FLOAT,
-                stock INTEGER,
-                category VARCHAR(50),
-                tax_rate FLOAT,
-                photo_filename VARCHAR(255),
-                reorder_point INTEGER DEFAULT 10,
-                reorder_quantity INTEGER DEFAULT 50,
-                reorder_enabled BOOLEAN DEFAULT 1,
-                branch_id INTEGER REFERENCES branch (id),
-                category_id INTEGER REFERENCES category (id)
-            )
-        '''))
-        db.session.execute(text('''
-            INSERT INTO product_new (id, barcode, name, price, cost, stock, category, tax_rate,
-                                     photo_filename, reorder_point, reorder_quantity, reorder_enabled,
-                                     branch_id, category_id)
-            SELECT id, barcode, name, price, cost, stock, category, tax_rate,
-                   photo_filename, reorder_point, reorder_quantity, reorder_enabled,
-                   branch_id, category_id
-            FROM product
-        '''))
-        db.session.execute(text('DROP TABLE product'))
-        db.session.execute(text('ALTER TABLE product_new RENAME TO product'))
-        db.session.commit()
-        # Recreate the standard lookup indexes that were dropped with the old table,
-        # plus the branch-scoped composite index (non-unique; uniqueness is app-level).
-        # IF NOT EXISTS keeps this idempotent even if a stale index entry lingers.
-        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_name ON product (name)'))
-        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_category ON product (category)'))
-        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_barcode_branch ON product (barcode, branch_id)'))
-        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_branch_id ON product (branch_id, id DESC)'))
-        db.session.commit()
-    else:
-        # Additive indexes: standard lookups plus the branch-scoped composite index
-        # (non-unique; uniqueness is enforced at the application level).
-        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_name ON product (name)'))
-        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_category ON product (category)'))
-        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_barcode_branch ON product (barcode, branch_id)'))
-        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_branch_id ON product (branch_id, id DESC)'))
-        db.session.commit()
+    # Preserve scan values and every legacy column/reference; fail closed on
+    # duplicate branch barcodes rather than silently merging unrelated products.
+    _migrate_branch_unique('product', 'barcode')
+    product_columns = {col['name'] for col in inspect(db.engine).get_columns('product')}
+    if 'catalog_id' not in product_columns:
+        db.session.execute(text('ALTER TABLE product ADD COLUMN catalog_id VARCHAR(64)'))
+    db.session.execute(text("UPDATE product SET barcode = NULL WHERE barcode = ''"))
+    db.session.execute(text("UPDATE product SET catalog_id = 'legacy-' || id WHERE catalog_id IS NULL"))
+    db.session.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_product_branch_barcode ON product (branch_id, barcode)'))
+    db.session.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_product_branch_catalog ON product (branch_id, catalog_id)'))
+    db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_branch_id ON product (branch_id, id DESC)'))
+    transfer_columns = {col['name'] for col in inspect(db.engine).get_columns('warehouse_transfer')}
+    for column, definition in (('idempotency_key', 'VARCHAR(128)'),
+                               ('request_fingerprint', 'VARCHAR(64)'),
+                               ('target_product_id', 'INTEGER'), ('resulting_stock', 'INTEGER')):
+        if column not in transfer_columns:
+            db.session.execute(text(f'ALTER TABLE warehouse_transfer ADD COLUMN {column} {definition}'))
+    db.session.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_transfer_idempotency ON warehouse_transfer (idempotency_key)'))
+    # create_all created the independent retry ledger before legacy columns were
+    # upgraded. Backfill once; never overwrite a durable result on later starts.
+    db.session.execute(text('''
+        INSERT OR IGNORE INTO transfer_request
+            (key, fingerprint, target_product_id, resulting_stock, transfer_id)
+        SELECT idempotency_key, request_fingerprint, target_product_id, resulting_stock, id
+        FROM warehouse_transfer
+        WHERE idempotency_key IS NOT NULL AND request_fingerprint IS NOT NULL
+    '''))
+    db.session.execute(text('CREATE TABLE IF NOT EXISTS schema_migration (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)'))
+    db.session.commit()
 
     supplier_columns = [col['name'] for col in inspector.get_columns('supplier')]
     supplier_migrations = [
@@ -2988,6 +3017,10 @@ with app.app_context():
             app.logger.warning(f'Failed to create index: {e}')
     db.session.commit()
 
+    # Mark complete only after every startup migration has succeeded.
+    db.session.execute(text("INSERT OR IGNORE INTO schema_migration VALUES ('branch_stabilization_v2', CURRENT_TIMESTAMP)"))
+    db.session.commit()
+
 # Authentication routes
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -2998,7 +3031,11 @@ def login():
         if user and check_password_hash(user.password, password):
             assigned_branch = db.session.get(Branch, user.branch_id) if user.branch_id else None
             if user.branch_id and (not assigned_branch or not assigned_branch.is_active):
+                session.clear()
                 return render_template('login.html', error='Your assigned branch is inactive. Contact a manager.')
+            if not assigned_branch and get_default_branch_id() is None:
+                session.clear()
+                return render_template('login.html', error='No active branch is available. Contact a manager.')
             session.clear()
             session.permanent = request.form.get('remember') == 'on'
             session['user_id'] = user.id
@@ -4061,7 +4098,7 @@ def api_products():
                 return jsonify({'success': False, 'message': 'Category not found in this branch'}), 400
 
         # Check for duplicate barcode within same branch
-        barcode = data.get('barcode')
+        barcode = data.get('barcode') or None
         if barcode:
             existing = Product.query.filter_by(barcode=barcode, branch_id=branch_id).first()
             if existing:
@@ -4100,7 +4137,11 @@ def api_products():
         if category:
             product.category = category.name
         db.session.add(product)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            return jsonify(success=False, message='Barcode already in use in this branch'), 409
         return jsonify({'success': True, 'message': 'Product added'}), 201
 
 @app.route('/api/products/export', methods=['GET'])
@@ -4313,6 +4354,8 @@ def api_single_product(product_id):
             if existing:
                 return jsonify({'success': False, 'message': 'Barcode already in use'}), 400
             product.barcode = data['barcode']
+        elif 'barcode' in data:
+            product.barcode = None
 
         if 'name' in data:
             product.name = data.get('name', product.name)
@@ -4387,23 +4430,31 @@ def api_single_product(product_id):
         if 'reorder_enabled' in data:
             product.reorder_enabled = to_bool(data.get('reorder_enabled'), True)
 
+        previous_photo = product.photo_filename
+        new_photo = None
         remove_photo = str(data.get('remove_photo', '')).lower() in ('1', 'true', 'yes', 'on')
         if remove_photo and product.photo_filename:
-            delete_product_image(product.photo_filename)
             product.photo_filename = None
 
         photo_file = request.files.get('photo') if is_multipart else None
         if photo_file and photo_file.filename:
             try:
                 new_photo = save_product_image(photo_file)
-                delete_product_image(product.photo_filename)
                 product.photo_filename = new_photo
             except ProductImageTooLargeError as e:
                 return jsonify({'success': False, 'message': str(e)}), 413
             except ValueError as e:
                 return jsonify({'success': False, 'message': str(e)}), 400
 
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            if new_photo:
+                delete_product_image(new_photo)
+            return jsonify(success=False, message='Barcode already in use in this branch'), 409
+        if previous_photo and previous_photo != product.photo_filename:
+            delete_product_image(previous_photo)
         return jsonify({'success': True, 'message': 'Product updated'})
 
     elif request.method == 'DELETE':
@@ -4944,11 +4995,13 @@ def _create_sale_transaction(data):
     try:
         branch_id = get_current_branch_id()
         customer_id = data.get('customer_id')
+        payment_method = str(data.get('payment_method') or 'cash').strip().lower()
+        if payment_method == 'split_payment' and customer_id:
+            return jsonify({'success': False, 'message': 'Split payment cannot be charged to a customer account'}), 400
         if customer_id:
             customer = Customer.query.filter_by(id=customer_id, branch_id=branch_id).first()
             if not customer:
                 return jsonify({'success': False, 'message': 'Customer not found in current branch'}), 404
-        payment_method = str(data.get('payment_method') or 'cash').strip().lower()
         if session.get('role') == 'cashier' and payment_method == 'debt':
             return jsonify({'success': False, 'message': 'Manager access required for credit sales'}), 403
         # Idempotency guard for offline sales: if the client already sent this
@@ -7442,74 +7495,18 @@ def api_cancel_purchase_order(po_id):
 @app.route('/api/purchase_orders/<int:po_id>/receive', methods=['POST'])
 @manager_required
 def api_receive_purchase_order(po_id):
-    po = db.session.get(PurchaseOrder, po_id)
-    if not po:
-        return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
-    if any(not item.product for item in po.items):
-        return jsonify({'success': False, 'message': 'Purchase order contains a missing product'}), 409
-
-    if po.status in ('received', 'cancelled'):
-        return jsonify({'success': False, 'message': f'Cannot receive items for {po.status} purchase order'}), 400
-
-    data = request.get_json() or {}
-    received_items = data.get('items') or []
-    if not received_items:
-        return jsonify({'success': False, 'message': 'No receiving items provided'}), 400
-
-    item_map = {item.id: item for item in po.items}
-
+    from purchase_receiving import receive_purchase_order
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(success=False, message='A JSON object is required'), 400
     try:
-        for received in received_items:
-            po_item_id = received.get('purchase_order_item_id')
-            receive_qty = int(received.get('received_qty', 0) or 0)
-
-            if receive_qty <= 0:
-                continue
-
-            po_item = item_map.get(po_item_id)
-            if not po_item:
-                db.session.rollback()
-                return jsonify({'success': False, 'message': f'Invalid PO item: {po_item_id}'}), 400
-
-            remaining = po_item.ordered_qty - po_item.received_qty
-            if receive_qty > remaining:
-                db.session.rollback()
-                return jsonify({'success': False, 'message': f'Receive qty exceeds remaining for {po_item.product.name}'}), 400
-
-            po_item.received_qty += receive_qty
-            
-            # Add to warehouse inventory instead of directly to product stock
-            warehouse_item = WarehouseInventory(
-                product_id=po_item.product_id,
-                quantity=receive_qty,
-                batch_number=po.po_number,  # Use PO number as batch reference
-                received_date=datetime.utcnow(),
-                unit_cost=po_item.unit_cost,
-                branch_id=po_item.product.branch_id
-            )
-            db.session.add(warehouse_item)
-
-            if po_item.unit_cost and po_item.unit_cost > 0:
-                po_item.product.cost = po_item.unit_cost
-
-        all_received = all(item.received_qty >= item.ordered_qty for item in po.items)
-        any_received = any(item.received_qty > 0 for item in po.items)
-        
-        if all_received:
-            po.status = 'received'
-        elif any_received:
-            po.status = 'partially_received'
-        
-        # Update supplier stats
-        if po.supplier:
-            po.supplier.total_orders = (po.supplier.total_orders or 0) + 1
-
-        db.session.commit()
-        return jsonify({'success': True, 'message': 'Receiving recorded', 'status': po.status})
-    except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"Error receiving purchase order: {str(e)}")
-        return jsonify({'success': False, 'message': 'Failed to process receiving'}), 500
+        result, status = receive_purchase_order(db, {
+            'PurchaseOrder': PurchaseOrder, 'WarehouseInventory': WarehouseInventory,
+        }, po_id, data.get('items'))
+        return jsonify(result), status
+    except Exception:
+        app.logger.exception('Error receiving purchase order')
+        return jsonify(success=False, message='Failed to process receiving'), 500
 
 @app.route('/api/purchase_orders/<int:po_id>/print', methods=['GET'])
 @manager_required
@@ -8162,136 +8159,144 @@ def api_warehouse_summary():
 @manager_required
 def api_warehouse_transfer():
     """Transfer stock from the shared warehouse to a selected branch."""
-    data = request.get_json() or {}
-    
-    product_id = data.get('product_id')
-    quantity = int(data.get('quantity', 0) or 0)
-    batch_number = data.get('batch_number')
-    target_branch_id = data.get('target_branch_id')
-    notes = (data.get('notes') or '').strip() or None
-    
-    if not product_id or quantity <= 0:
-        return jsonify({'success': False, 'message': 'Product and valid quantity are required'}), 400
-    
-    product = db.session.get(Product, product_id)
-    if not product:
-        return jsonify({'success': False, 'message': 'Product not found'}), 404
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(success=False, message='A JSON object is required'), 400
 
-    if target_branch_id in (None, '', 'current'):
-        target_branch_id = get_current_branch_id()
-    else:
-        try:
-            target_branch_id = int(target_branch_id)
-        except (TypeError, ValueError):
-            return jsonify({'success': False, 'message': 'Invalid target branch'}), 400
+    def positive_integer(value):
+        if isinstance(value, bool) or not re.fullmatch(r'[0-9]+', str(value)):
+            raise ValueError()
+        number = int(value)
+        if number < 1 or number > 2147483647:
+            raise ValueError()
+        return number
 
-    target_branch = Branch.query.filter_by(id=target_branch_id, is_active=True).first()
-    if not target_branch:
-        return jsonify({'success': False, 'message': 'Target branch not found'}), 404
-    
-    # Warehouse stock is shared; its branch_id records where the PO originated.
-    warehouse_query = WarehouseInventory.query.filter_by(product_id=product_id)
-    if batch_number:
-        warehouse_query = warehouse_query.filter_by(batch_number=batch_number)
-    
-    warehouse_items = warehouse_query.filter(WarehouseInventory.quantity > 0).all()
-    
-    if not warehouse_items:
-        return jsonify({'success': False, 'message': 'No warehouse inventory found for this product'}), 400
-    
-    total_available = sum(item.quantity for item in warehouse_items)
-    if quantity > total_available:
-        return jsonify({'success': False, 'message': f'Insufficient warehouse stock. Available: {total_available}'}), 400
-    
     try:
-        remaining_to_transfer = quantity
-        
-        # Transfer from warehouse batches (FIFO - oldest first)
-        for item in sorted(warehouse_items, key=lambda x: x.received_date or datetime.min):
-            if remaining_to_transfer <= 0:
+        product_id = positive_integer(data.get('product_id'))
+        quantity = positive_integer(data.get('quantity'))
+        target = data.get('target_branch_id')
+        target_branch_id = (get_current_branch_id() if target in (None, '', 'current')
+                            else positive_integer(target))
+    except (TypeError, ValueError):
+        return jsonify(success=False, message='Product, quantity and target must be positive integers'), 400
+    batch_number = data.get('batch_number') or None
+    notes = data.get('notes') or None
+    key = data.get('idempotency_key') or request.headers.get('Idempotency-Key') or None
+    if any(value is not None and not isinstance(value, str) for value in (batch_number, notes, key)):
+        return jsonify(success=False, message='Invalid transfer metadata'), 400
+    if key and (len(key) > 128 or not key.strip()):
+        return jsonify(success=False, message='Invalid idempotency key'), 400
+    notes = notes.strip() if notes else None
+    fingerprint = hashlib.sha256(json.dumps(
+        [product_id, quantity, target_branch_id, batch_number, notes, session.get('user_id')],
+        separators=(',', ':')).encode()).hexdigest()
+    try:
+        # Discard the read-only authorization transaction before acquiring the
+        # SQLite writer lock. All reads and writes below share this transaction.
+        db.session.rollback()
+        db.session.execute(text('BEGIN IMMEDIATE'))
+        if key:
+            previous = db.session.get(TransferRequest, key)
+            if previous:
+                if previous.fingerprint != fingerprint:
+                    db.session.rollback()
+                    return jsonify(success=False, message='Idempotency key already used for another transfer'), 409
+                result = dict(success=True, replayed=True, transfer_id=previous.transfer_id,
+                              target_product_id=previous.target_product_id,
+                              new_main_stock=previous.resulting_stock,
+                              message='Transfer already completed')
+                db.session.rollback()
+                return jsonify(result)
+        product = db.session.get(Product, product_id)
+        target_branch = Branch.query.filter_by(id=target_branch_id, is_active=True).first()
+        if not product or not target_branch:
+            db.session.rollback()
+            return jsonify(success=False, message='Product or target branch not found'), 404
+        # Validate identity before debiting any batch. A catalog copy whose
+        # barcode was edited needs explicit reconciliation, not silent credit
+        # to inventory that the source's physical barcode can no longer scan.
+        target_product = Product.query.filter_by(
+            branch_id=target_branch_id, catalog_id=product.catalog_id).first() if product.catalog_id else None
+        if target_product and product.barcode and target_product.barcode != product.barcode:
+            db.session.rollback()
+            return jsonify(success=False, message='Destination catalog barcode differs. Reconcile product barcodes before transferring.'), 409
+        if not target_product and product.barcode:
+            target_product = Product.query.filter_by(branch_id=target_branch_id, barcode=product.barcode).first()
+        warehouse_query = WarehouseInventory.query.filter_by(product_id=product_id)
+        if batch_number:
+            warehouse_query = warehouse_query.filter_by(batch_number=batch_number)
+        items = warehouse_query.filter(WarehouseInventory.quantity > 0).order_by(
+            WarehouseInventory.received_date, WarehouseInventory.id).all()
+        available = sum(item.quantity for item in items)
+        if available < quantity:
+            db.session.rollback()
+            return jsonify(success=False, message=f'Insufficient warehouse stock. Available: {available}'), 400
+        remaining = quantity
+        for item in items:
+            take = min(item.quantity, remaining)
+            if not take:
                 break
-            
-            transfer_from_this = min(remaining_to_transfer, item.quantity)
-            item.quantity -= transfer_from_this
-            item.updated_at = datetime.utcnow()
-            remaining_to_transfer -= transfer_from_this
-        
-        target_product = Product.query.filter_by(branch_id=target_branch_id, barcode=product.barcode).first() if product.barcode else None
-        if not target_product:
-            target_product = Product.query.filter_by(branch_id=target_branch_id, name=product.name).first()
+            changed = WarehouseInventory.query.filter(
+                WarehouseInventory.id == item.id, WarehouseInventory.quantity >= take
+            ).update({WarehouseInventory.quantity: WarehouseInventory.quantity - take}, synchronize_session=False)
+            if changed != 1:
+                raise RuntimeError('Warehouse stock changed during transfer')
+            remaining -= take
 
+        # Catalog identity, not display name, links barcode-less copies. A
+        # physical barcode is an explicit identity in the destination branch.
         if not target_product:
-            target_category = None
-            if product.category:
-                target_category = Category.query.filter(
-                    Category.branch_id == target_branch_id,
-                    db.func.lower(Category.name) == product.category.lower()
-                ).first()
-                if not target_category:
-                    source_category = product.category_ref
-                    target_category = Category(
-                        name=product.category,
+            source_category = product.category_ref
+            category_name = source_category.name if source_category else product.category
+            category = None
+            if category_name:
+                category = Category.query.filter(Category.branch_id == target_branch_id,
+                    func.lower(Category.name) == category_name.lower()).first()
+                if not category:
+                    category = Category(name=category_name, branch_id=target_branch_id,
                         description=source_category.description if source_category else None,
                         color=source_category.color if source_category else '#6c757d',
-                        is_active=True,
-                        sort_order=source_category.sort_order if source_category else 0,
-                        branch_id=target_branch_id
-                    )
-                    db.session.add(target_category)
+                        is_active=True, sort_order=source_category.sort_order if source_category else 0)
+                    db.session.add(category)
                     db.session.flush()
-            target_barcode = product.barcode
-            if target_barcode:
-                barcode_conflict = Product.query.filter(
-                    Product.barcode == target_barcode,
-                    Product.branch_id != target_branch_id
-                ).first()
-                if barcode_conflict:
-                    target_barcode = build_branch_scoped_barcode(target_barcode, target_branch)
-
+            if not product.catalog_id:
+                product.catalog_id = uuid.uuid4().hex
             target_product = Product(
-                barcode=target_barcode,
-                name=product.name,
-                price=product.price,
-                cost=product.cost,
-                stock=0,
-                category=target_category.name if target_category else None,
-                category_id=target_category.id if target_category else None,
-                unit_id=product.unit_id,
-                tax_rate=product.tax_rate,
-                photo_filename=product.photo_filename,
-                reorder_point=product.reorder_point,
-                reorder_quantity=product.reorder_quantity,
-                reorder_enabled=product.reorder_enabled,
-                branch_id=target_branch_id
-            )
+                catalog_id=product.catalog_id, barcode=product.barcode,
+                name=product.name, price=product.price, cost=product.cost, stock=0,
+                category=category.name if category else None,
+                category_id=category.id if category else None, unit_id=product.unit_id,
+                tax_rate=product.tax_rate, photo_filename=product.photo_filename,
+                reorder_point=product.reorder_point, reorder_quantity=product.reorder_quantity,
+                reorder_enabled=product.reorder_enabled, branch_id=target_branch_id)
             db.session.add(target_product)
             db.session.flush()
-
-        # Update target branch stock
-        target_product.stock += quantity
-        
-        # Record the transfer
-        transfer = WarehouseTransfer(
-            product_id=product_id,
-            quantity=quantity,
-            from_warehouse=True,
-            batch_number=batch_number,
-            performed_by=session.get('user_id'),
-            branch_id=target_branch_id,
-            notes=notes or f'Transferred from warehouse to {target_branch.name}'
-        )
+        db.session.flush()
+        Product.query.filter_by(id=target_product.id).update(
+            {Product.stock: func.coalesce(Product.stock, 0) + quantity}, synchronize_session=False)
+        db.session.refresh(target_product)
+        transfer = WarehouseTransfer(product_id=product_id, quantity=quantity, from_warehouse=True,
+            batch_number=batch_number, performed_by=session.get('user_id'), branch_id=target_branch_id,
+            notes=notes or f'Transferred from warehouse to {target_branch.name}',
+            idempotency_key=key, request_fingerprint=fingerprint,
+            target_product_id=target_product.id, resulting_stock=target_product.stock)
         db.session.add(transfer)
+        if key:
+            db.session.flush()
+            db.session.add(TransferRequest(key=key, fingerprint=fingerprint,
+                target_product_id=target_product.id, resulting_stock=target_product.stock,
+                transfer_id=transfer.id))
         db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'message': f'Transferred {quantity} units to {target_branch.name}',
-            'new_main_stock': target_product.stock
-        })
-    except Exception as e:
+        return jsonify(success=True, transfer_id=transfer.id, target_product_id=target_product.id,
+            new_main_stock=target_product.stock,
+            message=f'Transferred {quantity} units to {target_branch.name}')
+    except (OperationalError, IntegrityError):
         db.session.rollback()
-        app.logger.error(f"Error transferring from warehouse: {str(e)}")
-        return jsonify({'success': False, 'message': 'Failed to process transfer'}), 500
+        return jsonify(success=False, message='Inventory changed or is busy. Retry with the same idempotency key.'), 409
+    except Exception:
+        db.session.rollback()
+        app.logger.exception('Error transferring from warehouse')
+        return jsonify(success=False, message='Failed to process transfer'), 500
 
 @app.route('/api/warehouse/transfers', methods=['GET'])
 @manager_required

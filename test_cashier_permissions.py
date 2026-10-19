@@ -53,9 +53,11 @@ def world(backend):
         branches = [m.Branch(name='Local', code='LOCAL', is_default=True),
                     m.Branch(name='Foreign', code='FOREIGN'),
                     m.Branch(name='Inactive', code='OFF', is_active=False)]
-        users = [m.User(username=name, password='test-only', role=role) for name, role in
+        m.db.session.add_all(branches)
+        m.db.session.flush()
+        users = [m.User(username=name, password='test-only', role=role, branch_id=branches[0].id) for name, role in
                  [('own', 'cashier'), ('other', 'cashier'), ('manager', 'manager'), ('boss', 'boss')]]
-        m.db.session.add_all(branches + users)
+        m.db.session.add_all(users)
         m.db.session.flush()
         products = [m.Product(name=name, barcode=name, branch_id=b.id,
                               price=100, cost=61, stock=50, tax_rate=0) for name, b in

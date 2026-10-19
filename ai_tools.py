@@ -25,7 +25,7 @@ get write tools filtered out automatically via the ``mutates`` flag
 
 Safety rails every WRITE tool (mutates=True) must follow:
     - Validate ALL inputs (types, ranges, referenced ids exist within the
-      current branch scope via self._branch_filter / self._branch_id()).
+      tool's policy: shared procurement/warehouse or branch-local sales data).
     - Return {"success": True, ...} or {"error": "..."} dicts.
     - Include audit-trail info: entity id + changed fields.
     - Serialize money as plain 2-decimal STRINGS (e.g. "12.34") using
@@ -40,6 +40,7 @@ from typing import Dict, List, Any, Optional
 from decimal import Decimal, ROUND_HALF_UP
 
 import pytz
+from sqlalchemy import text
 
 MONEY_QUANT = Decimal('0.01')
 
@@ -143,6 +144,18 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
             }
         }
     },
+    "get_supplier_categories": {
+        "name": "get_supplier_categories",
+        "description": "Shared supplier category choices from every branch. Use category_id when names are ambiguous; category management remains branch-local.",
+        "parameters": {"type": "object", "properties": {}}
+    },
+    "get_purchase_order_products": {
+        "name": "get_purchase_order_products",
+        "description": "Find shared purchase-order product choices across branches by name. Use explicit product IDs for PO items; normal product tools remain branch-local.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Optional product name filter."},
+            "limit": {"type": "integer", "description": "Maximum choices (1-100)."}}}
+    },
     "get_supplier_details": {
         "name": "get_supplier_details",
         "description": "Get detailed information about a specific supplier including their price agreements and order history.",
@@ -180,7 +193,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "create_purchase_order": {
         "name": "create_purchase_order",
-        "description": "Create a new purchase order for one or more products. Automatically calculates totals and generates PO number.",
+        "description": "Create a shared purchase order using supplier and product IDs from any branch. Automatically calculates totals and generates PO number.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -260,7 +273,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "create_warehouse_transfer": {
         "name": "create_warehouse_transfer",
-        "description": "Transfer products from warehouse inventory to main product stock. Reduces warehouse quantity and increases main stock.",
+        "description": "Transfer shared warehouse stock to a branch (defaults to the active branch). Source product IDs may belong to any branch; destination identity uses catalog ID or physical barcode, never name.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -275,6 +288,10 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "notes": {
                     "type": "string",
                     "description": "Optional notes for the transfer."
+                },
+                "target_branch_id": {
+                    "type": "integer",
+                    "description": "Optional active destination branch ID; defaults to the trusted active branch."
                 }
             },
             "required": ["product_id", "quantity"]
@@ -479,23 +496,24 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     # --- smart-autonomy write tools ---
     "create_supplier": {
         "name": "create_supplier",
-        "description": "Create a new supplier in the active branch with optional contact details and category. Refuses duplicate supplier names.",
+        "description": "Create a shared supplier with optional contact details and a category from any branch. Refuses duplicate supplier names across branches.",
         "parameters": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Supplier name (required, unique per branch)."},
+                "name": {"type": "string", "description": "Supplier name (required, unique in the shared directory)."},
                 "contact_person": {"type": "string", "description": "Optional contact person name."},
                 "phone": {"type": "string", "description": "Optional phone number."},
                 "email": {"type": "string", "description": "Optional email address."},
                 "address": {"type": "string", "description": "Optional address."},
-                "category": {"type": "string", "description": "Optional category name in the active branch."}
+                "category": {"type": "string", "description": "Optional category name from any branch; ambiguous names require category_id."},
+                "category_id": {"type": "integer", "description": "Explicit supplier category ID from any branch; use to disambiguate names."}
             },
             "required": ["name"]
         }
     },
     "update_supplier": {
         "name": "update_supplier",
-        "description": "Partially update an existing supplier in the active branch; only provided fields are changed.",
+        "description": "Partially update an existing shared supplier; only provided fields are changed.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -504,7 +522,8 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "phone": {"type": "string", "description": "New phone number."},
                 "email": {"type": "string", "description": "New email address."},
                 "address": {"type": "string", "description": "New address."},
-                "category": {"type": "string", "description": "New category name in the active branch."},
+                "category": {"type": "string", "description": "New category name from any branch; ambiguous names require category_id. Empty string clears category."},
+                "category_id": {"type": "integer", "description": "Explicit supplier category ID from any branch; use to disambiguate names."},
                 "active": {"type": "boolean", "description": "Set the supplier active/inactive (is_active)."}
             },
             "required": ["supplier_id"]
@@ -560,7 +579,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "delete_supplier": {
         "name": "delete_supplier",
-        "description": "Permanently delete a supplier from the active branch. Refuses if any non-terminal purchase order exists for the supplier.",
+        "description": "Permanently delete an unused shared supplier. Refuses if purchase orders, communications or price agreements reference it.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -820,7 +839,9 @@ _TOOL_META = {
     "get_inventory_status":            ("inventory",   False, None,     "Current stock levels and reorder status for all or one product.", "medium"),
     "get_low_stock_items":             ("inventory",   False, None,     "Products at or below reorder point with suggested reorder quantities.", "medium"),
     "search_products":                 ("inventory",   False, None,     "Search active-branch products by name; returns stock, price, cost.", "small"),
-    "get_supplier_list":               ("purchasing",  False, None,     "List suppliers with contact info, ratings, and performance.", "medium"),
+    "get_supplier_list":               ("purchasing",  False, None,     "List shared suppliers with contact info, ratings, and performance.", "medium"),
+    "get_supplier_categories":         ("purchasing",  False, 'manager', "Shared supplier category choices with explicit IDs and branches.", "medium"),
+    "get_purchase_order_products":     ("purchasing",  False, 'manager', "Shared purchase-order product choices with explicit IDs and branches.", "medium"),
     "get_supplier_details":            ("purchasing",  False, None,     "Detailed supplier info including price agreements and recent POs.", "large"),
     "get_purchase_orders":             ("purchasing",  False, None,     "List purchase orders filtered by status, supplier, or date.", "medium"),
     "get_warehouse_inventory":         ("inventory",   False, None,     "Warehouse stock received but not yet transferred to main stock.", "medium"),
@@ -828,7 +849,7 @@ _TOOL_META = {
     "get_product_details":             ("inventory",   False, None,     "Full product detail: stock, pricing, tax, supplier agreements.", "small"),
     "suggest_reorder_quantities":      ("inventory",   False, None,     "Suggested reorder quantities from 30-day sales velocity analysis.", "medium"),
     "get_supplier_price_for_product":  ("purchasing",  False, None,     "Agreed supplier price for a product, if an agreement exists.", "small"),
-    "get_current_branch_context":      ("system",      False, None,     "Active POS branch that scopes all assistant results.", "small"),
+    "get_current_branch_context":      ("system",      False, None,     "Active POS branch for local tools; procurement and warehouse are shared.", "small"),
     "get_category_summary":            ("inventory",   False, None,     "Categories with active-branch product and supplier counts.", "small"),
     "get_promotion_summary":           ("promotions",  False, None,     "Active-branch promotions filtered by active/upcoming/expired.", "medium"),
     "get_customer_summary":            ("customers",   False, None,     "Find active-branch customers and outstanding debt balances.", "medium"),
@@ -849,12 +870,12 @@ _TOOL_META = {
     "record_debt_payment":             ("debts",       True,  'staff',   "Record a payment against a customer debt using exact decimal math; marks paid at zero balance.", "small"),
     "update_delivery_stage":           ("deliveries",  True,  'staff',   "Advance a delivery to its next valid stage (to_deliver -> packaged -> delivering -> delivered/cancelled).", "small"),
     # --- smart-autonomy write tools ---
-    "create_supplier":                 ("purchasing",  True,  'manager', "Create a new supplier in the active branch with contact details and category.", "small"),
+    "create_supplier":                 ("purchasing",  True,  'manager', "Create a shared supplier with contact details and an unambiguous category.", "small"),
     "update_supplier":                 ("purchasing",  True,  'manager', "Partially update a supplier's contact details, category, or active status.", "small"),
     "update_customer":                 ("customers",   True,  'manager', "Partially update a customer's name/phone/email/address in the active branch.", "small"),
     "create_category":                 ("inventory",   True,  'manager', "Create a new category with optional description/color/sort order.", "small"),
     "delete_product":                  ("inventory",   True,  'manager', "Delete a product; sales and return history are kept, while other tabs (warehouse/promotions/PO lines/prices) need cascade=true.", "small"),
-    "delete_supplier":                 ("purchasing",  True,  'manager', "Delete a supplier; refuses when non-terminal purchase orders exist.", "small"),
+    "delete_supplier":                 ("purchasing",  True,  'manager', "Delete an unused shared supplier; refuse linked procurement history.", "small"),
     "delete_customer":                 ("customers",   True,  'manager', "Delete a customer; refuses when outstanding debt balances exist.", "small"),
     "update_product_price":            ("inventory",   True,  'manager', "Update a product's price with exact decimal math and an optional audit reason.", "small"),
     "write_off_debt":                  ("debts",       True,  'manager', "Write off a debt with a mandatory reason; zeroes balance and appends an audit note.", "small"),
@@ -976,6 +997,30 @@ class AITools:
     def _get_model(self, name):
         """Get a model class by name"""
         return self.models.get(name)
+
+    def _supplier_category(self, category=None, category_id=None):
+        """Shared supplier choices must never resolve ambiguous names with first()."""
+        Category = self._get_model('Category')
+        name = str(category).strip() if category is not None else ''
+        if category_id is not None:
+            if isinstance(category_id, bool) or not str(category_id).isdigit() or int(category_id) < 1:
+                return None, {"error": "category_id must be a positive integer"}
+            record = Category.query.filter_by(id=int(category_id)).first()
+            if not record:
+                return None, {"error": f"Category with ID {category_id} not found"}
+            if category is not None and name.lower() != record.name.lower():
+                return None, {"error": "category and category_id do not match"}
+            return record, None
+        if not name:
+            return None, None
+        records = Category.query.filter(self.db.func.lower(Category.name) == name.lower()).all()
+        if not records:
+            return None, {"error": f"Category '{category}' not found"}
+        if len(records) > 1:
+            return None, {"error": f"Category '{category}' is ambiguous; specify category_id",
+                          "category_choices": [{"category_id": c.id, "name": c.name,
+                                                "branch_id": c.branch_id} for c in records]}
+        return records[0], None
         
     def get_inventory_status(self, product_id: int = None, category: str = None, 
                             low_stock_only: bool = False) -> Dict[str, Any]:
@@ -1090,7 +1135,7 @@ class AITools:
     def get_supplier_list(self, active_only: bool = True, category: str = None) -> Dict[str, Any]:
         """Get list of suppliers"""
         Supplier = self._get_model('Supplier')
-        query = self._branch_filter(Supplier.query, Supplier)
+        query = Supplier.query  # Shared supplier directory; authorization stays manager-only.
         
         if active_only:
             query = query.filter_by(is_active=True)
@@ -1108,6 +1153,7 @@ class AITools:
                 "phone": supplier.phone,
                 "email": supplier.email,
                 "category": supplier.category,
+                "category_id": supplier.category_id,
                 "payment_terms": supplier.payment_terms,
                 "lead_time_days": supplier.lead_time_days,
                 "quality_rating": float(supplier.quality_rating or 0),
@@ -1120,6 +1166,22 @@ class AITools:
             "total_suppliers": len(result),
             "suppliers": result
         }
+
+    def get_supplier_categories(self) -> Dict[str, Any]:
+        Category = self._get_model('Category')
+        rows = [{"category_id": c.id, "name": c.name, "branch_id": c.branch_id}
+                for c in Category.query.order_by(Category.name, Category.id).all()]
+        return {"categories": rows, "total_categories": len(rows)}
+
+    def get_purchase_order_products(self, query: str = None, limit: int = 50) -> Dict[str, Any]:
+        Product = self._get_model('Product')
+        choices = Product.query
+        if query:
+            choices = choices.filter(Product.name.ilike(f'%{query}%'))
+        products = choices.order_by(Product.name, Product.id).limit(self._limit(limit, 50)).all()
+        rows = [{"product_id": p.id, "name": p.name, "branch_id": p.branch_id,
+                 "cost": money_str(p.cost or 0)} for p in products]
+        return {"products": rows, "total_products": len(rows)}
         
     def get_supplier_details(self, supplier_id: int) -> Dict[str, Any]:
         """Get detailed supplier information"""
@@ -1127,7 +1189,7 @@ class AITools:
         SupplierPriceAgreement = self._get_model('SupplierPriceAgreement')
         PurchaseOrder = self._get_model('PurchaseOrder')
         
-        supplier = self._branch_filter(Supplier.query.filter_by(id=supplier_id), Supplier).first()
+        supplier = Supplier.query.filter_by(id=supplier_id).first()
         if not supplier:
             return {"error": f"Supplier with ID {supplier_id} not found"}
             
@@ -1161,6 +1223,7 @@ class AITools:
             "email": supplier.email,
             "address": supplier.address,
             "category": supplier.category,
+            "category_id": supplier.category_id,
             "payment_terms": supplier.payment_terms,
             "lead_time_days": supplier.lead_time_days,
             "bank_name": supplier.bank_name,
@@ -1177,21 +1240,23 @@ class AITools:
                            limit: int = 50) -> Dict[str, Any]:
         """Get purchase orders with optional filtering"""
         PurchaseOrder = self._get_model('PurchaseOrder')
-        query = self._branch_filter(PurchaseOrder.query, PurchaseOrder)
+        query = PurchaseOrder.query
         
         if status:
             query = query.filter_by(status=status)
         if supplier_id:
             query = query.filter_by(supplier_id=supplier_id)
             
-        orders = query.order_by(PurchaseOrder.created_at.desc()).limit(limit).all()
+        orders = query.order_by(PurchaseOrder.created_at.desc()).limit(self._limit(limit, 50)).all()
         result = []
         
         for po in orders:
             items = []
             for item in po.items:
                 items.append({
+                    "purchase_order_item_id": item.id,
                     "product_id": item.product_id,
+                    "product_branch_id": item.product.branch_id if item.product else None,
                     "product_name": item.product.name if item.product else None,
                     "ordered_qty": item.ordered_qty,
                     "received_qty": item.received_qty,
@@ -1223,10 +1288,10 @@ class AITools:
         PurchaseOrder = self._get_model('PurchaseOrder')
         PurchaseOrderItem = self._get_model('PurchaseOrderItem')
         
-        # Validate supplier (branch-scoped)
-        supplier = self._branch_filter(Supplier.query.filter_by(id=supplier_id), Supplier).first()
+        # Procurement intentionally references suppliers/products from every branch.
+        supplier = Supplier.query.filter_by(id=supplier_id).first()
         if not supplier:
-            return {"error": f"Supplier with ID {supplier_id} not found in the active branch"}
+            return {"error": f"Supplier with ID {supplier_id} not found"}
 
         if not isinstance(items, list) or not items:
             return {"error": "At least one order item is required"}
@@ -1257,10 +1322,10 @@ class AITools:
                 self.db.session.rollback()
                 return {"error": f"Quantity must be a positive whole number (got {quantity})"}
             
-            product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
+            product = Product.query.filter_by(id=product_id).first()
             if not product:
                 self.db.session.rollback()
-                return {"error": f"Product with ID {product_id} not found in the active branch"}
+                return {"error": f"Product with ID {product_id} not found"}
                 
             # Use product cost if unit_cost not provided
             if unit_cost is None:
@@ -1307,9 +1372,9 @@ class AITools:
         """Approve a purchase order"""
         PurchaseOrder = self._get_model('PurchaseOrder')
         
-        po = self._branch_filter(PurchaseOrder.query.filter_by(id=po_id), PurchaseOrder).first()
+        po = PurchaseOrder.query.filter_by(id=po_id).first()
         if not po:
-            return {"error": f"Purchase order with ID {po_id} not found in the active branch"}
+            return {"error": f"Purchase order with ID {po_id} not found"}
             
         if po.status != 'pending':
             return {"error": f"Cannot approve purchase order with status '{po.status}'. Only 'pending' orders can be approved."}
@@ -1330,9 +1395,9 @@ class AITools:
         """Cancel a purchase order"""
         PurchaseOrder = self._get_model('PurchaseOrder')
         
-        po = self._branch_filter(PurchaseOrder.query.filter_by(id=po_id), PurchaseOrder).first()
+        po = PurchaseOrder.query.filter_by(id=po_id).first()
         if not po:
-            return {"error": f"Purchase order with ID {po_id} not found in the active branch"}
+            return {"error": f"Purchase order with ID {po_id} not found"}
             
         if po.status in ['received', 'cancelled']:
             return {"error": f"Cannot cancel purchase order with status '{po.status}'."}
@@ -1354,7 +1419,7 @@ class AITools:
     def get_warehouse_inventory(self, product_id: int = None) -> Dict[str, Any]:
         """Get warehouse inventory status"""
         WarehouseInventory = self._get_model('WarehouseInventory')
-        query = self._branch_filter(WarehouseInventory.query, WarehouseInventory)
+        query = WarehouseInventory.query
         
         if product_id:
             query = query.filter_by(product_id=product_id)
@@ -1367,6 +1432,7 @@ class AITools:
                 result.append({
                     "warehouse_item_id": item.id,
                     "product_id": item.product_id,
+                    "product_branch_id": item.product.branch_id if item.product else None,
                     "product_name": item.product.name if item.product else None,
                     "barcode": item.product.barcode if item.product else None,
                     "quantity": item.quantity,
@@ -1381,64 +1447,103 @@ class AITools:
             "warehouse_items": result
         }
         
-    def create_warehouse_transfer(self, product_id: int, quantity: int, notes: str = None) -> Dict[str, Any]:
-        """Transfer products from warehouse to main stock"""
+    def create_warehouse_transfer(self, product_id: int, quantity: int, notes: str = None,
+                                  target_branch_id: int = None) -> Dict[str, Any]:
+        """Transfer shared warehouse stock using branch-local destination identity."""
         WarehouseInventory = self._get_model('WarehouseInventory')
         WarehouseTransfer = self._get_model('WarehouseTransfer')
         Product = self._get_model('Product')
-        
-        product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
-        if not product:
-            return {"error": f"Product with ID {product_id} not found in the active branch"}
-            
-        # Find warehouse items for this product (branch-scoped)
-        warehouse_items = self._branch_filter(
-            WarehouseInventory.query.filter_by(product_id=product_id),
-            WarehouseInventory).all()
-        total_available = sum(item.quantity for item in warehouse_items)
-        
-        if total_available < quantity:
-            return {
-                "error": f"Insufficient warehouse stock. Available: {total_available}, Requested: {quantity}"
-            }
-            
-        # Deduct from warehouse (FIFO - first in, first out)
-        remaining = quantity
-        transferred_from = []
-        
-        for wh_item in sorted(warehouse_items, key=lambda x: x.received_date or datetime.min):
-            if remaining <= 0:
-                break
-            deduct = min(wh_item.quantity, remaining)
-            wh_item.quantity -= deduct
-            remaining -= deduct
-            transferred_from.append({
-                "batch": wh_item.batch_number,
-                "deducted": deduct
-            })
-            
-        # Add to main stock
-        product.stock = (product.stock or 0) + quantity
-        
-        # Record transfer
-        transfer = WarehouseTransfer(
-            product_id=product_id,
-            quantity=quantity,
-            from_warehouse=True,
-            notes=notes or 'AI Agent transfer'
-        )
-        self.db.session.add(transfer)
-        self.db.session.commit()
-        
-        return {
-            "success": True,
-            "transfer_id": transfer.id,
-            "product_id": product_id,
-            "product_name": product.name,
-            "quantity_transferred": quantity,
-            "new_stock_level": product.stock,
-            "transferred_from": transferred_from
-        }
+        Branch = self._get_model('Branch')
+        Category = self._get_model('Category')
+        target_branch_id = self._branch_id() if target_branch_id is None else target_branch_id
+        for value in (product_id, quantity, target_branch_id):
+            if isinstance(value, bool) or not str(value).isdigit() or not 0 < int(value) <= 2147483647:
+                return {"error": "Product, quantity and target branch must be positive integers"}
+        product_id, quantity, target_branch_id = map(int, (product_id, quantity, target_branch_id))
+        if notes is not None and not isinstance(notes, str):
+            return {"error": "Transfer notes must be a string"}
+        try:
+            # Match the dashboard's SQLite writer transaction before reading
+            # FIFO stock or destination identity, not merely before updating it.
+            self.db.session.rollback()
+            self.db.session.execute(text('BEGIN IMMEDIATE'))
+            product = Product.query.filter_by(id=product_id).first()
+            branch = Branch.query.filter_by(id=target_branch_id, is_active=True).first()
+            if not product or not branch:
+                self.db.session.rollback()
+                return {"error": "Product or target branch not found"}
+            warehouse_items = WarehouseInventory.query.filter_by(product_id=product_id).filter(
+                WarehouseInventory.quantity > 0).order_by(
+                    WarehouseInventory.received_date, WarehouseInventory.id).all()
+            total_available = sum(item.quantity for item in warehouse_items)
+            if total_available < quantity:
+                self.db.session.rollback()
+                return {"error": f"Insufficient warehouse stock. Available: {total_available}, Requested: {quantity}"}
+            remaining, transferred_from = quantity, []
+            for item in warehouse_items:
+                if remaining <= 0:
+                    break
+                deduct = min(item.quantity, remaining)
+                changed = WarehouseInventory.query.filter(
+                    WarehouseInventory.id == item.id, WarehouseInventory.quantity >= deduct
+                ).update({WarehouseInventory.quantity: WarehouseInventory.quantity - deduct},
+                         synchronize_session=False)
+                if changed != 1:
+                    raise RuntimeError('Warehouse stock changed; retry the transfer')
+                remaining -= deduct
+                transferred_from.append({"batch": item.batch_number, "deducted": deduct})
+
+            target = Product.query.filter_by(branch_id=target_branch_id,
+                catalog_id=product.catalog_id).first() if product.catalog_id else None
+            if target and product.barcode and target.barcode != product.barcode:
+                self.db.session.rollback()
+                return {"error": "Destination catalog product barcode differs from the source physical barcode. Explicit barcode reconciliation is required before transfer."}
+            if not target and product.barcode:
+                target = Product.query.filter_by(branch_id=target_branch_id, barcode=product.barcode).first()
+            if not target and product.branch_id == target_branch_id:
+                target = product
+            if not target:
+                source_category = product.category_ref
+                category_name = source_category.name if source_category else product.category
+                category = None
+                if category_name:
+                    category = Category.query.filter(Category.branch_id == target_branch_id,
+                        self.db.func.lower(Category.name) == category_name.lower()).first()
+                    if not category:
+                        category = Category(name=category_name, branch_id=target_branch_id,
+                            description=source_category.description if source_category else None,
+                            color=source_category.color if source_category else '#6c757d',
+                            sort_order=source_category.sort_order if source_category else 0, is_active=True)
+                        self.db.session.add(category)
+                        self.db.session.flush()
+                if not product.catalog_id:
+                    product.catalog_id = uuid.uuid4().hex
+                target = Product(catalog_id=product.catalog_id, barcode=product.barcode,
+                    name=product.name, price=product.price, cost=product.cost, stock=0,
+                    category_id=category.id if category else None,
+                    category=category.name if category else None, unit_id=product.unit_id,
+                    tax_rate=product.tax_rate, photo_filename=product.photo_filename,
+                    reorder_point=product.reorder_point, reorder_quantity=product.reorder_quantity,
+                    reorder_enabled=product.reorder_enabled, branch_id=target_branch_id)
+                self.db.session.add(target)
+            self.db.session.flush()
+            Product.query.filter_by(id=target.id).update(
+                {Product.stock: self.db.func.coalesce(Product.stock, 0) + quantity}, synchronize_session=False)
+            self.db.session.refresh(target)
+            transfer = WarehouseTransfer(product_id=product_id, quantity=quantity, from_warehouse=True,
+                branch_id=target_branch_id, target_product_id=target.id, resulting_stock=target.stock,
+                performed_by=trusted_tool_context(self.context).get('user_id'),
+                notes=notes or 'AI Agent transfer')
+            self.db.session.add(transfer)
+            self.db.session.commit()
+            self.db.session.expire_all()
+            return {"success": True, "transfer_id": transfer.id, "product_id": product_id,
+                "target_product_id": target.id, "target_branch_id": target_branch_id,
+                "product_name": target.name, "quantity_transferred": quantity,
+                "new_stock_level": target.stock, "transferred_from": transferred_from}
+        except Exception as exc:
+            self.db.session.rollback()
+            return {"error": f"Failed to transfer warehouse stock: {exc}"}
         
     def get_sales_trends(self, days: int = 30, product_id: int = None, top_n: int = 10) -> Dict[str, Any]:
         """Get sales trend analysis"""
@@ -1588,9 +1693,9 @@ class AITools:
         Product = self._get_model('Product')
         Supplier = self._get_model('Supplier')
         product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
-        supplier = self._branch_filter(Supplier.query.filter_by(id=supplier_id), Supplier).first()
+        supplier = Supplier.query.filter_by(id=supplier_id).first()
         if not product or not supplier:
-            return {"has_agreement": False, "message": "Product or supplier was not found in the active branch."}
+            return {"has_agreement": False, "message": "Product was not found in the active branch or supplier was not found."}
         agreement = SupplierPriceAgreement.query.filter_by(product_id=product_id, supplier_id=supplier_id).first()
         
         if not agreement:
@@ -1609,7 +1714,7 @@ class AITools:
         }
 
     def get_current_branch_context(self) -> Dict[str, Any]:
-        """Return the trusted branch scope applied to every assistant query."""
+        """Return trusted active scope for branch-local tools (procurement/warehouse are shared)."""
         Branch = self._get_model('Branch')
         branch_id = self._branch_id()
         branch = Branch.query.filter_by(id=branch_id, is_active=True).first() if Branch and branch_id else None
@@ -1627,7 +1732,7 @@ class AITools:
         for category in categories:
             rows.append({"id": category.id, "name": category.name, "description": category.description,
                          "is_active": bool(category.is_active), "product_count": self._branch_filter(Product.query.filter_by(category_id=category.id), Product).count(),
-                         "supplier_count": self._branch_filter(Supplier.query.filter_by(category_id=category.id), Supplier).count()})
+                          "supplier_count": Supplier.query.filter_by(category_id=category.id).count()})
         return self._scope({"total_categories": len(rows), "categories": rows})
 
     def get_promotion_summary(self, status: str = "all", limit: int = 20) -> Dict[str, Any]:
@@ -1692,9 +1797,9 @@ class AITools:
 
     def get_warehouse_transfer_history(self, limit: int = 20) -> Dict[str, Any]:
         Transfer = self._get_model('WarehouseTransfer')
-        transfers = self._branch_filter(Transfer.query, Transfer).order_by(Transfer.created_at.desc()).limit(self._limit(limit)).all()
-        rows = [{"id": t.id, "product_name": t.product.name if t.product else 'Unknown', "quantity": t.quantity, "batch_number": t.batch_number, "performed_by": t.performer.username if t.performer else None, "created_at": t.created_at.isoformat() if t.created_at else None} for t in transfers]
-        return self._scope({"total_transfers": len(rows), "transfers": rows})
+        transfers = Transfer.query.order_by(Transfer.created_at.desc()).limit(self._limit(limit)).all()
+        rows = [{"id": t.id, "target_branch_id": t.branch_id, "product_name": t.product.name if t.product else 'Unknown', "quantity": t.quantity, "batch_number": t.batch_number, "performed_by": t.performer.username if t.performer else None, "created_at": t.created_at.isoformat() if t.created_at else None} for t in transfers]
+        return {"total_transfers": len(rows), "transfers": rows}
 
     def get_sales_summary(self, days: int = 30, limit: int = 10) -> Dict[str, Any]:
         Sale = self._get_model('Sale')
@@ -1733,7 +1838,7 @@ class AITools:
         
     # ==================================================================
     # WRITE TOOLS (mutates=True). Pattern: validate all inputs, scope
-    # lookups to the active branch via self._branch_filter, return
+    # branch-local lookups via self._branch_filter (procurement is shared), return
     # {"success": True, ...} or {"error": ...} with audit info, and
     # serialize money as plain 2-decimal strings via money_plain().
     # ==================================================================
@@ -1768,6 +1873,17 @@ class AITools:
             return {"error": "stock, reorder_point and reorder_quantity must be integers"}
         if stock_val < 0 or reorder_point_val < 0 or reorder_quantity_val < 0:
             return {"error": "stock, reorder_point and reorder_quantity must be >= 0"}
+
+        if barcode is not None:
+            if not isinstance(barcode, str):
+                return {"error": "barcode must be a string"}
+            barcode = barcode.strip() or None
+            if barcode:
+                duplicate_query = self._branch_filter(Product.query.filter_by(barcode=barcode), Product)
+                if product_id is not None:
+                    duplicate_query = duplicate_query.filter(Product.id != product_id)
+                if duplicate_query.first():
+                    return {"error": "Barcode already exists in the active branch"}
 
         category_record = None
         if category is not None and str(category).strip():
@@ -1814,7 +1930,11 @@ class AITools:
             )
             self.db.session.add(product)
             created = True
-        self.db.session.commit()
+        try:
+            self.db.session.commit()
+        except Exception:
+            self.db.session.rollback()
+            return {"error": "Failed to save product; check for a duplicate barcode in the active branch"}
         return {
             "success": True,
             "created": created,
@@ -2034,27 +2154,22 @@ class AITools:
 
     def create_supplier(self, name: str, contact_person: str = None, phone: str = None,
                         email: str = None, address: str = None,
-                        category: str = None) -> Dict[str, Any]:
-        """Create a new supplier in the active branch (manager only)."""
+                        category: str = None, category_id: int = None) -> Dict[str, Any]:
+        """Create a shared supplier, retaining the active branch as provenance."""
         Supplier = self._get_model('Supplier')
-        Category = self._get_model('Category')
         if not isinstance(name, str) or not name.strip():
             return {"error": "Supplier name is required"}
         name = name.strip()
-        duplicate = self._branch_filter(Supplier.query.filter_by(name=name), Supplier).first()
+        duplicate = Supplier.query.filter(self.db.func.lower(Supplier.name) == name.lower()).first()
         if duplicate:
-            return {"error": f"A supplier named '{name}' already exists in the active branch (ID {duplicate.id})"}
+            return {"error": f"A supplier named '{name}' already exists (ID {duplicate.id})"}
         if email is not None:
             email = str(email).strip() or None
             if email and '@' not in email:
                 return {"error": "email must be a valid email address"}
-        category_record = None
-        if category and str(category).strip():
-            category_record = self._branch_filter(Category.query.filter(
-                self.db.func.lower(Category.name) == str(category).strip().lower()
-            ), Category).first()
-            if not category_record:
-                return {"error": f"Category '{category}' not found in the active branch"}
+        category_record, error = self._supplier_category(category, category_id)
+        if error:
+            return error
         supplier = Supplier(
             name=name,
             contact_person=str(contact_person).strip() if contact_person else None,
@@ -2077,13 +2192,23 @@ class AITools:
 
     def update_supplier(self, supplier_id: int, contact_person: str = None, phone: str = None,
                         email: str = None, address: str = None, category: str = None,
-                        active: bool = None) -> Dict[str, Any]:
+                        active: bool = None, category_id: int = None) -> Dict[str, Any]:
         """Partially update a supplier; only provided fields change (manager only)."""
         Supplier = self._get_model('Supplier')
-        Category = self._get_model('Category')
-        supplier = self._branch_filter(Supplier.query.filter_by(id=supplier_id), Supplier).first()
+        supplier = Supplier.query.filter_by(id=supplier_id).first()
         if not supplier:
-            return {"error": f"Supplier with ID {supplier_id} not found in the active branch"}
+            return {"error": f"Supplier with ID {supplier_id} not found"}
+        # Validate everything before changing ORM state: failed choices must not
+        # be accidentally committed by a later tool in the same session.
+        category_record = None
+        if category is not None or category_id is not None:
+            category_record, error = self._supplier_category(category, category_id)
+            if error:
+                return error
+        if email is not None:
+            email = str(email).strip() or None
+            if email and '@' not in email:
+                return {"error": "email must be a valid email address"}
         changed_fields = []
         if contact_person is not None:
             supplier.contact_person = str(contact_person).strip() or None
@@ -2100,14 +2225,7 @@ class AITools:
         if address is not None:
             supplier.address = str(address).strip() or None
             changed_fields.append("address")
-        if category is not None:
-            category_record = None
-            if str(category).strip():
-                category_record = self._branch_filter(Category.query.filter(
-                    self.db.func.lower(Category.name) == str(category).strip().lower()
-                ), Category).first()
-                if not category_record:
-                    return {"error": f"Category '{category}' not found in the active branch"}
+        if category is not None or category_id is not None:
             supplier.category_id = category_record.id if category_record else None
             supplier.category = category_record.name if category_record else None
             changed_fields.append("category")
@@ -2337,21 +2455,16 @@ class AITools:
         return removed
 
     def delete_supplier(self, supplier_id: int) -> Dict[str, Any]:
-        """Delete a supplier unless non-terminal purchase orders exist (manager only)."""
+        """Delete an unused shared supplier; preserve all procurement history."""
         Supplier = self._get_model('Supplier')
         PurchaseOrder = self._get_model('PurchaseOrder')
-        supplier = self._branch_filter(Supplier.query.filter_by(id=supplier_id), Supplier).first()
+        supplier = Supplier.query.filter_by(id=supplier_id).first()
         if not supplier:
-            return {"error": f"Supplier with ID {supplier_id} not found in the active branch"}
-        # Only fully closed/cancelled/delivered POs are terminal.
-        TERMINAL_PO_STATUSES = {'cancelled', 'received'}
-        open_pos = PurchaseOrder.query.filter(
-            PurchaseOrder.supplier_id == supplier.id,
-            ~PurchaseOrder.status.in_(TERMINAL_PO_STATUSES)
-        ).all()
-        if open_pos:
-            po_numbers = ", ".join(po.po_number for po in open_pos[:5])
-            return {"error": f"Cannot delete supplier '{supplier.name}' (ID {supplier.id}): non-terminal purchase orders exist ({po_numbers})"}
+            return {"error": f"Supplier with ID {supplier_id} not found"}
+        for model in (PurchaseOrder, self._get_model('SupplierCommunication'),
+                      self._get_model('SupplierPriceAgreement')):
+            if model is not None and model.query.filter_by(supplier_id=supplier.id).first():
+                return {"error": f"Supplier '{supplier.name}' has linked records and cannot be deleted"}
         supplier_name = supplier.name
         self.db.session.delete(supplier)
         self.db.session.commit()
@@ -2456,84 +2569,16 @@ class AITools:
     # ==================================================================
 
     def receive_purchase_order(self, po_id: int, items: List[Dict] = None) -> Dict[str, Any]:
-        """Record received quantities against a PO; goods land in warehouse stock."""
-        PurchaseOrder = self._get_model('PurchaseOrder')
-        WarehouseInventory = self._get_model('WarehouseInventory')
-
-        po = PurchaseOrder.query.get(po_id)
-        if not po:
-            return {"error": f"Purchase order with ID {po_id} not found"}
-        if self._branch_id() is not None and po.branch_id != self._branch_id():
-            return {"error": "This purchase order belongs to a different branch"}
-        if po.status in ('received', 'cancelled'):
-            return {"error": f"Cannot receive items for a '{po.status}' purchase order"}
-
-        item_map = {item.id: item for item in po.items}
-        if not item_map:
-            return {"error": "This purchase order has no line items"}
-
+        """Authorized shared receiving; use the same atomic service as the API."""
+        from purchase_receiving import receive_purchase_order
         try:
-            requested = []
-            for row in (items or []):
-                po_item_id = int(row.get('purchase_order_item_id', 0) or 0)
-                qty = int(row.get('received_qty', 0) or 0)
-                if qty < 0:
-                    return {"error": "Received quantities cannot be negative"}
-                if po_item_id not in item_map:
-                    return {"error": f"Invalid PO item: {po_item_id}"}
-                requested.append((po_item_id, qty))
-        except (TypeError, ValueError):
-            return {"error": "Invalid receiving items payload"}
-
-        if items is None:
-            requested = [(item_id, max(item.ordered_qty - item.received_qty, 0))
-                         for item_id, item in item_map.items()]
-
-        received_lines = []
-        try:
-            for po_item_id, qty in requested:
-                if qty <= 0:
-                    continue
-                po_item = item_map[po_item_id]
-                remaining = int(po_item.ordered_qty or 0) - int(po_item.received_qty or 0)
-                if qty > remaining:
-                    name = po_item.product.name if po_item.product else f"item #{po_item_id}"
-                    return {"error": f"Receive qty exceeds remaining for {name}. Remaining: {remaining}"}
-
-                po_item.received_qty += qty
-                self.db.session.add(WarehouseInventory(
-                    product_id=po_item.product_id,
-                    quantity=qty,
-                    batch_number=po.po_number,
-                    received_date=datetime.utcnow(),
-                    unit_cost=po_item.unit_cost,
-                    branch_id=po.branch_id,
-                ))
-                if po_item.unit_cost and po_item.unit_cost > 0 and po_item.product:
-                    po_item.product.cost = po_item.unit_cost
-                received_lines.append({"purchase_order_item_id": po_item_id, "received_qty": qty})
-
-            all_received = all(i.received_qty >= i.ordered_qty for i in po.items)
-            any_received = any(i.received_qty > 0 for i in po.items)
-            if all_received:
-                po.status = 'received'
-            elif any_received:
-                po.status = 'partially_received'
-            if po.supplier and received_lines:
-                po.supplier.total_orders = (po.supplier.total_orders or 0) + 1
-
-            self.db.session.commit()
-            return {
-                "success": True,
-                "po_id": po.id,
-                "po_number": po.po_number,
-                "status": po.status,
-                "received_lines": received_lines,
-                "message": f"Receiving recorded for {po.po_number}; status is now '{po.status}'. Goods are in warehouse stock.",
-            }
+            result, status = receive_purchase_order(
+                self.db, self.models, po_id, items, receive_all=items is None)
+            if status != 200:
+                return {"error": result['message']}
+            return result
         except Exception as exc:
             self.db.session.rollback()
-            self.db.session.expire_all()
             return {"error": f"Failed to record receiving: {exc}"}
 
     def _returned_qty_map(self, sale_id):
@@ -2789,7 +2834,7 @@ class AITools:
         # Keep the denormalized legacy category strings in sync with the
         # canonical category record (by foreign key).
         Product.query.filter_by(category_id=category.id, branch_id=category.branch_id).update({'category': name})
-        Supplier.query.filter_by(category_id=category.id, branch_id=category.branch_id).update({'category': name})
+        Supplier.query.filter_by(category_id=category.id).update({'category': name})
         changed.append("product_supplier_names")
         self.db.session.commit()
 

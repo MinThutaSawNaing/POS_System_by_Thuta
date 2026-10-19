@@ -180,7 +180,7 @@ def test_settings_get_remains_accessible_but_ai_settings_are_manager_only(role):
 loadSettings();
 await tick();
 console.log(JSON.stringify({requests, aiLoads, applied, APP_SETTINGS}));
-""", functions=("loadSettings",), role=role, setup="""
+""", functions=("loadSettings", "settingsCacheKey"), role=role, setup="""
 let aiLoads = 0, applied = 0;
 const APP_SETTINGS = {posName: 'Old', currencyCode: 'MMK', currencySuffix: 'Ks'};
 const SETTINGS_CACHE_KEY = 'settings';
@@ -191,7 +191,7 @@ function offlineCacheGet() { return null; }
 function loadAISettings() { aiLoads++; }
 fetch = async (url, options) => {
   requests.push({url, method: options?.method || 'GET'});
-  return {ok: true, json: async () => ({pos_name: 'Shop', receipt_paper_size: '80mm'})};
+  return {ok: true, json: async () => ({branch_id: currentBranch.id, pos_name: 'Shop', receipt_paper_size: '80mm'})};
 };
 """)
     assert out["requests"] == [{"url": "/api/settings", "method": "GET"}]
