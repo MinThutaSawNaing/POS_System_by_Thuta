@@ -49,6 +49,9 @@ from reports import (
     build_return_exchange_report,
     build_return_exchange_rows,
     build_warehouse_stock_report,
+    build_sales_report,
+    build_sales_daily_summary_sheet,
+    build_sales_payment_summary_sheet,
     delivery_courier_performance,
     describe_filters,
     normalize_report_format,
@@ -6289,54 +6292,75 @@ def print_receipt(transaction_id):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     return response
 
+def sales_report_query(branch_id):
+    """Shared strict date/search filters for stored Yangon wall-clock sales."""
+    dates = []
+    for key in ('start', 'end'):
+        raw = request.args.get(key)
+        if raw is None:
+            dates.append(None)
+            continue
+        try:
+            parsed = datetime.strptime(raw, '%Y-%m-%d')
+            if parsed.date().isoformat() != raw:
+                raise ValueError()
+        except ValueError:
+            raise ValueError('Invalid date format. Use YYYY-MM-DD.') from None
+        dates.append(parsed)
+    start, end = dates
+    if start and end and start > end:
+        raise ValueError('Start date must not be after end date.')
+    query = Sale.query
+    if branch_id:
+        query = query.filter_by(branch_id=branch_id)
+    if start:
+        query = query.filter(Sale.date >= start)
+    if end:
+        # Avoid overflow at date.max while retaining all subsecond precision.
+        if end.date() == datetime.max.date():
+            query = query.filter(Sale.date <= datetime.max)
+        else:
+            query = query.filter(Sale.date < end + timedelta(days=1))
+    q = (request.args.get('q') or '').strip()
+    if q:
+        like_q = f'%{q}%'
+        query = query.outerjoin(User, User.id == Sale.user_id).filter(
+            Sale.transaction_id.ilike(like_q) | Sale.payment_method.ilike(like_q) |
+            User.username.ilike(like_q))
+    return query
+
+
 # --- Excel Export ---
 @app.route('/api/reports/sales/export', methods=['GET'])
 @manager_or_boss_required
 def export_sales_report():
-    start_date = request.args.get('start')
-    end_date = request.args.get('end')
-    _, branch_id = resolve_report_scope()
-    
-    query = Sale.query
-    if branch_id:
-        query = query.filter_by(branch_id=branch_id)
+    scope, branch_id = resolve_report_scope()
     try:
-        if start_date:
-            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
-            query = query.filter(Sale.date >= start_date_obj)
-        if end_date:
-            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
-            query = query.filter(Sale.date <= end_date_obj.replace(hour=23, minute=59, second=59))
-    except ValueError:
-        return jsonify({'success': False, 'message': 'Invalid date format'}), 400
-
-    sales = query.order_by(Sale.date).all()
-    data = []
-    for sale in sales:
-        data.append({
-            'Transaction ID': sale.transaction_id,
-            'Date': sale.date.strftime('%Y-%m-%d %H:%M:%S'),
-            'Total': money_float(sale.total),
-            'Tax': money_float(sale.tax),
-            'Cash Received': money_float(sale.cash_received),
-            'Refund Given': money_float(sale.refund_amount or 0),
-            'Payment Method': sale.payment_method,
-            'Payment Breakdown': json.dumps(get_sale_payment_breakdown(sale), ensure_ascii=False) if get_sale_payment_breakdown(sale) else '',
-            'User ID': sale.user_id
-        })
-    df = pd.DataFrame(data)
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, sheet_name='Sales Report', index=False)
-        for column in df:
-            column_width = max(df[column].astype(str).map(len).max(), len(column))
-            col_idx = df.columns.get_loc(column)
-            writer.sheets['Sales Report'].set_column(col_idx, col_idx, column_width)
-    output.seek(0)
-    filename = f"sales_report_{start_date or 'all'}_to_{end_date or 'all'}.xlsx"
-    response = make_response(output.getvalue())
-    response.headers['Content-Type'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+        query = sales_report_query(branch_id)
+    except ValueError as error:
+        return jsonify({'success': False, 'message': str(error)}), 400
+    branch = db.session.get(Branch, branch_id) if branch_id else None
+    branches = {b.id: b.name for b in Branch.query.all()}
+    rows = [{
+        'transaction_id': s.transaction_id, 'date': s.date, 'total': s.total,
+        'tax': s.tax, 'cash_received': s.cash_received, 'refund_amount': s.refund_amount,
+        'payment_method': s.payment_method, 'payment_breakdown': get_sale_payment_breakdown(s),
+        'username': s.user.username if s.user else 'Unknown',
+        'branch_name': branches.get(s.branch_id, 'Unknown'),
+    } for s in query.order_by(Sale.date, Sale.id).all()]
+    report = build_sales_report(
+        rows, brand=get_receipt_identity(branch),
+        branch_name=branch.name if branch else 'All branches',
+        generated_by=session.get('username') or '', scope=scope,
+        period_text=f"{request.args.get('start') or 'Beginning'} to {request.args.get('end') or 'Present'}",
+        filters_text=describe_filters({'From': request.args.get('start'),
+                                      'To': request.args.get('end'), 'Search': request.args.get('q')}),
+        currency_suffix=get_currency_suffix())
+    response = make_response(build_report_xlsx(report, extra_sheets=[
+        build_sales_daily_summary_sheet(report), build_sales_payment_summary_sheet(report)]))
+    response.headers['Content-Type'] = report_content_type('xlsx')
+    response.headers['Content-Disposition'] = report_disposition(
+        report_filename(report['file_stem'], 'xlsx'), 'xlsx')
     return response
 
 @app.route('/api/reports/sales', methods=['GET'])
@@ -6344,41 +6368,15 @@ def api_report_sales():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    start_date = request.args.get('start')  # Format: 'YYYY-MM-DD'
-    end_date = request.args.get('end')      # Format: 'YYYY-MM-DD'
     scope, branch_id = resolve_report_scope()
-
-    query = Sale.query
-    if branch_id:
-        query = query.filter_by(branch_id=branch_id)
-    myanmar_tz = pytz.timezone('Asia/Yangon')
-    q = (request.args.get('q') or '').strip()
     page = request.args.get('page', type=int)
     per_page = request.args.get('per_page', type=int)
 
     try:
-        # Apply date filters if provided
-        if start_date:
-            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
-            start_date_obj = myanmar_tz.localize(start_date_obj)
-            query = query.filter(Sale.date >= start_date_obj)
-
-        if end_date:
-            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d')
-            end_date_obj = myanmar_tz.localize(end_date_obj).replace(hour=23, minute=59, second=59)
-            query = query.filter(Sale.date <= end_date_obj)
-
+        query = sales_report_query(branch_id)
         # Cashiers can only see their own sales
         if session.get('role') == 'cashier':
             query = query.filter(Sale.user_id == session['user_id'])
-
-        if q:
-            like_q = f'%{q}%'
-            query = query.outerjoin(User, User.id == Sale.user_id).filter(
-                (Sale.transaction_id.ilike(like_q)) |
-                (Sale.payment_method.ilike(like_q)) |
-                (User.username.ilike(like_q))
-            )
 
         query = query.order_by(Sale.date.desc())
 
@@ -6416,7 +6414,7 @@ def api_report_sales():
 
     except ValueError as e:
         app.logger.error(f"Date parsing error: {str(e)}")
-        return jsonify({'success': False, 'message': 'Invalid date format. Use YYYY-MM-DD.'}), 400
+        return jsonify({'success': False, 'message': str(e)}), 400
 
 @app.route('/api/dashboard/sales_data')
 def api_dashboard_sales_data():

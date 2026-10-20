@@ -282,6 +282,122 @@ def _brand_block(brand: Mapping[str, Any] | None) -> dict[str, Any]:
         "email": str(brand.get("email") or "").strip(),
     }
 
+# Sales amounts are accumulated as decimal cents, never binary float sums.
+def _sales_money(value: Any):
+    from decimal import Decimal, ROUND_HALF_UP
+    return Decimal(str(value or 0)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+SALES_MONEY_KEYS = ('total', 'tax', 'cash_received', 'change_given')
+SALES_COLUMNS = (
+    column('transaction_id', 'Transaction ID', width=38),
+    column('date', 'Date / time', width=22),
+    column('username', 'Cashier', width=20),
+    column('branch_name', 'Branch', width=22),
+    column('payment_method', 'Payment method', width=22),
+    column('payment_breakdown', 'Payment breakdown', width=48),
+    *(column(key, label, width=18, align='right', kind='money') for key, label in (
+        ('total', 'Sales total'), ('tax', 'Tax'), ('cash_received', 'Cash received'),
+        ('change_given', 'Change given'))),
+)
+
+
+def _sales_payment_label(method):
+    return str(method or 'Unknown').replace('_', ' ').title()
+
+
+def build_sales_report(records, *, brand=None, branch_name='', generated_by='',
+                       filters_text='', currency_suffix='$', generated_at=None,
+                       period_text='All dates', scope='current'):
+    """Presentation-only sales register; checkout change is not a return."""
+    # Receipt identity exposes brand_name; report builders use name.
+    brand = dict(brand or {})
+    brand['name'] = brand.get('name') or brand.get('brand_name') or ''
+    rows = []
+    for record in records:
+        row = dict(record)
+        for key in SALES_MONEY_KEYS:
+            row[key] = _sales_money(record.get('refund_amount') if key == 'change_given'
+                                    else record.get(key))
+        method = record.get('payment_method') or 'unknown'
+        breakdown = record.get('payment_breakdown')
+        # Valid split payments store applied amounts, not cash tendered.
+        parts = {str(k): _sales_money(v) for k, v in breakdown.items()} if (
+            method == 'split_payment' and isinstance(breakdown, Mapping) and breakdown
+        ) else {method: row['total']}
+        row['_payment_parts'] = parts
+        row['payment_method'] = _sales_payment_label(method)
+        row['payment_breakdown'] = '; '.join(
+            f'{_sales_payment_label(k)}: {v:,.2f} {currency_suffix}' for k, v in parts.items()
+        )
+        date = record.get('date')
+        row['date'] = date.strftime('%Y-%m-%d %H:%M:%S') if isinstance(date, datetime) else str(date or '')
+        row['username'] = record.get('username') or 'Unknown'
+        row['branch_name'] = record.get('branch_name') or 'Unknown'
+        rows.append(row)
+    totals = {key: sum((row[key] for row in rows), _sales_money(0)) for key in SALES_MONEY_KEYS}
+    meta = _report_meta(branch_name, generated_by, filters_text, generated_at)
+    identity = _brand_block(brand)
+    meta.extend({'label': k, 'value': str(v)} for k, v in (
+        ('Business', identity['name']),
+        ('Address', ', '.join(identity['address_lines'])),
+        ('Phone', identity['phone']), ('Email', identity['email']),
+        ('Period', period_text), ('Scope', scope), ('Currency', currency_suffix)))
+    return _common_report_fields(
+        title='Sales Report', subtitle='Transaction register', sheet_name='Sales Register',
+        file_stem='sales_report', columns=SALES_COLUMNS, rows=rows, totals=totals,
+        summary=[{'label': 'Transactions', 'value': str(len(rows))}] + [
+            {'label': label, 'value': f'{totals[key]:,.2f} {currency_suffix}'}
+            for key, label in [('total', 'Sales total'), ('tax', 'Tax'),
+                               ('cash_received', 'Cash received'), ('change_given', 'Change given')]],
+        meta=meta, notes=[
+            'Sales totals include tax. Tax is shown separately, not added again.',
+            'Change given is checkout cash change (refund_amount), not actual returns.',
+            'Returns and exchanges are reported separately. Payment amounts represent sales allocations, not cash tendered.',
+            'Dates follow stored Asia/Yangon wall-clock time; the entire end day is included.',
+        ], brand=brand, currency_suffix=currency_suffix)
+
+
+def build_sales_daily_summary_sheet(report):
+    groups = {}
+    for row in report['rows']:
+        day = row['date'][:10]
+        group = groups.setdefault(day, {'date': day, 'transactions': 0,
+                                       **{key: _sales_money(0) for key in SALES_MONEY_KEYS}})
+        group['transactions'] += 1
+        for key in SALES_MONEY_KEYS:
+            group[key] += row[key]
+    return {
+        'name': 'Daily Summary', 'sheet_name': 'Daily Summary', 'title': 'Daily Sales Summary',
+        'currency_suffix': report['currency_suffix'], 'meta': report['meta'],
+        'columns': [column('date', 'Date', width=16),
+                    column('transactions', 'Transactions', width=16, align='right', kind='int'),
+                    *[dict(c) for c in SALES_COLUMNS if c['key'] in SALES_MONEY_KEYS]],
+        'rows': [groups[key] for key in sorted(groups)],
+        'totals': {**report['totals'], 'transactions': len(report['rows'])},
+    }
+
+
+def build_sales_payment_summary_sheet(report):
+    groups = {}
+    for row in report['rows']:
+        for method, amount in row['_payment_parts'].items():
+            group = groups.setdefault(method, {'method': _sales_payment_label(method),
+                                               'transactions': 0, 'amount': _sales_money(0)})
+            group['transactions'] += 1
+            group['amount'] += amount
+    return {
+        'name': 'Payment Summary', 'sheet_name': 'Payment Summary', 'title': 'Payment Summary',
+        'currency_suffix': report['currency_suffix'], 'meta': report['meta'],
+        'columns': [column('method', 'Payment method', width=24),
+                    column('transactions', 'Transactions', width=16, align='right', kind='int'),
+                    column('amount', 'Allocated sales', width=20, align='right', kind='money')],
+        'rows': [groups[key] for key in sorted(groups)],
+        'totals': {'amount': sum((g['amount'] for g in groups.values()), _sales_money(0))},
+    }
+
+
+
 
 def build_warehouse_stock_report(
     records: Iterable[Mapping[str, Any]],
