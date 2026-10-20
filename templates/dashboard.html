@@ -2039,9 +2039,28 @@
 
       <!-- Reports Section -->
       <div id="reports-section" style="display: none">
+        <style>
+          #reports-section { color: #183247; background: #f3f7fa; padding: 1.25rem; border-radius: 14px; }
+          #reports-section h2, #reports-section h3, #reports-section h5, #reports-section .report-kpi-value { font-family: system-ui, sans-serif; color: #183247; }
+          #reports-section .card, #reports-section .report-filter-panel { border: 1px solid #dce5ec; border-radius: 12px; background: #ffffff; box-shadow: none; }
+          #reports-section .report-filter-panel { padding: 1rem; }
+          #reports-section .report-scope-highlight { background: transparent; border: 0; padding: 0; box-shadow: none; }
+          #reports-section .form-label { font-weight: 600; color: #183247; }
+          #reports-section .form-control, #reports-section .form-select { border-color: #dce5ec; }
+          #reports-section .btn-primary { background: #087e83; border-color: #087e83; }
+          #reports-section .btn-outline-secondary { color: #183247; border-color: #dce5ec; background: #ffffff; }
+          #reports-section .btn:focus-visible, #reports-section input:focus, #reports-section select:focus { outline: 2px solid #087e83; outline-offset: 2px; }
+          #reports-section .report-context, #reports-section .form-text, #reports-section .report-note { color: #526172; }
+          #reports-section .report-kpi { background: #f3f7fa; border: 1px solid #dce5ec; border-radius: 10px; padding: 1rem; height: 100%; }
+          #reports-section .report-kpi-value { display: block; font-size: 1.4rem; font-weight: 700; overflow-wrap: anywhere; }
+          #reports-section .report-number, #reports-section .report-kpi-value { font-variant-numeric: tabular-nums; }
+          #reports-section .table th { background: #f3f7fa; color: #526172; font-size: .85rem; }
+          #reports-section .table > :not(caption) > * > * { border-color: #dce5ec; }
+          #reports-section .report-state { padding: 2rem 1rem; text-align: center; color: #526172; }
+        </style>
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
-            <h2 class="mb-0">Reports</h2>
+            <div><h2 class="mb-0">Reports</h2><p class="report-context mb-0">Sales statement &middot; Period and branch scope</p></div>
             <span class="branch-indicator" id="reports-branch-indicator">
               <i class="bi bi-building"></i>
               <span class="branch-name">-</span>
@@ -2051,18 +2070,18 @@
             <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
           </button>
         </div>
-        <div class="row mb-3 g-2">
+        <div class="row mb-3 g-3 report-filter-panel">
           <div class="col-12 col-sm-6 col-md-3">
-            <label class="form-label">Start Date</label>
+            <label class="form-label" for="start-date">Start Date</label>
             <input type="date" id="start-date" class="form-control" />
           </div>
           <div class="col-12 col-sm-6 col-md-3">
-            <label class="form-label">End Date</label>
+            <label class="form-label" for="end-date">End Date</label>
             <input type="date" id="end-date" class="form-control" />
           </div>
           <div class="col-12 col-md-3" id="report-scope-controls" style="display: none">
             <div class="report-scope-highlight h-100">
-              <label class="form-label">Manager / Boss Report View</label>
+              <label class="form-label" for="report-scope">Manager / Boss Report View</label>
               <select id="report-scope" class="form-select">
                 <option value="current">Current Branch</option>
                 <option value="all">All Branches (Combined)</option>
@@ -2073,24 +2092,28 @@
           </div>
           <div class="col-12 col-md-3" id="report-branch-controls" style="display: none">
             <div class="report-scope-highlight h-100">
-              <label class="form-label">Select Branch</label>
+              <label class="form-label" for="report-branch-selector">Select Branch</label>
               <select id="report-branch-selector" class="form-select">
                 <option value="">Current branch</option>
               </select>
             </div>
           </div>
           <div class="col-6 col-md-3 d-flex align-items-end">
-            <button class="btn btn-primary w-100" onclick="generateReport()">
-              <i class="bi bi-file-earmark-text"></i> <span class="d-none d-sm-inline">Generate</span><span class="d-sm-none">Go</span>
+            <button id="generate-report-btn" type="button" class="btn btn-primary w-100" onclick="generateReport()">
+              <i class="bi bi-file-earmark-text"></i> <span>Generate report</span>
             </button>
           </div>
+          {% if session.role in ["manager", "boss"] %}
           <div class="col-6 col-md-3 d-flex align-items-end">
-            <button class="btn btn-outline-secondary w-100" onclick="exportReport()">
-              <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Export</span>
+            <button type="button" class="btn btn-outline-secondary w-100" onclick="exportReport()">
+              <i class="bi bi-download"></i> <span>Download Excel</span>
             </button>
           </div>
+          {% endif %}
+          <p class="report-note mb-0">Excel workbook includes the full sales register, daily summary and payment summary.</p>
         </div>
 
+        <p id="report-context" class="report-context">Choose a report period and scope, then generate your statement.</p>
         <div class="row">
           <div class="col-12 col-lg-8 mb-3">
             <div class="card">
@@ -2098,7 +2121,7 @@
                 <h5 class="mb-0">Sales Chart</h5>
               </div>
               <div class="card-body">
-                <canvas id="salesChart" height="250"></canvas>
+                <canvas id="salesChart" height="250" role="img" aria-label="Daily sales for the report period"></canvas>
               </div>
             </div>
           </div>
@@ -2108,7 +2131,7 @@
                 <h5 class="mb-0">Payment Methods</h5>
               </div>
               <div class="card-body">
-                <canvas id="paymentChart" height="250"></canvas>
+                <canvas id="paymentChart" height="250" role="img" aria-label="Payment allocation for the report period"></canvas>
               </div>
             </div>
           </div>
@@ -2119,7 +2142,7 @@
             <h5 class="mb-0">Report Results</h5>
           </div>
           <div class="card-body">
-            <div id="report-results" class="table-responsive">
+            <div id="report-results" aria-live="polite" aria-atomic="true" aria-busy="false">
               <!-- Report results will be displayed here -->
               <p class="text-muted text-center py-3">
                 Select date range and generate report
@@ -8129,7 +8152,7 @@
         categories: () => loadCategories(),
         sales: () => loadSales(),
         returns: () => loadReturns(),
-        reports: () => { toggleReportScopeControls(); initSalesChart(); initPaymentChart(); },
+        reports: () => { toggleReportScopeControls(); generateReport(); },
         promotions: () => { loadPromotions(); loadProductsForPromotionModal(); },
         customers: () => loadCustomers(),
         debts: () => { loadDebts(); loadCustomersForDebtModal(); },
@@ -8814,16 +8837,19 @@
               reportBranchSelect.value = "";
             }
             toggleReportScopeControls();
+            invalidateSalesReport();
           });
         }
         if (reportBranchSelect) {
           reportBranchSelect.addEventListener("change", () => {
             if (currentSection === "reports") {
-              initSalesChart();
-              initPaymentChart();
+              invalidateSalesReport();
             }
           });
         }
+        ["start-date", "end-date"].forEach((id) => {
+          document.getElementById(id)?.addEventListener("input", invalidateSalesReport);
+        });
         toggleReportScopeControls();
 
         // Purchase order filter event listeners
@@ -13789,335 +13815,187 @@
       }
 
       // Reports functions
-      function initSalesChart() {
-        const ctx = document.getElementById("salesChart").getContext("2d");
+      let salesReportVersion = 0;
+      let salesChartVersion = 0;
+      let paymentChartVersion = 0;
 
-        if (salesChart) {
-          salesChart.destroy();
-        }
-
-        // Default to last 7 days
-        const startDate =
-          document.getElementById("start-date").value ||
-          new Date(new Date().setDate(new Date().getDate() - 7))
-            .toISOString()
-            .split("T")[0];
-        const endDate =
-          document.getElementById("end-date").value ||
-          new Date().toISOString().split("T")[0];
-
-        const query = buildReportQuery(startDate, endDate);
-        fetch(`/api/reports/sales?${query}`)
-          .then((response) => response.json())
-          .then((data) => {
-            // Group sales by date
-            const salesByDate = {};
-            data.forEach((sale) => {
-              const date = sale.date.split("T")[0];
-              if (!salesByDate[date]) {
-                salesByDate[date] = 0;
-              }
-              salesByDate[date] += sale.total;
-            });
-
-            // Prepare chart data
-            const labels = Object.keys(salesByDate).sort();
-            const chartData = labels.map((date) => salesByDate[date]);
-
-            salesChart = new Chart(ctx, {
-              type: "bar",
-              data: {
-                labels: labels,
-                datasets: [
-                  {
-                    label: "Daily Sales ($)",
-                    data: chartData,
-                    backgroundColor: "rgba(54, 162, 235, 0.7)",
-                    borderColor: "rgba(54, 162, 235, 1)",
-                    borderWidth: 1,
-                  },
-                ],
-              },
-              options: {
-                responsive: true,
-                plugins: {
-                  legend: {
-                    display: false,
-                  },
-                },
-                scales: {
-                  y: {
-                    beginAtZero: true,
-                    title: {
-                      display: true,
-                      text: "Amount ($)",
-                    },
-                  },
-                  x: {
-                    title: {
-                      display: true,
-                      text: "Date",
-                    },
-                  },
-                },
-              },
-            });
-          })
-          .catch((error) => {
-            console.error("Error initializing sales chart:", error);
-            ctx.font = "16px Arial";
-            ctx.fillStyle = "red";
-            ctx.textAlign = "center";
-            ctx.fillText(
-              "Failed to load chart data",
-              ctx.canvas.width / 2,
-              ctx.canvas.height / 2
-            );
-          });
+      function reportEscape(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+        }[char]));
       }
 
-      function initPaymentChart() {
-        const ctx = document.getElementById("paymentChart").getContext("2d");
-
-        if (paymentChart) {
-          paymentChart.destroy();
-        }
-
-        // Default to last 7 days
-        const startDate =
-          document.getElementById("start-date").value ||
-          new Date(new Date().setDate(new Date().getDate() - 7))
-            .toISOString()
-            .split("T")[0];
-        const endDate =
-          document.getElementById("end-date").value ||
-          new Date().toISOString().split("T")[0];
-
-        const query = buildReportQuery(startDate, endDate);
-        fetch(`/api/reports/sales?${query}`)
-          .then((response) => response.json())
-          .then((data) => {
-            // Group sales by payment method
-            const paymentMethods = {};
-            data.forEach((sale) => {
-              const entries = sale.payment_breakdown
-                ? Object.entries(sale.payment_breakdown)
-                : [[sale.payment_method, sale.total]];
-              entries.forEach(([method, amount]) => {
-                if (!paymentMethods[method]) paymentMethods[method] = 0;
-                paymentMethods[method] += Number(amount) || 0;
-              });
-            });
-
-            // Prepare chart data
-            const labels = Object.keys(paymentMethods);
-            const chartData = labels.map((method) => paymentMethods[method]);
-            const backgroundColors = [
-              "rgba(255, 99, 132, 0.7)",
-              "rgba(54, 162, 235, 0.7)",
-              "rgba(255, 206, 86, 0.7)",
-              "rgba(75, 192, 192, 0.7)",
-            ];
-
-            paymentChart = new Chart(ctx, {
-              type: "doughnut",
-              data: {
-                labels: labels,
-                datasets: [
-                  {
-                    data: chartData,
-                    backgroundColor: backgroundColors,
-                    borderWidth: 1,
-                  },
-                ],
-              },
-              options: {
-                responsive: true,
-                plugins: {
-                  legend: {
-                    position: "bottom",
-                  },
-                },
-              },
-            });
-          })
-          .catch((error) => {
-            console.error("Error initializing payment chart:", error);
-            ctx.font = "16px Arial";
-            ctx.fillStyle = "red";
-            ctx.textAlign = "center";
-            ctx.fillText(
-              "Failed to load chart data",
-              ctx.canvas.width / 2,
-              ctx.canvas.height / 2
-            );
-          });
+      function salesReportContext() {
+        return JSON.stringify([buildReportQuery(document.getElementById("start-date").value,
+          document.getElementById("end-date").value), currentBranch?.id, CURRENT_USER_ROLE,
+          typeof dashboardSessionStale !== "undefined" && dashboardSessionStale,
+          typeof dashboardBranchStale !== "undefined" && dashboardBranchStale]);
       }
 
-      function generateReport() {
-        const startDate = document.getElementById("start-date").value;
-        const endDate = document.getElementById("end-date").value;
+      function validateReportDates() {
+        const start = document.getElementById("start-date").value;
+        const end = document.getElementById("end-date").value;
+        const message = !start || !end ? "Please select both start and end dates."
+          : start > end ? "Start date must be on or before end date." : "";
+        if (!message) return true;
+        showToast(message, "warning");
+        document.getElementById("report-results").textContent = message;
+        return false;
+      }
 
-        if (!startDate || !endDate) {
-          showToast("Please select both start and end dates", "warning");
-          return;
-        }
+      function clearReportCharts() {
+        if (salesChart) salesChart.destroy();
+        if (paymentChart) paymentChart.destroy();
+        salesChart = null;
+        paymentChart = null;
+      }
 
-        const resultsDiv = document.getElementById("report-results");
-        resultsDiv.innerHTML = `
-                  <td colspan="6" class="text-center py-4">
-                          <div class="spinner-border text-primary" role="status">
-                              <span class="visually-hidden">Loading...</span>
-                          </div>
-                      </div>
-                  `;
+      function invalidateSalesReport() {
+        salesReportVersion++;
+        salesChartVersion++;
+        paymentChartVersion++;
+        clearReportCharts();
+        document.getElementById("generate-report-btn").disabled = false;
+        document.getElementById("report-results").setAttribute("aria-busy", "false");
+        document.getElementById("report-results").textContent = "Filters changed. Generate report to update the statement and charts.";
+        document.getElementById("report-context").textContent = "Report not generated for the selected filters.";
+      }
 
-        const query = buildReportQuery(startDate, endDate);
-        fetch(`/api/reports/sales?${query}`)
-          .then((response) => response.json())
-          .then((data) => {
-            const totalSales = centsToNumber(data.reduce((sum, sale) => sum + toCents(sale.total), 0));
-            const totalTax = centsToNumber(data.reduce((sum, sale) => sum + toCents(sale.tax), 0));
-            const totalRefunds = centsToNumber(data.reduce((sum, sale) => sum + toCents(sale.refund_amount || 0), 0));
-            const refundTransactions = data.filter((sale) => (sale.refund_amount || 0) > 0).length;
-            const totalTransactions = data.length;
-
-            // Group by payment method
-            const paymentMethods = {};
-            data.forEach((sale) => {
-              const entries = sale.payment_breakdown
-                ? Object.entries(sale.payment_breakdown)
-                : [[sale.payment_method, sale.total]];
-              entries.forEach(([method, amount]) => {
-                if (!paymentMethods[method]) paymentMethods[method] = { count: 0, total: 0 };
-                paymentMethods[method].total += Number(amount) || 0;
-              });
-            });
-
-            data.forEach((sale) => {
-              const methods = sale.payment_breakdown ? Object.keys(sale.payment_breakdown) : [sale.payment_method];
-              methods.forEach((method) => { if (paymentMethods[method]) paymentMethods[method].count++; });
-            });
-
-            let paymentMethodsHtml = "";
-            for (const [method, stats] of Object.entries(paymentMethods)) {
-              const ratio = totalSales > 0 ? (stats.total / totalSales) * 100 : 0;
-              paymentMethodsHtml += `
-                                  <tr>
-                                      <td>${method}</td>
-                                      <td>${stats.count}</td>
-                                      <td>$${stats.total.toFixed(2)}</td>
-                                      <td>${ratio.toFixed(1)}%</td>
-                                  </tr>
-                              `;
-            }
-
-            resultsDiv.innerHTML = `
-                              <div class="row mb-4">
-                                  <div class="col-md-3">
-                                      <div class="card bg-light">
-                                          <div class="card-body text-center">
-                                              <h5 class="card-title">Total Sales</h5>
-                                              <h3>$${totalSales.toFixed(2)}</h3>
-                                          </div>
-                                      </div>
-                                  </div>
-                                  <div class="col-md-3">
-                                      <div class="card bg-light">
-                                          <div class="card-body text-center">
-                                              <h5 class="card-title">Total Tax</h5>
-                                              <h3>$${totalTax.toFixed(2)}</h3>
-                                          </div>
-                                      </div>
-                                  </div>
-                                  <div class="col-md-3">
-                                      <div class="card bg-light">
-                                          <div class="card-body text-center">
-                                              <h5 class="card-title">Refund Given</h5>
-                                              <h3>$${totalRefunds.toFixed(2)}</h3>
-                                        <small class="text-muted">${refundTransactions} refunded sales</small>
-                                          </div>
-                                      </div>
-                                  </div>
-                                  <div class="col-md-3">
-                                      <div class="card bg-light">
-                                          <div class="card-body text-center">
-                                              <h5 class="card-title">Transactions</h5>
-                                              <h3>${totalTransactions}</h3>
-                                          </div>
-                                      </div>
-                                  </div>
-                              </div>
-
-                              <h5 class="mb-3">Payment Methods</h5>
-                              <div class="table-responsive mb-4">
-                                  <table class="table table-striped">
-                                      <thead>
-                                          <tr>
-                                              <th>Method</th>
-                                              <th>Transactions</th>
-                                              <th>Total</th>
-                                              <th>Percentage</th>
-                                          </tr>
-                                      </thead>
-                                      <tbody>
-                                          ${paymentMethodsHtml}
-                                      </tbody>
-                                  </table>
-                              </div>
-
-                              <h5 class="mb-3">Recent Transactions</h5>
-                              <div class="table-responsive">
-                                  <table class="table table-striped">
-                                      <thead>
-                                          <tr>
-                                              <th>Transaction ID</th>
-                                              <th>Date</th>
-                                              <th>Total</th>
-                                              <th>Refund</th>
-                                              <th>Payment</th>
-                                          </tr>
-                                      </thead>
-                                      <tbody>
-                                          ${data
-                                            .slice(0, 5)
-                                            .map(
-                                              (sale) => `
-                                              <tr>
-                                                  <td>${
-                                                    sale.transaction_id
-                                                  }</td>
-                                                  <td>${new Date(
-                                                    sale.date
-                                                  ).toLocaleString()}</td>
-                                                  <td>$${sale.total.toFixed(
-                                                    2
-                                                  )}</td>
-                                                  <td>$${(sale.refund_amount || 0).toFixed(2)}</td>
-                                                  <td>${
-                                                    sale.payment_method
-                                                  }</td>
-                                              </tr>
-                                          `
-                                            )
-                                            .join("")}
-                                      </tbody>
-                                  </table>
-                              </div>
-                          `;
-
-            // Refresh charts with new date range
-            initSalesChart();
-            initPaymentChart();
-          })
-          .catch((error) => {
-            console.error("Error generating report:", error);
-            resultsDiv.innerHTML = `
-                              <div class="alert alert-danger">
-                                  Failed to generate report. Please try again.
-                              </div>
-                          `;
+      function reportPaymentTotals(data) {
+        const totals = Object.create(null);
+        data.forEach((sale) => {
+          const entries = sale.payment_breakdown && Object.keys(sale.payment_breakdown).length
+            ? Object.entries(sale.payment_breakdown) : [[sale.payment_method || "Unknown", sale.total]];
+          entries.forEach(([method, amount]) => {
+            if (!totals[method]) totals[method] = { cents: 0, count: 0 };
+            totals[method].cents += toCents(amount);
+            totals[method].count++;
           });
+        });
+        return totals;
+      }
+
+      async function fetchSalesChartData() {
+        const start = document.getElementById("start-date").value || new Date(Date.now() - 7 * 86400000).toISOString().split("T")[0];
+        const end = document.getElementById("end-date").value || new Date().toISOString().split("T")[0];
+        if (start > end) throw new Error("Invalid report period");
+        const response = await fetch(`/api/reports/sales?${buildReportQuery(start, end)}`);
+        if (!response.ok) throw new Error("Unable to load sales report");
+        const data = await response.json();
+        if (!Array.isArray(data)) throw new Error("Invalid sales report response");
+        return data;
+      }
+
+      async function initSalesChart(data) {
+        const version = ++salesChartVersion;
+        const context = salesReportContext();
+        try {
+          data = data === undefined ? await fetchSalesChartData() : data;
+          if (version !== salesChartVersion || context !== salesReportContext()) return;
+          const daily = Object.create(null);
+          data.forEach((sale) => {
+            const day = String(sale.date || "").split("T")[0];
+            daily[day] = (daily[day] || 0) + toCents(sale.total);
+          });
+          const labels = Object.keys(daily).sort();
+          if (salesChart) salesChart.destroy();
+          salesChart = new Chart(document.getElementById("salesChart").getContext("2d"), {
+            type: "bar",
+            data: { labels, datasets: [{ label: "Daily sales", data: labels.map((day) => centsToNumber(daily[day])),
+              backgroundColor: "#087e83", borderColor: "#087e83", borderWidth: 1 }] },
+            options: { responsive: true, plugins: { legend: { display: false },
+              tooltip: { callbacks: { label: (item) => formatCurrency(item.parsed.y) } } },
+              scales: { y: { beginAtZero: true, title: { display: true, text: "Sales" },
+                ticks: { callback: (value) => formatCurrency(value) } },
+                x: { title: { display: true, text: "Date" } } } }
+          });
+        } catch (error) {
+          if (version === salesChartVersion && context === salesReportContext()) {
+            document.getElementById("report-results").textContent = "Failed to load chart data. Please generate the report again.";
+          }
+        }
+      }
+
+      async function initPaymentChart(data) {
+        const version = ++paymentChartVersion;
+        const context = salesReportContext();
+        try {
+          data = data === undefined ? await fetchSalesChartData() : data;
+          if (version !== paymentChartVersion || context !== salesReportContext()) return;
+          const totals = reportPaymentTotals(data);
+          const labels = Object.keys(totals);
+          if (paymentChart) paymentChart.destroy();
+          paymentChart = new Chart(document.getElementById("paymentChart").getContext("2d"), {
+            type: "doughnut",
+            data: { labels, datasets: [{ data: labels.map((method) => centsToNumber(totals[method].cents)),
+              backgroundColor: ["#087e83", "#183247", "#526172", "#a8c9cc"], borderWidth: 1 }] },
+            options: { responsive: true, plugins: { legend: { position: "bottom" },
+              tooltip: { callbacks: { label: (item) => `${item.label}: ${formatCurrency(item.parsed)}` } } } }
+          });
+        } catch (error) {
+          if (version === paymentChartVersion && context === salesReportContext()) {
+            document.getElementById("report-results").textContent = "Failed to load chart data. Please generate the report again.";
+          }
+        }
+      }
+
+      function renderSalesReport(data) {
+        const escape = reportEscape;
+        const money = (cents) => escape(formatCurrency(centsToNumber(cents)));
+        const sum = (key) => data.reduce((total, sale) => total + toCents(sale[key]), 0);
+        const total = sum("total");
+        const payments = reportPaymentTotals(data);
+        const allocated = Object.values(payments).reduce((value, stats) => value + stats.cents, 0);
+        const kpis = [["Sales", money(total)], ["Tax", money(sum("tax"))],
+          ["Change given", money(sum("refund_amount"))], ["Transactions", data.length]];
+        const recent = [...data].sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 5);
+        return `<div class="row g-3 mb-3">${kpis.map(([label, value]) =>
+          `<div class="col-6 col-xl-3"><div class="report-kpi"><span>${label}</span><strong class="report-kpi-value">${value}</strong></div></div>`).join("")}</div>
+          <p class="report-note">Change given is checkout change, not refunds or returns.</p>
+          ${!data.length ? '<p class="report-state">No transactions found for this period and scope.</p>' : `
+          <h5>Payment allocation</h5>
+          <p class="report-note">Split payments are allocated by method. A transaction can appear in more than one method count. Shares use total allocated payments.</p>
+          <div class="table-responsive"><table class="table align-middle"><caption>Payment summary for the full report period</caption>
+          <thead><tr><th scope="col">Method</th><th scope="col" class="text-end">Transactions</th><th scope="col" class="text-end">Allocated amount</th><th scope="col" class="text-end">Share</th></tr></thead>
+          <tbody>${Object.entries(payments).map(([method, stats]) => `<tr><td>${escape(method)}</td><td class="text-end report-number">${stats.count}</td><td class="text-end report-number">${money(stats.cents)}</td><td class="text-end report-number">${allocated ? (stats.cents / allocated * 100).toFixed(1) : "0.0"}%</td></tr>`).join("")}</tbody></table></div>
+          <h5>Latest transactions</h5><p class="report-note">Showing latest ${recent.length} of ${data.length} transactions, newest first. Download Excel for the full register.</p>
+          <div class="table-responsive"><table class="table align-middle"><caption>Latest transactions (maximum 5)</caption>
+          <thead><tr><th scope="col">Transaction ID</th><th scope="col">Date</th><th scope="col" class="text-end">Sales</th><th scope="col" class="text-end">Change given</th><th scope="col">Payment</th></tr></thead>
+          <tbody>${recent.map((sale) => `<tr><td>${escape(sale.transaction_id)}</td><td>${escape(new Date(sale.date).toLocaleString())}</td><td class="text-end report-number">${money(toCents(sale.total))}</td><td class="text-end report-number">${money(toCents(sale.refund_amount))}</td><td>${escape(sale.payment_method)}</td></tr>`).join("")}</tbody></table></div>`}`;
+      }
+
+      async function generateReport() {
+        // Invalidate even an invalid submission so an older request cannot overwrite it.
+        invalidateSalesReport();
+        if (!validateReportDates()) return;
+        const version = salesReportVersion;
+        const context = salesReportContext();
+        const results = document.getElementById("report-results");
+        const button = document.getElementById("generate-report-btn");
+        button.disabled = true;
+        results.setAttribute("aria-busy", "true");
+        results.innerHTML = '<p class="report-state"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Generating report…</p>';
+        try {
+          const data = await fetchSalesChartData();
+          if (version !== salesReportVersion || context !== salesReportContext()) return;
+          results.innerHTML = renderSalesReport(data);
+          const scope = document.getElementById("report-scope");
+          const branch = document.getElementById("report-branch-selector");
+          const scopeLabel = hasManagerOrBossAccess() && scope?.value === "all" ? "All branches (combined)"
+            : hasManagerOrBossAccess() && scope?.value === "branch" && branch?.value
+              ? branch.options[branch.selectedIndex].text : currentBranch?.name || "Current branch";
+          document.getElementById("report-context").textContent = `${document.getElementById("start-date").value} – ${document.getElementById("end-date").value} · ${scopeLabel}`;
+          await Promise.all([initSalesChart(data), initPaymentChart(data)]);
+        } catch (error) {
+          if (version === salesReportVersion && context === salesReportContext()) {
+            results.innerHTML = '<p class="report-state" role="alert">Failed to generate report. Please try again.</p>';
+          }
+        } finally {
+          if (version === salesReportVersion) {
+            button.disabled = false;
+            results.setAttribute("aria-busy", "false");
+          }
+        }
       }
 
       // User management functions
@@ -14876,15 +14754,8 @@
       }
 
       function exportReport() {
-        const startDate = document.getElementById("start-date").value;
-        const endDate = document.getElementById("end-date").value;
-
-        if (!startDate || !endDate) {
-          showToast("Please select both start and end dates", "warning");
-          return;
-        }
-
-        const query = buildReportQuery(startDate, endDate);
+        if (!hasManagerOrBossAccess() || !validateReportDates()) return false;
+        const query = buildReportQuery(document.getElementById("start-date").value, document.getElementById("end-date").value);
         return openReportDownload(`/api/reports/sales/export?${query}`);
       }
 

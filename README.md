@@ -78,6 +78,23 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
 
 ---
 
+### Sales statements and Excel workbooks
+
+In **Reports**, select the date range and branch scope, then choose **Generate report**.
+The statement shows sales, tax, checkout change, transaction counts, payment allocations,
+and the five most recent transactions. Amounts use the configured business currency.
+
+Managers and bosses can choose **Download Excel** to export all matching transactions,
+not just the five-row preview. The workbook includes **Sales Register**, **Daily Summary**,
+**Payment Summary**, and **Report Info** sheets, with numeric amounts, totals, frozen
+headers, filters, and landscape print formatting. Report Info records the business,
+reporting period, branch scope, currency, and generation details.
+
+**Change given** is cash returned at checkout, not a merchandise-return refund, and
+is not deducted from sales. Use **Returns & Exchanges** for return settlement reporting.
+
+---
+
 ## 📏 Units of Measurement
 
 Products can be counted in any unit — pieces, grams, kilograms, pounds, liters, meters, or custom units you define yourself.
