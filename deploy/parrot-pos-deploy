@@ -1,0 +1,82 @@
+#!/bin/bash
+# Guarded deployment for Parrot POS.
+#
+# Pre-flight refusals (invalid target, concurrent deploy, target not on
+# origin/main, dirty checkout) must happen BEFORE the rollback trap is armed:
+# refusing a deployment is not a failed deployment, and must never revert or
+# restart the running release.
+set -Eeuo pipefail
+
+TARGET="${1:-}"
+[[ "$TARGET" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid commit SHA." >&2; exit 64; }
+
+exec 9>/run/lock/parrot-pos-deploy.lock
+flock -n 9 || { echo "Another Parrot POS deployment is already running; refusing to start." >&2; exit 75; }
+
+DEPLOY_DIR=/opt/parrot-pos
+COMPOSE=(docker compose -f compose.yaml -f compose.server.yaml)
+cd "$DEPLOY_DIR"
+log() { printf '%s %s\n' "$(date -Is)" "$*" | tee -a /var/log/parrot-pos-deploy.log; }
+
+git fetch --quiet --prune origin main
+REMOTE=$(git rev-parse origin/main)
+if [ "$TARGET" != "$REMOTE" ]; then
+  log "Refusing target $TARGET because origin/main is $REMOTE"
+  exit 78
+fi
+
+# A hand-edited checkout would silently diverge from the released commit, so
+# refuse it with a diagnosis instead of deploying (or rolling back) anything.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  {
+    echo "Refusing to deploy: $DEPLOY_DIR has uncommitted changes."
+    echo "Deployed files must match the released commit exactly."
+    echo "Fix with: cd $DEPLOY_DIR && git status --short && git reset --hard $REMOTE"
+    git status --short
+  } 2>&1 | tee -a /var/log/parrot-pos-deploy.log >&2
+  exit 78
+fi
+
+PREVIOUS=$(git rev-parse HEAD)
+ROLLBACK_TAG="parrot-pos:rollback-${PREVIOUS:0:12}"
+git cat-file -e "$TARGET^{commit}"
+docker image inspect parrot-pos:latest >/dev/null
+
+# Everything below mutates production, so failures roll back to $PREVIOUS.
+rollback() {
+  code=$?
+  trap - ERR
+  log "Deployment failed for $TARGET (exit $code); rolling back to $PREVIOUS"
+  git reset --hard "$PREVIOUS"
+  if docker image inspect "$ROLLBACK_TAG" >/dev/null 2>&1; then
+    docker image tag "$ROLLBACK_TAG" parrot-pos:latest
+  fi
+  "${COMPOSE[@]}" up -d --no-deps --force-recreate app
+  for _ in $(seq 1 45); do
+    [ "$(docker inspect parrot-pos --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null || true)" = healthy ] && break
+    sleep 2
+  done
+  log "Rollback completed; deployment remains failed"
+  exit "$code"
+}
+trap rollback ERR
+
+log "Starting deployment target=$TARGET previous=$PREVIOUS"
+docker image tag parrot-pos:latest "$ROLLBACK_TAG"
+git reset --hard "$TARGET"
+"${COMPOSE[@]}" config --quiet
+export COMPOSE_PARALLEL_LIMIT=1
+nice -n 10 ionice -c 2 -n 7 "${COMPOSE[@]}" build app
+"${COMPOSE[@]}" up -d --no-deps --force-recreate app
+for _ in $(seq 1 60); do
+  health=$(docker inspect parrot-pos --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null || true)
+  [ "$health" = healthy ] && break
+  [ "$health" = unhealthy ] && false
+  sleep 2
+done
+[ "$(docker inspect parrot-pos --format '{{.State.Health.Status}}')" = healthy ]
+curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8888/healthz >/dev/null
+curl --fail --silent --show-error --max-time 15 https://parrotdemo.winterarc.asia/healthz >/dev/null
+docker image rm "$ROLLBACK_TAG" >/dev/null 2>&1 || true
+log "Deployment succeeded target=$TARGET"
+trap - ERR

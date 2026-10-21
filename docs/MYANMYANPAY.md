@@ -195,10 +195,13 @@ expected `sandbox` flag before accepting a payment.
 ### Do not hand-edit the deployed checkout
 
 `/opt/parrot-pos` is a git checkout guarded by `parrot-pos-deploy`. Copying files
-into it makes the tree dirty, and the guarded deploy (`git diff --quiet`) then
-fails and **rolls back**, silently reverting the application to the older
-revision. Deploy by pushing a commit and running the deploy script, or reset the
-checkout to the target commit before rebuilding.
+into it makes the tree dirty, so the next guarded deploy refuses to run. The
+script performs that check **before** arming its rollback, and reports
+`Refusing to deploy: /opt/parrot-pos has uncommitted changes` with the offending
+files and the `git reset --hard <origin/main>` fix, exiting `78` without touching
+the running release. Exit codes: `64` invalid SHA, `75` deploy already running,
+`78` refused pre-flight. Deploy by pushing a commit (the workflow runs the script
+for you) or by resetting the checkout to the target commit and rebuilding.
 
 - Create sandbox QR; scan/pay; confirm webhook reaches public HTTPS callback.
 - Verify app automatically shows verified status; completing creates exactly one
