@@ -75,6 +75,27 @@ class MyanMyanPayPaymentTests(unittest.TestCase):
         self.assertLessEqual(len(payment['order_id']), 32)
         self.assertTrue(payment['qr_url'])
 
+    def test_definitive_provider_rejection_releases_the_order(self):
+        from myanmyanpay import PaymentProviderError
+        with patch('myanmyanpay.MyanMyanPayClient.create',
+                   side_effect=PaymentProviderError('rejected', status_code=403)):
+            response = self.client.post(ROOT + '/intents', json=self.checkout(), headers=HEADERS)
+        self.assertEqual(response.status_code, 422, response.get_json())
+        payment = response.get_json()['payment']
+        self.assertEqual(payment['status'], 'FAILED')
+        self.assertIsNone(payment['qr_url'])
+        # A released order never blocks the next checkout.
+        retry = self.begin()
+        self.assertEqual(retry['status'], 'PENDING')
+
+    def test_ambiguous_provider_failure_keeps_the_order(self):
+        from myanmyanpay import PaymentProviderError
+        with patch('myanmyanpay.MyanMyanPayClient.create',
+                   side_effect=PaymentProviderError('timeout', status_code=504)):
+            response = self.client.post(ROOT + '/intents', json=self.checkout(), headers=HEADERS)
+        self.assertEqual(response.status_code, 502, response.get_json())
+        self.assertEqual(response.get_json()['payment']['status'], 'CREATING')
+
     def test_explicit_cancel_recovers_legacy_rejected_order(self):
         payment = self.begin()
         intent = db.session.get(PaymentIntent, payment['id'])

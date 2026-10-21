@@ -314,6 +314,7 @@ PAYMENT_FIELD_LIMITS = {'app_id': 120, 'publishable_key': 90,
                         'callback_url': 240}
 _payment_env_lock = threading.RLock()
 _payment_env_baseline = None
+_payment_settings_applied = False
 
 
 def _payment_env_names():
@@ -1075,6 +1076,26 @@ CASHIER_API_METHODS = {
     'mmpay_intent': {'GET'}, 'mmpay_refresh': {'POST'},
     'mmpay_complete': {'POST'}, 'mmpay_cancel': {'POST'}, 'mmpay_qr': {'GET'},
 }
+
+
+@app.before_request
+def _apply_saved_payment_settings_once():
+    """Reapply Settings-stored MyanMyanPay credentials in every process.
+
+    The container entrypoint is Waitress (`app:app`), so the `init_db()` call
+    below only runs for `python app.py`. Without this hook, credentials entered
+    in Settings worked until the next restart and then silently vanished, which
+    makes checkout fail closed with "not configured".
+    """
+    global _payment_settings_applied
+    if _payment_settings_applied:
+        return None
+    _payment_settings_applied = True
+    try:
+        apply_payment_settings()
+    except Exception:  # Database not ready yet (first boot/migration).
+        app.logger.warning('Stored payment settings could not be applied yet.')
+    return None
 
 
 @app.before_request

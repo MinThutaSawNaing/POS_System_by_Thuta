@@ -59,6 +59,18 @@ def register_payment_routes(app, db, pos):
             return MyanMyanPayClient.from_env(for_recovery=True)
         return MyanMyanPayClient.from_env()
 
+    # A definitive client-error rejection proves the operation never happened, so
+    # the local order may be released. 408/409/429 and 5xx stay ambiguous because
+    # the provider may have processed the request; those are never auto-released.
+    DEFINITIVE_REJECTIONS = (400, 401, 403, 404, 405, 422)
+
+    def definitive_rejection(error):
+        return getattr(error, 'status_code', None) in DEFINITIVE_REJECTIONS
+
+    def unissued(intent):
+        return (not intent.qr_payload and not intent.vendor_qr_ref
+                and not intent.transaction_ref and not intent.sale_transaction_id)
+
     def callback_url():
         value = os.environ.get('MMPAY_CALLBACK_URL', '').strip()
         parsed = urlparse(value)
@@ -280,8 +292,20 @@ def register_payment_routes(app, db, pos):
                 lock_intent(intent)
                 apply_provider(intent, payload)
                 db.session.commit()
-            except Exception:
+            except Exception as error:
                 db.session.rollback()
+                # A definitive rejection means the provider refused the checkout
+                # before issuing a QR, so holding the order would block the
+                # register forever with a misleading "retry later" message.
+                if definitive_rejection(error) and unissued(intent):
+                    PaymentIntent.query.filter_by(id=intent.id, status='CREATING').update(
+                        {'status': 'FAILED', 'updated_at': datetime.utcnow()},
+                        synchronize_session=False)
+                    db.session.commit()
+                    db.session.refresh(intent)
+                    return jsonify(success=False, payment=public(intent),
+                                   message='MyanMyanPay rejected this checkout before issuing a QR. '
+                                           'No payment was taken; create a new payment.'), 422
                 # Never invent a new order on an ambiguous network failure.
                 return jsonify(success=False, payment=public(intent),
                                message='Payment creation is uncertain. Resume this order and check status; do not create another payment.'), 502
@@ -347,8 +371,20 @@ def register_payment_routes(app, db, pos):
             apply_provider(intent, result)
             db.session.commit()
             return jsonify(success=True, payment=public(intent))
-        except Exception:
+        except Exception as error:
             db.session.rollback()
+            # An unrecognized/rejected order with no QR proves nothing was issued.
+            # Closing it lets the cashier proceed instead of retrying forever.
+            if definitive_rejection(error) and intent.status == 'CREATING' and unissued(intent):
+                released = 'CANCELLED' if cancel else 'FAILED'
+                PaymentIntent.query.filter_by(id=intent.id, status='CREATING').update(
+                    {'status': released, 'updated_at': datetime.utcnow()},
+                    synchronize_session=False)
+                db.session.commit()
+                db.session.refresh(intent)
+                return jsonify(success=True, payment=public(intent),
+                               message='MyanMyanPay does not recognize this order and never issued a QR. '
+                                       'The order is closed; create a new payment for the current cart.')
             return jsonify(success=False, payment=public(intent), message='Provider status unavailable. Keep this order and retry later.'), 502
 
     @app.route('/api/payments/myanmyanpay/intents/<payment_id>/refresh', methods=['POST'])

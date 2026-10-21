@@ -144,6 +144,20 @@ class MyanMyanPayClientTests(unittest.TestCase):
         self.assertIs(call.kwargs['allow_redirects'], False)
         self.assertEqual(raw, json.dumps(json.loads(raw), separators=(',', ':')).encode())
 
+    def test_integral_amounts_are_sent_as_json_integers(self):
+        # Live probe: the provider answers 403 for 6400.0 but 200 for 6400.
+        for amount, expected in ((Decimal('6400.00'), 6400), (6400, 6400),
+                                 (Decimal('6400.50'), 6400.5)):
+            with self.subTest(amount=amount):
+                self.post.reset_mock()
+                self.post.side_effect = [response({'token': 'one-time'}),
+                                         response({'orderId': 'order-1', 'qr': 'q',
+                                                   'status': 'PENDING'}, 201)]
+                self.client.create('order-1', amount, 'https://shop.example/callback')
+                body = json.loads(self.post.call_args_list[1].kwargs['data'])
+                self.assertEqual(body['amount'], expected)
+                self.assertIs(type(body['amount']), type(expected))
+
     def test_create_sdk_handshake_binding_and_qr_contract(self):
         result = {'orderId': 'order-1', 'amount': 1500.5, 'qr': '000201-EMV', 'status': 'PENDING'}
         hs, created = response({'token': 'one-time'}), response(result, 201)

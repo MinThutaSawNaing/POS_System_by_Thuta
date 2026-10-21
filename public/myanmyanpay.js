@@ -329,7 +329,7 @@
           : "Choose Create payment QR to request a QR for this checkout.";
         missing.style.display = "block";
       }
-      if (deadline) resetMMQRCountdown(deadline);
+      if (deadline) resetMMQRCountdown(deadline, showQr);
       else if (mode !== "legacy" || payment) stopMMQRCountdown();
       if (payment || mode !== "legacy") setMMQRDownloadState(showQr);
       if (showQr) {

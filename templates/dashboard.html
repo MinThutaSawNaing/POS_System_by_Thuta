@@ -11855,9 +11855,10 @@
         mmqrCountdownHandle = window.setInterval(render, 1000);
       }
 
-      function resetMMQRCountdown(deadline) {
-        startMMQRCountdown(deadline,
-          "This QR has expired. Refresh the payment status, or cancel explicitly before creating a new order.");
+      function resetMMQRCountdown(deadline, hasQr) {
+        startMMQRCountdown(deadline, hasQr === false
+          ? "This order expired without a QR. Cancel it explicitly before creating a new payment."
+          : "This QR has expired. Refresh the payment status, or cancel explicitly before creating a new order.");
       }
 
       function legacyMMQRDeadline() {

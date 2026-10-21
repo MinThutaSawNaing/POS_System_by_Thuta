@@ -223,6 +223,13 @@ class MyanMyanPayClient:
             amount = float(amount)
             if amount == 0:
                 raise ValueError('amount is too small for a JSON number.')
+        # The provider rejects whole Kyat sent as a JSON float (6400.0 -> 403)
+        # yet accepts the same value as an integer and accepts true subunits
+        # (6400.5). MMK has no fractional unit, so serialize integral amounts
+        # as integers and keep only genuine subunits as decimals.
+        decimal_amount = Decimal(str(amount))
+        amount = (int(decimal_amount) if decimal_amount == decimal_amount.to_integral_value()
+                  else float(decimal_amount))
         data = self._operation('create', order_id, appId=self._app_id,
                                amount=amount, callbackUrl=callback_url)
         if not isinstance(data.get('qr'), str) or not data['qr'].strip():
