@@ -48,14 +48,27 @@ class GuardUnitTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("Did you mean 'get_inventory_status'?", result.error)
 
-    def test_undocumented_arguments_are_dropped_before_execution(self):
+    def test_undocumented_arguments_are_rejected_before_execution(self):
         result = guard_tool_call(
             "get_inventory_status",
             {"product_id": 4, "date_range": "last year"},
             ["get_inventory_status"], schema_parameters(SCHEMAS))
-        self.assertTrue(result.ok)
-        self.assertEqual(result.arguments, {"product_id": 4})
-        self.assertEqual(result.dropped_arguments, ("date_range",))
+        self.assertFalse(result.ok)
+        self.assertIn('date_range', result.error)
+        self.assertEqual(result.arguments, {})
+
+    def test_required_types_enums_and_bounds_are_validated(self):
+        params = {'report': {'properties': {
+            'days': {'type': 'integer', 'minimum': 1, 'maximum': 365},
+            'all_time': {'type': 'boolean'},
+            'mode': {'type': 'string', 'enum': ['gross', 'net']},
+        }, 'required': ['days']}}
+        for args in ({}, {'days': True}, {'days': '30'}, {'days': 0},
+                     {'days': 366}, {'days': 30, 'all_time': 'true'},
+                     {'days': 30, 'mode': 'invented'}):
+            with self.subTest(args=args):
+                self.assertFalse(guard_tool_call('report', args, ['report'], params).ok)
+        self.assertTrue(guard_tool_call('report', {'days': 30, 'all_time': True}, ['report'], params).ok)
 
     def test_arguments_must_be_a_json_object(self):
         self.assertFalse(guard_tool_call(
@@ -165,7 +178,7 @@ class OrchestratorHallucinationTests(unittest.TestCase):
         self.assertTrue(results[0]["rejected"])
         self.assertIn("not offered", results[0]["error"])
 
-    def test_undocumented_arguments_are_dropped_at_execution(self):
+    def test_undocumented_arguments_are_rejected_at_execution(self):
         received = {}
         self.orchestrator.agent.tool_functions["get_inventory_status"] = (
             lambda **kwargs: received.update(kwargs) or {"total_products": 0})
@@ -175,8 +188,8 @@ class OrchestratorHallucinationTests(unittest.TestCase):
                       arguments={"product_id": 1, "date_range": "last year"})],
             allowed_names={"get_inventory_status"})
 
-        self.assertIsNone(results[0]["error"])
-        self.assertEqual(received, {"product_id": 1})
+        self.assertIn('date_range', results[0]["error"])
+        self.assertEqual(received, {})
 
     def test_plan_validation_rejects_invented_tool_names(self):
         registry = {"get_inventory_status": {"mutates": False, "one_line": "",
@@ -186,6 +199,18 @@ class OrchestratorHallucinationTests(unittest.TestCase):
         self.assertIsNone(steps)
         self.assertIn("unknown tool", error)
         self.assertTrue(fatal)
+
+    def test_planner_catalog_includes_actual_parameter_semantics(self):
+        catalog = self.orchestrator._build_planning_catalog(self.orchestrator._get_tool_registry())
+        self.assertIn('all_time', catalog)
+        self.assertIn('overrides days', catalog)
+        self.assertIn('"type":"boolean"', catalog)
+        self.assertIn('"maximum":100', catalog)
+
+    def test_all_time_best_seller_fallback_preserves_scope(self):
+        with mock.patch.object(self.orchestrator, '_run_fallback_tool', return_value='sales') as run:
+            self.orchestrator._fallback_intent_detection('Which product sells best of all time?')
+        run.assert_called_once_with('get_sales_trends', all_time=True)
 
     def test_plan_validation_rejects_undocumented_arguments(self):
         registry = {"get_inventory_status": {

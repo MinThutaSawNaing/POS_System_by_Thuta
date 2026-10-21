@@ -509,7 +509,7 @@ class RoleEnforcementTests(FullCoverageToolsTestBase):
                                   lambda **kw: calls.append(kw) or {"success": True}}):
             results = orch._execute_tools_with_context([
                 ToolCall(id="r2", function_name="create_purchase_order",
-                         arguments={"supplier_id": 1})])
+                         arguments={"supplier_id": 1, "items": []})])
 
         self.assertIsNone(results[0]["error"])
         self.assertEqual(len(calls), 1)

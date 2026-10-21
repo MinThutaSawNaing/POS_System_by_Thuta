@@ -122,7 +122,8 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "query": {
                     "type": "string",
                     "description": "Product name or part of a name to search for."
-                }
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10}
             },
             "required": ["query"]
         }
@@ -299,13 +300,14 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "get_sales_trends": {
         "name": "get_sales_trends",
-        "description": "Get sales trend analysis for products over a specified time period. Useful for making reorder decisions.",
+        "description": "Rank active-branch best-selling products by gross units sold. Use all_time=true for all-time/lifetime best sellers; otherwise defaults to the last 30 days. Revenue is gross line revenue before returns and tax.",
         "parameters": {
             "type": "object",
             "properties": {
                 "days": {
                     "type": "integer",
-                    "description": "Number of days to analyze. Default is 30."
+                    "minimum": 1, "maximum": 3650, "default": 30,
+                    "description": "Rolling days to analyze; ignored when all_time=true. Default 30."
                 },
                 "product_id": {
                     "type": "integer",
@@ -313,8 +315,11 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 },
                 "top_n": {
                     "type": "integer",
+                    "minimum": 1, "maximum": 100, "default": 10,
                     "description": "Return top N best selling products. Default is 10."
-                }
+                },
+                "all_time": {"type": "boolean", "default": False,
+                             "description": "Set true for all recorded sales in the active branch; overrides days."}
             }
         }
     },
@@ -404,7 +409,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     "get_sales_summary": {
         "name": "get_sales_summary",
         "description": "Summarize active-branch sales totals, transaction count, payment methods, and recent sales for a period.",
-        "parameters": {"type": "object", "properties": {"days": {"type": "integer", "description": "Days to summarize, 1 to 365. Default 30."}, "limit": {"type": "integer", "description": "Maximum recent sales, 1 to 100."}}}
+        "parameters": {"type": "object", "properties": {"days": {"type": "integer", "minimum": 1, "maximum": 365, "default": 30, "description": "Days to summarize; ignored when all_time=true."}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum recent sales; does not limit totals."}, "all_time": {"type": "boolean", "default": False, "description": "True summarizes all recorded active-branch sales; overrides days."}}}
     },
     "upsert_product": {
         "name": "upsert_product",
@@ -1545,48 +1550,52 @@ class AITools:
             self.db.session.rollback()
             return {"error": f"Failed to transfer warehouse stock: {exc}"}
         
-    def get_sales_trends(self, days: int = 30, product_id: int = None, top_n: int = 10) -> Dict[str, Any]:
-        """Get sales trend analysis"""
+    def get_sales_trends(self, days: int = 30, product_id: int = None, top_n: int = 10,
+                         all_time: bool = False) -> Dict[str, Any]:
+        """Gross product sales, scoped through Sale rather than invented relationships."""
         Sale = self._get_model('Sale')
         SaleItem = self._get_model('SaleItem')
         Product = self._get_model('Product')
         
-        from_date = datetime.utcnow() - timedelta(days=days)
-        
-        # Query sales in date range
-        sales_query = self._branch_filter(Sale.query.filter(Sale.date >= from_date), Sale)
-        sales = sales_query.all()
-        
-        # Aggregate sales by product
-        product_sales = {}
-        
-        for sale in sales:
-            for item in sale.items:
-                if product_id and item.product_id != product_id:
-                    continue
-                    
-                if item.product_id not in product_sales:
-                    product_sales[item.product_id] = {
-                        "product_id": item.product_id,
-                        "product_name": item.product.name if item.product else "Unknown",
-                        "total_quantity": 0,
-                        "total_revenue": 0,
-                        "sale_count": 0
-                    }
-                    
-                product_sales[item.product_id]["total_quantity"] += item.quantity
-                product_sales[item.product_id]["total_revenue"] += (item.price * item.quantity)
-                product_sales[item.product_id]["sale_count"] += 1
-                
-        # Sort by quantity sold and get top N
-        sorted_sales = sorted(product_sales.values(), key=lambda x: x["total_quantity"], reverse=True)
-        top_sales = sorted_sales[:top_n]
-        
-        return {
-            "period_days": days,
-            "total_products_sold": len(product_sales),
-            "top_selling_products": top_sales
-        }
+        if not isinstance(all_time, bool):
+            return {"error": "all_time must be a boolean"}
+        if not all_time and (type(days) is not int or not 1 <= days <= 3650):
+            return {"error": "days must be an integer from 1 to 3650"}
+        if type(top_n) is not int or not 1 <= top_n <= 100:
+            return {"error": "top_n must be an integer from 1 to 100"}
+        if product_id is not None and (type(product_id) is not int or product_id < 1):
+            return {"error": "product_id must be a positive integer"}
+
+        from sqlalchemy import func
+        quantity = func.sum(SaleItem.quantity)
+        query = self.db.session.query(
+            SaleItem.product_id, Product.name,
+            quantity.label('total_quantity'),
+            func.sum(SaleItem.price * SaleItem.quantity).label('total_revenue'),
+            func.count(func.distinct(Sale.id)).label('sale_count'),
+        ).select_from(SaleItem).join(Sale, SaleItem.sale_id == Sale.id).outerjoin(
+            Product, SaleItem.product_id == Product.id)
+        query = self._branch_filter(query, Sale)
+        if not all_time:
+            query = query.filter(Sale.date >= datetime.utcnow() - timedelta(days=days))
+        if product_id is not None:
+            query = query.filter(SaleItem.product_id == product_id)
+        query = query.group_by(SaleItem.product_id, Product.name)
+        total_products = query.count()
+        rows = query.order_by(quantity.desc(), SaleItem.product_id.asc()).limit(top_n).all()
+        return self._scope({
+            "period": "all_time" if all_time else "rolling_days",
+            "period_days": None if all_time else days,
+            "ranking_basis": "gross_units_sold",
+            "revenue_basis": "gross_line_revenue_before_returns_and_tax",
+            "total_products_sold": total_products,
+            "top_selling_products": [{
+                "product_id": row.product_id, "product_name": row.name or "Unknown (deleted product)",
+                "total_quantity": row.total_quantity,
+                "total_revenue": money_plain(row.total_revenue or 0),
+                "sale_count": row.sale_count,
+            } for row in rows],
+        })
         
     def get_product_details(self, product_id: int = None, barcode: str = None) -> Dict[str, Any]:
         """Get detailed product information"""
@@ -1801,12 +1810,16 @@ class AITools:
         rows = [{"id": t.id, "target_branch_id": t.branch_id, "product_name": t.product.name if t.product else 'Unknown', "quantity": t.quantity, "batch_number": t.batch_number, "performed_by": t.performer.username if t.performer else None, "created_at": t.created_at.isoformat() if t.created_at else None} for t in transfers]
         return {"total_transfers": len(rows), "transfers": rows}
 
-    def get_sales_summary(self, days: int = 30, limit: int = 10) -> Dict[str, Any]:
+    def get_sales_summary(self, days: int = 30, limit: int = 10, all_time: bool = False) -> Dict[str, Any]:
         Sale = self._get_model('Sale')
+        if not isinstance(all_time, bool):
+            return {"error": "all_time must be a boolean"}
         try: days = max(1, min(int(days), 365))
         except (TypeError, ValueError): days = 30
-        since = datetime.utcnow() - timedelta(days=days)
-        sales = self._branch_filter(Sale.query.filter(Sale.date >= since), Sale).order_by(Sale.date.desc()).all()
+        query = self._branch_filter(Sale.query, Sale)
+        if not all_time:
+            query = query.filter(Sale.date >= datetime.utcnow() - timedelta(days=days))
+        sales = query.order_by(Sale.date.desc()).all()
         methods = {}
         for sale in sales:
             breakdown = None
@@ -1834,7 +1847,7 @@ class AITools:
                 "payment_breakdown": breakdown if isinstance(breakdown, dict) else None,
                 "date": sale.date.isoformat() if sale.date else None,
             })
-        return self._scope({"period_days": days, "transaction_count": len(sales), "total_sales": money_str(sum((money_dec(s.total or 0) for s in sales), Decimal('0'))), "payment_method_totals": {key: money_str(value) for key, value in methods.items()}, "recent_sales": recent})
+        return self._scope({"period": "all_time" if all_time else "rolling_days", "period_days": None if all_time else days, "transaction_count": len(sales), "total_sales": money_str(sum((money_dec(s.total or 0) for s in sales), Decimal('0'))), "payment_method_totals": {key: money_str(value) for key, value in methods.items()}, "recent_sales": recent})
         
     # ==================================================================
     # WRITE TOOLS (mutates=True). Pattern: validate all inputs, scope

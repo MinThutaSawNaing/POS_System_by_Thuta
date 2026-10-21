@@ -89,11 +89,10 @@ def guard_tool_call(
 
     * An unknown tool name is rejected with the real catalog and a close-match
       suggestion, never executed.
-    * Arguments the tool's schema does not declare are dropped before
-      execution, so a hallucinated parameter cannot raise a ``TypeError`` deep
-      inside database code.
-    * Missing required arguments are left to the tool's own validation, which
-      already returns a readable payload the model can use.
+    * Unknown arguments are rejected, never silently removed: removing a scope
+      parameter could turn an all-time request into a default 30-day query.
+    * Required arguments, JSON types, enums and declared numeric bounds are
+      checked before either executor can invoke the database tool.
     """
     names = [str(item) for item in available or () if item]
     if not isinstance(name, str) or not name.strip():
@@ -138,6 +137,41 @@ def guard_tool_call(
         if isinstance(properties, Mapping):
             allowed = set(properties)
             dropped = tuple(sorted(str(key) for key in cleaned if key not in allowed))
-            for key in dropped:
-                cleaned.pop(key, None)
+            if dropped:
+                return GuardedToolCall(name, {}, (
+                    f"Undocumented arguments for '{name}': {', '.join(dropped)}. "
+                    f"Allowed arguments: {', '.join(sorted(allowed)) or 'none'}. "
+                    "Nothing was executed; retry with documented arguments."))
+            missing = [key for key in schema.get('required', ()) if key not in cleaned]
+            if missing:
+                return GuardedToolCall(name, {}, (
+                    f"Missing required arguments for '{name}': {', '.join(missing)}. "
+                    "Nothing was executed."))
+            for key, value in cleaned.items():
+                spec = properties[key]
+                kind = spec.get('type')
+                types = kind if isinstance(kind, list) else [kind]
+                matches = {
+                    'integer': type(value) is int,
+                    'number': type(value) in (int, float),
+                    'boolean': type(value) is bool,
+                    'string': isinstance(value, str),
+                    'object': isinstance(value, Mapping),
+                    'array': isinstance(value, list),
+                    'null': value is None,
+                }
+                error = None
+                if kind and not any(matches.get(t, True) for t in types):
+                    error = f"must have JSON type {kind}"
+                elif 'enum' in spec and value not in spec['enum']:
+                    error = f"must be one of {spec['enum']}"
+                elif type(value) in (int, float):
+                    if 'minimum' in spec and value < spec['minimum']:
+                        error = f"must be at least {spec['minimum']}"
+                    elif 'maximum' in spec and value > spec['maximum']:
+                        error = f"must be at most {spec['maximum']}"
+                if error:
+                    return GuardedToolCall(name, {}, (
+                        f"Invalid argument '{key}' for '{name}': {error}. "
+                        "Nothing was executed; retry with documented arguments."))
     return GuardedToolCall(name, cleaned, None, dropped)

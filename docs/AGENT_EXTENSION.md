@@ -13,8 +13,7 @@ keep green (`test_agent_plan_execute.py`).
    `None` for read-only), `autonomy` (`"auto"` or `"approval"` — use
    `"auto"` only for low-risk writes on the `_AUTO_EXECUTE_TOOLS` list;
    `"approval"` is the default), and `description_one_line`.
-   Then add a matching entry to `TOOL_SCHEMAS` (same `name`, `description`,
-   `parameters`) — this legacy registry must stay backward-compatible;
+   `TOOL_SCHEMAS` is derived from the registry; do not maintain a separate copy.
    `get_all_tools()` keys must equal `TOOL_SCHEMAS` keys.
 2. **Method** — implement the tool method on the `AITools` class in
    `ai_tools.py`. It receives plain keyword arguments matching the schema,
@@ -27,6 +26,12 @@ keep green (`test_agent_plan_execute.py`).
    rendered directly.
 
 ## Safety rules
+
+The complete generated contract is in `AI_TOOL_REFERENCE.md`. After changing a
+tool schema, run `python generate_ai_tool_docs.py`; signature and documentation
+drift are checked by `test_ai_tool_contracts.py`. The planner receives parameter
+types, descriptions, defaults and bounds from the same registry, not a separate
+handwritten list. This is runtime grounding, not model fine-tuning.
 
 - **mutates / requires_role**: any tool with `mutates=True` MUST set
   `requires_role` (currently `"manager"`). Read-only tools use

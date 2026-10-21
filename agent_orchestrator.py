@@ -986,7 +986,9 @@ class AgentOrchestrator:
                 flag = " [write - auto]" if auto else " [write - requires approval]"
             else:
                 flag = ""
-            arg_names = ", ".join((meta["params"].get("properties") or {}).keys())
+            arg_names = ", ".join(
+                f"{arg}: {json.dumps(spec, ensure_ascii=False, separators=(',', ':'))}"
+                for arg, spec in (meta["params"].get("properties") or {}).items())
             required = sorted(meta["params"].get("required") or ())
             if required:
                 arg_names += " | required: " + ", ".join(required)
@@ -1164,6 +1166,9 @@ class AgentOrchestrator:
                     "- Only the tools listed above exist. Never invent a tool name, "
                     "endpoint, or provider API; an unknown tool invalidates the plan.\n"
                     "- Use only the documented argument names shown for each tool.\n"
+                    "- For all-time/lifetime sales or best sellers, set all_time=true; "
+                    "never substitute the default rolling 30-day period. Best sellers "
+                    "use get_sales_trends ranked by gross units sold.\n"
                     '- To use an earlier step\'s output as an argument value, use '
                     '{"$from": "stepN.result.path"} with dotted segments for nested '
                     'keys and list indexes, e.g. {"$from": "step1.products.0.id"}.\n'
@@ -1337,6 +1342,11 @@ class AgentOrchestrator:
             # Resolve $from references against earlier step outputs.
             try:
                 resolved_args = self._resolve_from_refs(step.get("args") or {}, step_outputs)
+                guarded = guard_tool_call(tool, resolved_args, registry,
+                                          {name: meta['params'] for name, meta in registry.items()})
+                if not guarded.ok:
+                    raise ValueError(guarded.error)
+                resolved_args = guarded.arguments
             except Exception as exc:
                 step_results.append({**base, "status": "failed", "error": str(exc)})
                 aborted = True
@@ -1875,17 +1885,18 @@ class AgentOrchestrator:
             elif func_name == "get_sales_trends":
                 products = result_data.get('top_selling_products', [])
                 period = result_data.get('period_days', 30)
+                period_label = "All time" if result_data.get('period') == 'all_time' else f"Last {period} days"
                 total = result_data.get('total_products_sold', 0)
                 
                 if not products:
-                    lines.append(f"📊 No sales data found for the last {period} days.")
+                    lines.append(f"📊 No sales data found ({period_label}).")
                 else:
-                    lines.append(f"📊 **Sales Trends** (Last {period} days)")
+                    lines.append(f"📊 **Sales Trends** ({period_label}; gross units sold)")
                     lines.append(f"Total products sold: {total}")
                     lines.append("")
                     lines.append("**Top Selling Products:**")
                     for i, p in enumerate(products[:10], 1):
-                        lines.append(f"{i}. **{p['product_name']}** - {p['total_quantity']} units (${p['total_revenue']:.2f})")
+                        lines.append(f"{i}. **{p['product_name']}** - {p['total_quantity']} units (${money_str(p['total_revenue'])})")
                         
             elif func_name == "get_product_details":
                 if result_data.get("error"):
@@ -1908,11 +1919,11 @@ class AgentOrchestrator:
                     lines.append("✅ No reorder suggestions needed. All inventory levels are adequate.")
                 else:
                     lines.append(f"📋 **Reorder Suggestions**")
-                    lines.append(f"💰 Total Estimated Cost: ${total_cost:.2f}")
+                    lines.append(f"💰 Total Estimated Cost: ${money_str(total_cost)}")
                     lines.append("")
                     for s in suggestions[:10]:
                         lines.append(f"• **{s['name']}** - Order {s['suggested_reorder_qty']} units")
-                        lines.append(f"  Current: {s['current_stock']} | Daily sales: {s['daily_sales_velocity']} | Cost: ${s['estimated_cost']:.2f}")
+                        lines.append(f"  Current: {s['current_stock']} | Daily sales: {s['daily_sales_velocity']} | Cost: ${money_str(s['estimated_cost'])}")
                     if len(suggestions) > 10:
                         lines.append(f"\n... and {len(suggestions) - 10} more suggestions")
                         
@@ -1920,7 +1931,8 @@ class AgentOrchestrator:
                 period = result_data.get('period_days', 30)
                 total = result_data.get('total_sales', 0)
                 count = result_data.get('transaction_count', 0)
-                lines.append(f"📊 **Sales Summary** (last {period} days)")
+                period_label = "All time" if result_data.get('period') == 'all_time' else f"last {period} days"
+                lines.append(f"📊 **Sales Summary** ({period_label})")
                 lines.append(f"Total sales: ${money_str(total)} | Transactions: {count}")
                 methods = result_data.get('payment_method_totals', {}) or {}
                 if methods:
@@ -2101,14 +2113,14 @@ class AgentOrchestrator:
                 return self._run_fallback_tool("get_warehouse_inventory")
                 
             # Detect sales trend queries
-            if self._contains_any(command_lower, ['sales trend', 'best seller', 'top selling', 'sales analysis', 'best selling']):
+            if self._contains_any(command_lower, ['sales trend', 'best seller', 'top selling', 'sales analysis', 'best selling', 'sells best']):
                 print("[AI Agent Fallback] Detected: sales trend query")
-                return self._run_fallback_tool("get_sales_trends")
+                return self._run_fallback_tool("get_sales_trends", all_time=self._contains_any(command_lower, ['all time', 'all-time', 'lifetime', 'ever']))
                 
             # Detect sales summary queries
             if self._contains_any(command_lower, ['total sales', 'sales summary', 'revenue', 'income', 'sales today', 'today sales', 'how much did we sell']):
                 print("[AI Agent Fallback] Detected: sales summary query")
-                return self._run_fallback_tool("get_sales_summary")
+                return self._run_fallback_tool("get_sales_summary", all_time=self._contains_any(command_lower, ['all time', 'all-time', 'lifetime', 'ever']))
                 
             # Detect reorder suggestions
             if self._contains_any(command_lower, ['suggest reorder', 'reorder suggestion', 'how much to order', 'what to reorder']):
@@ -2309,15 +2321,16 @@ class AgentOrchestrator:
         products = result.get('top_selling_products', [])
         period = result.get('period_days', 30)
         total = result.get('total_products_sold', 0)
+        period_label = "All time" if result.get('period') == 'all_time' else f"last {period} days"
         
         if not products:
-            return f"No sales data found for the last {period} days."
+            return f"No sales data found ({period_label})."
             
-        lines = [f"Sales analysis (last {period} days) - {total} products sold:\n"]
+        lines = [f"Sales analysis ({period_label}; gross units sold) - {total} products sold:\n"]
         lines.append("Top selling products:")
         
         for i, p in enumerate(products[:10], 1):
-            lines.append(f"{i}. **{p['product_name']}** - {p['total_quantity']} units sold (${p['total_revenue']:.2f})")
+            lines.append(f"{i}. **{p['product_name']}** - {p['total_quantity']} units sold (${money_str(p['total_revenue'])})")
             
         return "\n".join(lines)
     
@@ -2334,9 +2347,9 @@ class AgentOrchestrator:
         
         for s in suggestions[:10]:
             lines.append(f"• **{s['name']}** - Order {s['suggested_reorder_qty']} units (Current: {s['current_stock']}, Daily sales: {s['daily_sales_velocity']})")
-            lines.append(f"  Estimated cost: ${s['estimated_cost']:.2f}")
+            lines.append(f"  Estimated cost: ${money_str(s['estimated_cost'])}")
             
-        lines.append(f"\n**Total estimated cost: ${total_cost:.2f}**")
+        lines.append(f"\n**Total estimated cost: ${money_str(total_cost)}**")
         
         return "\n".join(lines)
         
