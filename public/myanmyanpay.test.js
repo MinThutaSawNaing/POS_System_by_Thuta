@@ -8,14 +8,14 @@ const vm = require('node:vm');
 
 // Exercise the real browser adapter as well as the state machine. No browser
 // dependency is needed for button visibility, labels and in-flight guards.
-async function buttonHarness({enabled = true, configured = true, manual_allowed = false, sandbox = false} = {}) {
+async function buttonHarness({enabled = true, configured = true, manual_allowed = false, sandbox = false, dashboard = false} = {}) {
   const elements = new Map();
   const element = id => {
     if (!elements.has(id)) {
       const classes = new Set();
       const attributes = new Map();
       elements.set(id, {
-        textContent: '', disabled: false, style: {}, children: [],
+        textContent: '', value: '', checked: false, disabled: false, style: {}, children: [],
         classList: {
           add: name => classes.add(name), remove: name => classes.delete(name),
           contains: name => classes.has(name),
@@ -24,28 +24,38 @@ async function buttonHarness({enabled = true, configured = true, manual_allowed 
         setAttribute: (name, value) => attributes.set(name, value),
         getAttribute: name => attributes.get(name),
         removeAttribute: name => attributes.delete(name),
-        addEventListener() {}, replaceChildren() { this.children = []; },
+        listeners: {}, focus() {},
+        addEventListener(name, fn) { this.listeners[name] = fn; },
+        replaceChildren() { this.children = []; },
         appendChild(child) { this.children.push(child); },
       });
     }
     return elements.get(id);
   };
-  const h = {element, status: 'PENDING', calls: [], completions: [], opens: 0};
+  const h = {element, status: 'PENDING', calls: [], completions: [], opens: 0, notices: [], sequence: 0};
   const context = {
     document: {getElementById: element, createElement: () => element(Symbol()), addEventListener() {}},
     currentBranch: {id: 1}, CACHE_USER_ID: 1, cart: [], navigator: {onLine: true},
-    bootstrap: {Modal: {getInstance: () => ({show() { h.opens++; }, hide() {}})}},
-    crypto: {randomUUID: () => 'button-test'},
+    bootstrap: {Modal: {getInstance: () => ({
+      show() { h.opens++; element('mmqrPaymentModal').classList.add('show'); },
+      hide() {
+        const modal = element('mmqrPaymentModal');
+        modal.classList.remove('show');
+        modal.listeners['hidden.bs.modal']?.();
+      },
+    })}},
+    crypto: {randomUUID: () => `button-test-${++h.sequence}`},
     setTimeout: fn => { h.tick = fn; return 1; }, clearTimeout() {},
     resetMMQRCountdown() {}, stopMMQRCountdown() {}, setMMQRDownloadState() {},
     confirmMMQRPayment() {},
     updateCartDisplay() {}, resetSplitPaymentFields() {}, togglePosDeliveryFields() {},
     updateCashRefundDisplay() {}, loadSales() {}, loadDashboardStats() {}, invalidateProductsCache() {},
     showSaleSuccessModal: (...args) => h.completions.push(args),
+    showToast: (...args) => h.notices.push(args), formatCurrency: value => String(value),
     fetch: async (url, options) => {
       h.calls.push({url, options});
       if (h.intercept) { const response = await h.intercept(url, options); if (response) return response; }
-      const payment = {id: 7, order_id: 'button-order', status: h.status, amount: 1000};
+      const payment = {id: 7, order_id: 'button-order', status: h.status, amount: 1000, qr_url: '/qr'};
       const data = url.endsWith('/config') ? {enabled, configured, manual_allowed, sandbox}
         : url.endsWith('/complete') ? {success: true, transaction_id: 'sandbox-sale'}
         : url.endsWith('/intents') && options.method === 'GET' ? {payments: []}
@@ -53,12 +63,147 @@ async function buttonHarness({enabled = true, configured = true, manual_allowed 
       return {ok: true, json: async () => data};
     },
   };
+  if (dashboard) {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'templates', 'dashboard.html'), 'utf8');
+    const functions = ['addToCartToInternal', 'updateCartDisplay', 'showMMQRPaymentModal',
+      'completeSale', 'splitUsesMobilePayment', 'resetSplitPaymentFields',
+      'updateSplitPaymentDisplay', 'handlePaymentMethodChange', 'toggleCashPaymentFields',
+      'getCurrentCartTotal', 'toCents', 'centsToNumber', 'mulMoney'];
+    const helpers = functions.map(name => {
+      const match = new RegExp(`function ${name}\\([^)]*\\)\\s*\\{`).exec(source);
+      assert.ok(match, `dashboard function ${name} exists`);
+      let depth = 0;
+      for (let i = match.index + match[0].length - 1; i < source.length; i++) {
+        if (source[i] === '{') depth++;
+        if (source[i] === '}' && --depth === 0) return source.slice(match.index, i + 1);
+      }
+      throw new Error(`Unbalanced dashboard function: ${name}`);
+    }).join('\n');
+    Object.assign(context, {isSaleProcessing: false, APP_SETTINGS: {},
+      t: text => text, hasCapability: () => true});
+    vm.runInNewContext(helpers, context);
+    element('payment-method').value = 'mobile_payment';
+    element('split-method-one').value = 'cash';
+    element('split-method-two').value = 'mobile_payment';
+  }
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'myanmyanpay.js'), 'utf8'), context);
   await new Promise(setImmediate);
   h.checkout = context.MyanMyanPayCheckout;
+  h.context = context;
   h.hidden = id => element(id).classList.contains('d-none');
   return h;
 }
+
+test('after a finished mobile sale, selecting products builds the next cart without reopening MMQR', async () => {
+  const h = await buttonHarness({dashboard: true});
+  const product = {id: 5, name: 'Next sale', price: 1000, stock: 10};
+  h.context.cart = [{product_id: 5, price: 1000, quantity: 1, tax_rate: 0}];
+  h.context.completeSale();
+  await new Promise(setImmediate);
+  assert.equal(h.checkout.state().active.status, 'PENDING');
+  h.status = 'SUCCESS';
+  await h.tick();
+  assert.equal(h.completions.length, 1);
+  assert.equal(h.context.cart.length, 0);
+  assert.equal(h.checkout.state().active, null);
+  const calls = h.calls.length, opens = h.opens;
+  h.context.addToCartToInternal(product, 1);
+  await new Promise(setImmediate);
+  assert.equal(h.opens, opens, 'adding the next product must not reopen the payment window');
+  assert.equal(h.calls.length, calls, 'editing the next cart must not create a frozen payment');
+  assert.equal(h.element('payment-method').value, 'mobile_payment');
+  h.context.addToCartToInternal({...product, id: 6}, 1);
+  h.status = 'PENDING';
+  h.context.completeSale();
+  await new Promise(setImmediate);
+  assert.equal(h.checkout.state().active.status, 'PENDING');
+  assert.equal(h.element('pos-mmqr-image').style.display, 'block');
+  const creates = h.calls.filter(c => c.url.endsWith('/intents') && c.options.method === 'POST');
+  assert.equal(creates.length, 2, 'one payment for each explicitly checked-out sale');
+  assert.equal(JSON.parse(creates[1].options.body).items.length, 2, 'the new QR includes the entire new cart');
+  assert.notEqual(JSON.parse(creates[0].options.body).transaction_id, JSON.parse(creates[1].options.body).transaction_id);
+});
+
+for (const method of ['mobile_payment', 'split_payment']) {
+  test(`editing the next ${method} cart does not request payment until explicit checkout`, async () => {
+    const h = await buttonHarness({dashboard: true});
+    h.element('payment-method').value = method;
+    const opens = h.opens, calls = h.calls.length;
+    h.context.addToCartToInternal({id: 5, name: 'New cart', price: 1000, stock: 10}, 1);
+    h.context.cart[0].quantity = 2;
+    h.context.updateCartDisplay();
+    h.context.cart[0].quantity = 1;
+    h.context.updateCartDisplay();
+    assert.equal(h.opens, opens);
+    assert.equal(h.calls.length, calls);
+    h.element('split-amount-one').value = '200';
+    h.element('split-amount-two').value = '800';
+    h.context.handlePaymentMethodChange();
+    await new Promise(setImmediate);
+    assert.equal(h.checkout.state().active.status, 'PENDING', 'explicit payment selection still creates a QR');
+    assert.equal(h.element('pos-mmqr-image').style.display, 'block');
+    const pendingCalls = h.calls.length, pendingOpens = h.opens;
+    h.context.cart[0].quantity = 2;
+    h.context.updateCartDisplay();
+    assert.equal(h.calls.length, pendingCalls, 'editing must not replace an existing payment');
+    assert.equal(h.opens, pendingOpens);
+    h.context.completeSale();
+    assert.equal(h.checkout.state().active.id, 7, 'explicit checkout resumes the original pending order');
+    assert.equal(h.calls.length, pendingCalls);
+  });
+
+  test(`completion does not reopen ${method} checkout through split-field reset`, async () => {
+    const h = await buttonHarness({dashboard: true});
+    h.element('payment-method').value = method;
+    h.element('split-amount-one').value = '200';
+    h.element('split-amount-two').value = '800';
+    h.context.cart = [{product_id: 5, price: 1000, quantity: 1, tax_rate: 0}];
+    h.context.completeSale();
+    await new Promise(setImmediate);
+    // Exercise a delayed hide with the dialog still shown during field reset,
+    // before hidden.bs.modal, rather than only testing synchronous closure.
+    h.context.bootstrap.Modal.getInstance = () => ({
+      show() { h.opens++; }, hide() {},
+    });
+    const opens = h.opens;
+    h.status = 'SUCCESS';
+    await h.tick();
+    assert.equal(h.completions.length, 1);
+    assert.equal(h.opens, opens, 'resetting the finished sale must not open an empty checkout');
+    assert.equal(h.checkout.state().active, null);
+    assert.equal(h.checkout.state().quote, null);
+    assert.equal(h.notices.length, 0, 'clearing a completed cart must not warn about missing items');
+  });
+}
+
+test('payment readiness refresh after completion cannot reopen the completed checkout', async () => {
+  const h = harness();
+  let opens = 0;
+  h.env.open = () => { opens++; };
+  await h.checkout.loadConfig();
+  await h.checkout.start({items: [1]});
+  h.status = 'SUCCESS';
+  await h.tick();
+  assert.equal(h.completed.length, 1);
+  const completedOpens = opens;
+  await h.checkout.loadConfig();
+  assert.equal(opens, completedOpens, 'completion must clear visibility even before hidden.bs.modal');
+  assert.equal(h.checkout.state().active, null);
+});
+
+test('building a manual mobile cart does not warn about an unavailable QR before checkout', async () => {
+  const h = await buttonHarness({dashboard: true, enabled: false, configured: false, manual_allowed: true});
+  const opens = h.opens, calls = h.calls.length;
+  h.context.addToCartToInternal({id: 5, name: 'Manual cart', price: 1000, stock: 10}, 1);
+  assert.equal(h.opens, opens);
+  assert.equal(h.calls.length, calls);
+  assert.equal(h.notices.length, 1, 'only the product-added notice is shown');
+  assert.doesNotMatch(h.notices[0][0], /MMQR|configured|unavailable/i);
+  h.context.completeSale();
+  assert.match(h.notices.at(-1)[0], /MMQR has not been configured/, 'actual checkout still reports missing configuration');
+  assert.equal(h.checkout.state().active, null);
+  assert.equal(h.completions.length, 0, 'missing QR must never record a sale');
+});
 
 test('payment recovery is labelled as discovery until an order can actually be resumed', async () => {
   const h = await buttonHarness();

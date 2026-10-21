@@ -266,6 +266,7 @@
           if (!data.success || !data.transaction_id) throw new Error("Sale confirmation missing.");
           const clearCart = !!quote && quote.snapshot === env.snapshot();
           active = null; quote = null; busy = false; operation = ""; reconciliation = false; operationError = ""; revision++; stop();
+          visible = false; pendingCheckoutScope = null;
           env.forget?.();
           env.completed(data, clearCart); status("Sale confirmed. Payment completed.");
         } else {

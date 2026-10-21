@@ -81,8 +81,11 @@ that no real money was received. If the checkout script fails to load, mobile an
 mobile-split checkout are blocked instead of invoking the manual fallback.
 
 Selecting **Mobile Payment** with items in the cart opens checkout and requests
-the QR automatically. There is no initial **Create payment QR** step. Split
-payments must first have two different methods, positive amounts matching the
+the QR automatically. If Mobile Payment stays selected after a finished sale,
+adding or editing products only builds the next cart; it does not open MMQR or
+create a payment. Press **Complete Sale** when that cart is ready to generate a
+fresh QR for the entire new sale. There is no initial **Create payment QR** step.
+Split payments must first have two different methods, positive amounts matching the
 total, and all required delivery fields filled in. The provider request still
 takes network time; the screen shows generation progress. Reopening checkout
 retains the existing order instead of creating another one. A failed request

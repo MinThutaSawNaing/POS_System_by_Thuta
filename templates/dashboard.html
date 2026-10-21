@@ -11784,11 +11784,10 @@
         document.getElementById("tax").textContent = formatCurrency(taxCents / 100);
         document.getElementById("total").textContent = formatCurrency(totalCents / 100);
         updateCashRefundDisplay();
-        if (cart.length > 0 && document.getElementById("payment-method")?.value === "mobile_payment") {
-          showMMQRPaymentModal();
-        } else if (cart.length > 0 && document.getElementById("payment-method")?.value === "split_payment" && splitUsesMobilePayment()) {
-          showMMQRPaymentModal();
-        }
+        // Cart redraws are not checkout actions. In particular, Mobile Payment
+        // stays selected after a sale; adding the next product must not open an
+        // empty MMQR dialog or freeze a payment for a partially built cart.
+        // Checkout remains explicit via the payment selector or Complete Sale.
       }
 
       function getCurrentCartTotal() {
@@ -11868,7 +11867,10 @@
           : `Remaining: ${formatCurrency(Math.abs(difference) / 100)}${difference < 0 ? " over" : ""}`;
         remaining.className = difference === 0 ? "text-success mt-1" : "text-danger mt-1";
         const modalElement = document.getElementById("mmqrPaymentModal");
-        if (modalElement?.classList.contains("show") && splitUsesMobilePayment()) showMMQRPaymentModal();
+        if (cart.length > 0 && document.getElementById("payment-method")?.value === "split_payment"
+            && modalElement?.classList.contains("show") && splitUsesMobilePayment()) {
+          showMMQRPaymentModal();
+        }
       }
 
       // ===== MMQR compliance: MMK-only display, 15-minute timer, downloads =====
