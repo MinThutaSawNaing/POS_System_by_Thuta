@@ -3,8 +3,10 @@
 ## Scope
 
 This integration replaces the **manual uploaded MMQR and cashier confirmation**
-when `MMPAY_ENABLED=true`. It is disabled by default, so existing installations
-continue working until merchant onboarding is complete. It uses the existing
+when `MMPAY_ENABLED=true`. Manual-only installations with no provider configuration
+continue working until merchant onboarding is complete. Once any provider setting
+is present, disabling the switch blocks new mobile sales instead of silently
+falling back to cashier confirmation. It uses the existing
 `requests` and ReportLab libraries; no browser payment secret or external QR
 rendering service is needed.
 
@@ -48,6 +50,27 @@ deployment secret store): `MMPAY_APP_ID`, `MMPAY_PUBLISHABLE_KEY`,
 `MMPAY_SECRET_KEY`, `MMPAY_API_BASE_URL`, `MMPAY_CALLBACK_URL`.
 
 ## Automatic checkout and sandbox payment completion
+
+### Sale recorded is not proof of provider payment
+
+The checkout configuration returns `manual_allowed` and `sandbox` explicitly.
+The browser does not infer permission for manual payments from `enabled: false`.
+An onboarded or partially configured integration that is disabled blocks new
+mobile sales at both the browser and `/api/sales`, including the mobile leg of
+split payments. Existing provider orders can still be recovered and completed
+with their original credentials; turning off the switch does not discard them.
+
+For a genuinely manual-only installation, checkout and its completion notice say
+**not verified by MyanMyanPay** and explain that no provider request is sent.
+These uploaded/static-QR sales will not create provider sandbox transactions.
+Clearing saved credentials falls back to deployment environment settings; manual
+mode requires those provider settings to be absent too. Do not clear credentials
+while issued provider orders are outstanding.
+
+Sandbox checkout labels success as simulated, uses **Complete sandbox sale**, and
+warns that completing still changes POS stock and reports. Its sale notice says
+that no real money was received. If the checkout script fails to load, mobile and
+mobile-split checkout are blocked instead of invoking the manual fallback.
 
 Selecting **Mobile Payment** with items in the cart opens checkout and requests
 the QR automatically. There is no initial **Create payment QR** step. Split

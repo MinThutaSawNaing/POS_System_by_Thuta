@@ -21,8 +21,9 @@
     let pollRevision = 0, pendingPoll = null, lastProviderCheckAt = Date.now();
     const scope = () => env.scope();
     const valid = (s, r) => s !== null && s === scope() && (r === undefined || r === revision);
-    const mode = () => configScope !== scope() || !config ? "loading" : config.enabled === false ? "legacy" : config.enabled === true && config.configured === true ? "provider" : "blocked";
-    const canRecover = () => ["provider", "legacy"].includes(mode());
+    const mode = () => configScope !== scope() || !config ? "loading" : config.enabled === false && config.manual_allowed === true ? "legacy" : config.enabled === true && config.configured === true ? "provider" : "blocked";
+    // Pausing new payments must not strand already-issued provider orders.
+    const canRecover = () => ["provider", "legacy"].includes(mode()) || (configScope === scope() && config?.enabled === false);
     // Absolute validity deadline on the browser clock. The server sends its own
     // clock with the order so a skewed POS clock cannot shorten or extend the
     // mandatory 15-minute window.
@@ -40,7 +41,7 @@
         qr_url: active.qr_url || null,
       });
     }
-    const status = (text) => env.render({mode: mode(), sandbox: config?.sandbox === true, payment: active, busy, text: terminalNotice + (operationError ? operationError + " " : "") + text, deadline: deadline()});
+    const status = (text) => env.render({mode: mode(), sandbox: config?.sandbox === true, recovery: canRecover(), payment: active, busy, text: terminalNotice + (operationError ? operationError + " " : "") + text, deadline: deadline()});
     async function request(path, method = "GET", body) {
       if (!env.online()) throw new Error("Mobile payments require an online connection. Do not pay again if a request is uncertain.");
       const options = {method, cache: "no-store", credentials: "same-origin"};
@@ -89,7 +90,7 @@
         const data = await request("/config");
         if (!valid(s)) return;
         config = data;
-        env.ready?.(mode());
+        env.ready?.(mode(), canRecover());
         // A reload must restore the open order and its QR instead of minting a
         // new one. restore() only re-reads an order the server already owns.
         if (!active && canRecover()) await restore();
@@ -299,20 +300,20 @@
   }
   const snapshot = () => JSON.stringify({cart, fields: ["payment-method", "pos-customer-select", "split-method-one", "split-method-two", "split-amount-one", "split-amount-two", "pos-enable-delivery", "pos-delivery-recipient-name", "pos-delivery-recipient-phone", "pos-delivery-address", "pos-delivery-priority", "pos-delivery-fee"].map(id => [id, el(id)?.value, el(id)?.checked])});
   let lastActionState = null;
-  function renderActions({mode, payment, busy}) {
-    lastActionState = {mode, payment, busy};
-    const recover = mode === "provider" || mode === "legacy";
+  function renderActions({mode, payment, busy, sandbox = false, recovery = false}) {
+    lastActionState = {mode, payment, busy, sandbox, recovery};
+    const recover = recovery || mode === "provider" || mode === "legacy";
     const paid = payment?.status === "SUCCESS";
     const pending = recover && !!payment && !paid;
     const confirm = el("confirm-mmqr-payment-btn");
     // Pending orders must be checked, never manually marked paid or recreated.
     confirm.classList.toggle("d-none", pending);
-    confirm.textContent = paid ? busy ? "Completing sale…" : "Complete verified sale"
-      : mode === "legacy" && !payment ? "Payment Received — Complete Sale"
+    confirm.textContent = paid ? busy ? "Completing sale…" : sandbox ? "Complete sandbox sale" : "Complete verified sale"
+      : mode === "legacy" && !payment ? "Record manually confirmed sale"
       : mode === "loading" ? "Checking payment setup…"
       : mode === "blocked" ? "Payment unavailable"
       : busy ? "Please wait…" : "Retry payment QR";
-    confirm.disabled = busy || !recover || (!!payment && !paid);
+    confirm.disabled = busy || !recover || (mode === "blocked" && !payment) || (!!payment && !paid);
     confirm.setAttribute("aria-busy", String(busy && !pending));
     el("mmp-refresh").classList.toggle("d-none", !pending);
     el("mmp-refresh").textContent = busy ? "Please wait…" : "Check now";
@@ -357,26 +358,27 @@
       const method = el("payment-method")?.value;
       if (method === "mobile_payment" || (method === "split_payment" && splitUsesMobilePayment())) completeSale(false);
     },
-    ready(mode) {
-      el("mmp-open-existing").classList.toggle("d-none", !["provider", "legacy"].includes(mode));
-      renderActions({mode, payment: checkout.state().active, busy: checkout.state().busy});
+    ready(mode, recovery) {
+      el("mmp-open-existing").classList.toggle("d-none", !recovery);
+      renderActions({mode, recovery, payment: checkout.state().active, busy: checkout.state().busy});
     },
     legacy() {
-      el("mmp-status").textContent = "";
+      el("mmp-status").textContent = "Manual payment — not verified by MyanMyanPay. No provider request will be sent.";
       renderActions({mode: "legacy", payment: null, busy: false});
-      el("mmqr-payment-help").textContent = "Ask the customer to scan the QR and confirm that payment was received.";
+      el("mmqr-payment-help").textContent = "Manual payment only. Independently check the merchant account before recording the sale.";
       showMMQRPaymentModal();
     },
     setTimeout: root.setTimeout.bind(root), clearTimeout: root.clearTimeout.bind(root),
     open() { (bootstrap.Modal.getInstance(modal) || new bootstrap.Modal(modal)).show(); },
     busy: setBusy,
-    render({mode, sandbox, payment, busy, text, deadline}) {
+    render({mode, sandbox, recovery, payment, busy, text, deadline}) {
       el("mmp-status").textContent = text;
       const provider = mode === "provider";
-      const recover = provider || mode === "legacy";
-      renderActions({mode, payment, busy});
+      const recover = recovery || provider || mode === "legacy";
+      renderActions({mode, payment, busy, sandbox, recovery});
       el("mmqr-payment-help").textContent = sandbox
-        ? "SANDBOX — no real money: in MyanMyanPay Developers → Sandbox Txn → Pending, select this order and choose ‘Do a success callback’. After SUCCESS, choose Complete verified sale. Closing does not cancel the order."
+        ? "SANDBOX — no real money. Use the provider sandbox callback emulator for this order. SUCCESS is simulated, not a bank payment. Complete sandbox sale changes POS stock and reports. Closing does not cancel the order."
+        : mode === "legacy" && !payment ? "Manual payment — not verified by MyanMyanPay. No provider request will be sent. Independently check the merchant account before recording the sale."
         : "Only server-verified payment can complete this sale. Closing does not cancel payment. Existing QR always belongs to its frozen order.";
       const image = el("pos-mmqr-image");
       // Never disturb the uploaded legacy QR while rendering an empty provider state.
@@ -429,7 +431,10 @@
         togglePosDeliveryFields(); updateCashRefundDisplay();
       } else showToast("Original payment sale completed. Current cart was retained; it was not part of this payment.", "info");
       bootstrap.Modal.getInstance(modal)?.hide();
-      showSaleSuccessModal(data.transaction_id, data.delivery_number, false);
+      showSaleSuccessModal(data.transaction_id, data.delivery_number, false,
+        lastActionState?.sandbox === true
+          ? "SANDBOX sale recorded — simulated payment, no real money received. POS stock and reports were updated."
+          : "Sale recorded using the saved provider payment status. Reconcile the order with your merchant account.");
       ["sales-start-date-filter", "sales-end-date-filter", "sales-search"].forEach(id => { if (el(id)) el(id).value = ""; });
       loadSales(); loadDashboardStats(); invalidateProductsCache();
     }

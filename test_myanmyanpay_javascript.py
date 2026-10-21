@@ -60,3 +60,58 @@ console.log(JSON.stringify({ok: true}));
     helpers = '\n'.join(_function(source, name) for name in (
         'showMMQRPaymentModal', 'completeSale'))
     assert _run_node_script(script.replace('__HELPERS__', helpers)) == {'ok': True}
+
+
+def test_missing_checkout_script_never_calls_manual_sale_confirmation():
+    source = DASHBOARD.read_text(encoding='utf-8')
+    helpers = '\n'.join(_function(source, name) for name in (
+        'showMMQRPaymentModal', 'confirmMMQRPayment', 'completeSale'))
+    script = """
+const assert = require('node:assert/strict');
+let cart = [{product_id: 5, price: 1000, quantity: 1}];
+let isSaleProcessing = false, dashboardSessionStale = false;
+let dashboardBranchStale = false, branchSwitchInFlight = false;
+const notices = [];
+function showToast(text) { notices.push(text); }
+function requireCapability() { return true; }
+function splitUsesMobilePayment() { return true; }
+const fields = {'payment-method': 'mobile_payment', 'pos-customer-select': ''};
+const document = {getElementById: id => ({value: fields[id]})};
+function fetch() { throw new Error('Must not submit a sale without checkout verification'); }
+__HELPERS__
+showMMQRPaymentModal();
+confirmMMQRPayment();
+completeSale(true);
+fields['payment-method'] = 'split_payment';
+completeSale(true);
+assert.equal(notices.length, 4);
+assert.ok(notices.every(text => /verification is unavailable/.test(text)));
+assert.equal(cart.length, 1);
+console.log(JSON.stringify({ok: true}));
+"""
+    assert _run_node_script(script.replace('__HELPERS__', helpers)) == {'ok': True}
+
+
+def test_sale_success_notice_is_text_only_and_resets_between_payments():
+    source = DASHBOARD.read_text(encoding='utf-8')
+    script = """
+const assert = require('node:assert/strict');
+const elements = new Map();
+const document = {getElementById(id) {
+  if (!elements.has(id)) elements.set(id, {textContent: '', style: {},
+    classList: {toggle(name, hidden) { this.hidden = hidden; }}});
+  return elements.get(id);
+}};
+const bootstrap = {Modal: class {show() {}}};
+let currentSaleTransactionId;
+__HELPERS__
+showSaleSuccessModal('manual', null, false, 'Manual — not verified by MyanMyanPay');
+const notice = document.getElementById('salePaymentNotice');
+assert.match(notice.textContent, /not verified/);
+assert.equal(notice.classList.hidden, false);
+showSaleSuccessModal('cash', null, false);
+assert.equal(notice.textContent, '');
+assert.equal(notice.classList.hidden, true);
+console.log(JSON.stringify({ok: true}));
+"""
+    assert _run_node_script(script.replace('__HELPERS__', _function(source, 'showSaleSuccessModal'))) == {'ok': True}

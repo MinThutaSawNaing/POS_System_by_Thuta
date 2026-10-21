@@ -22,6 +22,18 @@ def payment_enabled():
     return os.environ.get('MMPAY_ENABLED', '').strip().lower() not in ('', '0', 'false', 'no', 'off')
 
 
+def manual_payment_allowed():
+    """Legacy-only installs may record cashier-confirmed, unverified payments.
+
+    Turning off an onboarded (even partially configured) provider must never
+    silently remove payment verification. Clear provider settings explicitly
+    before returning to a manual-only installation.
+    """
+    from myanmyanpay import CONFIGURATION_NAMES
+    return not payment_enabled() and not any(
+        os.environ.get(name, '').strip() for name in CONFIGURATION_NAMES)
+
+
 def register_payment_routes(app, db, pos):
     class PaymentIntent(db.Model):
         __tablename__ = 'payment_intent'
@@ -250,8 +262,20 @@ def register_payment_routes(app, db, pos):
             return denied
         enabled = payment_enabled()
         problem = enabled_error() if enabled else None
+        manual_allowed = manual_payment_allowed()
+        sandbox = None
+        if not manual_allowed:
+            try:
+                sandbox = client(for_recovery=True).sandbox
+            except Exception:
+                pass  # Unknown environment is never advertised as live-ready.
+        message = ('MyanMyanPay needs server configuration.' if problem else
+                   'Manual payment only — not verified by MyanMyanPay. No provider request will be sent.'
+                   if manual_allowed else
+                   'MyanMyanPay is disabled. Provider credentials are present; manual fallback is blocked. Ask a manager to enable the integration.'
+                   if not enabled else None)
         return jsonify(enabled=enabled, configured=enabled and problem is None, currency='MMK',
-                       message='MyanMyanPay needs server configuration.' if problem else None)
+                       manual_allowed=manual_allowed, sandbox=sandbox, message=message)
 
     @app.route('/api/payments/myanmyanpay/intents', methods=['GET', 'POST'])
     def mmpay_intents():

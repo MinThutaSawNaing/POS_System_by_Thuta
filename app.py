@@ -5390,8 +5390,8 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
         mobile_amount = (payment_breakdown or {}).get('mobile_payment', 0) if payment_method == 'split_payment' else (total_rounded if payment_method == 'mobile_payment' else 0)
         if quote_only:
             return {'total': str(total_rounded), 'mobile_amount': str(mobile_amount)}
-        from payment_routes import payment_enabled
-        if mobile_amount and (payment_enabled() or verified_payment_id is not None):
+        from payment_routes import manual_payment_allowed
+        if mobile_amount and (not manual_payment_allowed() or verified_payment_id is not None):
             if verified_payment_id is None:
                 return jsonify(success=False, message='Verified MyanMyanPay payment is required. Use the payment checkout.'), 409
             intent = db.session.get(PaymentIntent, verified_payment_id)

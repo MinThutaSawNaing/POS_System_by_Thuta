@@ -3658,6 +3658,7 @@
             <div class="alert alert-light border py-2 small mb-3">
               <i class="bi bi-shield-lock me-1"></i>
               Keys are encrypted in this database with the server <code>SECRET_KEY</code> and applied to the running server for all branches. Saved values are never displayed again.
+              Disabling a configured provider blocks new mobile sales; it does not enable manual confirmation. Existing payment orders can still be resumed.
             </div>
             <div class="row g-3">
               <div class="col-12 col-md-6">
@@ -6301,8 +6302,9 @@
             <div class="mb-3">
               <i class="bi bi-bag-check text-success" style="font-size: 4rem;"></i>
             </div>
-            <h4 class="text-success mb-3">Transaction Successful</h4>
+            <h4 class="text-success mb-3">Sale Recorded</h4>
             <p class="mb-2">Transaction ID: <strong id="saleTransactionId"></strong></p>
+            <p class="mb-2 d-none" id="salePaymentNotice" role="status"></p>
             <p class="mb-0 text-muted" id="saleDeliveryInfo"></p>
           </div>
           <div class="modal-footer justify-content-center gap-2">
@@ -6358,8 +6360,8 @@
           </div>
           <div class="modal-footer mmqr-actions">
             <p id="mmp-auto-status" class="mmqr-auto-status d-none mb-0" role="status" aria-live="polite"></p>
-            <button type="button" class="btn btn-success mmqr-primary-action" id="confirm-mmqr-payment-btn" onclick="confirmMMQRPayment()">
-              <i class="bi bi-check-circle me-1"></i>Payment Received — Complete Sale
+            <button type="button" class="btn btn-success mmqr-primary-action" id="confirm-mmqr-payment-btn" onclick="confirmMMQRPayment()" disabled>
+              <i class="bi bi-hourglass-split me-1"></i>Checking payment setup…
             </button>
             <button type="button" class="btn btn-outline-secondary" id="mmqr-close-btn" data-bs-dismiss="modal">Close</button>
             <button type="button" class="btn btn-outline-secondary d-none" id="mmp-refresh">Check now</button>
@@ -10240,9 +10242,14 @@
         return entry?.receiptSnapshot || null;
       }
 
-      function showSaleSuccessModal(transactionId, deliveryNumber, isDebt) {
+      function showSaleSuccessModal(transactionId, deliveryNumber, isDebt, paymentNotice = "") {
         currentSaleTransactionId = transactionId;
         document.getElementById("saleTransactionId").textContent = transactionId;
+        const notice = document.getElementById("salePaymentNotice");
+        if (notice) {
+          notice.textContent = paymentNotice;
+          notice.classList.toggle("d-none", !paymentNotice);
+        }
         
         const deliveryInfo = document.getElementById("saleDeliveryInfo");
         if (deliveryNumber) {
@@ -11959,6 +11966,10 @@
       }
 
       function showMMQRPaymentModal() {
+        if (typeof MyanMyanPayCheckout === "undefined") {
+          showToast("Payment verification is unavailable. Reload while online; no payment or sale has been confirmed.", "error");
+          return false;
+        }
         if (typeof MyanMyanPayCheckout !== "undefined" && typeof MyanMyanPayCheckout.state === "function" && MyanMyanPayCheckout.state().active) return MyanMyanPayCheckout.preview();
         if (typeof MyanMyanPayCheckout !== "undefined" && MyanMyanPayCheckout.mode() !== "legacy") {
           // Use the same delivery/split/cart validation as the checkout button.
@@ -11980,7 +11991,9 @@
         }
         if (missing) missing.style.display = "none";
         const help = document.getElementById("mmqr-payment-help");
-        if (help) help.textContent = "Ask the customer to scan the QR and confirm that payment was received.";
+        if (help) help.textContent = "Manual payment — not verified by MyanMyanPay. No provider request will be sent. Independently check the merchant account before recording the sale.";
+        const confirm = document.getElementById("confirm-mmqr-payment-btn");
+        if (confirm) confirm.textContent = "Record manually confirmed sale";
         setMMQRDownloadState(true);
         resetMMQRCountdown(legacyMMQRDeadline());
         let amountToPay = getCurrentCartTotal();
@@ -12001,6 +12014,10 @@
       }
 
       function confirmMMQRPayment() {
+        if (typeof MyanMyanPayCheckout === "undefined") {
+          showToast("Payment verification is unavailable. Reload while online; no payment or sale has been confirmed.", "error");
+          return;
+        }
         if (typeof MyanMyanPayCheckout !== "undefined" && typeof MyanMyanPayCheckout.state === "function" && MyanMyanPayCheckout.state().active) {
           MyanMyanPayCheckout.action("complete");
           return;
@@ -12463,7 +12480,10 @@
           setCompleteSaleButtonState(false);
           return;
         }
-        showSaleSuccessModal(saleData.transaction_id, null, saleData.payment_method === "debt");
+        showSaleSuccessModal(saleData.transaction_id, null, saleData.payment_method === "debt",
+          saleData.payment_method === "mobile_payment" || (saleData.payment_method === "split_payment" && saleData.payment_breakdown?.mobile_payment > 0)
+            ? "Offline manual sale queued — not verified by MyanMyanPay. No provider request was sent."
+            : "Offline sale queued — awaiting server sync.");
         cart = [];
         updateCartDisplay();
         const cashReceived = document.getElementById("cash-received");
@@ -12500,6 +12520,10 @@
         if (paymentMethod === "debt" && !requireCapability("debts")) return;
         const customerId = document.getElementById("pos-customer-select").value;
 
+        if ((paymentMethod === "mobile_payment" || (paymentMethod === "split_payment" && splitUsesMobilePayment())) && typeof MyanMyanPayCheckout === "undefined") {
+          showToast("Payment verification is unavailable. Reload while online; no payment or sale has been confirmed.", "error");
+          return;
+        }
         const providerMobile = (paymentMethod === "mobile_payment" || (paymentMethod === "split_payment" && splitUsesMobilePayment())) && typeof MyanMyanPayCheckout !== "undefined" && MyanMyanPayCheckout.mode() !== "legacy";
         if ((paymentMethod === "mobile_payment" || (paymentMethod === "split_payment" && splitUsesMobilePayment())) && !mmqrConfirmed && !providerMobile) {
           showMMQRPaymentModal();
@@ -12600,7 +12624,9 @@
                 : `${t("saleCompleted")} Transaction ID: ${data.transaction_id}`;
               
               // Show success modal instead of alert
-              showSaleSuccessModal(data.transaction_id, data.delivery_number, paymentMethod === "debt");
+              showSaleSuccessModal(data.transaction_id, data.delivery_number, paymentMethod === "debt",
+                paymentMethod === "mobile_payment" || (paymentMethod === "split_payment" && splitUsesMobilePayment())
+                  ? "Manual payment recorded — not verified by MyanMyanPay. No provider request was sent." : "");
               
               cart = [];
               updateCartDisplay();

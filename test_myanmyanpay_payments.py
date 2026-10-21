@@ -128,6 +128,103 @@ class MyanMyanPayPaymentTests(unittest.TestCase):
             self.assertEqual(self.client.post(ROOT + '/intents', json=self.checkout(), headers=HEADERS).status_code, 503)
         self.assertNotIn('sk_test', self.client.get(ROOT + '/config').get_data(as_text=True))
 
+    def test_disabled_configured_provider_cannot_fall_back_to_manual_success(self):
+        # Real sales endpoint, real configured adapter, but no provider request:
+        # disabling an onboarded integration must not turn money verification off.
+        with patch.dict(os.environ, {'MMPAY_ENABLED': 'false'}), \
+                patch('myanmyanpay.requests.post') as outbound:
+            config = self.client.get(ROOT + '/config').get_json()
+            for data in (self.checkout(), self.checkout(payment_method='split_payment',
+                         payment_breakdown={'cash': 500, 'mobile_payment': 550})):
+                response = self.client.post('/api/sales', json=data)
+                self.assertEqual(response.status_code, 409, response.get_json())
+                self.assertFalse(response.get_json()['success'])
+                self.assertIsNone(Sale.query.filter_by(transaction_id=data['transaction_id']).first())
+            self.assertFalse(config.get('manual_allowed', True), config)
+            outbound.assert_not_called()
+            self.create.assert_not_called()
+            self.assertEqual(PaymentIntent.query.count(), 0)
+            self.assertEqual(db.session.get(Product, self.product.id).stock, 10)
+
+    def test_checkout_configuration_exposes_sandbox_without_secrets(self):
+        with patch('myanmyanpay.requests.post') as outbound:
+            config = self.client.get(ROOT + '/config').get_json()
+            self.assertIs(config.get('sandbox'), True, config)
+            self.assertFalse(config.get('manual_allowed', True), config)
+            outbound.assert_not_called()
+        with patch.dict(os.environ, {'MMPAY_ENABLED': 'false'}):
+            self.assertIs(self.client.get(ROOT + '/config').get_json().get('sandbox'), True)
+        with patch.dict(os.environ, {'MMPAY_PUBLISHABLE_KEY': 'pk_live_abc',
+                                    'MMPAY_SECRET_KEY': 'sk_live_abc'}):
+            self.assertIs(self.client.get(ROOT + '/config').get_json().get('sandbox'), False)
+
+    def test_unconfigured_legacy_mode_is_explicitly_unverified(self):
+        from myanmyanpay import CONFIGURATION_NAMES
+        with patch.dict(os.environ, dict.fromkeys(CONFIGURATION_NAMES, '') | {'MMPAY_ENABLED': 'false'}):
+            config = self.client.get(ROOT + '/config').get_json()
+            self.assertIs(config.get('manual_allowed'), True, config)
+            self.assertIn('not verified', config['message'])
+
+    def test_partial_provider_configuration_also_blocks_manual_fallback(self):
+        from myanmyanpay import CONFIGURATION_NAMES
+        for name in CONFIGURATION_NAMES:
+            with self.subTest(field=name), patch.dict(os.environ,
+                    dict.fromkeys(CONFIGURATION_NAMES, '') | {'MMPAY_ENABLED': 'false', name: 'incomplete'}):
+                self.assertIs(self.client.get(ROOT + '/config').get_json()['manual_allowed'], False)
+                data = self.checkout()
+                self.assertEqual(self.client.post('/api/sales', json=data).status_code, 409)
+                self.assertIsNone(Sale.query.filter_by(transaction_id=data['transaction_id']).first())
+        self.create.assert_not_called()
+
+    def test_real_adapter_sandbox_flow_requires_outbound_create_and_verified_status(self):
+        # Only the HTTP transport is simulated. Use the actual route, adapter,
+        # handshake, signing, payload validation, refresh and sale transaction.
+        from test_myanmyanpay_client import response
+        self.create_mock.stop()
+        ledger = {}
+        calls = []
+
+        def provider(url, *, data, headers, **kwargs):
+            operation = url.rsplit('/', 1)[-1]
+            payload = json.loads(data)
+            calls.append(operation)
+            expected = hmac.new(b'sk_test_abc',
+                headers['X-Mmpay-Nonce'].encode() + b'.' + data, hashlib.sha256).hexdigest()
+            self.assertEqual(headers['X-Mmpay-Signature'], expected)
+            self.assertEqual(headers['Authorization'], 'Bearer pk_test_abc')
+            if operation == 'sandbox-handshake':
+                return response({'token': 'isolated-provider-token'})
+            self.assertEqual(headers['X-Mmpay-Btoken'], 'isolated-provider-token')
+            if operation == 'sandbox-create':
+                self.assertIs(type(payload['amount']), int)
+                self.assertEqual(payload['callbackUrl'], 'https://pos.example/webhooks/myanmyanpay')
+                record = self.provider_create(payload['orderId'], payload['amount'], '')
+                ledger[payload['orderId']] = record
+                return response(record, 201)
+            self.assertEqual(operation, 'sandbox-get')
+            return response(ledger[payload['orderId']])
+
+        with patch('myanmyanpay.requests.post', side_effect=provider), \
+                patch('requests.sessions.Session.request', side_effect=AssertionError('Real network forbidden')):
+            payment = self.begin()
+            self.assertIn(payment['order_id'], ledger)
+            self.assertEqual(calls, ['sandbox-handshake', 'sandbox-create'])
+            self.assertEqual(payment['status'], 'PENDING')
+            endpoint = ROOT + '/intents/' + payment['id']
+            self.assertEqual(self.client.post(endpoint + '/complete', headers=HEADERS).status_code, 409)
+            self.assertEqual(db.session.get(Product, self.product.id).stock, 10)
+            ledger[payment['order_id']].update(status='SUCCESS', transactionRefId='MMPAY_MANUAL')
+            refreshed = self.client.post(endpoint + '/refresh', headers=HEADERS)
+            self.assertEqual(refreshed.status_code, 200, refreshed.get_json())
+            self.assertEqual(refreshed.get_json()['payment']['status'], 'SUCCESS')
+            self.assertEqual(calls, ['sandbox-handshake', 'sandbox-create', 'sandbox-handshake', 'sandbox-get'])
+            self.assertIsNone(Sale.query.filter_by(transaction_id=payment['transaction_id']).first())
+            completed = self.client.post(endpoint + '/complete', headers=HEADERS)
+            self.assertEqual(completed.status_code, 201, completed.get_json())
+            self.assertEqual(self.client.post(endpoint + '/complete', headers=HEADERS).status_code, 200)
+            self.assertEqual(Sale.query.filter_by(transaction_id=payment['transaction_id']).count(), 1)
+            self.assertEqual(db.session.get(Product, self.product.id).stock, 9)
+
     def test_creating_payment_does_not_create_sale_or_decrement_stock(self):
         payment = self.begin()
         self.assertEqual(payment['amount'], '1050.00')

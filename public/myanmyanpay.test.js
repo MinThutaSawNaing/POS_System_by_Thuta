@@ -8,7 +8,7 @@ const vm = require('node:vm');
 
 // Exercise the real browser adapter as well as the state machine. No browser
 // dependency is needed for button visibility, labels and in-flight guards.
-async function buttonHarness({enabled = true, configured = true} = {}) {
+async function buttonHarness({enabled = true, configured = true, manual_allowed = false, sandbox = false} = {}) {
   const elements = new Map();
   const element = id => {
     if (!elements.has(id)) {
@@ -30,7 +30,7 @@ async function buttonHarness({enabled = true, configured = true} = {}) {
     }
     return elements.get(id);
   };
-  const h = {element, status: 'PENDING', calls: []};
+  const h = {element, status: 'PENDING', calls: [], completions: []};
   const context = {
     document: {getElementById: element, createElement: () => element(Symbol()), addEventListener() {}},
     currentBranch: {id: 1}, CACHE_USER_ID: 1, cart: [], navigator: {onLine: true},
@@ -39,11 +39,15 @@ async function buttonHarness({enabled = true, configured = true} = {}) {
     setTimeout: fn => { h.tick = fn; return 1; }, clearTimeout() {},
     resetMMQRCountdown() {}, stopMMQRCountdown() {}, setMMQRDownloadState() {},
     confirmMMQRPayment() {},
+    updateCartDisplay() {}, resetSplitPaymentFields() {}, togglePosDeliveryFields() {},
+    updateCashRefundDisplay() {}, loadSales() {}, loadDashboardStats() {}, invalidateProductsCache() {},
+    showSaleSuccessModal: (...args) => h.completions.push(args),
     fetch: async (url, options) => {
       h.calls.push({url, options});
       if (h.intercept) { const response = await h.intercept(url, options); if (response) return response; }
       const payment = {id: 7, order_id: 'button-order', status: h.status, amount: 1000};
-      const data = url.endsWith('/config') ? {enabled, configured}
+      const data = url.endsWith('/config') ? {enabled, configured, manual_allowed, sandbox}
+        : url.endsWith('/complete') ? {success: true, transaction_id: 'sandbox-sale'}
         : url.endsWith('/intents') && options.method === 'GET' ? {payments: []}
         : {payment};
       return {ok: true, json: async () => data};
@@ -151,13 +155,46 @@ test('blocked setup fails closed and legacy checkout retains manual completion',
   assert.equal(blocked.element('confirm-mmqr-payment-btn').disabled, true);
   assert.equal(blocked.element('confirm-mmqr-payment-btn').textContent, 'Payment unavailable');
   for (const id of ['mmp-refresh', 'mmp-cancel', 'mmp-resume']) assert.equal(blocked.hidden(id), true);
-  const legacy = await buttonHarness({enabled: false});
+  const legacy = await buttonHarness({enabled: false, manual_allowed: true});
   assert.equal(legacy.element('confirm-mmqr-payment-btn').disabled, false);
   assert.equal(legacy.hidden('confirm-mmqr-payment-btn'), false);
-  assert.equal(legacy.element('confirm-mmqr-payment-btn').textContent, 'Payment Received — Complete Sale');
+  assert.equal(legacy.element('confirm-mmqr-payment-btn').textContent, 'Record manually confirmed sale');
   assert.equal(legacy.hidden('mmp-resume'), false);
   assert.equal(legacy.hidden('mmp-refresh'), true);
   assert.equal(legacy.hidden('mmp-cancel'), true);
+});
+
+test('disabled provider without explicit manual permission cannot expose manual completion', async () => {
+  const h = await buttonHarness({enabled: false, configured: false});
+  h.checkout.preview();
+  assert.equal(h.checkout.mode(), 'blocked');
+  assert.equal(h.element('confirm-mmqr-payment-btn').disabled, true);
+  await h.checkout.start({items: [1]});
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+});
+
+test('sandbox checkout distinguishes simulated success from real money', async () => {
+  const h = await buttonHarness({sandbox: true});
+  await h.checkout.start({items: [1]});
+  assert.match(h.element('mmqr-payment-help').textContent, /SANDBOX.*no real money/);
+  h.status = 'SUCCESS';
+  await h.tick();
+  assert.equal(h.element('confirm-mmqr-payment-btn').textContent, 'Complete sandbox sale');
+  assert.match(h.element('mmqr-payment-help').textContent, /stock|reports/);
+  await h.checkout.action('complete');
+  assert.equal(h.completions.length, 1);
+  assert.match(h.completions[0][3], /SANDBOX.*simulated.*no real money/);
+});
+
+test('older config without explicit manual permission also fails closed', async () => {
+  const h = await buttonHarness();
+  h.intercept = async url => url.endsWith('/config') ? {
+    ok: true, json: async () => ({enabled: false, configured: false})
+  } : undefined;
+  await h.checkout.loadConfig();
+  h.checkout.preview();
+  assert.equal(h.checkout.mode(), 'blocked');
+  assert.equal(h.element('confirm-mmqr-payment-btn').disabled, true);
 });
 function harness() {
   const h = {scope: 'user:branch', snapshot: 'cart1', online: true, calls: [], texts: [], completed: [], payments: [], status: 'PENDING', configured: true, enabled: true};
@@ -171,7 +208,7 @@ function harness() {
       const now = Date.now();
       const payment = {id: 7, order_id: 'order1', status: h.status, amount: 1000, currency: 'MMK',
         created_at: new Date(now).toISOString(), expires_at: now + 900000, server_now: now};
-      let data = path.endsWith('/config') ? {enabled: h.enabled, configured: h.configured} :
+      let data = path.endsWith('/config') ? {enabled: h.enabled, configured: h.configured, manual_allowed: h.enabled === false} :
         path.endsWith('/intents') && options.method === 'GET' ? {success: true, payments: h.payments} :
         path.endsWith('/complete') ? {success: true, transaction_id: 'sale1'} : {success: true, payment};
       return {ok: true, json: async () => data};
@@ -471,9 +508,13 @@ test('a cached order that is already terminal is dropped without a new create', 
   assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
 });
 
-test('disabled integration permits saved provider recovery but never new provider creation', async () => {
+for (const manualAllowed of [true, false]) {
+test(`disabled integration permits saved provider recovery (manual=${manualAllowed}) but never new provider creation`, async () => {
   const h = harness(); h.enabled = false; h.configured = false;
-  await h.checkout.loadConfig(); assert.equal(h.checkout.mode(), 'legacy');
+  h.intercept = async path => path.endsWith('/config') ? {
+    ok: true, json: async () => ({enabled: false, configured: false, manual_allowed: manualAllowed})
+  } : undefined;
+  await h.checkout.loadConfig(); assert.equal(h.checkout.mode(), manualAllowed ? 'legacy' : 'blocked');
   h.payments = [{id: 7, status: 'PENDING'}];
   await h.checkout.list(); assert.deepEqual(h.listed, h.payments);
   h.checkout.preview(); h.checkout.resume(h.payments[0]); await new Promise(setImmediate);
@@ -490,3 +531,4 @@ test('disabled integration permits saved provider recovery but never new provide
   assert.match(h.calls.at(-1).path, /\/7\/cancel$/);
   assert.equal(h.checkout.state().active, null);
 });
+}
