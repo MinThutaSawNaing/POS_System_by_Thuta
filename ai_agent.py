@@ -10,6 +10,8 @@ import requests
 from typing import List, Dict, Any, Optional, Callable
 from dataclasses import dataclass, field
 
+from ai_tool_guard import guard_tool_call, schema_parameters
+
 
 APIFREE_BASE_URL = "https://api.apifree.ai/v1"
 DEFAULT_MODEL = "deepseek-ai/deepseek-v4-pro-stable"
@@ -28,6 +30,9 @@ class ToolCall:
     id: str
     function_name: str
     arguments: Dict[str, Any]
+    # Set when the provider sent arguments that were not valid JSON. The guard
+    # rejects such a call instead of silently running it with empty arguments.
+    parse_error: Optional[str] = None
 
 
 @dataclass
@@ -238,15 +243,23 @@ class AIAgent:
             for tc in raw_tool_calls:
                 if tc.get("type") == "function":
                     func = tc.get("function", {})
+                    raw_arguments = func.get("arguments", "{}")
+                    parse_error = None
                     try:
-                        args = json.loads(func.get("arguments", "{}"))
-                    except json.JSONDecodeError:
+                        args = json.loads(raw_arguments)
+                    except (TypeError, ValueError) as exc:
+                        # Keep the failure on the call so the guard can reject it
+                        # with a correction instead of running with {} silently.
                         args = {}
+                        parse_error = str(exc)
+                        print(f"[AI Agent API] Unparseable arguments for "
+                              f"{func.get('name', '')}: {exc}")
                         
                     tool_calls.append(ToolCall(
                         id=tc.get("id", ""),
                         function_name=func.get("name", ""),
-                        arguments=args
+                        arguments=args,
+                        parse_error=parse_error,
                     ))
                     
             # Add assistant message to history
@@ -313,24 +326,33 @@ class AIAgent:
             List of dicts with 'tool_call_id', 'function_name', 'result', 'error'
         """
         results = []
-        
+        # Validate every call against the functions that actually exist. A model
+        # that invents a tool name gets a corrective tool result instead of a
+        # dangling tool call (which used to corrupt the next request).
+        executable = list(self.tool_functions)
+        parameters = schema_parameters(self.tools)
+
         for tc in tool_calls:
-            if tc.function_name not in self.tool_functions:
+            guarded = guard_tool_call(tc.function_name, tc.arguments, executable, parameters,
+                                      getattr(tc, "parse_error", None))
+            if not guarded.ok:
                 results.append({
                     "tool_call_id": tc.id,
                     "function_name": tc.function_name,
                     "result": None,
-                    "error": f"Tool '{tc.function_name}' not found"
+                    "error": guarded.error,
+                    "rejected": True,
                 })
+                self.add_tool_result(tc.id, json.dumps({"error": guarded.error}))
                 continue
-                
+
             try:
                 from ai_tools import tool_authorization_error, minimize_cashier_result
                 error = tool_authorization_error(tc.function_name, self.request_context)
                 if error:
                     raise PermissionError(error)
-                func = self.tool_functions[tc.function_name]
-                result = minimize_cashier_result(func(**tc.arguments), self.request_context)
+                func = self.tool_functions[guarded.name]
+                result = minimize_cashier_result(func(**guarded.arguments), self.request_context)
                 results.append({
                     "tool_call_id": tc.id,
                     "function_name": tc.function_name,

@@ -1390,6 +1390,11 @@
           </a>
         </li>
         <li class="nav-item">
+          <a class="nav-link" href="#" onclick="showSection('memory')">
+            <i class="bi bi-stars"></i> AI Memory
+          </a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link" href="#" data-capability="admin" onclick="showSection('users')">
             <i class="bi bi-people"></i>Users
           </a>
@@ -2980,6 +2985,135 @@
               </table>
             </div>
             <div id="deliveries-pagination" class="d-flex justify-content-start mt-3"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI Memory Section -->
+      <div id="memory-section" style="display: none">
+        <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
+          <div class="d-flex align-items-center gap-3 flex-wrap">
+            <h2 class="mb-0">AI Memory</h2>
+            <span class="branch-indicator" id="memory-branch-indicator">
+              <i class="bi bi-building"></i>
+              <span class="branch-name">-</span>
+            </span>
+          </div>
+          <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
+              <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">&raquo;</span>
+            </button>
+          </div>
+        </div>
+        <p class="text-muted small mb-3">
+          What Loli remembers for <strong>{{ session.username }}</strong> in this branch.
+          Always-on memories are read at the start of <strong>every</strong> conversation.
+        </p>
+
+        <div class="row g-3 mb-3">
+          <div class="col-12 col-xl-7">
+            <div class="card h-100">
+              <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-pin-angle"></i> Always-on memories</span>
+                <span class="badge bg-primary" id="memory-tab-always-count">0</span>
+              </div>
+              <div class="card-body">
+                <div class="list-group list-group-flush" id="memory-tab-always">
+                  <p class="text-muted small mb-0">Loading&hellip;</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="col-12 col-xl-5">
+            <div class="card h-100">
+              <div class="card-header"><i class="bi bi-bookmark-plus"></i> Add a memory</div>
+              <div class="card-body">
+                <form id="memory-tab-form" onsubmit="saveMemoryTabEntry(event)">
+                  <div class="mb-2">
+                    <textarea
+                      id="memory-tab-input"
+                      class="form-control"
+                      rows="2"
+                      maxlength="1000"
+                      required
+                      placeholder="Example: I check the Monday low-stock report first."
+                    ></textarea>
+                  </div>
+                  <div class="row g-2 align-items-center">
+                    <div class="col-sm-7">
+                      <select id="memory-tab-scope" class="form-select form-select-sm" aria-label="Memory visibility">
+                        <option value="private">Only me</option>
+                        <option value="branch_shared">Branch shared</option>
+                      </select>
+                    </div>
+                    <div class="col-sm-5 text-sm-end">
+                      <button class="btn btn-primary btn-sm" type="submit">
+                        <i class="bi bi-bookmark-plus"></i> Save memory
+                      </button>
+                    </div>
+                  </div>
+                  <div class="form-check mt-2">
+                    <input class="form-check-input" type="checkbox" id="memory-tab-always-flag" checked />
+                    <label class="form-check-label small" for="memory-tab-always-flag">
+                      Apply to every conversation (always on)
+                    </label>
+                  </div>
+                  <p class="text-muted small mb-0 mt-2" id="memory-tab-status" aria-live="polite"></p>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-collection"></i> Other saved memories</span>
+            <span class="badge bg-secondary" id="memory-tab-other-count">0</span>
+          </div>
+          <div class="card-body">
+            <p class="text-muted small">Recalled only when a conversation is relevant to them.</p>
+            <div class="list-group list-group-flush" id="memory-tab-other">
+              <p class="text-muted small mb-0">Loading&hellip;</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><i class="bi bi-terminal"></i> Chat commands</div>
+          <div class="card-body">
+            <p class="text-muted small">
+              Type these in the Loli chat widget (bottom-right corner). The system handles
+              them directly, without asking the AI model, so the confirmation is always real.
+            </p>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th style="width: 220px">Command</th>
+                    <th>What it does</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>#remember &lt;detail&gt;</code></td>
+                    <td>Saves a private memory that Loli reads at the start of <strong>every</strong> conversation.</td>
+                  </tr>
+                  <tr>
+                    <td><code>#memory</code></td>
+                    <td>Lists your always-on memories, with the id needed to remove one.</td>
+                  </tr>
+                  <tr>
+                    <td><code>#forget &lt;id&gt;</code></td>
+                    <td>Deletes one of your memories by id, so Loli stops applying it.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="text-muted small mb-0 mt-3">
+              You can also use the form above, or the <em>Saved memories</em> menu inside the chat widget.
+              Memories are private to you and the active branch. Passwords, PINs, card numbers and account
+              numbers are refused.
+            </p>
           </div>
         </div>
       </div>
@@ -6089,7 +6223,7 @@
 
       // Backend remains the security boundary. This allowlist keeps the operational
       // workspace deliberate and prevents stale navigation from invoking admin loaders.
-      const CASHIER_SECTIONS = new Set(["pos", "products", "categories", "sales", "returns", "deliveries", "reports"]);
+      const CASHIER_SECTIONS = new Set(["pos", "products", "categories", "sales", "returns", "deliveries", "reports", "memory"]);
       const MANAGER_CAPABILITIES = new Set(["catalog.write", "deliveries.write", "labels", "debts", "branches.switch", "admin"]);
       const MANAGER_MODAL_IDS = new Set(["addProductModal", "editProductModal", "addCategoryModal", "editCategoryModal", "barcodeLabelModal", "addDebtModal", "makePaymentModal", "debtDetailsModal", "addCommunicationModal", "createDeliveryModal", "updateDeliveryModal"]);
 
@@ -7287,6 +7421,7 @@
           "customers-branch-indicator",
           "debts-branch-indicator",
           "deliveries-branch-indicator",
+          "memory-branch-indicator",
           "users-branch-indicator",
           "returns-branch-indicator"
         ];
@@ -8160,6 +8295,7 @@
         purchases: () => { loadPOSupplierFilter(); loadPurchaseOrders(); },
         warehouse: () => { loadWarehouseSummary(); loadWarehouseInventory(); },
         deliveries: () => { loadDeliveryStats(); loadDeliveries(); },
+        memory: () => loadMemoryTab(),
         users: () => loadUsers(),
         logs: () => loadLogs(),
         settings: () => { loadSettings(); loadBranches(); loadUnits(); },
@@ -8184,6 +8320,9 @@
         purchases: ["purchases", "suppliers"],
         warehouse: ["warehouse"],
         deliveries: ["deliveries"],
+        // No cache group: memories change from chat at any time, so the tab
+        // always re-reads them when it is opened.
+        memory: [],
         users: ["users"],
         logs: ["logs"],
         settings: ["settings", "branches"],
@@ -8252,6 +8391,180 @@
         return true;
       }
       // ===== END SECTION (TAB) RENDER STATE =====
+
+      // ===== AI MEMORY TAB =====
+      // Read/manage the memories Loli applies to this user and branch. Rendering
+      // uses textContent only: memory text is user-authored and must never be
+      // interpreted as markup.
+      const MEMORY_TAB_SCOPE_LABELS = { private: "Only me", branch_shared: "Branch shared" };
+      const MEMORY_TAB_SOURCE_LABELS = {
+        command: "Saved with #remember",
+        manual: "Saved from this tab",
+        automatic: "Learned automatically",
+      };
+
+      function setMemoryTabStatus(message, isError) {
+        const status = document.getElementById("memory-tab-status");
+        if (!status) return;
+        status.textContent = message || "";
+        status.classList.toggle("text-danger", Boolean(isError));
+        status.classList.toggle("text-success", Boolean(message) && !isError);
+      }
+
+      function memoryTabEntryElement(entry) {
+        const item = document.createElement("div");
+        item.className = "list-group-item d-flex justify-content-between align-items-start gap-3 px-0";
+
+        const body = document.createElement("div");
+        body.className = "flex-grow-1";
+        const text = document.createElement("p");
+        text.className = "mb-1";
+        text.textContent = entry.summary || "(empty memory)";
+        const meta = document.createElement("div");
+        meta.className = "d-flex flex-wrap gap-2 align-items-center small text-muted";
+
+        const scope = document.createElement("span");
+        scope.textContent = MEMORY_TAB_SCOPE_LABELS[entry.scope] || MEMORY_TAB_SCOPE_LABELS.private;
+        meta.appendChild(scope);
+
+        const source = document.createElement("span");
+        source.textContent = MEMORY_TAB_SOURCE_LABELS[entry.source] || "Saved";
+        meta.appendChild(source);
+
+        if (entry.pinned) {
+          const pinned = document.createElement("span");
+          pinned.className = "badge bg-primary";
+          pinned.textContent = "Always on";
+          meta.appendChild(pinned);
+        }
+
+        body.appendChild(text);
+        body.appendChild(meta);
+
+        const forget = document.createElement("button");
+        forget.type = "button";
+        forget.className = "btn btn-sm btn-outline-danger flex-shrink-0";
+        forget.textContent = "Forget";
+        const memoryId = entry.id || entry.memory_id;
+        if (memoryId) {
+          forget.addEventListener("click", () => forgetMemoryTabEntry(memoryId));
+        } else {
+          forget.disabled = true;
+        }
+
+        item.appendChild(body);
+        item.appendChild(forget);
+        return item;
+      }
+
+      function renderMemoryTabGroup(containerId, entries, emptyMessage) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        container.replaceChildren();
+        if (!entries.length) {
+          const empty = document.createElement("p");
+          empty.className = "text-muted small mb-0";
+          empty.textContent = emptyMessage;
+          container.appendChild(empty);
+          return;
+        }
+        entries.forEach((entry) => container.appendChild(memoryTabEntryElement(entry)));
+      }
+
+      function loadMemoryTab() {
+        if (!document.getElementById("memory-tab-always")) return;
+        fetch("/api/agent/memories?limit=100")
+          .then((response) => response.json()
+            .catch(() => ({}))
+            .then((data) => ({ response, data })))
+          .then(({ response, data }) => {
+            if (!response.ok || !data.success) {
+              throw new Error(data.error || "Could not load memories.");
+            }
+            const entries = Array.isArray(data.memories) ? data.memories : [];
+            const always = entries.filter((entry) => entry.pinned);
+            const other = entries.filter((entry) => !entry.pinned);
+
+            const alwaysCount = document.getElementById("memory-tab-always-count");
+            const otherCount = document.getElementById("memory-tab-other-count");
+            if (alwaysCount) alwaysCount.textContent = String(always.length);
+            if (otherCount) otherCount.textContent = String(other.length);
+
+            renderMemoryTabGroup(
+              "memory-tab-always", always,
+              "No always-on memories yet. Save one here or type #remember <detail> in chat.");
+            renderMemoryTabGroup("memory-tab-other", other, "Nothing else saved yet.");
+
+            // Only managers may share a memory with the branch; the API enforces
+            // this too, but disabling the option avoids a pointless 403.
+            const scopeSelect = document.getElementById("memory-tab-scope");
+            const sharedOption = scopeSelect?.querySelector('option[value="branch_shared"]');
+            if (sharedOption) sharedOption.disabled = !hasCapability("admin");
+            if (sharedOption?.disabled && scopeSelect.value === "branch_shared") {
+              scopeSelect.value = "private";
+            }
+          })
+          .catch((error) => {
+            renderMemoryTabGroup("memory-tab-always", [], "Memories are unavailable right now.");
+            renderMemoryTabGroup("memory-tab-other", [], "Memories are unavailable right now.");
+            setMemoryTabStatus(error.message || "Could not load memories.", true);
+          });
+      }
+
+      function saveMemoryTabEntry(event) {
+        event.preventDefault();
+        const input = document.getElementById("memory-tab-input");
+        const content = (input?.value || "").trim();
+        if (!content) {
+          setMemoryTabStatus("Write the detail you want Loli to remember.", true);
+          return;
+        }
+        const payload = {
+          content,
+          scope: document.getElementById("memory-tab-scope")?.value || "private",
+          always: Boolean(document.getElementById("memory-tab-always-flag")?.checked),
+        };
+        setMemoryTabStatus("Saving...");
+        fetch("/api/agent/memories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+          .then((response) => response.json()
+            .catch(() => ({}))
+            .then((data) => ({ response, data })))
+          .then(({ response, data }) => {
+            if (!response.ok || !data.success) {
+              throw new Error(data.error || "Could not save that memory.");
+            }
+            if (input) input.value = "";
+            setMemoryTabStatus(
+              payload.always
+                ? "Saved. Loli will apply it to every conversation."
+                : "Saved. Loli will recall it when relevant.");
+            loadMemoryTab();
+          })
+          .catch((error) => setMemoryTabStatus(error.message || "Could not save that memory.", true));
+      }
+
+      function forgetMemoryTabEntry(memoryId) {
+        if (!memoryId) return;
+        if (!window.confirm("Forget this memory? Loli will stop recalling it.")) return;
+        setMemoryTabStatus("Forgetting...");
+        fetch(`/api/agent/memories/${encodeURIComponent(memoryId)}`, { method: "DELETE" })
+          .then((response) => response.json()
+            .catch(() => ({}))
+            .then((data) => ({ response, data })))
+          .then(({ response, data }) => {
+            if (!response.ok || !data.success) {
+              throw new Error(data.error || "Could not forget that memory.");
+            }
+            setMemoryTabStatus("Forgotten.");
+            loadMemoryTab();
+          })
+          .catch((error) => setMemoryTabStatus(error.message || "Could not forget that memory.", true));
+      }
+      // ===== END AI MEMORY TAB =====
 
       // ===== CACHING IMPLEMENTATION =====
       // Product data caching to reduce API calls

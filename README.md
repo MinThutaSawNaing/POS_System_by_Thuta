@@ -182,6 +182,8 @@ The AI assistant can help with:
 - **Real-time Data**: Always works with live database information
 - **Branch Awareness**: Operational results are scoped to the currently selected branch
 - **Professional Answers**: Supports safe Markdown headings, lists, code, and tables in Loli responses
+- **Registered Tools Only**: Loli can call only the tool schemas it was offered. If it invents a tool name, an undocumented argument, or unparseable arguments, the call is rejected before any database code runs, Loli is told exactly which tools exist, and it gets one chance to correct itself. A hallucinated call never produces an answer, and every rejected call still receives a tool result so the conversation sent upstream stays valid.
+- **Always-on memory (`#remember`)**: Type `#remember <detail>` in chat to store a private memory. Loli reads always-on memories at the start of every turn — not only when your message happens to share keywords with it. Use `#memory` to list them (with ids) and `#forget <id>` to remove one. These commands are deterministic: no model call is made, so a save confirmation always reflects what the backend actually stored. The **AI Memory** tab in the sidebar shows everything Loli remembers, marks always-on entries, lets you add or forget memories, and repeats the command reference in-app.
 
 ### AI Agent Configuration
 
@@ -201,7 +203,9 @@ The AI agent uses APIFree.ai (DeepSeek V4 Pro by default) for natural language p
 
 Loli can use embedded [Mem0 OSS](https://github.com/mem0ai/mem0) long-term memory for approved user preferences and branch-specific aliases. Memory is disabled by default. It is private by user and branch, auditable, and never stores passwords, API keys, payment data, customer contact data, or raw business results.
 
-To enable it, run a local Ollama instance with `llama3.2` and `nomic-embed-text`, then configure `AI_MEMORY_ENABLED=true` and the local-only `AI_MEMORY_MEM0_CONFIG` example in `.env.example`. The memory vector data persists under the existing `/app/instance` volume. If Mem0 or the local models are unavailable, normal Loli chat continues without persistent recall.
+Regardless of whether Mem0 is configured, the local SQLite memory registry stays available, so `#remember`, `#memory`, and `#forget` work out of the box. Memories saved with `#remember` are marked *always on* (up to 12 injected per turn, bounded in characters) and are re-read on every turn. Memories saved from the **Saved memories** panel stay query-relevant recall, which the API can also mark as always-on with `{"always": true}`.
+
+To add semantic recall on top of the registry, run a local Ollama instance with `llama3.2` and `nomic-embed-text`, then configure `AI_MEMORY_ENABLED=true` and the local-only `AI_MEMORY_MEM0_CONFIG` example in `.env.example`. The memory vector data persists under the existing `/app/instance` volume. If Mem0 or the local models are unavailable, normal Loli chat continues without semantic recall and always-on memory keeps working from the registry.
 
 ---
 
@@ -263,6 +267,8 @@ POS_System_by_Thuta/
 ├── ai_agent.py               # AI Agent core module
 ├── agent_orchestrator.py     # AI Agent orchestration and tool management
 ├── ai_tools.py               # AI Agent database tools
+├── ai_tool_guard.py          # Rejects invented tools/arguments before execution
+├── ai_memory_service.py      # Optional Mem0 + SQLite always-on memory layer
 ├── receipt.py                # Thermal receipt snapshots and paper profiles
 ├── reports.py                # Professional PDF/Excel report builders
 ├── requirements.txt

@@ -40,6 +40,18 @@ class MemoryApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item['id'] for item in response.get_json()['memories']], ['mem-private'])
 
+    def test_always_flag_marks_the_memory_as_always_on(self):
+        service = Mock()
+        service.remember.return_value = {'saved': True, 'memory_id': 'mem-always',
+                                         'summary': 'Reports use MMK'}
+        with patch('app.get_persistent_memory_service', return_value=service):
+            response = self._client().post(
+                '/api/agent/memories',
+                json={'content': 'Reports use MMK', 'always': True})
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.get_json()['memory']['pinned'])
+        self.assertTrue(service.remember.call_args.kwargs['pinned'])
+
     def test_cashier_cannot_create_branch_shared_memory(self):
         client = self._client(role='cashier')
         response = client.post('/api/agent/memories', json={

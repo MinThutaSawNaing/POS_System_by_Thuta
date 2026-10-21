@@ -1320,6 +1320,9 @@ class MemoryRegistry(db.Model):
     scope = db.Column(db.String(20), nullable=False, default='private')
     summary = db.Column(db.String(500), nullable=False)
     source = db.Column(db.String(50), nullable=False, default='manual')
+    # Always-on memories (saved with "#remember") are injected into every turn,
+    # not only when retrieval finds them relevant.
+    pinned = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -1334,6 +1337,7 @@ class MemoryRegistry(db.Model):
             'scope': self.scope,
             'summary': self.summary,
             'source': self.source,
+            'pinned': bool(self.pinned),
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -3019,6 +3023,22 @@ with app.app_context():
         except Exception as e:
             app.logger.warning(f'Failed to create index: {e}')
     db.session.commit()
+
+    # Always-on AI memory flag (added after memory_registry shipped). Existing
+    # databases get the column here; db.create_all() never adds columns.
+    memory_inspector = inspect(db.engine)
+    if memory_inspector.has_table('memory_registry'):
+        memory_columns = [column['name'] for column in
+                          memory_inspector.get_columns('memory_registry')]
+        if 'pinned' not in memory_columns:
+            try:
+                db.session.execute(text(
+                    'ALTER TABLE memory_registry ADD COLUMN pinned BOOLEAN NOT NULL DEFAULT 0'
+                ))
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                app.logger.warning(f'Could not add pinned to memory_registry: {e}')
 
     # Mark complete only after every startup migration has succeeded.
     db.session.execute(text("INSERT OR IGNORE INTO schema_migration VALUES ('branch_stabilization_v2', CURRENT_TIMESTAMP)"))
@@ -9036,6 +9056,7 @@ def api_agent_memories():
     data = request.get_json(silent=True) or {}
     content = data.get('content')
     scope = memory_scope_from_request(data)
+    always = bool(data.get('always', data.get('pinned', False)))
     if not scope:
         return jsonify({'success': False, 'error': 'Invalid memory scope'}), 400
     if not isinstance(content, str) or not content.strip():
@@ -9048,7 +9069,7 @@ def api_agent_memories():
     try:
         result = service.remember(
             content=content.strip(), user_id=session['user_id'], branch_id=get_current_branch_id(),
-            scope=scope, source='manual', db=db,
+            scope=scope, source='manual', pinned=always, db=db,
             registry_model=MemoryRegistry, audit_model=MemoryAudit,
         )
         if result is False or result is None:
@@ -9063,7 +9084,8 @@ def api_agent_memories():
             safe_summary = (result.get('summary') if isinstance(result, dict) else None) or 'Manual memory'
             entry = MemoryRegistry(memory_id=memory_id, user_id=session['user_id'],
                                    branch_id=get_current_branch_id(), scope=scope,
-                                   summary=str(safe_summary)[:500], source='manual')
+                                   summary=str(safe_summary)[:500], source='manual',
+                                   pinned=always)
             db.session.add(entry)
         record_memory_audit('created', memory_id, scope)
         db.session.commit()
@@ -9165,7 +9187,9 @@ def agent_chat():
         # Process the command through the agent
         orchestrator = get_ai_orchestrator()
         result = orchestrator.process_command(command, session.get('user_id'))
-        if result.get('success'):
+        # "#remember ..." already wrote an always-on memory deterministically;
+        # auto-capture must never double-save a command.
+        if result.get('success') and not command.startswith('#'):
             capture_low_risk_memory(command)
 
         # GOAL 1: persist plan-bearing results so proposals can be approved later.

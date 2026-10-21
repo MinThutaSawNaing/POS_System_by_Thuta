@@ -23,6 +23,10 @@ _SCOPES = {"private", "branch_shared"}
 _MAX_TEXT = 1_000
 _DEFAULT_LIMIT = 5
 _MAX_LIMIT = 12
+# Always-on memories are injected into every assistant turn, so they are capped
+# both in count and in characters before they can crowd out the system prompt.
+_MAX_ALWAYS = 20
+_ALWAYS_LIMIT = 12
 _SENSITIVE_PATTERNS = (
     r"\b(?:password|passcode|pin|api[_ -]?key|secret|access[_ -]?token|bearer)\b",
     r"\b(?:cvv|cvc)\s*[:#-]?\s*\d{3,4}\b",
@@ -175,27 +179,83 @@ class MemoryService:
 
     def remember(self, content: str, *, user_id: Any, branch_id: Any,
                  scope: str = "private", source: str = "explicit",
-                 explicit: bool = True, allow_auto: bool = False, **hooks: Any) -> Dict[str, Any]:
+                 explicit: bool = True, allow_auto: bool = False,
+                 pinned: bool = False, **hooks: Any) -> Dict[str, Any]:
+        """Store one memory.
+
+        ``pinned`` marks an always-on memory: it is injected into every
+        assistant turn (see :meth:`always_on`), not only when a query looks
+        similar. Always-on writes are capped so the system prompt stays bounded.
+        """
         text, namespace = self._clean_text(content), self._scope(user_id, branch_id, scope)
         if not explicit and not (allow_auto and self.should_auto_save(text)):
             return {"saved": False, "reason": "auto-save policy", "memory_id": None}
+        if pinned:
+            namespace["pinned"] = True
+            if self._pinned_full(user_id, branch_id, hooks):
+                return {"saved": False, "reason": "always-on memory limit reached",
+                        "memory_id": None}
         if not self.enabled or self._client is None:
             registry = self._registry_backend(hooks)
             if registry is None:
                 return {"saved": False, "reason": self.unavailable_reason or "disabled", "memory_id": None}
             memory_id = "sqlite-" + uuid.uuid4().hex
-            self._registry("create", memory_id, text, namespace, source, hooks)
-            return {"saved": True, "memory_id": memory_id, "summary": text[:500], "backend": "sqlite"}
+            self._registry("create", memory_id, text, namespace, source, hooks, pinned=pinned)
+            return {"saved": True, "memory_id": memory_id, "summary": text[:500],
+                    "pinned": bool(pinned), "backend": "sqlite"}
         try:
             with self._lock:
                 result = self._client.add([{ "role": "user", "content": text }], user_id=self._mem0_namespace(namespace), metadata=namespace)
             memory = self._normalise_one(result, fallback=text)
             memory_id = memory.get("id") or memory.get("memory_id")
-            self._registry("create", memory_id, text, namespace, source, hooks)
-            return {"saved": True, "memory_id": memory_id, "memory": memory}
+            self._registry("create", memory_id, text, namespace, source, hooks, pinned=pinned)
+            return {"saved": True, "memory_id": memory_id, "memory": memory,
+                    "pinned": bool(pinned)}
         except Exception as exc:
             LOG.warning("AI memory write failed: %s", exc)
             return {"saved": False, "reason": "backend unavailable", "memory_id": None}
+
+    def _pinned_full(self, user_id: Any, branch_id: Any, hooks: Mapping[str, Any]) -> bool:
+        """Fail open on bookkeeping errors; the read path stays capped anyway."""
+        registry = self._registry_backend(hooks)
+        if registry is None:
+            return False
+        try:
+            rows = registry.query.filter_by(user_id=user_id, branch_id=branch_id).all()
+            return sum(1 for row in rows if getattr(row, "pinned", False)) >= _MAX_ALWAYS
+        except Exception as exc:
+            LOG.warning("AI always-on memory count failed: %s", exc)
+            return False
+
+    def always_on(self, *, user_id: Any, branch_id: Any, scope: Optional[str] = None,
+                  limit: int = _ALWAYS_LIMIT, **hooks: Any) -> List[Dict[str, Any]]:
+        """Return pinned memories that must be present in every assistant turn.
+
+        The local registry is authoritative. Mem0 identifiers are opaque and the
+        order of ``get_all`` differs between Mem0 versions, so the always-on
+        list is read from the SQL registry that also owns ownership checks.
+        """
+        registry = self._registry_backend(hooks)
+        if registry is None:
+            return []
+        self._scope(user_id, branch_id, scope or "private")
+        try:
+            query = registry.query.filter_by(user_id=user_id, branch_id=branch_id)
+            if scope:
+                query = query.filter_by(scope=scope)
+            try:
+                query = query.order_by(registry.updated_at.desc())
+            except Exception:
+                pass  # test doubles and older registries may lack updated_at
+            rows = [row for row in query.all() if getattr(row, "pinned", False)]
+            return [{"id": getattr(row, "memory_id", None),
+                     "memory": str(getattr(row, "summary", "")),
+                     "scope": getattr(row, "scope", None),
+                     "pinned": True}
+                    for row in rows[:max(1, min(int(limit), _MAX_ALWAYS))]]
+        except Exception as exc:
+            LOG.warning("AI always-on memory listing failed: %s", exc)
+            return []
 
     def retrieve(self, query: str, *, user_id: Any, branch_id: Any,
                  scope: Optional[str] = None, limit: int = _DEFAULT_LIMIT, **_: Any) -> List[Dict[str, Any]]:
@@ -231,17 +291,38 @@ class MemoryService:
 
     def build_context(self, query: str, *, user_id: Any, branch_id: Any,
                       scope: Optional[str] = None, limit: int = _DEFAULT_LIMIT,
-                      max_characters: int = 1_500, **hooks: Any) -> str:
-        budget, lines = max(0, min(int(max_characters), 4_000)), []
+                      max_characters: int = 1_500, include_always: bool = True,
+                      always_characters: int = 600, **hooks: Any) -> str:
+        """Render bounded recall text for the system prompt.
+
+        Always-on memories come first and get their own budget, so a pinned fact
+        is present even when the current message shares no keywords with it.
+        """
+        budget = max(0, min(int(max_characters), 4_000))
+        always_budget = max(0, min(int(always_characters), budget))
+        lines: List[str] = []
+        seen: set = set()
         used = 0
-        for item in self.retrieve(query, user_id=user_id, branch_id=branch_id, scope=scope, limit=limit, **hooks):
-            value = str(item.get("memory") or item.get("content") or "").strip()
-            line = "- " + value
+
+        def append(value: Any, cap: int) -> None:
+            nonlocal used
+            text = str(value or "").strip()
+            if not text or text in seen:
+                return
+            line = "- " + text
             separator = 1 if lines else 0
-            if not value or used + separator + len(line) > budget:
-                continue
+            if used + separator + len(line) > cap:
+                return
             lines.append(line)
+            seen.add(text)
             used += separator + len(line)
+
+        if include_always and always_budget:
+            for item in self.always_on(user_id=user_id, branch_id=branch_id,
+                                       scope=scope, **hooks):
+                append(item.get("memory"), always_budget)
+        for item in self.retrieve(query, user_id=user_id, branch_id=branch_id, scope=scope, limit=limit, **hooks):
+            append(item.get("memory") or item.get("content"), budget)
         return "\n".join(lines)
 
     def list_memories(self, *, user_id: Any, branch_id: Any, scope: Optional[str] = None,
@@ -300,16 +381,21 @@ class MemoryService:
         except Exception:
             return False
 
-    def _registry(self, action: str, memory_id: Any, summary: str, namespace: Dict[str, Any], source: str, hooks: Mapping[str, Any]) -> None:
+    def _registry(self, action: str, memory_id: Any, summary: str, namespace: Dict[str, Any], source: str, hooks: Mapping[str, Any], pinned: bool = False) -> None:
         db = hooks.get("db") or self.db
         registry = hooks.get("registry_model") or self.registry_model
         audit = hooks.get("audit_model") or self.audit_model
         if not db or not getattr(db, "session", None): return
         try:
             if action == "create" and registry and memory_id:
-                db.session.add(registry(memory_id=str(memory_id), user_id=int(namespace["user_id"]), branch_id=int(namespace["branch_id"]), scope=namespace["scope"], summary=summary[:500], source=source))
+                values = dict(memory_id=str(memory_id), user_id=int(namespace["user_id"]), branch_id=int(namespace["branch_id"]), scope=namespace["scope"], summary=summary[:500], source=source)
+                # Older databases may not have the always-on column yet; adding it
+                # only when the model declares it keeps startup migrations optional.
+                if hasattr(registry, "pinned"):
+                    values["pinned"] = bool(pinned)
+                db.session.add(registry(**values))
             if audit:
-                db.session.add(audit(actor_user_id=int(namespace["user_id"]), branch_id=int(namespace["branch_id"]), memory_id=str(memory_id) if memory_id else None, action=action, scope=namespace["scope"], details=json.dumps({"source": source})))
+                db.session.add(audit(actor_user_id=int(namespace["user_id"]), branch_id=int(namespace["branch_id"]), memory_id=str(memory_id) if memory_id else None, action=action, scope=namespace["scope"], details=json.dumps({"source": source, "pinned": bool(pinned)})))
         except Exception as exc:
             LOG.warning("AI memory registry/audit hook failed: %s", exc)
 
@@ -327,7 +413,7 @@ class MemoryService:
 
     @staticmethod
     def _model_dict(row: Any) -> Dict[str, Any]:
-        return {key: getattr(row, key) for key in ("id", "memory_id", "user_id", "branch_id", "scope", "summary", "source", "created_at", "updated_at") if hasattr(row, key)}
+        return {key: getattr(row, key) for key in ("id", "memory_id", "user_id", "branch_id", "scope", "summary", "source", "pinned", "created_at", "updated_at") if hasattr(row, key)}
 
 
 _service: Optional[MemoryService] = None
