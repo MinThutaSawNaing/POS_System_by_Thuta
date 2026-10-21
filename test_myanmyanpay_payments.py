@@ -307,11 +307,94 @@ class MyanMyanPayPaymentTests(unittest.TestCase):
             with self.client.session_transaction() as s:
                 s['user_id'] = self.user.id
         self.assertEqual(self.event(first, transactionRefId='same-bank-transaction').status_code, 200)
-        self.assertEqual(self.event(second, transactionRefId='same-bank-transaction').status_code, 409)
+        conflict = self.event(second, transactionRefId='same-bank-transaction')
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.get_json()['code'], 'reference_conflict')
         db.session.expire_all()
         self.assertEqual(db.session.get(PaymentIntent, second['id']).status, 'PENDING')
         db.session.delete(other)
         db.session.commit()
+
+    def test_sandbox_manual_callbacks_can_pay_distinct_orders_without_reference_collision(self):
+        # The sandbox console reuses this marker, not a unique bank transaction.
+        # Reproduce the reported payload with two otherwise independent orders.
+        first = self.begin()
+        self.assertEqual(self.event(first, vendor='MMPAY_MANUAL', method='QR',
+                                    transactionRefId='MMPAY_MANUAL').status_code, 200)
+        self.assertEqual(self.client.post(ROOT + '/intents/' + first['id'] + '/complete',
+                                         headers=HEADERS).status_code, 201)
+        self.product.price = 5350
+        self.product.tax_rate = 0
+        db.session.commit()
+        with patch('myanmyanpay.MyanMyanPayClient.create', side_effect=lambda order_id, amount, url: {
+                **self.provider_create(order_id, amount, url), 'vendorQrRefId': '1792591566093'}):
+            second = self.begin(self.checkout(items=[{'product_id': self.product.id,
+                                                      'price': 5350, 'quantity': 1}]))
+        callback = dict(vendor='MMPAY_MANUAL', method='QR', transactionRefId='MMPAY_MANUAL',
+                        vendorQrRefId='1792591566093', customMessage='',
+                        callbackUrl='https://pos.example/webhooks/myanmyanpay')
+        response = self.event(second, **callback)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertTrue(self.event(second, **callback).get_json()['duplicate'])
+        db.session.expire_all()
+        one = db.session.get(PaymentIntent, first['id'])
+        two = db.session.get(PaymentIntent, second['id'])
+        self.assertEqual(two.status, 'SUCCESS')
+        self.assertNotEqual(one.transaction_ref, two.transaction_ref)
+        self.assertIsNone(two.sale_transaction_id, 'callbacks do not automatically create sales')
+        response = self.client.get(ROOT + '/intents/' + second['id'])
+        self.assertEqual(response.get_json()['payment']['status'], 'SUCCESS')
+
+    def test_manual_sandbox_marker_is_never_accepted_with_live_credentials(self):
+        payment = self.begin()
+        with patch.dict(os.environ, {'MMPAY_PUBLISHABLE_KEY': 'pk_live_abc',
+                                     'MMPAY_SECRET_KEY': 'sk_live_abc'}):
+            payload = {'orderId': payment['order_id'], 'amount': 1050, 'currency': 'MMK',
+                       'status': 'SUCCESS', 'vendorQrRefId': 'qr-' + payment['order_id'],
+                       'transactionRefId': 'MMPAY_MANUAL', 'vendor': 'MMPAY_MANUAL', 'method': 'QR'}
+            raw = json.dumps(payload, separators=(',', ':')).encode()
+            nonce = 'live-manual-rejection'
+            signature = hmac.new(b'sk_live_abc', nonce.encode() + b'.' + raw, hashlib.sha256).hexdigest()
+            response = self.client.post('/webhooks/myanmyanpay', data=raw, content_type='application/json',
+                headers={'X-Mmpay-Nonce': nonce, 'X-Mmpay-Signature': signature})
+        self.assertEqual(response.status_code, 409)
+        db.session.expire_all()
+        self.assertEqual(db.session.get(PaymentIntent, payment['id']).status, 'PENDING')
+
+    def test_sandbox_manual_callback_keeps_identity_checks_and_reports_safe_conflicts(self):
+        payment = self.begin()
+        manual = dict(transactionRefId='MMPAY_MANUAL', vendor='MMPAY_MANUAL', method='QR')
+        for mismatch in ({'amount': 1}, {'currency': 'USD'}, {'vendorQrRefId': 'wrong-qr'}):
+            response = self.event(payment, **dict(manual, **mismatch))
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.get_json()['code'], 'payment_mismatch')
+            self.assertTrue(response.get_json()['message'])
+            self.assertNotIn('sk_test', response.get_data(as_text=True))
+        self.assertEqual(self.event(payment, **manual).status_code, 200)
+
+    def test_legacy_sandbox_manual_reference_can_be_redelivered_and_recovered(self):
+        payment = self.begin()
+        intent = db.session.get(PaymentIntent, payment['id'])
+        intent.status = 'SUCCESS'
+        intent.transaction_ref = 'MMPAY_MANUAL'
+        db.session.commit()
+        response = self.event(payment, transactionRefId='MMPAY_MANUAL', vendor='MMPAY_MANUAL')
+        self.assertEqual(response.status_code, 200, response.get_json())
+        db.session.expire_all()
+        self.assertTrue(db.session.get(PaymentIntent, payment['id']).transaction_ref.startswith('sandbox-manual:'))
+
+    def test_provider_refresh_recovers_manual_sandbox_success_after_rejected_callback(self):
+        payment = self.begin()
+        payload = dict(self.provider_create(payment['order_id'], 1050, ''),
+                       status='SUCCESS', transactionRefId='MMPAY_MANUAL', vendor='MMPAY_MANUAL')
+        with patch('myanmyanpay.MyanMyanPayClient.get', return_value=payload):
+            response = self.client.post(ROOT + '/intents/' + payment['id'] + '/refresh', headers=HEADERS)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()['payment']['status'], 'SUCCESS')
+        db.session.expire_all()
+        intent = db.session.get(PaymentIntent, payment['id'])
+        self.assertTrue(intent.transaction_ref.startswith('sandbox-manual:'))
+        self.assertIsNone(intent.sale_transaction_id)
 
     def test_cancel_uses_provider_and_does_not_cancel_paid_orders(self):
         payment = self.begin()

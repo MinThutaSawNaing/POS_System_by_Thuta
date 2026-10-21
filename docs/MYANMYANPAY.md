@@ -68,13 +68,33 @@ providers do not support sandbox live testing. Use its callback emulator:
 4. Select the transaction matching the POS order ID and amount.
 5. Click the green **Do a success callback** button.
 6. Keep the POS checkout open. Once its server verifies the callback, the status
-   becomes **SUCCESS**. Click **Complete verified sale** to create the sale.
-   If the callback is delayed, try **Check payment status** on the same order.
+   becomes **SUCCESS** automatically (the POS checks saved webhook state every
+   three seconds). Click **Complete verified sale** to create the sale.
+   If the callback is delayed, the POS also asks the provider about the same order
+   every 15 seconds while it remains pending. **Check now** is an optional manual
+   fallback, not a required checkout step. No automatic check creates a new QR or sale.
 
 The configured callback must reach `/webhooks/myanmyanpay` on the public POS HTTPS
 host. If the provider reports success but the POS remains pending, inspect the
 callback delivery result and server logs; do not edit the database or disable
 signature checks. Only provider-verified success permits completion.
+
+### Sandbox callback returns HTTP 409
+
+The sandbox console can reuse `transactionRefId: MMPAY_MANUAL` on distinct orders.
+Older versions stored this marker as a globally unique bank reference, so the
+second manual callback could fail with `409 {"received":false}`. Sandbox manual
+references are now scoped to the validated order and QR reference. Live payment
+references remain globally unique, and live credentials cannot accept this marker.
+HMAC verification and exact order, amount, currency and QR-reference matching still
+apply. No schema migration or manual database editing is needed.
+
+After deployment, retry the sandbox success callback for the **same original
+order** (or leave its POS checkout open for automatic provider reconciliation).
+Do not generate another order or send money. A rejected callback now includes a
+safe `code` and `message` distinguishing mismatched payment details from a duplicate
+provider reference. If it still returns 409, inspect that reason rather than
+bypassing verification.
 
 **Test-data warning:** completing a sandbox payment in the production POS still
 creates a real local sale/receipt and changes stock/reports. Use a separate test

@@ -449,6 +449,15 @@
         grid-row: 1;
         font-weight: 600;
       }
+      #mmqrPaymentModal .mmqr-auto-status {
+        grid-column: 1 / -1;
+        grid-row: 1;
+        padding: 10px 12px;
+        border-left: 3px solid #198754;
+        background: #e8f5ed;
+        color: #146c43;
+        font-size: 0.875rem;
+      }
       #mmqrPaymentModal .btn:focus-visible {
         outline: 3px solid #1f3a93;
         outline-offset: 3px;
@@ -6348,11 +6357,12 @@
             <div id="mmp-existing" class="mt-2"></div>
           </div>
           <div class="modal-footer mmqr-actions">
-            <button type="button" class="btn btn-success mmqr-primary-action d-none" id="mmp-refresh">Check payment status</button>
+            <p id="mmp-auto-status" class="mmqr-auto-status d-none mb-0" role="status" aria-live="polite"></p>
             <button type="button" class="btn btn-success mmqr-primary-action" id="confirm-mmqr-payment-btn" onclick="confirmMMQRPayment()">
               <i class="bi bi-check-circle me-1"></i>Payment Received — Complete Sale
             </button>
             <button type="button" class="btn btn-outline-secondary" id="mmqr-close-btn" data-bs-dismiss="modal">Close</button>
+            <button type="button" class="btn btn-outline-secondary d-none" id="mmp-refresh">Check now</button>
             <button type="button" class="btn btn-outline-secondary d-none" id="mmp-resume">Find existing payments</button>
             <button type="button" class="btn btn-outline-danger d-none" id="mmp-cancel" aria-describedby="mmqr-close-note">Cancel payment</button>
             <p id="mmqr-close-note" class="mmqr-close-note d-none mb-0">Closing keeps this payment available to resume. It does not cancel it.</p>

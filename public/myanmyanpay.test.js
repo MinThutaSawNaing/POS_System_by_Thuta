@@ -36,7 +36,7 @@ async function buttonHarness({enabled = true, configured = true} = {}) {
     currentBranch: {id: 1}, CACHE_USER_ID: 1, cart: [], navigator: {onLine: true},
     bootstrap: {Modal: {getInstance: () => ({show() {}, hide() {}})}},
     crypto: {randomUUID: () => 'button-test'},
-    setTimeout: () => 1, clearTimeout() {},
+    setTimeout: fn => { h.tick = fn; return 1; }, clearTimeout() {},
     resetMMQRCountdown() {}, stopMMQRCountdown() {}, setMMQRDownloadState() {},
     confirmMMQRPayment() {},
     fetch: async (url, options) => {
@@ -62,7 +62,9 @@ test('pending order promotes status check and hides sale completion and discover
   assert.equal(h.hidden('confirm-mmqr-payment-btn'), true);
   assert.equal(h.element('confirm-mmqr-payment-btn').disabled, true);
   assert.equal(h.hidden('mmp-refresh'), false);
-  assert.equal(h.element('mmp-refresh').textContent, 'Check payment status');
+  assert.equal(h.element('mmp-refresh').textContent, 'Check now');
+  assert.equal(h.hidden('mmp-auto-status'), false);
+  assert.match(h.element('mmp-auto-status').textContent, /Checking payment status automatically/);
   assert.equal(h.hidden('mmp-cancel'), false);
   assert.equal(h.hidden('mmp-resume'), true);
   assert.equal(h.element('mmqr-close-btn').textContent, 'Close — resume later');
@@ -98,7 +100,7 @@ test('failed refresh and failed completion restore usable buttons without allowi
     ? {ok: false, json: async () => ({message: 'Try again safely'})} : undefined;
   await h.checkout.action('refresh');
   assert.equal(h.element('mmp-refresh').disabled, false);
-  assert.equal(h.element('mmp-refresh').textContent, 'Check payment status');
+  assert.equal(h.element('mmp-refresh').textContent, 'Check now');
   assert.equal(h.hidden('confirm-mmqr-payment-btn'), true);
   h.status = 'SUCCESS';
   h.checkout.resume({id: 7, status: 'SUCCESS'});
@@ -108,6 +110,18 @@ test('failed refresh and failed completion restore usable buttons without allowi
   assert.equal(h.element('confirm-mmqr-payment-btn').textContent, 'Complete verified sale');
   assert.equal(h.hidden('mmp-cancel'), true);
   assert.match(h.element('mmp-status').textContent, /reconciliation/);
+});
+
+test('webhook success automatically updates the real dialog without a refresh click or sale creation', async () => {
+  const h = await buttonHarness();
+  await h.checkout.start({items: [1]});
+  h.status = 'SUCCESS'; // Next GET reads the state persisted by the verified callback.
+  await h.tick();
+  assert.equal(h.hidden('mmp-auto-status'), true);
+  assert.equal(h.hidden('confirm-mmqr-payment-btn'), false);
+  assert.equal(h.element('confirm-mmqr-payment-btn').disabled, false);
+  assert.equal(h.element('confirm-mmqr-payment-btn').textContent, 'Complete verified sale');
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 1, 'only the initial create posts');
 });
 
 test('rejected creation offers retry and discovery; cancellation restores checkout actions', async () => {
@@ -165,6 +179,103 @@ function harness() {
   };
   h.checkout = createCheckout(h.env); return h;
 }
+
+test('automatic checks recover a missed callback periodically and never create or complete an order', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  await h.checkout.start({items: [1]});
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    now += 16000;
+    h.intercept = async path => path.endsWith('/refresh') ? {
+      ok: true, json: async () => ({payment: {id: 7, status: 'SUCCESS', amount: 1000}})
+    } : undefined;
+    await h.tick();
+    assert.equal(h.checkout.state().active.status, 'SUCCESS');
+    assert.equal(h.calls.filter(c => c.path.endsWith('/refresh')).length, 1);
+    assert.equal(h.calls.filter(c => c.path.endsWith('/intents') && c.options.method === 'POST').length, 1);
+    assert.equal(h.calls.filter(c => c.path.endsWith('/complete')).length, 0);
+  } finally { Date.now = realNow; }
+});
+
+test('an older status GET cannot overwrite a verified payment returned by a manual refresh', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  await h.checkout.start({items: [1]});
+  let finish;
+  h.intercept = async path => path.endsWith('/intents/7')
+    ? new Promise(resolve => { finish = resolve; }) : undefined;
+  const polling = h.tick();
+  h.status = 'SUCCESS';
+  await h.checkout.action('refresh');
+  finish({ok: true, json: async () => ({payment: {id: 7, status: 'PENDING'}})});
+  await polling;
+  assert.equal(h.checkout.state().active.status, 'SUCCESS');
+});
+
+test('automatic provider checks are throttled and stop after close or a branch change', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  await h.checkout.start({items: [1]});
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    now += 16000;
+    await h.tick();
+    assert.equal(h.calls.filter(c => c.path.endsWith('/refresh')).length, 1);
+    for (let i = 0; i < 4; i++) { now += 3000; await h.tick(); }
+    assert.equal(h.calls.filter(c => c.path.endsWith('/refresh')).length, 1);
+    h.checkout.close();
+    now += 16000;
+    const count = h.calls.length;
+    await h.tick();
+    assert.equal(h.calls.length, count);
+    h.scope = 'different-branch';
+    await h.tick();
+    assert.equal(h.calls.length, count);
+  } finally { Date.now = realNow; }
+});
+
+test('in-flight GET cannot change closed checkout, and reopening continues automatic polling', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  await h.checkout.start({items: [1]});
+  let finish;
+  h.intercept = async path => path.endsWith('/intents/7')
+    ? new Promise(resolve => { finish = resolve; }) : undefined;
+  const polling = h.tick();
+  h.checkout.close();
+  finish({ok: true, json: async () => ({payment: {id: 7, status: 'SUCCESS'}})});
+  await polling;
+  assert.equal(h.checkout.state().active.status, 'PENDING');
+  h.intercept = null; h.status = 'SUCCESS';
+  h.checkout.preview();
+  await h.tick();
+  assert.equal(h.checkout.state().active.status, 'SUCCESS');
+});
+
+test('automatic refresh failure backs off while a later webhook still enables completion', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  await h.checkout.start({items: [1]});
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    h.intercept = async path => path.endsWith('/refresh') ? {
+      ok: false, json: async () => ({message: 'Provider status unavailable'})
+    } : undefined;
+    now += 16000;
+    await h.tick();
+    assert.equal(h.checkout.state().busy, false);
+    assert.equal(h.checkout.state().active.status, 'PENDING');
+    now += 3000;
+    h.status = 'SUCCESS';
+    await h.tick();
+    assert.equal(h.checkout.state().active.status, 'SUCCESS');
+    assert.doesNotMatch(h.rendered.text, /Provider status unavailable/);
+    assert.equal(h.calls.filter(c => c.path.endsWith('/refresh')).length, 1);
+    assert.equal(h.completed.length, 0);
+  } finally { Date.now = realNow; }
+});
 test('uncertain create error remains visible after finally and status polling', async () => {
   const h = harness(); await h.checkout.loadConfig();
   h.status = 'CREATING';

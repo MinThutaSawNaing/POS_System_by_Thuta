@@ -18,6 +18,7 @@
     let operationError = "";
     let pendingCheckoutScope = null;
     let readinessScope = null;
+    let pollRevision = 0, pendingPoll = null, lastProviderCheckAt = Date.now();
     const scope = () => env.scope();
     const valid = (s, r) => s !== null && s === scope() && (r === undefined || r === revision);
     const mode = () => configScope !== scope() || !config ? "loading" : config.enabled === false ? "legacy" : config.enabled === true && config.configured === true ? "provider" : "blocked";
@@ -81,7 +82,7 @@
     async function loadConfig() {
       const s = scope();
       if (s === null) return;
-      if (configScope !== s) { active = null; quote = null; busy = false; reconciliation = false; terminalNotice = ""; operationError = ""; revision++; stop(); }
+      if (configScope !== s) { active = null; quote = null; busy = false; reconciliation = false; terminalNotice = ""; operationError = ""; revision++; pollRevision++; pendingPoll = null; lastProviderCheckAt = Date.now(); stop(); }
       config = null; configScope = s;
       readinessScope = s;
       try {
@@ -126,6 +127,7 @@
     function resume(payment) {
       if (busy || scope() === null || !canRecover()) return;
       revision++; active = payment; quote = null; reconciliation = false;
+      pollRevision++; lastProviderCheckAt = Date.now();
       display();
       poll();
     }
@@ -185,6 +187,7 @@
         const data = await request("/intents", "POST", quote.payload);
         if (!valid(s, r)) return;
         active = data.payment;
+        lastProviderCheckAt = Date.now();
         operationError = "";
         display();
       } catch (error) {
@@ -200,19 +203,35 @@
       stop();
       if (mode() === "loading" && visible) { status("Payment context changed. Reload readiness before resuming this order."); return; }
       if (!visible || !active || busy || !canRecover()) { schedule(); return; }
+      if (pendingPoll) { schedule(); return; }
       const s = scope(), r = revision, id = active.id;
+      const token = {revision: pollRevision};
+      pendingPoll = token;
       try {
         const data = await request("/intents/" + encodeURIComponent(id));
-        if (!valid(s, r) || active?.id !== id) return;
-        active = data.payment; display();
-      } catch (error) { if (valid(s, r)) status(error.message); }
-      finally { if (valid(s, r)) schedule(); }
+        if (!valid(s, r) || active?.id !== id || token.revision !== pollRevision || !visible) return;
+        active = data.payment;
+        if (active?.status === "SUCCESS" && !reconciliation) operationError = "";
+        display();
+        // Webhooks normally arrive first. If delivery is delayed or missed,
+        // reconcile the SAME order via the authenticated server-side provider
+        // lookup, no more than once every 15 seconds (server throttle is 5s).
+        if (active && ["CREATING", "PENDING"].includes(active.status)
+            && Date.now() - lastProviderCheckAt >= 15000) await action("refresh");
+      } catch (error) { if (valid(s, r) && token.revision === pollRevision && visible) status(error.message); }
+      finally {
+        if (pendingPoll === token) pendingPoll = null;
+        if (valid(s, r)) schedule();
+      }
     }
     async function action(name) {
       if (busy || !active || !canRecover()) return;
       if (name === "complete" && active.status !== "SUCCESS") return;
       if (!["complete", "refresh", "cancel"].includes(name)) return;
       const s = scope(), r = revision, id = active.id;
+      // Invalidate an older GET so it cannot replace a just-verified payment.
+      pollRevision++;
+      if (name === "refresh") lastProviderCheckAt = Date.now();
       busy = true; status(name === "complete" ? "Completing verified payment…" : "Contacting payment server…");
       try {
         const data = await request("/intents/" + encodeURIComponent(id) + "/" + name, "POST");
@@ -239,7 +258,7 @@
       } finally { if (s === scope()) { busy = false; env.busy(false); schedule(); } }
     }
     return {mode, preview, start, list, resume, action, loadConfig,
-      close() { visible = false; pendingCheckoutScope = null; stop(); },
+      close() { visible = false; pendingCheckoutScope = null; pollRevision++; stop(); },
       state: () => ({active, quote, busy})};
   }
   if (typeof module !== "undefined" && module.exports) module.exports = {createCheckout};
@@ -296,13 +315,15 @@
     confirm.disabled = busy || !recover || (!!payment && !paid);
     confirm.setAttribute("aria-busy", String(busy && !pending));
     el("mmp-refresh").classList.toggle("d-none", !pending);
-    el("mmp-refresh").textContent = busy ? "Please wait…" : "Check payment status";
+    el("mmp-refresh").textContent = busy ? "Please wait…" : "Check now";
     el("mmp-refresh").setAttribute("aria-busy", String(busy && pending));
     el("mmp-cancel").classList.toggle("d-none", !pending);
     el("mmp-resume").classList.toggle("d-none", !recover || !!payment);
     ["mmp-refresh", "mmp-cancel", "mmp-resume"].forEach(id => { el(id).disabled = busy || !recover; });
     el("mmqr-close-btn").textContent = payment ? "Close — resume later" : "Close";
     el("mmqr-close-note").classList.toggle("d-none", !payment);
+    el("mmp-auto-status").classList.toggle("d-none", !pending);
+    el("mmp-auto-status").textContent = "Checking payment status automatically. No need to click Check now.";
   }
   function setBusy(value) {
     if (lastActionState) renderActions({...lastActionState,

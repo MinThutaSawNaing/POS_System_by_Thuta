@@ -178,7 +178,7 @@ def register_payment_routes(app, db, pos):
             raise ValueError('Mobile payment amount must be positive.')
         return (data, format(amount.quantize(Decimal('0.01')), 'f')), None
 
-    def apply_provider(intent, payload):
+    def apply_provider(intent, payload, *, sandbox=False):
         """Use exact order/amount/currency and pinned references; preserve paid state.
 
         An authenticated late success must be recoverable even if an earlier
@@ -203,7 +203,21 @@ def register_payment_routes(app, db, pos):
                 raise ValueError('Invalid provider reference.')
         if intent.vendor_qr_ref and vendor_ref != intent.vendor_qr_ref:
             raise ValueError('Provider QR reference does not match.')
-        if intent.transaction_ref and tx_ref and tx_ref != intent.transaction_ref:
+        pinned_tx_ref = intent.transaction_ref
+        if tx_ref == 'MMPAY_MANUAL':
+            # Sandbox emulation reuses a literal marker across orders. Keep the
+            # UNIQUE constraint for real bank references; scope ONLY this marker
+            # to the authenticated sandbox order and its validated QR reference.
+            if not sandbox:
+                raise ValueError('Sandbox manual references are not valid for live payments.')
+            if not vendor_ref:
+                raise ValueError('Sandbox manual payment requires a QR reference.')
+            tx_ref = 'sandbox-manual:' + hashlib.sha256(
+                canonical([intent.order_id, vendor_ref]).encode('utf-8')).hexdigest()
+            # Accept redelivery of the first sandbox order saved before this fix.
+            if pinned_tx_ref == 'MMPAY_MANUAL':
+                pinned_tx_ref = tx_ref
+        if pinned_tx_ref and tx_ref and tx_ref != pinned_tx_ref:
             raise ValueError('Provider transaction reference does not match.')
         if status == 'SUCCESS' and (not tx_ref or not vendor_ref):
             raise ValueError('Successful payment requires provider references.')
@@ -287,10 +301,11 @@ def register_payment_routes(app, db, pos):
             db.session.add(intent)
             db.session.commit()  # durable order BEFORE calling the provider
             try:
-                payload = client().create(intent.order_id, Decimal(intent.amount), callback_url())
+                gateway = client()
+                payload = gateway.create(intent.order_id, Decimal(intent.amount), callback_url())
                 # A callback can beat the create response. Reload durable state.
                 lock_intent(intent)
-                apply_provider(intent, payload)
+                apply_provider(intent, payload, sandbox=gateway.sandbox)
                 db.session.commit()
             except Exception as error:
                 db.session.rollback()
@@ -368,7 +383,7 @@ def register_payment_routes(app, db, pos):
             if cancel:
                 result = gateway.get(intent.order_id)
             lock_intent(intent)
-            apply_provider(intent, result)
+            apply_provider(intent, result, sandbox=gateway.sandbox)
             db.session.commit()
             return jsonify(success=True, payment=public(intent))
         except Exception as error:
@@ -479,12 +494,24 @@ def register_payment_routes(app, db, pos):
             if PaymentWebhookEvent.query.filter_by(digest=digest).first():
                 db.session.rollback()
                 return jsonify(received=True, duplicate=True)
-            apply_provider(intent, payload)
+            apply_provider(intent, payload, sandbox=gateway.sandbox)
             db.session.add(PaymentWebhookEvent(digest=digest, order_id=intent.order_id, status=payload['status']))
             db.session.commit()
             return jsonify(received=True)
-        except (ValueError, TypeError, ArithmeticError, IntegrityError):
+        except ValueError as error:
             db.session.rollback()
-            return jsonify(received=False), 409
+            # Validation messages are fixed application text, never raw payloads
+            # or credentials. Give the console a useful, safe rejection reason.
+            message = str(error) if not isinstance(error, json.JSONDecodeError) else 'Invalid JSON payload.'
+            app.logger.warning('MyanMyanPay callback rejected: %s', message)
+            return jsonify(received=False, code='payment_mismatch', message=message), 409
+        except IntegrityError:
+            db.session.rollback()
+            app.logger.warning('MyanMyanPay callback rejected: duplicate provider reference.')
+            return jsonify(received=False, code='reference_conflict',
+                           message='Provider reference is already assigned to another payment.'), 409
+        except (TypeError, ArithmeticError):
+            db.session.rollback()
+            return jsonify(received=False, code='invalid_payload', message='Invalid payment payload.'), 409
 
     return PaymentIntent, PaymentWebhookEvent
