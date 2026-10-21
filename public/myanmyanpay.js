@@ -16,6 +16,8 @@
     let busy = false, visible = false, timer = null, revision = 0, reconciliation = false;
     let terminalNotice = "";
     let operationError = "";
+    let pendingCheckoutScope = null;
+    let readinessScope = null;
     const scope = () => env.scope();
     const valid = (s, r) => s !== null && s === scope() && (r === undefined || r === revision);
     const mode = () => configScope !== scope() || !config ? "loading" : config.enabled === false ? "legacy" : config.enabled === true && config.configured === true ? "provider" : "blocked";
@@ -37,7 +39,7 @@
         qr_url: active.qr_url || null,
       });
     }
-    const status = (text) => env.render({mode: mode(), payment: active, busy, text: terminalNotice + (operationError ? operationError + " " : "") + text, deadline: deadline()});
+    const status = (text) => env.render({mode: mode(), sandbox: config?.sandbox === true, payment: active, busy, text: terminalNotice + (operationError ? operationError + " " : "") + text, deadline: deadline()});
     async function request(path, method = "GET", body) {
       if (!env.online()) throw new Error("Mobile payments require an online connection. Do not pay again if a request is uncertain.");
       const options = {method, cache: "no-store", credentials: "same-origin"};
@@ -81,6 +83,7 @@
       if (s === null) return;
       if (configScope !== s) { active = null; quote = null; busy = false; reconciliation = false; terminalNotice = ""; operationError = ""; revision++; stop(); }
       config = null; configScope = s;
+      readinessScope = s;
       try {
         const data = await request("/config");
         if (!valid(s)) return;
@@ -88,10 +91,17 @@
         env.ready?.(mode());
         // A reload must restore the open order and its QR instead of minting a
         // new one. restore() only re-reads an order the server already owns.
-        if (!active && canRecover()) restore();
+        if (!active && canRecover()) await restore();
+        if (!valid(s)) return;
+        readinessScope = null;
         if (visible && mode() === "legacy" && !active) env.legacy?.();
         else if (visible) preview();
+        if (pendingCheckoutScope === s) {
+          pendingCheckoutScope = null;
+          if (visible && mode() === "provider" && !active) env.checkoutReady?.();
+        }
       } catch (error) { if (valid(s)) status("Cannot verify payment configuration. Mobile checkout is blocked. " + error.message); }
+      finally { if (readinessScope === s) readinessScope = null; }
     }
     function preview() {
       visible = true;
@@ -143,6 +153,11 @@
       }
     }
     async function start(saleData) {
+      if (mode() === "loading" || readinessScope === scope()) {
+        pendingCheckoutScope = scope();
+        preview();
+        return;
+      }
       preview();
       if (busy || mode() !== "provider") return;
       const snapshot = env.snapshot();
@@ -179,7 +194,7 @@
           status(error.message + " Find pending payments or refresh this same order; do not pay again.");
         }
       }
-      finally { if (valid(s, r)) { busy = false; env.busy(false); if (active) display(); } }
+      finally { if (valid(s, r)) { busy = false; env.busy(false); display(); } }
     }
     async function poll() {
       stop();
@@ -224,7 +239,7 @@
       } finally { if (s === scope()) { busy = false; env.busy(false); schedule(); } }
     }
     return {mode, preview, start, list, resume, action, loadConfig,
-      close() { visible = false; stop(); },
+      close() { visible = false; pendingCheckoutScope = null; stop(); },
       state: () => ({active, quote, busy})};
   }
   if (typeof module !== "undefined" && module.exports) module.exports = {createCheckout};
@@ -290,6 +305,12 @@
       } catch (error) { /* ignore */ }
     },
     snapshot, uuid: () => root.crypto.randomUUID(),
+    // Revalidate current fields rather than submitting a stale cart captured
+    // while readiness or saved-order recovery was still in flight.
+    checkoutReady() {
+      const method = el("payment-method")?.value;
+      if (method === "mobile_payment" || (method === "split_payment" && splitUsesMobilePayment())) completeSale(false);
+    },
     ready(mode) { el("mmp-open-existing").classList.toggle("d-none", !["provider", "legacy"].includes(mode)); },
     legacy() {
       el("mmp-status").textContent = "";
@@ -303,16 +324,18 @@
     setTimeout: root.setTimeout.bind(root), clearTimeout: root.clearTimeout.bind(root),
     open() { (bootstrap.Modal.getInstance(modal) || new bootstrap.Modal(modal)).show(); },
     busy: setBusy,
-    render({mode, payment, busy, text, deadline}) {
+    render({mode, sandbox, payment, busy, text, deadline}) {
       el("mmp-status").textContent = text;
       const provider = mode === "provider";
       const recover = provider || mode === "legacy";
       ["mmp-resume", "mmp-refresh", "mmp-cancel"].forEach(id => el(id).classList.toggle("d-none", !recover || (id !== "mmp-resume" && !payment)));
       const confirm = el("confirm-mmqr-payment-btn");
-      confirm.textContent = payment?.status === "SUCCESS" ? "Complete verified sale" : !payment && mode === "legacy" ? "Payment Received — Complete Sale" : "Create payment QR";
+      confirm.textContent = payment?.status === "SUCCESS" ? "Complete verified sale" : !payment && mode === "legacy" ? "Payment Received — Complete Sale" : busy ? "Generating payment QR…" : payment ? "Waiting for payment" : "Retry payment QR";
       confirm.disabled = busy || !recover || (!!payment && payment.status !== "SUCCESS");
       el("mmp-refresh").disabled = el("mmp-cancel").disabled = el("mmp-resume").disabled = busy;
-      el("mmqr-payment-help").textContent = "Only server-verified payment can complete this sale. Closing does not cancel payment. Existing QR always belongs to its frozen order.";
+      el("mmqr-payment-help").textContent = sandbox
+        ? "SANDBOX — no real money: in MyanMyanPay Developers → Sandbox Txn → Pending, select this order and choose ‘Do a success callback’. After SUCCESS, choose Complete verified sale. Closing does not cancel the order."
+        : "Only server-verified payment can complete this sale. Closing does not cancel payment. Existing QR always belongs to its frozen order.";
       const image = el("pos-mmqr-image");
       // Never disturb the uploaded legacy QR while rendering an empty provider state.
       if (mode !== "legacy" || payment) {
@@ -326,7 +349,7 @@
       if (!showQr && (mode !== "legacy" || payment)) {
         missing.textContent = payment?.status === "CREATING"
           ? "No QR has been issued for this order. Refresh provider to recover it, or explicitly cancel the order before trying again."
-          : "Choose Create payment QR to request a QR for this checkout.";
+          : busy ? "Generating your payment QR. Please wait…" : payment?.status === "SUCCESS" ? "Payment verified. Complete the sale below." : "The QR will be generated automatically for a valid checkout. If a request failed, resolve the error before retrying.";
         missing.style.display = "block";
       }
       if (deadline) resetMMQRCountdown(deadline, showQr);

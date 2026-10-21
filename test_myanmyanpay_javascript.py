@@ -5,6 +5,8 @@ import subprocess
 
 import pytest
 
+from test_returns_dashboard_javascript import DASHBOARD, _function, _run_node_script
+
 
 def test_myanmyanpay_checkout_state_machine():
     node = shutil.which('node')
@@ -14,3 +16,47 @@ def test_myanmyanpay_checkout_state_machine():
     result = subprocess.run([node, '--test', str(root / 'public' / 'myanmyanpay.test.js')],
                             cwd=root, capture_output=True, text=True, encoding='utf-8', timeout=30)
     assert result.returncode == 0, result.stdout + '\n' + result.stderr
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='Node.js is required')
+def test_opening_mmqr_automatically_starts_validated_checkout():
+    source = DASHBOARD.read_text(encoding='utf-8')
+    script = """
+const assert = require('node:assert/strict');
+const fields = {'payment-method': 'mobile_payment', 'pos-customer-select': '',
+  'split-method-one': 'cash', 'split-method-two': 'mobile_payment',
+  'split-amount-one': '200', 'split-amount-two': '800'};
+const document = {getElementById: id => ({value: fields[id], checked: false})};
+let cart = [{product_id: 5, price: 1000, quantity: 1, tax_rate: 0}];
+let isSaleProcessing = false, dashboardSessionStale = false;
+let dashboardBranchStale = false, branchSwitchInFlight = false;
+const starts = [], notices = [];
+let previews = 0, active = null, mode = 'provider';
+const MyanMyanPayCheckout = {mode: () => mode, state: () => ({active}),
+  start: sale => starts.push(sale), preview: () => { previews++; }};
+function showToast(text) { notices.push(text); }
+function t(text) { return text; }
+function splitUsesMobilePayment() { return true; }
+function toCents(value) { return Math.round(Number(value) * 100); }
+function centsToNumber(value) { return value / 100; }
+function getCurrentCartTotal() { return 1000; }
+__HELPERS__
+showMMQRPaymentModal();
+assert.equal(starts.length, 1, 'opening MMQR must create without another button');
+assert.equal(starts[0].items[0].product_id, 5);
+fields['payment-method'] = 'split_payment';
+showMMQRPaymentModal();
+assert.deepEqual(starts[1].payment_breakdown, {cash: 200, mobile_payment: 800});
+fields['split-amount-two'] = '700';
+showMMQRPaymentModal();
+assert.equal(starts.length, 2, 'invalid split must not generate a QR');
+assert.equal(notices.length, 1);
+active = {id: 7, status: 'PENDING'};
+showMMQRPaymentModal();
+assert.equal(starts.length, 2, 'reopening must retain the original order');
+assert.equal(previews, 1);
+console.log(JSON.stringify({ok: true}));
+"""
+    helpers = '\n'.join(_function(source, name) for name in (
+        'showMMQRPaymentModal', 'completeSale'))
+    assert _run_node_script(script.replace('__HELPERS__', helpers)) == {'ok': True}

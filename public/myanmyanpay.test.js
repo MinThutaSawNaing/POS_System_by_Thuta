@@ -6,7 +6,7 @@ function harness() {
   const h = {scope: 'user:branch', snapshot: 'cart1', online: true, calls: [], texts: [], completed: [], payments: [], status: 'PENDING', configured: true, enabled: true};
   h.env = {
     scope: () => h.scope, snapshot: () => h.snapshot, online: () => h.online, uuid: () => 'stable-txn',
-    open() {}, render: x => h.texts.push(x.text), busy() {}, list: p => { h.listed = p; },
+    open() {}, render: x => { h.rendered = x; h.texts.push(x.text); }, busy() {}, list: p => { h.listed = p; },
     setTimeout: fn => { h.tick = fn; return 1; }, clearTimeout() {}, completed: (...args) => h.completed.push(args),
     fetch: async (path, options) => {
       h.calls.push({path, options});
@@ -33,6 +33,17 @@ test('uncertain create error remains visible after finally and status polling', 
   assert.match(h.texts.at(-1), /Provider did not issue a QR/);
   await h.tick();
   assert.match(h.texts.at(-1), /Provider did not issue a QR/);
+});
+
+test('a rejected create without an order leaves a retryable non-busy error', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  h.intercept = async (path, options) => options.method === 'POST' ? {
+    ok: false, json: async () => ({success: false, message: 'Checkout validation failed.'})
+  } : undefined;
+  await h.checkout.start({items: [1]});
+  assert.equal(h.rendered.busy, false);
+  assert.match(h.rendered.text, /Checkout validation failed/);
+  assert.equal(h.checkout.state().active, null);
 });
 
 test('fail closed before runtime config and when misconfigured; explicit disabled is legacy', async () => {
@@ -156,6 +167,44 @@ test('a reload restores the cached order and never posts a second create', async
   assert.equal(h.checkout.state().active.id, 7);
   assert.ok(h.calls.some(c => /\/intents\/7$/.test(c.path)));
 });
+
+test('checkout opened while config loads starts automatically once ready', async () => {
+  const h = harness();
+  h.env.checkoutReady = () => h.checkout.start({items: [1]});
+  await h.checkout.start({items: [1]});
+  await new Promise(setImmediate);
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 1);
+  assert.equal(h.checkout.state().active.id, 7);
+});
+
+test('automatic checkout waits for cached-order recovery instead of creating again', async () => {
+  const h = harness(); let finishRecovery;
+  h.env.restore = () => ({id: 7});
+  h.env.checkoutReady = () => h.checkout.start({items: [1]});
+  h.intercept = async path => path.endsWith('/intents/7')
+    ? new Promise(resolve => { finishRecovery = resolve; }) : undefined;
+  const loading = h.checkout.loadConfig();
+  await new Promise(setImmediate);
+  await h.checkout.start({items: [1]});
+  finishRecovery({ok: true, json: async () => ({payment: {id: 7, status: 'PENDING'}})});
+  await loading;
+  assert.equal(h.checkout.state().active.id, 7);
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+});
+
+for (const abandon of ['close', 'branch switch']) {
+  test(`no automatic create after ${abandon} while readiness is loading`, async () => {
+    const h = harness(); let finishConfig;
+    h.env.checkoutReady = () => h.checkout.start({items: [1]});
+    h.intercept = async path => path.endsWith('/config')
+      ? new Promise(resolve => { finishConfig = resolve; }) : undefined;
+    await h.checkout.start({items: [1]});
+    if (abandon === 'close') h.checkout.close(); else h.scope = 'other-branch';
+    finishConfig({ok: true, json: async () => ({enabled: true, configured: true})});
+    await new Promise(setImmediate);
+    assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+  });
+}
 
 test('a cached order that is already terminal is dropped without a new create', async () => {
   const h = harness(); h.status = 'CANCELLED';

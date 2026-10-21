@@ -47,6 +47,41 @@ set the variables in the root `.env.example` copy in your untracked `.env` (or
 deployment secret store): `MMPAY_APP_ID`, `MMPAY_PUBLISHABLE_KEY`,
 `MMPAY_SECRET_KEY`, `MMPAY_API_BASE_URL`, `MMPAY_CALLBACK_URL`.
 
+## Automatic checkout and sandbox payment completion
+
+Selecting **Mobile Payment** with items in the cart opens checkout and requests
+the QR automatically. There is no initial **Create payment QR** step. Split
+payments must first have two different methods, positive amounts matching the
+total, and all required delivery fields filled in. The provider request still
+takes network time; the screen shows generation progress. Reopening checkout
+retains the existing order instead of creating another one. A failed request
+can be retried explicitly; uncertain orders must be recovered or cancelled, not
+replaced blindly.
+
+**Do not send real money to test a sandbox QR.** The provider's official
+quick-start guide at `https://myanmyanpay.com/start`, Step 06, says wallet
+providers do not support sandbox live testing. Use its callback emulator:
+
+1. Generate the QR in the POS and note the displayed **Order** ID and MMK amount.
+2. Sign in to the MyanMyanPay developer console for the same merchant/app.
+3. Open **Developers → Sandbox Txn → Pending**.
+4. Select the transaction matching the POS order ID and amount.
+5. Click the green **Do a success callback** button.
+6. Keep the POS checkout open. Once its server verifies the callback, the status
+   becomes **SUCCESS**. Click **Complete verified sale** to create the sale.
+   If the callback is delayed, try **Refresh provider** on the same order.
+
+The configured callback must reach `/webhooks/myanmyanpay` on the public POS HTTPS
+host. If the provider reports success but the POS remains pending, inspect the
+callback delivery result and server logs; do not edit the database or disable
+signature checks. Only provider-verified success permits completion.
+
+**Test-data warning:** completing a sandbox payment in the production POS still
+creates a real local sale/receipt and changes stock/reports. Use a separate test
+installation/database or controlled test products and reconcile test sales via
+the normal authorized returns workflow. Sandbox success proves the integration
+flow, not a real bank transfer or settlement.
+
 ## Activation checklist
 
 1. Back up the POS database and uploads; deploy this version. Startup creates

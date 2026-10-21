@@ -11917,7 +11917,9 @@
       function showMMQRPaymentModal() {
         if (typeof MyanMyanPayCheckout !== "undefined" && typeof MyanMyanPayCheckout.state === "function" && MyanMyanPayCheckout.state().active) return MyanMyanPayCheckout.preview();
         if (typeof MyanMyanPayCheckout !== "undefined" && MyanMyanPayCheckout.mode() !== "legacy") {
-          return MyanMyanPayCheckout.preview();
+          // Use the same delivery/split/cart validation as the checkout button.
+          // start() recovers existing orders and suppresses concurrent creates.
+          return completeSale(false);
         }
         if (!APP_SETTINGS.mmqrUrl) {
           setMMQRDownloadState(false);
