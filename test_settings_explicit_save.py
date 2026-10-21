@@ -14,6 +14,7 @@ def test_each_independent_configuration_card_has_a_save_button():
         'save-receipt-printer-btn': 'saveReceiptPrinterSettings()',
         'save-label-printing-btn': 'saveLabelPrintingSettings()',
         'save-agent-autonomy-btn': 'saveAgentAutonomy()',
+        'save-mmpay-btn': 'savePaymentSettings()',
     }
     for button_id, handler in expected.items():
         assert f'id="{button_id}"' in DASHBOARD

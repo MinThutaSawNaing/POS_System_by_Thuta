@@ -179,9 +179,9 @@ def test_settings_get_remains_accessible_but_ai_settings_are_manager_only(role):
     out = run_js("""
 loadSettings();
 await tick();
-console.log(JSON.stringify({requests, aiLoads, applied, APP_SETTINGS}));
+console.log(JSON.stringify({requests, aiLoads, paymentLoads, applied, APP_SETTINGS}));
 """, functions=("loadSettings", "settingsCacheKey"), role=role, setup="""
-let aiLoads = 0, applied = 0;
+let aiLoads = 0, paymentLoads = 0, applied = 0;
 const APP_SETTINGS = {posName: 'Old', currencyCode: 'MMK', currencySuffix: 'Ks'};
 const SETTINGS_CACHE_KEY = 'settings';
 function currencySuffixFromCode() { return 'Ks'; }
@@ -189,6 +189,7 @@ function applySettingsUI() { applied++; }
 function offlineCacheSet() {}
 function offlineCacheGet() { return null; }
 function loadAISettings() { aiLoads++; }
+function loadPaymentSettings() { paymentLoads++; }
 fetch = async (url, options) => {
   requests.push({url, method: options?.method || 'GET'});
   return {ok: true, json: async () => ({branch_id: currentBranch.id, pos_name: 'Shop', receipt_paper_size: '80mm'})};
@@ -196,6 +197,7 @@ fetch = async (url, options) => {
 """)
     assert out["requests"] == [{"url": "/api/settings", "method": "GET"}]
     assert out["aiLoads"] == (0 if role == "cashier" else 1)
+    assert out["paymentLoads"] == (0 if role == "cashier" else 1)
     assert out["applied"] == 1
     assert out["APP_SETTINGS"]["posName"] == "Shop"
     assert out["APP_SETTINGS"]["receiptPaperSize"] == "80mm"

@@ -380,6 +380,56 @@
         --set-border: #e4e8ee;
         --set-muted: #6c757d;
       }
+      /* ===== MMQR compliance surface =====
+         Official logo shown unmodified, untouched QR inside a white quiet zone,
+         mandatory attribution, and the 15-minute validity timer. */
+      .mmqr-official-logo {
+        display: block;
+        height: 104px;
+        width: auto;
+        margin: 0 auto 12px;
+        object-fit: contain;
+      }
+      .mmqr-qr-surface {
+        background: #ffffff;
+        padding: 16px; /* quiet zone around the symbol; never drawn on the QR */
+        border: 1px solid #dee2e6;
+        width: fit-content;
+        max-width: 100%;
+        margin: 0 auto;
+      }
+      .mmqr-qr-image {
+        display: block;
+        width: 280px;
+        max-width: 100%;
+        height: auto;
+        border: 0;
+        border-radius: 0;
+        image-rendering: pixelated;
+      }
+      .mmqr-attribution {
+        margin-top: 10px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        color: #1f3a93;
+      }
+      .mmqr-timer-box {
+        margin-top: 6px;
+        font-size: 0.9rem;
+        color: #495057;
+      }
+      .mmqr-timer {
+        font-variant-numeric: tabular-nums;
+        font-weight: 700;
+        color: #198754;
+      }
+      .mmqr-timer.is-expired { color: #dc3545; }
+      .mmqr-settings-logo {
+        height: 64px;
+        width: auto;
+        object-fit: contain;
+      }
       .settings-nav {
         position: sticky;
         top: 1rem;
@@ -3249,6 +3299,10 @@
                 <i class="bi bi-receipt"></i>
                 <span>Receipt &amp; branding<small>Logo, contacts, MMQR</small></span>
               </button>
+              <button type="button" class="settings-nav-item" data-group="payments" aria-controls="settings-group-payments" onclick="showSettingsGroup('payments')">
+                <i class="bi bi-phone"></i>
+                <span>Payments<small>MyanMyanPay keys</small></span>
+              </button>
               <button type="button" class="settings-nav-item" data-group="printing" aria-controls="settings-group-printing" onclick="showSettingsGroup('printing')">
                 <i class="bi bi-printer"></i>
                 <span>Printing<small>Paper &amp; label geometry</small></span>
@@ -3542,6 +3596,91 @@
           </div>
         </div>
         </div><!-- /settings-group-receipt -->
+
+        <!-- Mobile payments group: one global MyanMyanPay account for every branch -->
+        <div id="settings-group-payments" class="settings-group" role="group" aria-label="Mobile payments" style="display: none">
+        <div class="card settings-card">
+          <div class="card-header">
+            <span class="settings-icon-chip"><i class="bi bi-phone"></i></span>
+            <div class="settings-card-header-title">
+              <h5>MyanMyanPay</h5>
+              <span class="settings-card-subtitle">One merchant account used by every branch</span>
+            </div>
+            <span class="badge bg-secondary" id="mmpay-status-badge">Checking…</span>
+          </div>
+          <div class="card-body">
+            <div class="alert alert-light border py-2 small mb-3">
+              <i class="bi bi-shield-lock me-1"></i>
+              Keys are encrypted in this database with the server <code>SECRET_KEY</code> and applied to the running server for all branches. Saved values are never displayed again.
+            </div>
+            <div class="row g-3">
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="mmpay-app-id">App ID</label>
+                <input class="form-control" id="mmpay-app-id" autocomplete="off" placeholder="MMxxxxxxx" />
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="mmpay-api-base-url">API base URL</label>
+                <input class="form-control" id="mmpay-api-base-url" type="url" autocomplete="off" placeholder="https://api.your-provider.com" />
+                <div class="form-text">HTTPS API host from your merchant console — not the documentation site.</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="mmpay-publishable-key">Publishable key</label>
+                <div class="input-group">
+                  <input class="form-control" id="mmpay-publishable-key" type="password" autocomplete="new-password" placeholder="pk_test_… / pk_live_…" />
+                  <button class="btn btn-outline-secondary" type="button" onclick="togglePaymentSecret('mmpay-publishable-key', 'mmpay-publishable-key-icon')" aria-label="Show or hide the publishable key">
+                    <i class="bi bi-eye" id="mmpay-publishable-key-icon"></i>
+                  </button>
+                </div>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="mmpay-secret-key">Secret key</label>
+                <div class="input-group">
+                  <input class="form-control" id="mmpay-secret-key" type="password" autocomplete="new-password" placeholder="sk_test_… / sk_live_…" />
+                  <button class="btn btn-outline-secondary" type="button" onclick="togglePaymentSecret('mmpay-secret-key', 'mmpay-secret-key-icon')" aria-label="Show or hide the secret key">
+                    <i class="bi bi-eye" id="mmpay-secret-key-icon"></i>
+                  </button>
+                </div>
+              </div>
+              <div class="col-12">
+                <label class="form-label" for="mmpay-callback-url">Callback (webhook) URL</label>
+                <input class="form-control" id="mmpay-callback-url" type="url" autocomplete="off" placeholder="https://your-pos-host/webhooks/myanmyanpay" />
+                <div class="form-text">Public HTTPS address that reaches this server without a login redirect. It must end in <code>/webhooks/myanmyanpay</code>.</div>
+              </div>
+            </div>
+            <div class="form-check form-switch mt-3">
+              <input class="form-check-input" type="checkbox" role="switch" id="mmpay-enabled" />
+              <label class="form-check-label" for="mmpay-enabled">Enable MyanMyanPay mobile payments</label>
+            </div>
+            <div class="alert alert-warning py-2 mt-3 mb-0 small" id="mmpay-currency-warning" style="display: none;">
+              <i class="bi bi-exclamation-triangle me-1"></i>
+              The store currency is not <strong>MMK</strong>. MyanMyanPay checkout requires MMK and performs no conversion — change the store currency before enabling payments.
+            </div>
+            <div class="alert alert-danger py-2 mt-3 mb-0 small" id="mmpay-config-problem" style="display: none;"></div>
+            <div class="form-text mt-3" id="mmpay-source-note"></div>
+            <div class="border rounded p-3 mt-3">
+              <div class="d-flex align-items-center gap-3 flex-wrap">
+                <img src="/public/photos/mmqr-logo.png" alt="MyanmarPay MMQR official logo" class="mmqr-settings-logo" />
+                <div class="small text-muted flex-grow-1">
+                  Customer checkout enforces the MMQR compliance rules: the official logo is shown unmodified,
+                  only MMK is displayed, the QR is never altered, a 15-minute timer runs, and the mandatory
+                  <strong>PAYMENT POWERED BY MYANMYANPAY</strong> attribution appears below the QR.
+                </div>
+                <a class="btn btn-outline-secondary btn-sm" href="/public/photos/mmqr-logo.png" download="MMQR-logo.png">
+                  <i class="bi bi-download me-1"></i>Download MMQR logo
+                </a>
+              </div>
+            </div>
+            <div class="d-flex flex-wrap gap-2 mt-3">
+              <button class="btn btn-primary" id="save-mmpay-btn" onclick="savePaymentSettings()">
+                <i class="bi bi-save me-1"></i>Save payment settings
+              </button>
+              <button class="btn btn-outline-danger" id="clear-mmpay-btn" onclick="clearPaymentSettings()">
+                <i class="bi bi-trash me-1"></i>Clear saved credentials
+              </button>
+            </div>
+          </div>
+        </div>
+        </div><!-- /settings-group-payments -->
 
         <!-- Printing group -->
         <div id="settings-group-printing" class="settings-group" role="group" aria-label="Printing" style="display: none">
@@ -6141,9 +6280,33 @@
             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body text-center">
-            <img id="pos-mmqr-image" alt="MMQR payment QR" class="img-fluid rounded border mb-3" style="max-height: 320px; display: none;" />
-            <div id="pos-mmqr-missing" class="alert alert-warning" style="display: none;">MMQR has not been configured. Upload it from Settings before accepting mobile payments.</div>
-            <div class="fs-4 fw-bold text-success">Amount to pay: <span id="pos-mmqr-total"></span></div>
+            <!-- Official MMQR logo, displayed exactly as supplied: no crop,
+                 recolor, distortion or overlay. -->
+            <img id="mmqr-official-logo" src="/public/photos/mmqr-logo.png"
+                 alt="MyanmarPay MMQR official logo" class="mmqr-official-logo" />
+            <div class="fs-4 fw-bold text-success">Amount to pay: <span id="pos-mmqr-total">—</span></div>
+            <div class="small text-muted mb-2" id="mmqr-currency-note">Prices are charged in <strong>MMK</strong> only.</div>
+            <!-- The QR is rendered unmodified by the server. The white surface is
+                 the mandatory quiet zone, not a wrapper that alters the symbol. -->
+            <div class="mmqr-qr-surface mx-auto">
+              <img id="pos-mmqr-image" alt="MMQR payment QR" class="mmqr-qr-image" style="display: none;" />
+              <div id="pos-mmqr-missing" class="alert alert-warning mb-0" style="display: none;">MMQR has not been configured. Upload it from Settings before accepting mobile payments.</div>
+            </div>
+            <!-- Mandatory attribution, directly below the QR. -->
+            <div class="mmqr-attribution" id="mmqr-attribution">PAYMENT POWERED BY MYANMYANPAY</div>
+            <div class="mmqr-timer-box">
+              <i class="bi bi-stopwatch me-1" aria-hidden="true"></i>QR valid for
+              <span id="mmqr-timer" class="mmqr-timer" role="timer" aria-live="off">15:00</span>
+            </div>
+            <div class="d-flex justify-content-center flex-wrap gap-2 mt-3">
+              <button type="button" class="btn btn-outline-success btn-sm" id="download-mmqr-btn" onclick="downloadMMQRImage()" disabled>
+                <i class="bi bi-download me-1"></i>Download QR
+              </button>
+              <a class="btn btn-outline-secondary btn-sm" id="download-mmqr-logo-btn"
+                 href="/public/photos/mmqr-logo.png" download="MMQR-logo.png">
+                <i class="bi bi-download me-1"></i>Download MMQR logo
+              </a>
+            </div>
             <p id="mmqr-payment-help" class="text-muted small mb-0 mt-2">Ask the customer to scan the QR and confirm that payment was received.</p>
             <div id="mmp-status" class="mt-2" role="status" aria-live="polite"></div>
             <!-- Readiness: server integration defaults disabled. Keep uploaded MMQR settings;
@@ -6491,7 +6654,10 @@
             };
             applySettingsUI();
             offlineCacheSet(settingsCacheKey(data.branch_id), data);
-            if (hasCapability("admin")) loadAISettings();
+            if (hasCapability("admin")) {
+              loadAISettings();
+              if (typeof loadPaymentSettings === "function") loadPaymentSettings();
+            }
           })
           .catch((error) => {
             console.error("Error loading settings:", error);
@@ -6908,6 +7074,188 @@
               .catch((error) => {
                 console.error("Error clearing AI settings:", error);
                 showToast("Failed to clear API key", "error");
+              });
+          }
+        );
+      }
+
+      // ===== MyanMyanPay provider settings (global, all branches) =====
+      function togglePaymentSecret(inputId, iconId) {
+        const input = document.getElementById(inputId);
+        const icon = document.getElementById(iconId);
+        if (!input || !icon) return;
+        const hidden = input.type === "password";
+        input.type = hidden ? "text" : "password";
+        icon.classList.toggle("bi-eye", !hidden);
+        icon.classList.toggle("bi-eye-slash", hidden);
+      }
+
+      function mmpayFieldValue(id) {
+        return (document.getElementById(id)?.value || "").trim();
+      }
+
+      function renderPaymentSettingsStatus(data) {
+        const badge = document.getElementById("mmpay-status-badge");
+        if (badge) {
+          badge.className = "badge bg-secondary";
+          badge.textContent = "Disabled";
+          if (data.enabled && data.configured) {
+            badge.className = "badge bg-success";
+            badge.textContent = data.sandbox ? "Sandbox ready" : "Live ready";
+          } else if (data.enabled) {
+            badge.className = "badge bg-danger";
+            badge.textContent = "Needs configuration";
+          }
+        }
+        const warning = document.getElementById("mmpay-currency-warning");
+        if (warning) warning.style.display = data.currency_supported ? "none" : "block";
+        const problem = document.getElementById("mmpay-config-problem");
+        if (problem) {
+          problem.style.display = data.message ? "block" : "none";
+          problem.textContent = data.message || "";
+        }
+        const note = document.getElementById("mmpay-source-note");
+        if (note) {
+          note.textContent = data.saved_in_settings
+            ? "Saved in this database and applied to every branch. Clear these values to fall back to the server environment configuration."
+            : "Using the server environment (.env) configuration. Saving here stores an encrypted copy that applies to every branch immediately.";
+        }
+        const clearButton = document.getElementById("clear-mmpay-btn");
+        if (clearButton) clearButton.disabled = !data.saved_in_settings;
+      }
+
+      function loadPaymentSettings() {
+        if (!hasCapability("admin")) return;
+        fetch("/api/settings/myanmyanpay", { cache: "no-store" })
+          .then(async (response) => {
+            const data = await response.json();
+            if (!response.ok || data.success === false) {
+              throw new Error(data.message || data.error || "Unable to load payment settings");
+            }
+            return data;
+          })
+          .then((data) => {
+            const fill = (id, value) => {
+              const field = document.getElementById(id);
+              if (field && document.activeElement !== field) field.value = value || "";
+            };
+            fill("mmpay-app-id", data.app_id);
+            fill("mmpay-api-base-url", data.api_base_url);
+            fill("mmpay-callback-url", data.callback_url);
+            const publishable = document.getElementById("mmpay-publishable-key");
+            if (publishable) {
+              publishable.value = "";
+              publishable.placeholder = data.fields?.publishable_key
+                ? "Configured — enter a new key to replace"
+                : "pk_test_… / pk_live_…";
+            }
+            const secret = document.getElementById("mmpay-secret-key");
+            if (secret) {
+              secret.value = "";
+              secret.placeholder = data.fields?.secret_key
+                ? "Configured — enter a new key to replace"
+                : "sk_test_… / sk_live_…";
+            }
+            const enabled = document.getElementById("mmpay-enabled");
+            if (enabled) enabled.checked = Boolean(data.enabled);
+            renderPaymentSettingsStatus(data);
+          })
+          .catch((error) => {
+            console.error("Error loading payment settings:", error);
+            const problem = document.getElementById("mmpay-config-problem");
+            if (problem) {
+              problem.style.display = "block";
+              problem.textContent = error.message || "Unable to load payment settings";
+            }
+          });
+      }
+
+      function refreshProviderCheckout() {
+        if (typeof MyanMyanPayCheckout !== "undefined" &&
+            typeof MyanMyanPayCheckout.loadConfig === "function") {
+          MyanMyanPayCheckout.loadConfig();
+        }
+      }
+
+      function savePaymentSettings() {
+        if (!requireCapability("admin")) return;
+        const button = document.getElementById("save-mmpay-btn");
+        const originalContent = button?.innerHTML;
+        const payload = {
+          app_id: mmpayFieldValue("mmpay-app-id"),
+          api_base_url: mmpayFieldValue("mmpay-api-base-url"),
+          callback_url: mmpayFieldValue("mmpay-callback-url"),
+          enabled: Boolean(document.getElementById("mmpay-enabled")?.checked),
+        };
+        const publishableKey = mmpayFieldValue("mmpay-publishable-key");
+        const secretKey = mmpayFieldValue("mmpay-secret-key");
+        if (publishableKey) payload.publishable_key = publishableKey;
+        if (secretKey) payload.secret_key = secretKey;
+        if (button) {
+          button.disabled = true;
+          button.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span> Saving...';
+        }
+        fetch("/api/settings/myanmyanpay", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+          .then(async (response) => {
+            const data = await response.json();
+            if (!response.ok || data.success === false) {
+              throw new Error(data.message || data.error || "Failed to save payment settings");
+            }
+            return data;
+          })
+          .then((data) => {
+            ["mmpay-publishable-key", "mmpay-secret-key"].forEach((id) => {
+              const field = document.getElementById(id);
+              if (field) field.value = "";
+            });
+            renderPaymentSettingsStatus(data);
+            loadPaymentSettings();
+            refreshProviderCheckout();
+            showToast(data.message || "Payment settings saved for all branches", "success");
+          })
+          .catch((error) => {
+            console.error("Error saving payment settings:", error);
+            showToast(error.message || "Failed to save payment settings", "error");
+          })
+          .finally(() => {
+            if (button) {
+              button.disabled = false;
+              button.innerHTML = originalContent;
+            }
+          });
+      }
+
+      function clearPaymentSettings() {
+        if (!requireCapability("admin")) return;
+        showConfirmDialog(
+          "Clear saved payment credentials",
+          "Remove the MyanMyanPay credentials stored in this database? Server environment (.env) values will apply again.",
+          () => {
+            fetch("/api/settings/myanmyanpay", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ clear: true }),
+            })
+              .then(async (response) => {
+                const data = await response.json();
+                if (!response.ok || data.success === false) {
+                  throw new Error(data.message || data.error || "Failed to clear payment settings");
+                }
+                return data;
+              })
+              .then((data) => {
+                renderPaymentSettingsStatus(data);
+                loadPaymentSettings();
+                refreshProviderCheckout();
+                showToast(data.message || "Saved payment credentials cleared", "success");
+              })
+              .catch((error) => {
+                console.error("Error clearing payment settings:", error);
+                showToast(error.message || "Failed to clear payment settings", "error");
               });
           }
         );
@@ -11448,12 +11796,131 @@
         if (modalElement?.classList.contains("show") && splitUsesMobilePayment()) showMMQRPaymentModal();
       }
 
+      // ===== MMQR compliance: MMK-only display, 15-minute timer, downloads =====
+      // The timer is purely visual. It never refreshes the page, never cancels an
+      // order and never creates a replacement QR; those stay explicit actions.
+      const MMQR_ORDER_WINDOW_MS = 15 * 60 * 1000;
+      let mmqrCountdownHandle = null;
+      let mmqrCountdownDeadline = null;
+
+      function mmqrScopeKey(suffix) {
+        const user = typeof CACHE_USER_ID === "undefined" ? "guest" : CACHE_USER_ID;
+        const branch = currentBranch?.id ?? "none";
+        return `${suffix}:${user}:${branch}`;
+      }
+
+      function formatMMKAmount(value) {
+        const amount = Number(value);
+        if (!Number.isFinite(amount)) return "MMK —";
+        return "MMK " + amount.toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+      }
+
+      function mmqrStoreUsesMMK() {
+        return String(APP_SETTINGS.currencyCode || "MMK").toUpperCase() === "MMK";
+      }
+
+      function setMMQRCurrencyNote(html) {
+        const note = document.getElementById("mmqr-currency-note");
+        if (note) note.innerHTML = html;
+      }
+
+      function stopMMQRCountdown() {
+        if (mmqrCountdownHandle) window.clearInterval(mmqrCountdownHandle);
+        mmqrCountdownHandle = null;
+        mmqrCountdownDeadline = null;
+      }
+
+      function startMMQRCountdown(deadline, expiredText) {
+        const timer = document.getElementById("mmqr-timer");
+        if (!timer || !Number.isFinite(Number(deadline))) return;
+        // Polling re-renders the same order; keep the running ticker.
+        if (mmqrCountdownHandle && mmqrCountdownDeadline === Number(deadline)) return;
+        stopMMQRCountdown();
+        mmqrCountdownDeadline = Number(deadline);
+        const render = () => {
+          const remaining = Math.max(0, mmqrCountdownDeadline - Date.now());
+          const totalSeconds = Math.ceil(remaining / 1000);
+          timer.textContent = `${String(Math.floor(totalSeconds / 60)).padStart(2, "0")}:${String(totalSeconds % 60).padStart(2, "0")}`;
+          timer.classList.toggle("is-expired", remaining <= 0);
+          if (remaining <= 0) {
+            const help = document.getElementById("mmqr-payment-help");
+            if (help) help.textContent = expiredText;
+            stopMMQRCountdown();
+          }
+        };
+        render();
+        mmqrCountdownHandle = window.setInterval(render, 1000);
+      }
+
+      function resetMMQRCountdown(deadline) {
+        startMMQRCountdown(deadline,
+          "This QR has expired. Refresh the payment status, or cancel explicitly before creating a new order.");
+      }
+
+      function legacyMMQRDeadline() {
+        const key = mmqrScopeKey("mmqr_legacy_deadline");
+        try {
+          const stored = Number(sessionStorage.getItem(key));
+          if (stored && stored > Date.now()) return stored;
+          const deadline = Date.now() + MMQR_ORDER_WINDOW_MS;
+          sessionStorage.setItem(key, String(deadline));
+          return deadline;
+        } catch (error) {
+          return Date.now() + MMQR_ORDER_WINDOW_MS;
+        }
+      }
+
+      function clearLegacyMMQRDeadline() {
+        try {
+          sessionStorage.removeItem(mmqrScopeKey("mmqr_legacy_deadline"));
+        } catch (error) {
+          /* sessionStorage unavailable: the timer still works for this view. */
+        }
+      }
+
+      function setMMQRDownloadState(enabled) {
+        const button = document.getElementById("download-mmqr-btn");
+        if (button) button.disabled = !enabled;
+      }
+
+      async function downloadMMQRImage() {
+        const image = document.getElementById("pos-mmqr-image");
+        if (!image || !image.getAttribute("src") || image.style.display === "none") return;
+        try {
+          const response = await fetch(image.getAttribute("src"), {
+            credentials: "same-origin",
+            cache: "no-store",
+          });
+          if (!response.ok) throw new Error("QR unavailable");
+          const blob = await response.blob();
+          const type = blob.type || "";
+          const extension = type.includes("svg") ? "svg" : type.includes("png") ? "png" : "jpg";
+          const order = MyanMyanPayCheckout?.state?.().active?.order_id || "payment";
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = `MMQR-${order}.${extension}`;
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (error) {
+          console.error("MMQR download failed:", error);
+          showToast("The QR could not be downloaded. Retry while the payment is active.", "error");
+        }
+      }
+
       function showMMQRPaymentModal() {
         if (typeof MyanMyanPayCheckout !== "undefined" && typeof MyanMyanPayCheckout.state === "function" && MyanMyanPayCheckout.state().active) return MyanMyanPayCheckout.preview();
         if (typeof MyanMyanPayCheckout !== "undefined" && MyanMyanPayCheckout.mode() !== "legacy") {
           return MyanMyanPayCheckout.preview();
         }
         if (!APP_SETTINGS.mmqrUrl) {
+          setMMQRDownloadState(false);
+          stopMMQRCountdown();
           showToast("MMQR has not been configured. Upload it from Settings first.", "warning");
           return false;
         }
@@ -11462,16 +11929,24 @@
         const total = document.getElementById("pos-mmqr-total");
         if (image) {
           image.src = APP_SETTINGS.mmqrUrl;
-          image.style.display = "inline-block";
+          image.style.display = "block";
         }
         if (missing) missing.style.display = "none";
+        const help = document.getElementById("mmqr-payment-help");
+        if (help) help.textContent = "Ask the customer to scan the QR and confirm that payment was received.";
+        setMMQRDownloadState(true);
+        resetMMQRCountdown(legacyMMQRDeadline());
         let amountToPay = getCurrentCartTotal();
         if (document.getElementById("payment-method")?.value === "split_payment" && splitUsesMobilePayment()) {
           const mobileMethod = ["split-method-one", "split-method-two"].find((id) => document.getElementById(id)?.value === "mobile_payment");
           amountToPay = centsToNumber(toCents(document.getElementById(mobileMethod ? mobileMethod.replace("method", "amount") : "")?.value || "0"));
           if (!amountToPay) amountToPay = getCurrentCartTotal();
         }
-        if (total) total.textContent = formatCurrency(amountToPay);
+        // Compliance: only MMK may be displayed on the MMQR payment surface.
+        if (total) total.textContent = mmqrStoreUsesMMK() ? formatMMKAmount(amountToPay) : "MMK only";
+        setMMQRCurrencyNote(mmqrStoreUsesMMK()
+          ? "Prices are charged in <strong>MMK</strong> only."
+          : '<span class="text-danger">This register is not set to MMK. MMQR requires MMK; change the store currency before accepting this payment.</span>');
         const modalElement = document.getElementById("mmqrPaymentModal");
         const modal = bootstrap.Modal.getInstance(modalElement) || new bootstrap.Modal(modalElement);
         if (!modalElement.classList.contains("show")) modal.show();
@@ -11489,6 +11964,9 @@
         }
         const modalElement = document.getElementById("mmqrPaymentModal");
         bootstrap.Modal.getInstance(modalElement)?.hide();
+        clearLegacyMMQRDeadline();
+        stopMMQRCountdown();
+        setMMQRDownloadState(false);
         completeSale(true);
       }
 
@@ -11527,6 +12005,7 @@
 
       function clearCart() {
         if (cart.length === 0) return;
+        clearLegacyMMQRDeadline();
 
         if (confirm("Are you sure you want to clear the cart?")) {
           cart = [];
@@ -13053,6 +13532,9 @@
         document.querySelectorAll("#settings-section .settings-group").forEach((pane) => {
           pane.style.display = pane.id === `settings-group-${groupId}` ? "" : "none";
         });
+        // Payment credentials live on the server; refresh them when opened so a
+        // value saved on another device is visible without a reload.
+        if (groupId === "payments" && typeof loadPaymentSettings === "function") loadPaymentSettings();
         document.querySelectorAll("#settings-section .settings-nav-item").forEach((item) => {
           const isActive = item.dataset.group === groupId;
           item.classList.toggle("active", isActive);

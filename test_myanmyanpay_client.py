@@ -32,6 +32,16 @@ def response(data, status=200):
 
 
 class MyanMyanPayClientTests(unittest.TestCase):
+    def test_overlength_order_id_rejected_before_network(self):
+        with patch.dict(os.environ, ENV), patch('myanmyanpay.requests.post') as post:
+            gateway = MyanMyanPayClient.from_env()
+            for operation in (gateway.get, gateway.cancel):
+                with self.assertRaisesRegex(ValueError, '32 characters'):
+                    operation('POS-' + 'a' * 32)
+            with self.assertRaisesRegex(ValueError, '32 characters'):
+                gateway.create('POS-' + 'a' * 32, 1000, 'https://pos.example/webhooks/myanmyanpay')
+            post.assert_not_called()
+
     def setUp(self):
         self.env = patch.dict(os.environ, ENV, clear=True)
         self.env.start()

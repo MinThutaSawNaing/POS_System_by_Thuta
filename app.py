@@ -72,6 +72,7 @@ import hashlib
 import zlib
 import sqlite3
 from contextlib import closing
+from urllib.parse import urlsplit
 from cryptography.fernet import Fernet, InvalidToken
 
 # Import AI Agent modules
@@ -225,7 +226,7 @@ def normalize_payment_breakdown(raw_breakdown, total):
 
 # Settings whose values are credentials are encrypted at rest with a key derived
 # from SECRET_KEY, so secrets are never stored in plaintext in the database.
-_SECRET_SETTING_KEYS = {'ai_api_key'}
+_SECRET_SETTING_KEYS = {'ai_api_key', 'mmpay_publishable_key', 'mmpay_secret_key'}
 
 
 def _fernet():
@@ -256,7 +257,7 @@ def decrypt_secret(stored_value):
         return _fernet().decrypt(stored_value.encode('utf-8')).decode('utf-8')
     except (InvalidToken, ValueError, UnicodeDecodeError):
         if stored_value.startswith('gAAAA'):
-            app.logger.warning('Stored AI API key could not be decrypted; SECRET_KEY may have changed.')
+            app.logger.warning('A stored credential could not be decrypted; SECRET_KEY may have changed.')
             return ''
         return stored_value
 
@@ -286,6 +287,173 @@ def set_setting(key, value):
         setting = AppSetting(key=key, value=value)
         db.session.add(setting)
     db.session.commit()
+
+
+# ---------------------------------------------------------------------------
+# MyanMyanPay provider configuration (Settings -> Payments)
+# ---------------------------------------------------------------------------
+# One merchant account serves every branch, so these values are deliberately
+# global (never branch-scoped). A manager can enter them from Settings instead of
+# editing server files; the two keys are encrypted at rest with the SECRET_KEY
+# derived cipher. Stored values override the deployment environment, while the
+# environment stays the bootstrap and fallback so container installs provisioned
+# from .env keep working unchanged.
+PAYMENT_FIELDS = {
+    'app_id': 'MMPAY_APP_ID',
+    'publishable_key': 'MMPAY_PUBLISHABLE_KEY',
+    'secret_key': 'MMPAY_SECRET_KEY',
+    'api_base_url': 'MMPAY_API_BASE_URL',
+    'callback_url': 'MMPAY_CALLBACK_URL',
+}
+PAYMENT_SETTING_ENV = {f'mmpay_{field}': name for field, name in PAYMENT_FIELDS.items()}
+PAYMENT_ENABLED_SETTING = 'mmpay_enabled'
+PAYMENT_CALLBACK_PATH = '/webhooks/myanmyanpay'
+# AppSetting.value is a 255-character column; Fernet adds ~76 base64 characters.
+PAYMENT_FIELD_LIMITS = {'app_id': 120, 'publishable_key': 90,
+                        'secret_key': 90, 'api_base_url': 240,
+                        'callback_url': 240}
+_payment_env_lock = threading.RLock()
+_payment_env_baseline = None
+
+
+def _payment_env_names():
+    return tuple(PAYMENT_SETTING_ENV.values()) + ('MMPAY_ENABLED',)
+
+
+def _payment_env_baseline_snapshot():
+    """Capture deployment values once, before any stored value overlays them."""
+    global _payment_env_baseline
+    with _payment_env_lock:
+        if _payment_env_baseline is None:
+            _payment_env_baseline = {
+                name: os.environ[name]
+                for name in _payment_env_names() if name in os.environ
+            }
+        return dict(_payment_env_baseline)
+
+
+def _payment_environment_values():
+    """Effective provider values, including the callback URL the adapter omits."""
+    from myanmyanpay import configuration_values
+    values = configuration_values()
+    values['MMPAY_CALLBACK_URL'] = os.environ.get('MMPAY_CALLBACK_URL', '')
+    return values
+
+
+def payment_setting_values():
+    """Stored Settings values, decrypted. '' means "not stored in Settings"."""
+    return {key: (get_setting(key, '') or '') for key in PAYMENT_SETTING_ENV}
+
+
+def payment_switch_enabled():
+    """Same fail-closed switch rule the checkout boundary uses."""
+    value = os.environ.get('MMPAY_ENABLED', '').strip().lower()
+    return value not in ('', '0', 'false', 'no', 'off')
+
+
+def apply_payment_settings():
+    """Make stored Settings values effective for this process and every branch.
+
+    Recomputed from the deployment baseline on every call, so clearing a stored
+    credential falls back to the .env value instead of keeping a stale one.
+    """
+    with _payment_env_lock:
+        effective = _payment_env_baseline_snapshot()
+        stored = payment_setting_values()
+        for key, env_name in PAYMENT_SETTING_ENV.items():
+            value = (stored.get(key) or '').strip()
+            if value:
+                effective[env_name] = value
+        switch = (get_setting(PAYMENT_ENABLED_SETTING, '') or '').strip().lower()
+        if switch in ('true', 'false'):
+            effective['MMPAY_ENABLED'] = switch
+        for name in _payment_env_names():
+            if name in effective:
+                os.environ[name] = effective[name]
+            else:
+                os.environ.pop(name, None)
+
+
+def _validate_payment_callback_url(value):
+    parsed = urlsplit(value)
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username
+            or parsed.password or parsed.query or parsed.fragment
+            or parsed.path != PAYMENT_CALLBACK_PATH):
+        raise ValueError(
+            'Callback URL must be a public HTTPS address ending in '
+            f'{PAYMENT_CALLBACK_PATH}.')
+    return value
+
+
+def validated_payment_environment(changes):
+    """Merge submitted Settings fields over the effective config and validate.
+
+    Blank credential fields mean "keep the stored key", so the browser never has
+    to resend a secret it cannot read. Validation reuses the provider adapter's
+    own rules so there is exactly one definition of a usable configuration.
+    """
+    from myanmyanpay import MyanMyanPayClient
+
+    merged = dict(_payment_environment_values())
+    for field, env_name in PAYMENT_FIELDS.items():
+        if field not in changes or changes[field] is None:
+            continue
+        value = changes[field]
+        if not isinstance(value, str):
+            raise ValueError(f'{field.replace("_", " ").capitalize()} must be text.')
+        if field in ('publishable_key', 'secret_key') and not value.strip():
+            continue  # blank secret field: keep the stored value
+        merged[env_name] = value.strip()
+    for field, limit in PAYMENT_FIELD_LIMITS.items():
+        if len(merged[PAYMENT_FIELDS[field]]) > limit:
+            raise ValueError(
+                f'{field.replace("_", " ").capitalize()} is too long '
+                f'(maximum {limit} characters).')
+    MyanMyanPayClient.from_values(merged, enabled=True)
+    _validate_payment_callback_url(merged['MMPAY_CALLBACK_URL'])
+    return merged
+
+
+def payment_settings_status():
+    """Non-secret view of the effective provider configuration (all branches)."""
+    from myanmyanpay import MyanMyanPayClient, PaymentConfigurationError
+
+    effective = _payment_environment_values()
+    stored = payment_setting_values()
+    sources = {}
+    for field, env_name in PAYMENT_FIELDS.items():
+        sources[field] = ('settings' if (stored.get(f'mmpay_{field}') or '').strip()
+                          else 'environment' if effective.get(env_name) else 'unset')
+    switch = (get_setting(PAYMENT_ENABLED_SETTING, '') or '').strip().lower()
+    enabled = payment_switch_enabled()
+    configured = False
+    sandbox = None
+    problem = None
+    if enabled:
+        try:
+            client = MyanMyanPayClient.from_values(effective, enabled=True)
+            _validate_payment_callback_url(effective['MMPAY_CALLBACK_URL'])
+            sandbox = client.sandbox
+            configured = True
+        except (PaymentConfigurationError, ValueError) as error:
+            problem = str(error)
+    currency = get_currency_code()
+    return {
+        'enabled': enabled,
+        'configured': configured,
+        'sandbox': sandbox,
+        'app_id': effective['MMPAY_APP_ID'],
+        'api_base_url': effective['MMPAY_API_BASE_URL'],
+        'callback_url': effective['MMPAY_CALLBACK_URL'],
+        'fields': {field: bool(effective[env_name])
+                   for field, env_name in PAYMENT_FIELDS.items()},
+        'sources': sources,
+        'saved_in_settings': switch in ('true', 'false') or any(
+            (value or '').strip() for value in stored.values()),
+        'currency': currency,
+        'currency_supported': currency == 'MMK',
+        'message': problem,
+    }
 
 
 def branch_setting_key(branch_id, key):
@@ -2956,6 +3124,10 @@ with app.app_context():
     # Encrypt any legacy plaintext AI API key so it is never stored in the clear.
     migrate_legacy_secrets()
 
+    # MyanMyanPay credentials saved in Settings override the deployment
+    # environment for every branch and must return after a restart.
+    apply_payment_settings()
+
     # Deleting a product keeps its history rows and only unlinks them, so
     # return/exchange lines must accept a NULL product_id. Legacy SQLite tables
     # declare product_id NOT NULL, which ALTER TABLE cannot drop, so the table
@@ -3251,6 +3423,91 @@ def api_settings():
             })
     
     return jsonify({'success': False, 'message': 'No valid settings provided'}), 400
+
+@app.route('/api/settings/myanmyanpay', methods=['GET', 'PUT'])
+@manager_or_boss_required
+def api_payment_settings():
+    """Global MyanMyanPay credentials entered by a manager; applies to all branches.
+
+    GET never returns a stored credential: only booleans, the source of each
+    value, and the non-secret App ID / URLs. PUT accepts JSON only, so a
+    cross-site form post cannot silently replace payment credentials.
+    """
+    if request.method == 'GET':
+        return jsonify(success=True, **payment_settings_status())
+
+    from myanmyanpay import PaymentConfigurationError
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(success=False, message='Send a JSON object'), 400
+
+    if data.get('clear') is True:
+        for key in (*PAYMENT_SETTING_ENV, PAYMENT_ENABLED_SETTING):
+            row = AppSetting.query.filter_by(key=key).first()
+            if row:
+                db.session.delete(row)
+        record_audit_event('settings', 'delete', 'payment_settings',
+                           entity_id='myanmyanpay', entity_label='MyanMyanPay',
+                           changes={'saved_credentials': 'cleared'})
+        db.session.commit()
+        apply_payment_settings()
+        payload = payment_settings_status()
+        payload.update(
+            success=True,
+            message='Saved payment credentials cleared; deployment environment values apply.')
+        return jsonify(payload)
+
+    enabled = data.get('enabled')
+    if enabled is not None:
+        if isinstance(enabled, str) and enabled.strip().lower() in ('true', 'false'):
+            enabled = enabled.strip().lower() == 'true'
+        elif not isinstance(enabled, bool):
+            return jsonify(success=False, message='enabled must be true or false'), 400
+
+    try:
+        merged = validated_payment_environment(
+            {field: data[field] for field in PAYMENT_FIELDS if field in data})
+    except (PaymentConfigurationError, ValueError) as error:
+        return jsonify(success=False, message=str(error)), 400
+
+    # Compliance: MMQR may only display MMK, and the provider does no conversion.
+    if enabled and get_currency_code() != 'MMK':
+        return jsonify(
+            success=False,
+            message='Set the store currency to MMK before enabling MyanMyanPay. '
+                    'Foreign currencies cannot be displayed on an MMQR checkout.'), 400
+
+    changed = {}
+    for field, env_name in PAYMENT_FIELDS.items():
+        key = f'mmpay_{field}'
+        value = merged[env_name]
+        stored_value = encrypt_secret(value) if key in _SECRET_SETTING_KEYS else value
+        row = AppSetting.query.filter_by(key=key).first()
+        if row:
+            row.value = stored_value
+        else:
+            db.session.add(AppSetting(key=key, value=stored_value))
+        changed[field] = 'set'
+    if enabled is not None:
+        switch_value = 'true' if enabled else 'false'
+        row = AppSetting.query.filter_by(key=PAYMENT_ENABLED_SETTING).first()
+        if row:
+            row.value = switch_value
+        else:
+            db.session.add(AppSetting(key=PAYMENT_ENABLED_SETTING, value=switch_value))
+        changed['enabled'] = switch_value
+
+    record_audit_event('settings', 'update', 'payment_settings',
+                       entity_id='myanmyanpay', entity_label='MyanMyanPay',
+                       changes=changed)
+    db.session.commit()
+    apply_payment_settings()
+    payload = payment_settings_status()
+    payload.update(success=True,
+                   message='Payment settings saved for all branches.')
+    return jsonify(payload)
+
 
 @app.route('/api/settings/database_backup', methods=['GET'])
 @manager_required

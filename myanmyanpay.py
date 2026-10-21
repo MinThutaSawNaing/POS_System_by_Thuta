@@ -65,6 +65,15 @@ def _https_url(value):
         return False
 
 
+CONFIGURATION_NAMES = ('MMPAY_API_BASE_URL', 'MMPAY_APP_ID',
+                       'MMPAY_PUBLISHABLE_KEY', 'MMPAY_SECRET_KEY')
+
+
+def configuration_values():
+    """Return the provider configuration currently present in the environment."""
+    return {name: os.environ.get(name, '') for name in CONFIGURATION_NAMES}
+
+
 class MyanMyanPayClient:
     """Environment-configured client; no session or per-request shared state.
 
@@ -76,18 +85,20 @@ class MyanMyanPayClient:
 
     TIMEOUT = (5, 20)  # connect/read seconds; requests does not impose a total deadline
 
-    def __init__(self, *, for_webhook=False, for_recovery=False):
-        self.enabled = is_enabled()
+    def __init__(self, *, for_webhook=False, for_recovery=False,
+                 values=None, enabled=None):
+        self.enabled = is_enabled() if enabled is None else bool(enabled)
         self.sandbox = False
         self._secret_key = None
         self._recovery = for_recovery
         if not self.enabled and not for_webhook and not for_recovery:
             return
+        supplied = configuration_values() if values is None else values
         values = {}
-        for name in ('MMPAY_API_BASE_URL', 'MMPAY_APP_ID',
-                     'MMPAY_PUBLISHABLE_KEY', 'MMPAY_SECRET_KEY'):
-            value = os.environ.get(name, '')
-            if (not value or value != value.strip() or
+        for name in CONFIGURATION_NAMES:
+            value = supplied.get(name, '')
+            if (not isinstance(value, str) or not value or
+                    value != value.strip() or
                     any(ord(c) < 32 or ord(c) == 127 for c in value)):
                 raise PaymentConfigurationError(f'{name} is missing or invalid.')
             values[name] = value
@@ -113,6 +124,15 @@ class MyanMyanPayClient:
         client. It does not bypass the enabled gate for create/get/cancel.
         """
         return cls(for_webhook=for_webhook, for_recovery=for_recovery)
+
+    @classmethod
+    def from_values(cls, values, *, enabled=True):
+        """Validate an explicit configuration mapping instead of the environment.
+
+        The settings screen uses this to apply exactly the same rules as a live
+        deployment before anything is stored. No network I/O is performed.
+        """
+        return cls(values=values, enabled=enabled)
 
     def _require_enabled(self, *, recovery=False):
         if not self.enabled and not (recovery and self._recovery):
@@ -168,8 +188,8 @@ class MyanMyanPayClient:
 
     def _operation(self, action, order_id, **fields):
         self._require_enabled(recovery=action in ('get', 'cancel'))
-        if not isinstance(order_id, str) or not order_id.strip():
-            raise ValueError('order_id must be a nonempty string.')
+        if not isinstance(order_id, str) or not order_id.strip() or len(order_id) > 32:
+            raise ValueError('order_id must be a nonempty string of at most 32 characters.')
         nonce = str(time.time_ns() // 1_000_000)
         # As in the official SDK, the handshake body binds the operation nonce;
         # its own signature/header uses a separately generated nonce.

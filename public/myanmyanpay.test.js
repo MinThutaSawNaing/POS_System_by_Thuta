@@ -11,7 +11,9 @@ function harness() {
     fetch: async (path, options) => {
       h.calls.push({path, options});
       if (h.intercept) { const result = await h.intercept(path, options); if (result) return result; }
-      const payment = {id: 7, order_id: 'order1', status: h.status, amount: 1000, currency: 'MMK'};
+      const now = Date.now();
+      const payment = {id: 7, order_id: 'order1', status: h.status, amount: 1000, currency: 'MMK',
+        created_at: new Date(now).toISOString(), expires_at: now + 900000, server_now: now};
       let data = path.endsWith('/config') ? {enabled: h.enabled, configured: h.configured} :
         path.endsWith('/intents') && options.method === 'GET' ? {success: true, payments: h.payments} :
         path.endsWith('/complete') ? {success: true, transaction_id: 'sale1'} : {success: true, payment};
@@ -20,6 +22,19 @@ function harness() {
   };
   h.checkout = createCheckout(h.env); return h;
 }
+test('uncertain create error remains visible after finally and status polling', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  h.status = 'CREATING';
+  h.intercept = async (path, options) => options.method === 'POST' ? {
+    ok: false, json: async () => ({success: false, message: 'Provider did not issue a QR.',
+      payment: {id: 7, order_id: 'order1', status: 'CREATING'}})
+  } : undefined;
+  await h.checkout.start({items: [1]});
+  assert.match(h.texts.at(-1), /Provider did not issue a QR/);
+  await h.tick();
+  assert.match(h.texts.at(-1), /Provider did not issue a QR/);
+});
+
 test('fail closed before runtime config and when misconfigured; explicit disabled is legacy', async () => {
   const h = harness(); assert.equal(h.checkout.mode(), 'loading');
   await h.checkout.start({items: [1]}); assert.equal(h.calls.length, 1); // config only
@@ -119,6 +134,40 @@ test('late uncertain error payment is ignored after branch changes', async () =>
   resolve({ok: false, json: async () => ({success: false, payment: {id: 55, status: 'UNKNOWN'}})});
   await pending; assert.equal(h.checkout.state().active, null);
 });
+test('render carries the 15-minute deadline and caches the active order', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  const renders = []; let remembered = null;
+  h.env.render = x => { renders.push(x); };
+  h.env.remember = payment => { remembered = payment; };
+  await h.checkout.start({items: [1]});
+  const last = renders.at(-1);
+  assert.ok(last.deadline > Date.now(), 'deadline must be in the future');
+  assert.ok(last.deadline <= Date.now() + 900000 + 1000, 'deadline must be within 15 minutes');
+  assert.equal(remembered.id, 7);
+  assert.equal(remembered.expires_at, h.checkout.state().active.expires_at);
+});
+
+test('a reload restores the cached order and never posts a second create', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  h.env.restore = () => ({id: 7, order_id: 'order1'});
+  await h.checkout.loadConfig();
+  await new Promise(setImmediate);
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+  assert.equal(h.checkout.state().active.id, 7);
+  assert.ok(h.calls.some(c => /\/intents\/7$/.test(c.path)));
+});
+
+test('a cached order that is already terminal is dropped without a new create', async () => {
+  const h = harness(); h.status = 'CANCELLED';
+  h.env.restore = () => ({id: 7, order_id: 'order1'});
+  let forgotten = false; h.env.forget = () => { forgotten = true; };
+  await h.checkout.loadConfig();
+  await new Promise(setImmediate);
+  assert.equal(forgotten, true);
+  assert.equal(h.checkout.state().active, null);
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+});
+
 test('disabled integration permits saved provider recovery but never new provider creation', async () => {
   const h = harness(); h.enabled = false; h.configured = false;
   await h.checkout.loadConfig(); assert.equal(h.checkout.mode(), 'legacy');

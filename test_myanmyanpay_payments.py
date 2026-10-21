@@ -70,6 +70,25 @@ class MyanMyanPayPaymentTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.get_json())
         return response.get_json()['payment']
 
+    def test_order_id_fits_provider_handshake_limit(self):
+        payment = self.begin()
+        self.assertLessEqual(len(payment['order_id']), 32)
+        self.assertTrue(payment['qr_url'])
+
+    def test_explicit_cancel_recovers_legacy_rejected_order(self):
+        payment = self.begin()
+        intent = db.session.get(PaymentIntent, payment['id'])
+        intent.order_id = 'POS-' + uuid.uuid4().hex
+        intent.status = 'CREATING'
+        intent.qr_payload = None
+        intent.vendor_qr_ref = None
+        db.session.commit()
+        with patch('myanmyanpay.MyanMyanPayClient.cancel') as cancel:
+            response = self.client.post(ROOT + '/intents/' + intent.id + '/cancel', headers=HEADERS)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()['payment']['status'], 'CANCELLED')
+        cancel.assert_not_called()
+
     def event(self, payment, status='SUCCESS', **updates):
         payload = {'orderId': payment['order_id'], 'amount': float(payment['amount']),
                    'currency': 'MMK', 'status': status, 'vendorQrRefId': 'qr-' + payment['order_id'],
@@ -97,7 +116,38 @@ class MyanMyanPayPaymentTests(unittest.TestCase):
         qr = self.client.get(payment['qr_url'])
         self.assertEqual(qr.status_code, 200)
         self.assertIn(b'<svg', qr.data)
+        # Compliance: the provider payload is rendered unchanged with a white
+        # quiet zone around it (no logo or caption drawn inside the symbol).
+        self.assertIn(b'width="384"', qr.data)
+        self.assertIn(b'fill: rgb(100%,100%,100%)', qr.data)
         self.assertEqual(self.client.post(ROOT + '/intents/' + payment['id'] + '/complete', headers=HEADERS).status_code, 409)
+
+    def test_order_exposes_the_fifteen_minute_validity_window(self):
+        payment = self.begin()
+        window = payment['expires_at'] - payment['server_now']
+        self.assertLessEqual(window, 15 * 60 * 1000)
+        self.assertGreater(window, 15 * 60 * 1000 - 5000)
+        refreshed = self.client.get(ROOT + '/intents/' + payment['id']).get_json()['payment']
+        self.assertEqual(refreshed['expires_at'], payment['expires_at'])
+
+    def test_a_second_order_is_blocked_until_the_active_order_is_cancelled(self):
+        first = self.begin()
+        # Reloading, reopening the modal or resubmitting never mints another QR.
+        blocked = self.client.post(ROOT + '/intents', json=self.checkout(), headers=HEADERS)
+        self.assertEqual(blocked.status_code, 409, blocked.get_json())
+        self.assertEqual(blocked.get_json()['payment']['id'], first['id'])
+        self.assertEqual(PaymentIntent.query.count(), 1)
+
+        result = self.provider_create(first['order_id'], 1050, '')
+        result['status'] = 'CANCELLED'
+        with patch('myanmyanpay.MyanMyanPayClient.cancel', return_value={'status': 'CANCELLED'}), \
+                patch('myanmyanpay.MyanMyanPayClient.get', return_value=result):
+            cancelled = self.client.post(ROOT + '/intents/' + first['id'] + '/cancel', headers=HEADERS)
+            self.assertEqual(cancelled.status_code, 200, cancelled.get_json())
+
+        second = self.begin()
+        self.assertNotEqual(second['id'], first['id'])
+        self.assertEqual(PaymentIntent.query.count(), 2)
 
     def test_signed_success_then_complete_is_idempotent_and_uses_saved_cart(self):
         payment = self.begin()
@@ -221,11 +271,26 @@ class MyanMyanPayPaymentTests(unittest.TestCase):
             db.session.commit()
 
     def test_duplicate_confirmed_provider_reference_cannot_pay_two_orders(self):
-        first, second = self.begin(), self.begin()
+        # Only one open order per user/branch is allowed now, so the second
+        # order is created by another manager in the same branch.
+        first = self.begin()
+        other = User(username='mm-duplicate-' + uuid.uuid4().hex[:8], password='test-only',
+                     role='manager', branch_id=self.branch.id)
+        db.session.add(other)
+        db.session.commit()
+        try:
+            with self.client.session_transaction() as s:
+                s['user_id'] = other.id
+            second = self.begin()
+        finally:
+            with self.client.session_transaction() as s:
+                s['user_id'] = self.user.id
         self.assertEqual(self.event(first, transactionRefId='same-bank-transaction').status_code, 200)
         self.assertEqual(self.event(second, transactionRefId='same-bank-transaction').status_code, 409)
         db.session.expire_all()
         self.assertEqual(db.session.get(PaymentIntent, second['id']).status, 'PENDING')
+        db.session.delete(other)
+        db.session.commit()
 
     def test_cancel_uses_provider_and_does_not_cancel_paid_orders(self):
         payment = self.begin()

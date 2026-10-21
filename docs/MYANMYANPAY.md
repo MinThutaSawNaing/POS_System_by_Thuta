@@ -15,15 +15,47 @@ signed create/get/cancel requests, and raw-body HMAC-SHA256 webhook verification
 The exact production base URL and keys must be obtained from your merchant
 console. Do not assume the developer-console URL is an API host.
 
-## Configure on the server
+## Configure
+
+### Option A - Settings screen (no server access needed)
+
+A manager can open **Settings -> Payments** in the POS and enter the App ID,
+publishable key, secret key, API base URL, callback URL and the enable switch.
+
+* The one merchant configuration applies to **all branches**; it is not
+  branch-scoped, because a single merchant account issues every branch's QRs.
+* The two keys are encrypted at rest with the same `SECRET_KEY`-derived cipher
+  as the AI API key. `GET /api/settings/myanmyanpay` returns only booleans, the
+  source of each value, and the non-secret App ID/URLs - never a credential.
+* Saving validates the values with the provider adapter itself (HTTPS base URL,
+  matching `_test_`/`_live_` keys, callback path `/webhooks/myanmyanpay`) and
+  then applies them to the running server for every branch immediately.
+* Stored values override the deployment environment. **Clear saved credentials**
+  deletes them and falls back to `.env`, so container installs keep working.
+* Only `manager` and `boss` may read or change these values; a cashier receives
+  `403` from the deny-by-default API allowlist. Changes are written to the audit
+  trail with field names only (never values).
+* Entering credentials in the browser means TLS is required in production, and
+  `SECRET_KEY` must stay stable: changing it makes stored ciphertext
+  undecryptable (the screen then reports the configuration as incomplete and the
+  keys must be re-entered).
+
+### Option B - Environment variables
+
+If you prefer provisioning by deployment (or need values before first launch),
+set the variables in the root `.env.example` copy in your untracked `.env` (or
+deployment secret store): `MMPAY_APP_ID`, `MMPAY_PUBLISHABLE_KEY`,
+`MMPAY_SECRET_KEY`, `MMPAY_API_BASE_URL`, `MMPAY_CALLBACK_URL`.
+
+## Activation checklist
 
 1. Back up the POS database and uploads; deploy this version. Startup creates
    `payment_intent` and `payment_webhook_event` tables without deleting sales.
 2. Obtain merchant App ID, publishable key, secret key, approved API base URL,
    and any required outbound IP allowlisting from MyanMyanPay.
-3. Configure the variables in the root `.env.example` in your untracked `.env`
-   (or deployment secret store): `MMPAY_APP_ID`, `MMPAY_PUBLISHABLE_KEY`,
-   `MMPAY_SECRET_KEY`, `MMPAY_API_BASE_URL`, `MMPAY_CALLBACK_URL`.
+3. Apply the configuration with **Option A** (Settings -> Payments) or
+   **Option B** (.env) above. Both produce the same effective configuration;
+   Settings values win until they are cleared.
 4. Set the payment branch currency to **MMK**. This implementation does not
    perform currency conversion.
 5. Set `MMPAY_CALLBACK_URL=https://YOUR-POS-HOST/webhooks/myanmyanpay`.
@@ -95,7 +127,46 @@ matches return 409; unknown orders return 404; oversized events return 413.
 Transient database/server failures return non-2xx for provider retry. Confirm
 the provider's actual retry policy during onboarding; it is not assumed here.
 
+## Merchant compliance (MMQR rules)
+
+| Rule | Where it is enforced |
+| --- | --- |
+| MMQR logo | `public/photos/mmqr-logo.png` is served byte-for-byte and displayed unmodified (no crop, recolor, distortion or overlay) in the checkout modal and Settings -> Payments. A "Download MMQR logo" action exists in both places. |
+| MMK only | The server pins every intent to `MMK` and refuses checkout under another currency. The payment surface formats through `formatMMK()` / `formatMMKAmount()`; a non-MMK register shows "MMK only" instead of a foreign amount. |
+| Attribution | `PAYMENT POWERED BY MYANMYANPAY` is rendered directly below the QR. |
+| QR integrity | The QR is rendered from the provider payload by ReportLab at `/api/payments/myanmyanpay/intents/<id>/qr` inside a white quiet zone; nothing is drawn over it and the image is never rounded or bordered. |
+| 15-minute timer | `expires_at` = creation + 15 minutes, returned with the order. The browser derives an absolute deadline from `expires_at`/`server_now` so a skewed POS clock cannot change it. Legacy uploaded QR images use a 15-minute session window. The timer never reloads, cancels or replaces an order. |
+| Download QR | `Download QR` fetches the exact server-rendered SVG (or the uploaded image in legacy mode) and saves it as `MMQR-<order>.svg|png|jpg`. |
+| Seamless return | No payment path calls `location.reload()`. Returning to the tab re-reads the saved order in place via `visibilitychange`. |
+| State caching | The open order is cached per user+branch in `localStorage` (`mmpay_active:*`) together with the rendered QR (`mmpay_qr:*`). After a reload the order is re-validated with the server and displayed again; no new order is created. |
+| Strict re-request | `POST /intents` refuses a second order while an open `CREATING`/`PENDING`/`SUCCESS` order exists for that user and branch (409 plus the existing payment). A new QR requires an explicit provider cancellation that ends the order. |
+| Spam prevention | The same server-side guard, the five-second refresh throttle and per-user/per-branch scoping mean refreshing or replaying a browser cannot mint transactions. |
+
+## Platform and KYC obligations
+
+These are merchant obligations; this deployment is a single-merchant checkout and
+never acts as an intermediary.
+
+* **Fund holding.** Without a verified CBM permit, the POS must not hold customer
+  funds on behalf of sub-merchants. Settlement stays with MyanMyanPay.
+* **KYC.** Every business entity processing payments needs an officially verified
+  profile. Shadow onboarding is prohibited.
+* **Prohibited uses.** Illegal goods, unregulated gambling, adult content,
+  financial scams (pyramid schemes, unregulated crypto) and political/religious
+  fundraising must never be enabled for MMQR checkout.
+
 ## Acceptance checklist (required before live use)
+
+### Recovering an older checkout stuck at CREATING
+
+The provider handshake accepts order IDs of at most 32 characters. New orders
+use a 32-character UUID hex string and the adapter validates this before I/O.
+Older `POS-` plus UUID-hex IDs were 36 characters and were rejected before QR
+creation. Choose **Cancel payment** explicitly to close an old overlength
+`CREATING` order with no QR or provider references, then create a new checkout.
+Valid-length uncertain orders still require provider reconciliation/cancellation;
+they are never automatically released. Provider errors remain visible while
+local status polling runs, and the checkout explains when no QR has been issued.
 
 - Create sandbox QR; scan/pay; confirm webhook reaches public HTTPS callback.
 - Verify app automatically shows verified status; completing creates exactly one

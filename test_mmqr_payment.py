@@ -125,6 +125,44 @@ class MMQRPaymentTests(unittest.TestCase):
         self.assertIn('function showMMQRPaymentModal()', dashboard)
         self.assertIn('mobile_payment" || (paymentMethod === "split_payment"', dashboard)
 
+    def test_dashboard_and_checkout_enforce_mmqr_compliance(self):
+        dashboard = Path(app.root_path, 'templates', 'dashboard.html').read_text(encoding='utf-8')
+        for token in (
+            'src="/public/photos/mmqr-logo.png"',
+            'PAYMENT POWERED BY MYANMYANPAY',
+            'id="mmqr-timer"',
+            'role="timer"',
+            'id="download-mmqr-btn"',
+            'onclick="downloadMMQRImage()"',
+            'id="download-mmqr-logo-btn"',
+            'function downloadMMQRImage()',
+            'function startMMQRCountdown(',
+            'function formatMMKAmount(',
+            'MMQR_ORDER_WINDOW_MS = 15 * 60 * 1000',
+            'legacyMMQRDeadline()',
+        ):
+            self.assertIn(token, dashboard)
+        # The QR surface is undecorated: no rounded corners, border or overlay.
+        self.assertIn('class="mmqr-qr-image"', dashboard)
+        self.assertNotIn('img-fluid rounded border mb-3', dashboard)
+
+        script = Path(app.root_path, 'public', 'myanmyanpay.js').read_text(encoding='utf-8')
+        self.assertIn('formatMMK', script)
+        self.assertIn('mmpay_active:', script)
+        self.assertIn('mmpay_qr:', script)
+        self.assertIn('visibilitychange', script)
+        # Seamless return: coming back from the banking app never reloads the page.
+        self.assertNotIn('location.reload', script)
+        self.assertNotIn('location.href', script)
+
+    def test_official_mmqr_logo_is_served_byte_for_byte(self):
+        logo = Path(app.root_path, 'public', 'photos', 'mmqr-logo.png')
+        self.assertTrue(logo.is_file())
+        response = self.client.get('/public/photos/mmqr-logo.png')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, logo.read_bytes())
+        self.assertEqual(response.data[:8], b'\x89PNG\r\n\x1a\n')
+
 
 if __name__ == '__main__':
     unittest.main()

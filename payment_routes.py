@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
 
@@ -95,13 +95,25 @@ def register_payment_routes(app, db, pos):
         return PaymentIntent.query.filter_by(
             id=payment_id, branch_id=pos['get_current_branch_id'](), user_id=session['user_id']).first()
 
+    ORDER_WINDOW = timedelta(minutes=15)
+
+    def _epoch_ms(value):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return int(value.timestamp() * 1000)
+
     def public(intent):
+        created = intent.created_at or datetime.utcnow()
         return {
             'id': intent.id, 'order_id': intent.order_id, 'transaction_id': intent.transaction_id,
             'status': intent.status, 'amount': intent.amount, 'currency': intent.currency,
             'sale_transaction_id': intent.sale_transaction_id,
             'qr_url': url_for('mmpay_qr', payment_id=intent.id) if intent.qr_payload else None,
-            'created_at': intent.created_at.isoformat(),
+            'created_at': created.isoformat(),
+            # Compliance timer: 15 minutes from order creation. Epoch milliseconds
+            # plus the server clock let the browser correct for clock skew.
+            'expires_at': _epoch_ms(created + ORDER_WINDOW),
+            'server_now': _epoch_ms(datetime.utcnow()),
             'message': ('Payment received. Complete this saved checkout; do not pay again.'
                         if intent.status == 'SUCCESS' and not intent.sale_transaction_id else None),
         }
@@ -245,7 +257,18 @@ def register_payment_routes(app, db, pos):
                 return jsonify(success=True, payment=public(existing)), 200
             if pos['Sale'].query.filter_by(transaction_id=data['transaction_id']).first():
                 return jsonify(success=False, message='Checkout reference already used by a sale.'), 409
-            intent = PaymentIntent(id=str(uuid.uuid4()), order_id='POS-' + uuid.uuid4().hex,
+            # Strict re-request policy: a user/branch may hold only one open order.
+            # Refreshing, reopening the modal or reloading the page can never mint a
+            # second QR; the caller must resume (or explicitly cancel) the active one.
+            active_intent = PaymentIntent.query.filter_by(
+                branch_id=pos['get_current_branch_id'](), user_id=session['user_id'],
+                sale_transaction_id=None).filter(PaymentIntent.status.in_(
+                    ('CREATING', 'PENDING', 'SUCCESS'))).order_by(
+                    PaymentIntent.created_at.desc()).first()
+            if active_intent:
+                return jsonify(success=False, payment=public(active_intent),
+                               message='An active payment already exists. Resume it, or cancel it explicitly before creating another.'), 409
+            intent = PaymentIntent(id=str(uuid.uuid4()), order_id=uuid.uuid4().hex,
                                    transaction_id=data['transaction_id'], branch_id=pos['get_current_branch_id'](),
                                    user_id=session['user_id'], amount=amount, currency='MMK',
                                    checkout_json=serialized, checkout_hash=digest, status='CREATING')
@@ -288,6 +311,21 @@ def register_payment_routes(app, db, pos):
             return jsonify(success=False, message='Payment not found'), 404
         if cancel and (intent.status in ('SUCCESS', 'REFUNDED') or intent.sale_transaction_id):
             return jsonify(success=False, message='Paid orders cannot be cancelled here. Reconcile/refund separately.'), 409
+        # Older releases generated 36-character IDs. The provider rejects these
+        # at handshake validation, before create can run. Only explicit cancel
+        # may release such an unissued order; never abandon an uncertain valid ID.
+        if (cancel and intent.status == 'CREATING' and len(intent.order_id) > 32
+                and not intent.qr_payload and not intent.vendor_qr_ref
+                and not intent.transaction_ref):
+            lock_intent(intent)
+            if (intent.status == 'CREATING' and not intent.qr_payload
+                    and not intent.vendor_qr_ref and not intent.transaction_ref
+                    and not intent.sale_transaction_id):
+                intent.status = 'CANCELLED'
+                db.session.commit()
+                return jsonify(success=True, payment=public(intent))
+            db.session.rollback()
+            return jsonify(success=False, message='Payment changed. Refresh before cancelling.'), 409
         now = datetime.utcnow()
         if intent.last_checked_at and now - intent.last_checked_at < timedelta(seconds=5):
             return jsonify(success=False, message='Wait five seconds before checking again.'), 429
@@ -353,11 +391,21 @@ def register_payment_routes(app, db, pos):
         if not intent or not intent.qr_payload or intent.status != 'PENDING':
             return jsonify(success=False, message='No active payment QR'), 404
         from reportlab.graphics.barcode.qr import QrCodeWidget
-        from reportlab.graphics.shapes import Drawing
+        from reportlab.graphics.shapes import Drawing, Rect
         from reportlab.graphics import renderSVG
+        from reportlab.lib.colors import white
         widget = QrCodeWidget(intent.qr_payload)
         x1, y1, x2, y2 = widget.getBounds()
-        drawing = Drawing(320, 320, transform=[320 / (x2 - x1), 0, 0, 320 / (y2 - y1), 0, 0])
+        # QR integrity: the provider payload is rendered by the provider library
+        # and never altered, overlaid or re-encoded. A white quiet zone is added
+        # around the symbol so the downloaded file also scans reliably.
+        symbol = 320
+        quiet = 32
+        canvas = symbol + 2 * quiet
+        drawing = Drawing(canvas, canvas, transform=[
+            symbol / (x2 - x1), 0, 0, symbol / (y2 - y1), quiet, quiet])
+        drawing.add(Rect(0, 0, canvas, canvas, fillColor=white,
+                         strokeColor=white, strokeWidth=0))
         drawing.add(widget)
         response = Response(renderSVG.drawToString(drawing), mimetype='image/svg+xml')
         response.headers['Cache-Control'] = 'no-store'
