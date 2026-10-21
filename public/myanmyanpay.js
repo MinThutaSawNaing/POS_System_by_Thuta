@@ -279,9 +279,34 @@
     } catch (error) { /* offline: the visible QR is unaffected */ }
   }
   const snapshot = () => JSON.stringify({cart, fields: ["payment-method", "pos-customer-select", "split-method-one", "split-method-two", "split-amount-one", "split-amount-two", "pos-enable-delivery", "pos-delivery-recipient-name", "pos-delivery-recipient-phone", "pos-delivery-address", "pos-delivery-priority", "pos-delivery-fee"].map(id => [id, el(id)?.value, el(id)?.checked])});
+  let lastActionState = null;
+  function renderActions({mode, payment, busy}) {
+    lastActionState = {mode, payment, busy};
+    const recover = mode === "provider" || mode === "legacy";
+    const paid = payment?.status === "SUCCESS";
+    const pending = recover && !!payment && !paid;
+    const confirm = el("confirm-mmqr-payment-btn");
+    // Pending orders must be checked, never manually marked paid or recreated.
+    confirm.classList.toggle("d-none", pending);
+    confirm.textContent = paid ? busy ? "Completing sale…" : "Complete verified sale"
+      : mode === "legacy" && !payment ? "Payment Received — Complete Sale"
+      : mode === "loading" ? "Checking payment setup…"
+      : mode === "blocked" ? "Payment unavailable"
+      : busy ? "Please wait…" : "Retry payment QR";
+    confirm.disabled = busy || !recover || (!!payment && !paid);
+    confirm.setAttribute("aria-busy", String(busy && !pending));
+    el("mmp-refresh").classList.toggle("d-none", !pending);
+    el("mmp-refresh").textContent = busy ? "Please wait…" : "Check payment status";
+    el("mmp-refresh").setAttribute("aria-busy", String(busy && pending));
+    el("mmp-cancel").classList.toggle("d-none", !pending);
+    el("mmp-resume").classList.toggle("d-none", !recover || !!payment);
+    ["mmp-refresh", "mmp-cancel", "mmp-resume"].forEach(id => { el(id).disabled = busy || !recover; });
+    el("mmqr-close-btn").textContent = payment ? "Close — resume later" : "Close";
+    el("mmqr-close-note").classList.toggle("d-none", !payment);
+  }
   function setBusy(value) {
-    ["confirm-mmqr-payment-btn", "mmp-refresh", "mmp-cancel", "mmp-resume"].forEach(id => { el(id).disabled = value; });
-    if (!value && checkout.state().active && checkout.state().active.status !== "SUCCESS") el("confirm-mmqr-payment-btn").disabled = true;
+    if (lastActionState) renderActions({...lastActionState,
+      mode: checkout.mode(), payment: checkout.state().active, busy: value});
   }
   const checkout = createCheckout({
     fetch: (...args) => root.fetch(...args), online: () => navigator.onLine !== false,
@@ -311,13 +336,13 @@
       const method = el("payment-method")?.value;
       if (method === "mobile_payment" || (method === "split_payment" && splitUsesMobilePayment())) completeSale(false);
     },
-    ready(mode) { el("mmp-open-existing").classList.toggle("d-none", !["provider", "legacy"].includes(mode)); },
+    ready(mode) {
+      el("mmp-open-existing").classList.toggle("d-none", !["provider", "legacy"].includes(mode));
+      renderActions({mode, payment: checkout.state().active, busy: checkout.state().busy});
+    },
     legacy() {
       el("mmp-status").textContent = "";
-      ["mmp-refresh", "mmp-cancel"].forEach(id => el(id).classList.add("d-none"));
-      el("mmp-resume").classList.remove("d-none");
-      el("confirm-mmqr-payment-btn").textContent = "Payment Received — Complete Sale";
-      el("confirm-mmqr-payment-btn").disabled = false;
+      renderActions({mode: "legacy", payment: null, busy: false});
       el("mmqr-payment-help").textContent = "Ask the customer to scan the QR and confirm that payment was received.";
       showMMQRPaymentModal();
     },
@@ -328,11 +353,7 @@
       el("mmp-status").textContent = text;
       const provider = mode === "provider";
       const recover = provider || mode === "legacy";
-      ["mmp-resume", "mmp-refresh", "mmp-cancel"].forEach(id => el(id).classList.toggle("d-none", !recover || (id !== "mmp-resume" && !payment)));
-      const confirm = el("confirm-mmqr-payment-btn");
-      confirm.textContent = payment?.status === "SUCCESS" ? "Complete verified sale" : !payment && mode === "legacy" ? "Payment Received — Complete Sale" : busy ? "Generating payment QR…" : payment ? "Waiting for payment" : "Retry payment QR";
-      confirm.disabled = busy || !recover || (!!payment && payment.status !== "SUCCESS");
-      el("mmp-refresh").disabled = el("mmp-cancel").disabled = el("mmp-resume").disabled = busy;
+      renderActions({mode, payment, busy});
       el("mmqr-payment-help").textContent = sandbox
         ? "SANDBOX — no real money: in MyanMyanPay Developers → Sandbox Txn → Pending, select this order and choose ‘Do a success callback’. After SUCCESS, choose Complete verified sale. Closing does not cancel the order."
         : "Only server-verified payment can complete this sale. Closing does not cancel payment. Existing QR always belongs to its frozen order.";
@@ -348,7 +369,7 @@
       const showQr = Boolean(recover && payment?.qr_url && payment.status === "PENDING");
       if (!showQr && (mode !== "legacy" || payment)) {
         missing.textContent = payment?.status === "CREATING"
-          ? "No QR has been issued for this order. Refresh provider to recover it, or explicitly cancel the order before trying again."
+          ? "No QR has been issued for this order. Check payment status to recover it, or explicitly cancel the order before trying again."
           : busy ? "Generating your payment QR. Please wait…" : payment?.status === "SUCCESS" ? "Payment verified. Complete the sale below." : "The QR will be generated automatically for a valid checkout. If a request failed, resolve the error before retrying.";
         missing.style.display = "block";
       }
@@ -374,7 +395,7 @@
       el("mmp-existing").replaceChildren();
       payments.forEach(payment => {
         const button = doc.createElement("button");
-        button.type = "button"; button.className = "btn btn-outline-primary m-1";
+        button.type = "button"; button.className = "btn btn-outline-primary mmqr-resume-payment";
         button.textContent = `Resume ${payment.order_id || payment.id}: ${formatMMK(payment.amount)} — ${payment.status}`;
         button.onclick = () => { el("mmp-existing").replaceChildren(); resume(payment); };
         el("mmp-existing").appendChild(button);

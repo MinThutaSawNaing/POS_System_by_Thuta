@@ -430,6 +430,43 @@
         width: auto;
         object-fit: contain;
       }
+      /* A single next action, with recovery and cancellation kept distinct. */
+      #mmqrPaymentModal .mmqr-actions {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 10px;
+        padding: 16px;
+      }
+      #mmqrPaymentModal .mmqr-actions > * { margin: 0; }
+      #mmqrPaymentModal .mmqr-actions .btn,
+      #mmqrPaymentModal .mmqr-downloads .btn,
+      #mmqrPaymentModal .mmqr-resume-payment {
+        min-height: 44px;
+        white-space: normal;
+      }
+      #mmqrPaymentModal .mmqr-primary-action {
+        grid-column: 1 / -1;
+        grid-row: 1;
+        font-weight: 600;
+      }
+      #mmqrPaymentModal .btn:focus-visible {
+        outline: 3px solid #1f3a93;
+        outline-offset: 3px;
+      }
+      #mmqrPaymentModal .mmqr-resume-payment {
+        width: 100%;
+        margin-top: 8px;
+        text-align: left;
+        overflow-wrap: anywhere;
+      }
+      #mmqrPaymentModal .mmqr-close-note {
+        grid-column: 1 / -1;
+        font-size: 0.8rem;
+        color: #495057;
+      }
+      @media (max-width: 380px) {
+        #mmqrPaymentModal .mmqr-actions { grid-template-columns: minmax(0, 1fr); }
+      }
       .settings-nav {
         position: sticky;
         top: 1rem;
@@ -6272,11 +6309,11 @@
     </div>
 
     <!-- MMQR Payment Modal -->
-    <div class="modal fade" id="mmqrPaymentModal" tabindex="-1" aria-hidden="true">
-      <div class="modal-dialog modal-dialog-centered">
+    <div class="modal fade" id="mmqrPaymentModal" tabindex="-1" aria-labelledby="mmqr-payment-title" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
           <div class="modal-header bg-success text-white">
-            <h5 class="modal-title"><i class="bi bi-qr-code me-2"></i>Scan MMQR to Pay</h5>
+            <h5 class="modal-title" id="mmqr-payment-title"><i class="bi bi-qr-code me-2" aria-hidden="true"></i>Scan MMQR to Pay</h5>
             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body text-center">
@@ -6298,14 +6335,10 @@
               <i class="bi bi-stopwatch me-1" aria-hidden="true"></i>QR valid for
               <span id="mmqr-timer" class="mmqr-timer" role="timer" aria-live="off">15:00</span>
             </div>
-            <div class="d-flex justify-content-center flex-wrap gap-2 mt-3">
+            <div class="mmqr-downloads d-flex justify-content-center flex-wrap gap-2 mt-3">
               <button type="button" class="btn btn-outline-success btn-sm" id="download-mmqr-btn" onclick="downloadMMQRImage()" disabled>
                 <i class="bi bi-download me-1"></i>Download QR
               </button>
-              <a class="btn btn-outline-secondary btn-sm" id="download-mmqr-logo-btn"
-                 href="/public/photos/mmqr-logo.png" download="MMQR-logo.png">
-                <i class="bi bi-download me-1"></i>Download MMQR logo
-              </a>
             </div>
             <p id="mmqr-payment-help" class="text-muted small mb-0 mt-2">Ask the customer to scan the QR and confirm that payment was received.</p>
             <div id="mmp-status" class="mt-2" role="status" aria-live="polite"></div>
@@ -6314,14 +6347,15 @@
                  Enabled but unconfigured, unknown config, and offline states fail closed. -->
             <div id="mmp-existing" class="mt-2"></div>
           </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-            <button type="button" class="btn btn-outline-primary d-none" id="mmp-resume">Find pending payments</button>
-            <button type="button" class="btn btn-outline-primary d-none" id="mmp-refresh">Refresh provider</button>
-            <button type="button" class="btn btn-outline-danger d-none" id="mmp-cancel">Cancel payment</button>
-            <button type="button" class="btn btn-success" id="confirm-mmqr-payment-btn" onclick="confirmMMQRPayment()">
+          <div class="modal-footer mmqr-actions">
+            <button type="button" class="btn btn-success mmqr-primary-action d-none" id="mmp-refresh">Check payment status</button>
+            <button type="button" class="btn btn-success mmqr-primary-action" id="confirm-mmqr-payment-btn" onclick="confirmMMQRPayment()">
               <i class="bi bi-check-circle me-1"></i>Payment Received — Complete Sale
             </button>
+            <button type="button" class="btn btn-outline-secondary" id="mmqr-close-btn" data-bs-dismiss="modal">Close</button>
+            <button type="button" class="btn btn-outline-secondary d-none" id="mmp-resume">Find existing payments</button>
+            <button type="button" class="btn btn-outline-danger d-none" id="mmp-cancel" aria-describedby="mmqr-close-note">Cancel payment</button>
+            <p id="mmqr-close-note" class="mmqr-close-note d-none mb-0">Closing keeps this payment available to resume. It does not cancel it.</p>
           </div>
         </div>
       </div>

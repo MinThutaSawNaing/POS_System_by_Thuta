@@ -69,7 +69,7 @@ providers do not support sandbox live testing. Use its callback emulator:
 5. Click the green **Do a success callback** button.
 6. Keep the POS checkout open. Once its server verifies the callback, the status
    becomes **SUCCESS**. Click **Complete verified sale** to create the sale.
-   If the callback is delayed, try **Refresh provider** on the same order.
+   If the callback is delayed, try **Check payment status** on the same order.
 
 The configured callback must reach `/webhooks/myanmyanpay` on the public POS HTTPS
 host. If the provider reports success but the POS remains pending, inspect the
@@ -166,7 +166,7 @@ the provider's actual retry policy during onboarding; it is not assumed here.
 
 | Rule | Where it is enforced |
 | --- | --- |
-| MMQR logo | `public/photos/mmqr-logo.png` is served byte-for-byte and displayed unmodified (no crop, recolor, distortion or overlay) in the checkout modal and Settings -> Payments. A "Download MMQR logo" action exists in both places. |
+| MMQR logo | `public/photos/mmqr-logo.png` is served byte-for-byte and displayed unmodified (no crop, recolor, distortion or overlay) in the checkout modal and Settings -> Payments. Download the logo from Settings; checkout offers only the payment QR download to avoid confusing cashiers. |
 | MMK only | The server pins every intent to `MMK` and refuses checkout under another currency. The payment surface formats through `formatMMK()` / `formatMMKAmount()`; a non-MMK register shows "MMK only" instead of a foreign amount. |
 | Attribution | `PAYMENT POWERED BY MYANMYANPAY` is rendered directly below the QR. |
 | QR integrity | The QR is rendered from the provider payload by ReportLab at `/api/payments/myanmyanpay/intents/<id>/qr` inside a white quiet zone; nothing is drawn over it and the image is never rounded or bordered. |

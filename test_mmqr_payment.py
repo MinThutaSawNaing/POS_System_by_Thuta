@@ -134,7 +134,6 @@ class MMQRPaymentTests(unittest.TestCase):
             'role="timer"',
             'id="download-mmqr-btn"',
             'onclick="downloadMMQRImage()"',
-            'id="download-mmqr-logo-btn"',
             'function downloadMMQRImage()',
             'function startMMQRCountdown(',
             'function formatMMKAmount(',
@@ -145,6 +144,15 @@ class MMQRPaymentTests(unittest.TestCase):
         # The QR surface is undecorated: no rounded corners, border or overlay.
         self.assertIn('class="mmqr-qr-image"', dashboard)
         self.assertNotIn('img-fluid rounded border mb-3', dashboard)
+
+        # Cashiers need the payment QR, not a branding-asset download. The logo
+        # download remains available in Settings, outside the checkout dialog.
+        modal = dashboard.split('<!-- MMQR Payment Modal -->', 1)[1].split('<script src=', 1)[0]
+        self.assertNotIn('Download MMQR logo', modal)
+        self.assertIn('modal-dialog-scrollable', modal)
+        self.assertIn('modal-footer mmqr-actions', modal)
+        self.assertIn('id="mmqr-close-note"', modal)
+        self.assertIn('aria-labelledby="mmqr-payment-title"', modal)
 
         script = Path(app.root_path, 'public', 'myanmyanpay.js').read_text(encoding='utf-8')
         self.assertIn('formatMMK', script)

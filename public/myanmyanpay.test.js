@@ -2,6 +2,149 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {createCheckout} = require('./myanmyanpay.js');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+// Exercise the real browser adapter as well as the state machine. No browser
+// dependency is needed for button visibility, labels and in-flight guards.
+async function buttonHarness({enabled = true, configured = true} = {}) {
+  const elements = new Map();
+  const element = id => {
+    if (!elements.has(id)) {
+      const classes = new Set();
+      const attributes = new Map();
+      elements.set(id, {
+        textContent: '', disabled: false, style: {}, children: [],
+        classList: {
+          add: name => classes.add(name), remove: name => classes.delete(name),
+          contains: name => classes.has(name),
+          toggle(name, force) { if (force) classes.add(name); else classes.delete(name); },
+        },
+        setAttribute: (name, value) => attributes.set(name, value),
+        getAttribute: name => attributes.get(name),
+        removeAttribute: name => attributes.delete(name),
+        addEventListener() {}, replaceChildren() { this.children = []; },
+        appendChild(child) { this.children.push(child); },
+      });
+    }
+    return elements.get(id);
+  };
+  const h = {element, status: 'PENDING', calls: []};
+  const context = {
+    document: {getElementById: element, createElement: () => element(Symbol()), addEventListener() {}},
+    currentBranch: {id: 1}, CACHE_USER_ID: 1, cart: [], navigator: {onLine: true},
+    bootstrap: {Modal: {getInstance: () => ({show() {}, hide() {}})}},
+    crypto: {randomUUID: () => 'button-test'},
+    setTimeout: () => 1, clearTimeout() {},
+    resetMMQRCountdown() {}, stopMMQRCountdown() {}, setMMQRDownloadState() {},
+    confirmMMQRPayment() {},
+    fetch: async (url, options) => {
+      h.calls.push({url, options});
+      if (h.intercept) { const response = await h.intercept(url, options); if (response) return response; }
+      const payment = {id: 7, order_id: 'button-order', status: h.status, amount: 1000};
+      const data = url.endsWith('/config') ? {enabled, configured}
+        : url.endsWith('/intents') && options.method === 'GET' ? {payments: []}
+        : {payment};
+      return {ok: true, json: async () => data};
+    },
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'myanmyanpay.js'), 'utf8'), context);
+  await new Promise(setImmediate);
+  h.checkout = context.MyanMyanPayCheckout;
+  h.hidden = id => element(id).classList.contains('d-none');
+  return h;
+}
+
+test('pending order promotes status check and hides sale completion and discovery', async () => {
+  const h = await buttonHarness();
+  await h.checkout.start({items: [1]});
+  assert.equal(h.hidden('confirm-mmqr-payment-btn'), true);
+  assert.equal(h.element('confirm-mmqr-payment-btn').disabled, true);
+  assert.equal(h.hidden('mmp-refresh'), false);
+  assert.equal(h.element('mmp-refresh').textContent, 'Check payment status');
+  assert.equal(h.hidden('mmp-cancel'), false);
+  assert.equal(h.hidden('mmp-resume'), true);
+  assert.equal(h.element('mmqr-close-btn').textContent, 'Close — resume later');
+  assert.equal(h.hidden('mmqr-close-note'), false);
+});
+
+test('status refresh disables payment actions, restores labels, and promotes verified completion', async () => {
+  const h = await buttonHarness();
+  await h.checkout.start({items: [1]});
+  let finish;
+  h.intercept = url => url.endsWith('/refresh') ? new Promise(resolve => { finish = resolve; }) : undefined;
+  const refreshing = h.checkout.action('refresh');
+  for (const id of ['mmp-refresh', 'mmp-cancel', 'mmp-resume', 'confirm-mmqr-payment-btn']) {
+    assert.equal(h.element(id).disabled, true);
+  }
+  assert.equal(h.element('mmp-refresh').textContent, 'Please wait…');
+  assert.equal(h.element('mmp-refresh').getAttribute('aria-busy'), 'true');
+  finish({ok: true, json: async () => ({payment: {id: 7, status: 'SUCCESS', amount: 1000}})});
+  await refreshing;
+  assert.equal(h.hidden('mmp-refresh'), true);
+  assert.equal(h.hidden('mmp-cancel'), true, 'verified payments cannot be cancelled in this dialog');
+  assert.equal(h.hidden('mmp-resume'), true);
+  assert.equal(h.hidden('confirm-mmqr-payment-btn'), false);
+  assert.equal(h.element('confirm-mmqr-payment-btn').disabled, false);
+  assert.equal(h.element('confirm-mmqr-payment-btn').textContent, 'Complete verified sale');
+  assert.equal(h.element('confirm-mmqr-payment-btn').getAttribute('aria-busy'), 'false');
+});
+
+test('failed refresh and failed completion restore usable buttons without allowing another payment', async () => {
+  const h = await buttonHarness();
+  await h.checkout.start({items: [1]});
+  h.intercept = url => url.endsWith('/refresh') || url.endsWith('/complete')
+    ? {ok: false, json: async () => ({message: 'Try again safely'})} : undefined;
+  await h.checkout.action('refresh');
+  assert.equal(h.element('mmp-refresh').disabled, false);
+  assert.equal(h.element('mmp-refresh').textContent, 'Check payment status');
+  assert.equal(h.hidden('confirm-mmqr-payment-btn'), true);
+  h.status = 'SUCCESS';
+  h.checkout.resume({id: 7, status: 'SUCCESS'});
+  await new Promise(setImmediate);
+  await h.checkout.action('complete');
+  assert.equal(h.element('confirm-mmqr-payment-btn').disabled, false);
+  assert.equal(h.element('confirm-mmqr-payment-btn').textContent, 'Complete verified sale');
+  assert.equal(h.hidden('mmp-cancel'), true);
+  assert.match(h.element('mmp-status').textContent, /reconciliation/);
+});
+
+test('rejected creation offers retry and discovery; cancellation restores checkout actions', async () => {
+  const h = await buttonHarness();
+  h.intercept = (url, options) => url.endsWith('/intents') && options.method === 'POST'
+    ? {ok: false, json: async () => ({message: 'Checkout rejected'})} : undefined;
+  await h.checkout.start({items: [1]});
+  assert.equal(h.element('confirm-mmqr-payment-btn').textContent, 'Retry payment QR');
+  assert.equal(h.element('confirm-mmqr-payment-btn').disabled, false);
+  assert.equal(h.hidden('mmp-resume'), false);
+  assert.equal(h.hidden('mmp-refresh'), true);
+  assert.equal(h.hidden('mmp-cancel'), true);
+  h.intercept = null;
+  await h.checkout.start({items: [1]});
+  h.status = 'CANCELLED';
+  await h.checkout.action('cancel');
+  assert.equal(h.hidden('confirm-mmqr-payment-btn'), false);
+  assert.equal(h.hidden('mmp-resume'), false);
+  assert.equal(h.hidden('mmp-cancel'), true);
+  assert.equal(h.hidden('mmqr-close-note'), true);
+  assert.equal(h.element('mmqr-close-btn').textContent, 'Close');
+});
+
+test('blocked setup fails closed and legacy checkout retains manual completion', async () => {
+  const blocked = await buttonHarness({configured: false});
+  blocked.checkout.preview();
+  assert.equal(blocked.element('confirm-mmqr-payment-btn').disabled, true);
+  assert.equal(blocked.element('confirm-mmqr-payment-btn').textContent, 'Payment unavailable');
+  for (const id of ['mmp-refresh', 'mmp-cancel', 'mmp-resume']) assert.equal(blocked.hidden(id), true);
+  const legacy = await buttonHarness({enabled: false});
+  assert.equal(legacy.element('confirm-mmqr-payment-btn').disabled, false);
+  assert.equal(legacy.hidden('confirm-mmqr-payment-btn'), false);
+  assert.equal(legacy.element('confirm-mmqr-payment-btn').textContent, 'Payment Received — Complete Sale');
+  assert.equal(legacy.hidden('mmp-resume'), false);
+  assert.equal(legacy.hidden('mmp-refresh'), true);
+  assert.equal(legacy.hidden('mmp-cancel'), true);
+});
 function harness() {
   const h = {scope: 'user:branch', snapshot: 'cart1', online: true, calls: [], texts: [], completed: [], payments: [], status: 'PENDING', configured: true, enabled: true};
   h.env = {
