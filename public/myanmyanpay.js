@@ -120,8 +120,11 @@
       try {
         const data = await request("/intents");
         if (!valid(s, r)) return;
-        env.list(data.payments || [], payment => { if (valid(s, r)) resume(payment); });
-        status("Select an existing payment to resume. A paid payment must be completed, not paid again.");
+        const payments = data.payments || [];
+        env.list(payments, payment => { if (valid(s, r)) resume(payment); });
+        status(payments.length
+          ? "Select an existing payment to resume. A paid payment must be completed, not paid again."
+          : "No unfinished payments found for your account in this branch. Close this window to continue checkout.");
       } catch (error) { if (valid(s, r)) status(error.message); }
       finally { if (valid(s, r)) { busy = false; env.busy(false); } }
     }
@@ -303,6 +306,11 @@
   function renderActions({mode, payment, busy, sandbox = false, recovery = false}) {
     lastActionState = {mode, payment, busy, sandbox, recovery};
     const recover = recovery || mode === "provider" || mode === "legacy";
+    const existing = el("mmp-open-existing");
+    existing.classList.toggle("d-none", !recover);
+    existing.disabled = busy || !recover;
+    existing.textContent = payment ? `Resume payment — ${formatMMK(payment.amount)}` : "Find unfinished payments";
+    existing.setAttribute("aria-busy", String(busy));
     const paid = payment?.status === "SUCCESS";
     const pending = recover && !!payment && !paid;
     const confirm = el("confirm-mmqr-payment-btn");
@@ -359,7 +367,6 @@
       if (method === "mobile_payment" || (method === "split_payment" && splitUsesMobilePayment())) completeSale(false);
     },
     ready(mode, recovery) {
-      el("mmp-open-existing").classList.toggle("d-none", !recovery);
       renderActions({mode, recovery, payment: checkout.state().active, busy: checkout.state().busy});
     },
     legacy() {
@@ -446,6 +453,12 @@
     ? checkout.state().active.status === "SUCCESS" ? checkout.action("complete") : checkout.preview()
     : checkout.mode() === "legacy" ? manual() : completeSale(false);
   el("mmp-resume").onclick = checkout.list;
+  el("mmp-open-existing").onclick = () => {
+    const current = checkout.state();
+    if (current.busy) return;
+    checkout.preview();
+    if (!current.active) return checkout.list();
+  };
   el("mmp-refresh").onclick = () => checkout.action("refresh");
   el("mmp-cancel").onclick = () => { if (root.confirm("Request cancellation from the provider? Closing the modal alone does not cancel.")) checkout.action("cancel"); };
   modal.addEventListener("hidden.bs.modal", checkout.close);

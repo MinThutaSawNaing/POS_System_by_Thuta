@@ -1682,7 +1682,6 @@
                   <select class="form-select form-select-sm" id="pos-customer-select">
                     <option value="">Walk-in Customer</option>
                   </select>
-                  <button type="button" id="mmp-open-existing" class="btn btn-link btn-sm d-none" onclick="MyanMyanPayCheckout.preview(); MyanMyanPayCheckout.list();">Resume MyanMyanPay payment</button>
                 </div>
                 <div id="pos-customer-warning" class="small mb-3" role="status" hidden>
                   Customer list unavailable. Walk-in sales are still available; retry before charging to a customer.
@@ -1715,6 +1714,7 @@
                     <option value="split_payment">Split Payment</option>
                     <option value="debt">Charge to Customer</option>
                   </select>
+                  <button type="button" id="mmp-open-existing" class="btn btn-outline-secondary btn-sm w-100 mt-2 d-none" aria-haspopup="dialog" aria-controls="mmqrPaymentModal" disabled>Find unfinished payments</button>
                 </div>
                 <div class="mb-2 border rounded p-2 small">
                   <div class="form-check form-switch mb-1">

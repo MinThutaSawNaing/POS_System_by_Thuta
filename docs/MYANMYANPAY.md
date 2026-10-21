@@ -60,6 +60,12 @@ mobile sales at both the browser and `/api/sales`, including the mobile leg of
 split payments. Existing provider orders can still be recovered and completed
 with their original credentials; turning off the switch does not discard them.
 
+The **Find unfinished payments** button beside the POS payment method searches
+orders for the current account and branch, with an explicit empty-result message.
+When an order is already selected, it becomes **Resume payment — [amount]** and
+reopens that same order without creating a payment or recording a sale. The
+button is disabled while a payment operation is in flight.
+
 For a genuinely manual-only installation, checkout and its completion notice say
 **not verified by MyanMyanPay** and explain that no provider request is sent.
 These uploaded/static-QR sales will not create provider sandbox transactions.

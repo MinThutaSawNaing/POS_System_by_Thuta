@@ -30,11 +30,11 @@ async function buttonHarness({enabled = true, configured = true, manual_allowed 
     }
     return elements.get(id);
   };
-  const h = {element, status: 'PENDING', calls: [], completions: []};
+  const h = {element, status: 'PENDING', calls: [], completions: [], opens: 0};
   const context = {
     document: {getElementById: element, createElement: () => element(Symbol()), addEventListener() {}},
     currentBranch: {id: 1}, CACHE_USER_ID: 1, cart: [], navigator: {onLine: true},
-    bootstrap: {Modal: {getInstance: () => ({show() {}, hide() {}})}},
+    bootstrap: {Modal: {getInstance: () => ({show() { h.opens++; }, hide() {}})}},
     crypto: {randomUUID: () => 'button-test'},
     setTimeout: fn => { h.tick = fn; return 1; }, clearTimeout() {},
     resetMMQRCountdown() {}, stopMMQRCountdown() {}, setMMQRDownloadState() {},
@@ -59,6 +59,74 @@ async function buttonHarness({enabled = true, configured = true, manual_allowed 
   h.hidden = id => element(id).classList.contains('d-none');
   return h;
 }
+
+test('payment recovery is labelled as discovery until an order can actually be resumed', async () => {
+  const h = await buttonHarness();
+  const button = h.element('mmp-open-existing');
+  assert.equal(button.textContent, 'Find unfinished payments');
+  assert.equal(button.disabled, false);
+  const posts = h.calls.filter(c => c.options.method === 'POST').length;
+  await button.onclick();
+  assert.equal(h.opens, 1);
+  assert.match(h.element('mmp-status').textContent, /No unfinished payments found/);
+  assert.equal(h.element('mmp-existing').children.length, 0);
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, posts);
+});
+
+test('resume reopens the active order without searching or creating another payment', async () => {
+  const h = await buttonHarness();
+  await h.checkout.start({items: [1]});
+  h.checkout.close();
+  const button = h.element('mmp-open-existing');
+  assert.equal(button.textContent, 'Resume payment — MMK 1,000.00');
+  const calls = h.calls.length, opens = h.opens;
+  await button.onclick();
+  assert.equal(h.opens, opens + 1);
+  assert.equal(h.calls.length, calls, 'reopen must not query or replace the selected order');
+  assert.equal(h.checkout.state().active.id, 7);
+  h.status = 'CANCELLED';
+  await h.checkout.action('cancel');
+  assert.equal(button.textContent, 'Find unfinished payments');
+});
+
+test('payment recovery is disabled during discovery and recovers after an error', async () => {
+  const h = await buttonHarness();
+  let finish;
+  h.intercept = url => url.endsWith('/intents')
+    ? new Promise(resolve => { finish = resolve; }) : undefined;
+  const finding = h.element('mmp-open-existing').onclick();
+  assert.equal(h.element('mmp-open-existing').disabled, true);
+  finish({ok: false, json: async () => ({message: 'Connection interrupted; retry discovery'})});
+  await finding;
+  assert.equal(h.element('mmp-open-existing').disabled, false);
+  assert.match(h.element('mmp-status').textContent, /Connection interrupted/);
+});
+
+test('discovery can select and resume a server-owned payment without creating or completing it', async () => {
+  const h = await buttonHarness();
+  h.intercept = (url, options) => url.endsWith('/intents') && options.method === 'GET'
+    ? {ok: true, json: async () => ({payments: [{id: 7, amount: 1000, status: 'PENDING'}]})}
+    : undefined;
+  await h.element('mmp-open-existing').onclick();
+  assert.match(h.element('mmp-status').textContent, /Select an existing payment/);
+  const [choice] = h.element('mmp-existing').children;
+  assert.match(choice.textContent, /Resume 7: MMK 1,000.00/);
+  choice.onclick();
+  await new Promise(setImmediate);
+  assert.equal(h.checkout.state().active.id, 7);
+  assert.equal(h.element('mmp-existing').children.length, 0);
+  assert.equal(h.element('mmp-open-existing').textContent, 'Resume payment — MMK 1,000.00');
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+});
+
+test('disabled configured provider keeps discovery usable without exposing new payment creation', async () => {
+  const h = await buttonHarness({enabled: false, manual_allowed: false});
+  assert.equal(h.hidden('mmp-open-existing'), false);
+  await h.element('mmp-open-existing').onclick();
+  assert.match(h.element('mmp-status').textContent, /No unfinished payments found/);
+  assert.equal(h.element('confirm-mmqr-payment-btn').disabled, true);
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+});
 
 test('pending order promotes status check and hides sale completion and discovery', async () => {
   const h = await buttonHarness();
