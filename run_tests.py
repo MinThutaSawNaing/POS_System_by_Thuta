@@ -54,7 +54,7 @@ def main():
         shutil.copytree(source, checkout, ignore=excluded)
         env = dict(os.environ)
         for key in list(env):
-            if key.startswith(('AI_', 'POS_ACCOUNT_BARRIER_', 'POS_PERMISSION_')):
+            if key.startswith(('AI_', 'POS_ACCOUNT_BARRIER_', 'POS_PERMISSION_', 'MMPAY_')):
                 env.pop(key)
         for key in ('APIFREE_API_KEY', 'PYTEST_ADDOPTS', 'PYTEST_PLUGINS'):
             env.pop(key, None)

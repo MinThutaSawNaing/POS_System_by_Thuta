@@ -62,11 +62,36 @@ class SalesTrendsTests(FullCoverageToolsTestBase):
         sale = self._sale(product, 4)
         SaleItem.query.filter_by(sale_id=sale.id).update({'product_id': None})
         db.session.commit()
-        row = self.tools.get_sales_trends()['top_selling_products'][0]
-        self.assertIsNone(row['product_id'])
-        self.assertIn('Unknown', row['product_name'])
+        result = self.tools.get_sales_trends()
+        self.assertEqual(result['top_selling_products'], [])
+        self.assertEqual(result['total_products_sold'], 0)
+        row = result['unknown_product_sales']
         self.assertEqual(row['total_quantity'], 4)
         self.assertEqual(row['total_revenue'], '10.00')
+        orch = AgentOrchestrator(db, self.tools.models)
+        for text in (orch._format_sales_trend_result(result),
+                     orch._format_tool_results_for_user([
+                         {'function_name': 'get_sales_trends', 'result': result, 'error': None}
+                     ], 'Best sellers?')):
+            self.assertIn('Unknown/deleted product sales (not ranked)', text)
+            self.assertNotIn('No sales data', text)
+            self.assertNotIn('1. **Unknown', text)
+
+    def test_unknown_aggregate_does_not_displace_identifiable_bestseller(self):
+        known = self._product('Known bestseller')
+        removed = self._product('Removed seller')
+        self._sale(known, 5)
+        for quantity in (20, 30):
+            sale = self._sale(removed, quantity)
+            SaleItem.query.filter_by(sale_id=sale.id).update({'product_id': None})
+        db.session.commit()
+        result = self.tools.get_sales_trends(top_n=1)
+        self.assertEqual(result['total_products_sold'], 1)
+        self.assertEqual(result['top_selling_products'][0]['product_id'], known.id)
+        self.assertEqual(result['unknown_product_sales'], {
+            'total_quantity': 50, 'total_revenue': '125.00', 'sale_count': 2})
+        filtered = self.tools.get_sales_trends(product_id=known.id)
+        self.assertEqual(filtered['unknown_product_sales']['total_quantity'], 0)
 
     def test_all_time_summary_totals_are_not_limited_by_recent_rows(self):
         product = self._product('Summary product')
@@ -78,6 +103,26 @@ class SalesTrendsTests(FullCoverageToolsTestBase):
         self.assertEqual(history['total_sales'], '25.00')
         self.assertEqual(history['transaction_count'], 2)
         self.assertEqual(len(history['recent_sales']), 1)
+
+    def test_unknown_history_respects_period_and_branch(self):
+        product = self._product('Unknown scoped history')
+        recent = self._sale(product, 2)
+        old = self._sale(product, 8, age=800)
+        other = self._sale(product, 100, branch_id=self.original_default.id)
+        try:
+            for sale in (recent, old, other):
+                SaleItem.query.filter_by(sale_id=sale.id).update({'product_id': None})
+            db.session.commit()
+            rolling = self.tools.get_sales_trends()['unknown_product_sales']
+            history = self.tools.get_sales_trends(all_time=True)['unknown_product_sales']
+            self.assertEqual(rolling['total_quantity'], 2)
+            self.assertEqual(history['total_quantity'], 10)
+            self.assertEqual(history['sale_count'], 2)
+            self.assertEqual(history['total_revenue'], '25.00')
+        finally:
+            SaleItem.query.filter_by(sale_id=other.id).delete()
+            db.session.delete(other)
+            db.session.commit()
 
     def test_plan_executes_real_all_time_trend_and_formats_money(self):
         product = self._product('Plan bestseller')

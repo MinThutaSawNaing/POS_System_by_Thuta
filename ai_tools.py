@@ -300,7 +300,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "get_sales_trends": {
         "name": "get_sales_trends",
-        "description": "Rank active-branch best-selling products by gross units sold. Use all_time=true for all-time/lifetime best sellers; otherwise defaults to the last 30 days. Revenue is gross line revenue before returns and tax.",
+        "description": "Rank identifiable active-branch best-selling products by gross units sold. Missing/deleted product sales are preserved separately in unknown_product_sales, never ranked or counted as a product. Use all_time=true for all-time/lifetime best sellers; otherwise defaults to the last 30 days. Revenue is gross line revenue before returns and tax.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1580,15 +1580,27 @@ class AITools:
             query = query.filter(Sale.date >= datetime.utcnow() - timedelta(days=days))
         if product_id is not None:
             query = query.filter(SaleItem.product_id == product_id)
-        query = query.group_by(SaleItem.product_id, Product.name)
-        total_products = query.count()
-        rows = query.order_by(quantity.desc(), SaleItem.product_id.asc()).limit(top_n).all()
+        # Deleted products lose their identity; their combined units are not a
+        # single bestseller. Keep the same branch/date/product scope for both.
+        unknown = query.filter(Product.id.is_(None)).with_entities(
+            quantity.label('total_quantity'),
+            func.sum(SaleItem.price * SaleItem.quantity).label('total_revenue'),
+            func.count(func.distinct(Sale.id)).label('sale_count'),
+        ).one()
+        ranked = query.filter(Product.id.isnot(None)).group_by(SaleItem.product_id, Product.name)
+        total_products = ranked.count()
+        rows = ranked.order_by(quantity.desc(), SaleItem.product_id.asc()).limit(top_n).all()
         return self._scope({
             "period": "all_time" if all_time else "rolling_days",
             "period_days": None if all_time else days,
             "ranking_basis": "gross_units_sold",
             "revenue_basis": "gross_line_revenue_before_returns_and_tax",
             "total_products_sold": total_products,
+            "unknown_product_sales": {
+                "total_quantity": unknown.total_quantity or 0,
+                "total_revenue": money_plain(unknown.total_revenue or 0),
+                "sale_count": unknown.sale_count,
+            },
             "top_selling_products": [{
                 "product_id": row.product_id, "product_name": row.name or "Unknown (deleted product)",
                 "total_quantity": row.total_quantity,

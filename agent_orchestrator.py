@@ -1881,22 +1881,8 @@ class AgentOrchestrator:
                     lines.append(f"📈 New Stock Level: {result_data.get('new_stock_level')}")
                 else:
                     lines.append(f"❌ **Transfer Failed**: {result_data.get('error', 'Unknown error')}")
-                    
             elif func_name == "get_sales_trends":
-                products = result_data.get('top_selling_products', [])
-                period = result_data.get('period_days', 30)
-                period_label = "All time" if result_data.get('period') == 'all_time' else f"Last {period} days"
-                total = result_data.get('total_products_sold', 0)
-                
-                if not products:
-                    lines.append(f"📊 No sales data found ({period_label}).")
-                else:
-                    lines.append(f"📊 **Sales Trends** ({period_label}; gross units sold)")
-                    lines.append(f"Total products sold: {total}")
-                    lines.append("")
-                    lines.append("**Top Selling Products:**")
-                    for i, p in enumerate(products[:10], 1):
-                        lines.append(f"{i}. **{p['product_name']}** - {p['total_quantity']} units (${money_str(p['total_revenue'])})")
+                lines.append(self._format_sales_trend_result(result_data))
                         
             elif func_name == "get_product_details":
                 if result_data.get("error"):
@@ -2322,15 +2308,22 @@ class AgentOrchestrator:
         period = result.get('period_days', 30)
         total = result.get('total_products_sold', 0)
         period_label = "All time" if result.get('period') == 'all_time' else f"last {period} days"
+        unknown = result.get('unknown_product_sales') or {}
         
-        if not products:
+        if not products and not unknown.get('sale_count'):
             return f"No sales data found ({period_label})."
             
         lines = [f"Sales analysis ({period_label}; gross units sold) - {total} products sold:\n"]
-        lines.append("Top selling products:")
+        lines.append("Top selling products:" if products else "No identifiable products to rank.")
         
         for i, p in enumerate(products[:10], 1):
             lines.append(f"{i}. **{p['product_name']}** - {p['total_quantity']} units sold (${money_str(p['total_revenue'])})")
+        if unknown.get('sale_count'):
+            lines.append(
+                "\nUnknown/deleted product sales (not ranked): "
+                f"{unknown.get('total_quantity', 0)} units "
+                f"(${money_str(unknown.get('total_revenue', 0))}); "
+                "original product identities are unavailable.")
             
         return "\n".join(lines)
     

@@ -903,6 +903,9 @@ CASHIER_API_METHODS = {
     'api_forget_all_agent_memories': {'POST'}, 'api_agent_approve_step': {'POST'},
     'api_agent_reject_step': {'POST'}, 'api_agent_advance_task': {'POST'},
     'api_agent_get_task': {'GET'}, 'api_agent_autonomy_get': {'GET'},
+    'mmpay_config': {'GET'}, 'mmpay_intents': {'GET', 'POST'},
+    'mmpay_intent': {'GET'}, 'mmpay_refresh': {'POST'},
+    'mmpay_complete': {'POST'}, 'mmpay_cancel': {'POST'}, 'mmpay_qr': {'GET'},
 }
 
 
@@ -2408,6 +2411,11 @@ def _migrate_branch_unique(table, column):
             connection.exec_driver_sql(f'PRAGMA foreign_keys={int(enabled)}')
             connection.commit()
 
+
+# Payment models are registered before create_all; existing databases gain only
+# new tables. Provider credentials remain in the server environment.
+from payment_routes import register_payment_routes
+PaymentIntent, PaymentWebhookEvent = register_payment_routes(app, db, globals())
 
 # Create database tables and admin user
 with app.app_context():
@@ -5013,7 +5021,7 @@ def _sale_replay_response(existing):
     return jsonify(response), 200
 
 
-def _create_sale_transaction(data):
+def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
     """Run a single sale transaction. Raises OperationalError on DB lock so the caller can retry."""
     try:
         branch_id = get_current_branch_id()
@@ -5031,6 +5039,10 @@ def _create_sale_transaction(data):
         # transaction_id (e.g. a retried sync after a lost response), return the
         # original sale instead of creating a duplicate.
         client_txn_id = str(data.get('transaction_id') or '').strip()
+        if client_txn_id and not quote_only and verified_payment_id is None:
+            reserved_payment = PaymentIntent.query.filter_by(transaction_id=client_txn_id).first()
+            if reserved_payment:
+                return jsonify(success=False, message='This checkout belongs to a saved payment. Resume it from MyanMyanPay.'), 409
         if client_txn_id:
             existing = Sale.query.filter_by(transaction_id=client_txn_id, branch_id=get_current_branch_id()).first()
             if existing:
@@ -5118,6 +5130,29 @@ def _create_sale_transaction(data):
                 return jsonify({'success': False, 'message': 'Cash received is less than total amount'}), 400
             refund_amount = round_money(refund_decimal)
         
+        mobile_amount = (payment_breakdown or {}).get('mobile_payment', 0) if payment_method == 'split_payment' else (total_rounded if payment_method == 'mobile_payment' else 0)
+        if quote_only:
+            return {'total': str(total_rounded), 'mobile_amount': str(mobile_amount)}
+        from payment_routes import payment_enabled
+        if mobile_amount and (payment_enabled() or verified_payment_id is not None):
+            if verified_payment_id is None:
+                return jsonify(success=False, message='Verified MyanMyanPay payment is required. Use the payment checkout.'), 409
+            intent = db.session.get(PaymentIntent, verified_payment_id)
+            if (not intent or intent.status != 'SUCCESS'
+                    or intent.branch_id != branch_id or intent.user_id != session['user_id']
+                    or intent.transaction_id != client_txn_id
+                    or to_decimal(intent.amount) != to_decimal(mobile_amount)
+                    or intent.currency != get_currency_code()):
+                return jsonify(success=False, message='Payment does not match this checkout.'), 409
+            # Claim within the SAME transaction as sale/stock changes. Concurrent
+            # completions cannot spend one payment twice; rollback releases claim.
+            claimed = PaymentIntent.query.filter_by(
+                id=intent.id, status='SUCCESS', sale_transaction_id=None).update(
+                    {'sale_transaction_id': client_txn_id}, synchronize_session=False)
+            if claimed != 1:
+                db.session.rollback()
+                return jsonify(success=False, message='Payment was already used.'), 409
+
         myanmar_tz = pytz.timezone('Asia/Yangon')
         sale_time = datetime.now(myanmar_tz)
 

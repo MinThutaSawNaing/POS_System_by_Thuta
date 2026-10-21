@@ -17,8 +17,9 @@ for a successful answer, and failed writes must never be blindly retried.
   gross unit rankings in the active branch, or `days` for a rolling period.
 - `all_time=true` overrides `days`; it never means a large guessed day count.
 - Trend revenue is gross line price × quantity, before returns and tax.
-- `total_products_sold` counts product groups, not units or transactions.
-- Missing/deleted products remain in historical rankings as unknown products.
+- `total_products_sold` counts identifiable product groups, not units or transactions.
+- Missing/deleted product history is preserved in `unknown_product_sales`
+  (total_quantity, total_revenue, sale_count), never in product rankings.
 - Summary totals: `get_sales_summary`; `limit` limits recent rows only.
 - Results explicitly identify `period`, `period_days` and `branch_id`.
 
@@ -1000,7 +1001,7 @@ Summarize active-branch sales totals, transaction count, payment methods, and re
 
 ## `get_sales_trends`
 
-Rank active-branch best-selling products by gross units sold. Use all_time=true for all-time/lifetime best sellers; otherwise defaults to the last 30 days. Revenue is gross line revenue before returns and tax.
+Rank identifiable active-branch best-selling products by gross units sold. Missing/deleted product sales are preserved separately in unknown_product_sales, never ranked or counted as a product. Use all_time=true for all-time/lifetime best sellers; otherwise defaults to the last 30 days. Revenue is gross line revenue before returns and tax.
 
 - Category: `sales`
 - Mutates data: `False`
