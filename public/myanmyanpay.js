@@ -16,6 +16,7 @@
     let busy = false, visible = false, timer = null, revision = 0, reconciliation = false;
     let terminalNotice = "";
     let operationError = "";
+    let view = "checkout", operation = "", lastText = "";
     let pendingCheckoutScope = null;
     let readinessScope = null;
     let pollRevision = 0, pendingPoll = null, lastProviderCheckAt = Date.now();
@@ -41,7 +42,16 @@
         qr_url: active.qr_url || null,
       });
     }
-    const status = (text) => env.render({mode: mode(), sandbox: config?.sandbox === true, recovery: canRecover(), payment: active, busy, text: terminalNotice + (operationError ? operationError + " " : "") + text, deadline: deadline()});
+    const status = (text) => {
+      lastText = text;
+      env.render({mode: mode(), sandbox: config?.sandbox === true, recovery: canRecover(), payment: active, busy, view, operation, text: terminalNotice + (operationError ? operationError + " " : "") + text, deadline: deadline()});
+    };
+    async function completeIfVerified() {
+      // Called only after a successful server response, never from cached/listed
+      // status. Stop automatic retries after a recording failure: keep the paid
+      // order for explicit retry/reconciliation instead of posting every poll.
+      if (visible && active?.status === "SUCCESS" && !busy && !reconciliation) await action("complete");
+    }
     async function request(path, method = "GET", body) {
       if (!env.online()) throw new Error("Mobile payments require an online connection. Do not pay again if a request is uncertain.");
       const options = {method, cache: "no-store", credentials: "same-origin"};
@@ -83,7 +93,7 @@
     async function loadConfig() {
       const s = scope();
       if (s === null) return;
-      if (configScope !== s) { active = null; quote = null; busy = false; reconciliation = false; terminalNotice = ""; operationError = ""; revision++; pollRevision++; pendingPoll = null; lastProviderCheckAt = Date.now(); stop(); }
+      if (configScope !== s) { active = null; quote = null; busy = false; reconciliation = false; terminalNotice = ""; operationError = ""; view = "checkout"; operation = ""; revision++; pollRevision++; pendingPoll = null; lastProviderCheckAt = Date.now(); stop(); }
       config = null; configScope = s;
       readinessScope = s;
       try {
@@ -96,7 +106,7 @@
         if (!active && canRecover()) await restore();
         if (!valid(s)) return;
         readinessScope = null;
-        if (visible && mode() === "legacy" && !active) env.legacy?.();
+        if (visible && mode() === "legacy" && !active && view !== "discovery") env.legacy?.();
         else if (visible) preview();
         if (pendingCheckoutScope === s) {
           pendingCheckoutScope = null;
@@ -105,18 +115,23 @@
       } catch (error) { if (valid(s)) status("Cannot verify payment configuration. Mobile checkout is blocked. " + error.message); }
       finally { if (readinessScope === s) readinessScope = null; }
     }
-    function preview() {
+    function preview(checkoutView) {
+      if (checkoutView === "checkout") view = "checkout";
       visible = true;
       env.open();
       if (mode() === "loading") { status("Checking mobile payment readiness. No payment can be accepted yet."); if (configScope !== scope()) loadConfig(); }
+      else if (view === "discovery" && !active) status("Find unfinished payments for your account in this branch. Searching does not create a new payment.");
       else if (mode() === "blocked") status(config.message || "MyanMyanPay is enabled but not configured. Mobile checkout is blocked; contact a manager.");
       else display();
       return false;
     }
     async function list() {
       if (busy || !canRecover()) return;
+      if (active) { preview(); return; }
       const s = scope(), r = revision;
-      busy = true; status("Finding pending and paid payments…");
+      view = "discovery"; operation = "search"; operationError = "";
+      env.list([], () => {});
+      busy = true; status("Finding unfinished payments for your account in this branch…");
       try {
         const data = await request("/intents");
         if (!valid(s, r)) return;
@@ -126,10 +141,11 @@
           ? "Select an existing payment to resume. A paid payment must be completed, not paid again."
           : "No unfinished payments found for your account in this branch. Close this window to continue checkout.");
       } catch (error) { if (valid(s, r)) status(error.message); }
-      finally { if (valid(s, r)) { busy = false; env.busy(false); } }
+      finally { if (valid(s, r)) { busy = false; operation = ""; status(lastText); env.busy(false); } }
     }
     function resume(payment) {
       if (busy || scope() === null || !canRecover()) return;
+      view = "checkout";
       revision++; active = payment; quote = null; reconciliation = false;
       pollRevision++; lastProviderCheckAt = Date.now();
       display();
@@ -159,6 +175,8 @@
       }
     }
     async function start(saleData) {
+      view = "checkout";
+      env.list([], () => {});
       if (mode() === "loading" || readinessScope === scope()) {
         pendingCheckoutScope = scope();
         preview();
@@ -178,7 +196,7 @@
       const s = scope(), r = revision;
       // Keep this ID and frozen payload on all retries, including create timeouts.
       if (!quote) quote = {snapshot, payload: JSON.parse(JSON.stringify({...saleData, transaction_id: env.uuid()}))};
-      busy = true; status("Checking for existing payments…");
+      busy = true; operation = "search"; status("Checking for existing payments…");
       try {
         const pending = await request("/intents");
         if (!valid(s, r)) return;
@@ -188,6 +206,7 @@
           return;
         }
         if (snapshot !== env.snapshot()) { status("Cart changed. Checkout again after resolving this order."); return; }
+        operation = "generate"; status("Generating your payment QR. Please wait…");
         const data = await request("/intents", "POST", quote.payload);
         if (!valid(s, r)) return;
         active = data.payment;
@@ -201,7 +220,8 @@
           status(error.message + " Find pending payments or refresh this same order; do not pay again.");
         }
       }
-      finally { if (valid(s, r)) { busy = false; env.busy(false); display(); } }
+      finally { if (valid(s, r)) { busy = false; operation = ""; env.busy(false); display(); } }
+      if (valid(s, r)) await completeIfVerified();
     }
     async function poll() {
       stop();
@@ -217,6 +237,7 @@
         active = data.payment;
         if (active?.status === "SUCCESS" && !reconciliation) operationError = "";
         display();
+        await completeIfVerified();
         // Webhooks normally arrive first. If delivery is delayed or missed,
         // reconcile the SAME order via the authenticated server-side provider
         // lookup, no more than once every 15 seconds (server throttle is 5s).
@@ -233,21 +254,23 @@
       if (name === "complete" && active.status !== "SUCCESS") return;
       if (!["complete", "refresh", "cancel"].includes(name)) return;
       const s = scope(), r = revision, id = active.id;
+      let verified = false;
       // Invalidate an older GET so it cannot replace a just-verified payment.
       pollRevision++;
       if (name === "refresh") lastProviderCheckAt = Date.now();
-      busy = true; status(name === "complete" ? "Completing verified payment…" : "Contacting payment server…");
+      busy = true; operation = name; status(name === "complete" ? "Payment verified. Recording the sale…" : "Contacting payment server…");
       try {
         const data = await request("/intents/" + encodeURIComponent(id) + "/" + name, "POST");
         if (!valid(s, r) || active?.id !== id) return;
         if (name === "complete") {
           if (!data.success || !data.transaction_id) throw new Error("Sale confirmation missing.");
           const clearCart = !!quote && quote.snapshot === env.snapshot();
-          active = null; quote = null; revision++; stop();
+          active = null; quote = null; busy = false; operation = ""; reconciliation = false; operationError = ""; revision++; stop();
           env.forget?.();
           env.completed(data, clearCart); status("Sale confirmed. Payment completed.");
         } else {
           active = data.payment;
+          verified = active?.status === "SUCCESS";
           operationError = "";
           display();
         }
@@ -259,7 +282,8 @@
           if (active && ["FAILED", "EXPIRED", "CANCELLED", "CANCELED", "REFUNDED"].includes(active.status)) { display(); return; }
           status(name === "complete" ? "Payment received; sale needs reconciliation, do not pay again. " + error.message : error.message);
         }
-      } finally { if (s === scope()) { busy = false; env.busy(false); schedule(); } }
+      } finally { if (valid(s, r) || (s === scope() && !active)) { busy = false; operation = ""; env.busy(false); schedule(); } }
+      if (verified && valid(s, r)) await completeIfVerified();
     }
     return {mode, preview, start, list, resume, action, loadConfig,
       close() { visible = false; pendingCheckoutScope = null; pollRevision++; stop(); },
@@ -303,8 +327,8 @@
   }
   const snapshot = () => JSON.stringify({cart, fields: ["payment-method", "pos-customer-select", "split-method-one", "split-method-two", "split-amount-one", "split-amount-two", "pos-enable-delivery", "pos-delivery-recipient-name", "pos-delivery-recipient-phone", "pos-delivery-address", "pos-delivery-priority", "pos-delivery-fee"].map(id => [id, el(id)?.value, el(id)?.checked])});
   let lastActionState = null;
-  function renderActions({mode, payment, busy, sandbox = false, recovery = false}) {
-    lastActionState = {mode, payment, busy, sandbox, recovery};
+  function renderActions({mode, payment, busy, sandbox = false, recovery = false, view = "checkout"}) {
+    lastActionState = {mode, payment, busy, sandbox, recovery, view};
     const recover = recovery || mode === "provider" || mode === "legacy";
     const existing = el("mmp-open-existing");
     existing.classList.toggle("d-none", !recover);
@@ -315,7 +339,7 @@
     const pending = recover && !!payment && !paid;
     const confirm = el("confirm-mmqr-payment-btn");
     // Pending orders must be checked, never manually marked paid or recreated.
-    confirm.classList.toggle("d-none", pending);
+    confirm.classList.toggle("d-none", pending || (view === "discovery" && !payment));
     confirm.textContent = paid ? busy ? "Completing sale…" : sandbox ? "Complete sandbox sale" : "Complete verified sale"
       : mode === "legacy" && !payment ? "Record manually confirmed sale"
       : mode === "loading" ? "Checking payment setup…"
@@ -332,7 +356,7 @@
     el("mmqr-close-btn").textContent = payment ? "Close — resume later" : "Close";
     el("mmqr-close-note").classList.toggle("d-none", !payment);
     el("mmp-auto-status").classList.toggle("d-none", !pending);
-    el("mmp-auto-status").textContent = "Checking payment status automatically. No need to click Check now.";
+    el("mmp-auto-status").textContent = "Checking payment status automatically. Once verified, we’ll open Done / Print receipt.";
   }
   function setBusy(value) {
     if (lastActionState) renderActions({...lastActionState,
@@ -378,44 +402,59 @@
     setTimeout: root.setTimeout.bind(root), clearTimeout: root.clearTimeout.bind(root),
     open() { (bootstrap.Modal.getInstance(modal) || new bootstrap.Modal(modal)).show(); },
     busy: setBusy,
-    render({mode, sandbox, recovery, payment, busy, text, deadline}) {
+    render({mode, sandbox, recovery, payment, busy, text, deadline, view, operation}) {
       el("mmp-status").textContent = text;
       const provider = mode === "provider";
       const recover = recovery || provider || mode === "legacy";
-      renderActions({mode, payment, busy, sandbox, recovery});
+      renderActions({mode, payment, busy, sandbox, recovery, view});
+      const discovery = view === "discovery" && !payment;
+      el("mmqr-payment-title").textContent = discovery ? "Find unfinished payments"
+        : payment?.status === "SUCCESS" ? "Payment verified" : "Scan MMQR to pay";
       el("mmqr-payment-help").textContent = sandbox
-        ? "SANDBOX — no real money. Use the provider sandbox callback emulator for this order. SUCCESS is simulated, not a bank payment. Complete sandbox sale changes POS stock and reports. Closing does not cancel the order."
+        ? "SANDBOX — no real money. Use the provider sandbox callback emulator. Verified sandbox payments automatically record a sale and update POS stock and reports."
+        : discovery ? "Only unfinished payments for your account in this branch appear here. Searching never creates a payment or records a sale."
         : mode === "legacy" && !payment ? "Manual payment — not verified by MyanMyanPay. No provider request will be sent. Independently check the merchant account before recording the sale."
         : "Only server-verified payment can complete this sale. Closing does not cancel payment. Existing QR always belongs to its frozen order.";
       const image = el("pos-mmqr-image");
       // Never disturb the uploaded legacy QR while rendering an empty provider state.
-      if (mode !== "legacy" || payment) {
+      const showQr = Boolean(recover && payment?.qr_url && payment.status === "PENDING");
+      if (!showQr && (mode !== "legacy" || payment || discovery)) {
         image.style.display = "none"; image.removeAttribute("src");
       }
       const missing = el("pos-mmqr-missing");
       missing.style.display = "none";
       // Compliance: only MMK may appear on the payment surface.
       el("pos-mmqr-total").textContent = payment ? formatMMK(payment.amount) : "—";
-      const showQr = Boolean(recover && payment?.qr_url && payment.status === "PENDING");
-      if (!showQr && (mode !== "legacy" || payment)) {
-        missing.textContent = payment?.status === "CREATING"
+      const legacyQr = mode === "legacy" && !payment && !discovery;
+      el("mmqr-amount-summary").classList.toggle("d-none", discovery);
+      el("mmqr-timer-box").classList.toggle("d-none", !showQr && !legacyQr);
+      el("mmqr-downloads").classList.toggle("d-none", !showQr && !legacyQr);
+      el("mmqr-qr-surface").classList.toggle("d-none", !showQr && !legacyQr);
+      el("mmqr-attribution").classList.toggle("d-none", discovery);
+      if (!showQr && !legacyQr) {
+        missing.textContent = discovery ? text : payment?.status === "CREATING"
           ? "No QR has been issued for this order. Check payment status to recover it, or explicitly cancel the order before trying again."
-          : busy ? "Generating your payment QR. Please wait…" : payment?.status === "SUCCESS" ? "Payment verified. Complete the sale below." : "The QR will be generated automatically for a valid checkout. If a request failed, resolve the error before retrying.";
+          : payment?.status === "SUCCESS" ? busy ? "Payment verified. Recording your sale — please wait." : "Payment received. If sale recording failed, retry below or ask a manager to reconcile. Do not pay again."
+          : busy ? operation === "generate" ? "Generating your payment QR. Please wait…" : text
+          : mode === "blocked" || mode === "loading" ? text
+          : "No QR is active. Return to checkout to generate a payment, or find an unfinished payment.";
         missing.style.display = "block";
       }
-      if (deadline) resetMMQRCountdown(deadline, showQr);
-      else if (mode !== "legacy" || payment) stopMMQRCountdown();
-      if (payment || mode !== "legacy") setMMQRDownloadState(showQr);
+      if (deadline && showQr) resetMMQRCountdown(deadline, true);
+      else if (mode !== "legacy" || payment || discovery) stopMMQRCountdown();
+      if (payment || mode !== "legacy" || discovery) setMMQRDownloadState(showQr);
       if (showQr) {
         // Prefer the cached copy so a reload (even offline) shows the same QR.
         const inline = readCachedQr(payment.id);
         if (inline) {
-          image.src = inline; image.style.display = "block";
+          if (image.getAttribute("src") !== inline) image.src = inline;
+          image.style.display = "block";
         } else {
           const url = BASE + "/intents/" + encodeURIComponent(payment.id) + "/qr";
           const pinned = typeof dashboardIdentityUrl === "function" ? dashboardIdentityUrl(url) : url;
           if (pinned) {
-            image.src = pinned; image.style.display = "block";
+            if (image.getAttribute("src") !== pinned) image.src = pinned;
+            image.style.display = "block";
             cacheQrImage(pinned, payment.id);
           }
         }
@@ -437,7 +476,6 @@
         el("cash-received").value = ""; el("pos-enable-delivery").checked = false;
         togglePosDeliveryFields(); updateCashRefundDisplay();
       } else showToast("Original payment sale completed. Current cart was retained; it was not part of this payment.", "info");
-      bootstrap.Modal.getInstance(modal)?.hide();
       showSaleSuccessModal(data.transaction_id, data.delivery_number, false,
         lastActionState?.sandbox === true
           ? "SANDBOX sale recorded — simulated payment, no real money received. POS stock and reports were updated."

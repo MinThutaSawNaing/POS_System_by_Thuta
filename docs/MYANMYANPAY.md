@@ -63,8 +63,10 @@ with their original credentials; turning off the switch does not discard them.
 The **Find unfinished payments** button beside the POS payment method searches
 orders for the current account and branch, with an explicit empty-result message.
 When an order is already selected, it becomes **Resume payment — [amount]** and
-reopens that same order without creating a payment or recording a sale. The
-button is disabled while a payment operation is in flight.
+reopens that same order without creating another payment. A fresh server read of
+verified success automatically records its original sale. The button is disabled
+while a payment operation is in flight. Empty searches show **No unfinished
+payments found**, not QR generation progress; QR-only controls stay hidden.
 
 For a genuinely manual-only installation, checkout and its completion notice say
 **not verified by MyanMyanPay** and explain that no provider request is sent.
@@ -73,8 +75,8 @@ Clearing saved credentials falls back to deployment environment settings; manual
 mode requires those provider settings to be absent too. Do not clear credentials
 while issued provider orders are outstanding.
 
-Sandbox checkout labels success as simulated, uses **Complete sandbox sale**, and
-warns that completing still changes POS stock and reports. Its sale notice says
+Sandbox checkout labels success as simulated and warns that verified sandbox
+payments automatically record sales and change POS stock and reports. Its sale notice says
 that no real money was received. If the checkout script fails to load, mobile and
 mobile-split checkout are blocked instead of invoking the manual fallback.
 
@@ -98,10 +100,19 @@ providers do not support sandbox live testing. Use its callback emulator:
 5. Click the green **Do a success callback** button.
 6. Keep the POS checkout open. Once its server verifies the callback, the status
    becomes **SUCCESS** automatically (the POS checks saved webhook state every
-   three seconds). Click **Complete verified sale** to create the sale.
+   three seconds). The POS then automatically records the original frozen sale
+   and opens **Done / Print Receipt** without an extra confirmation click.
    If the callback is delayed, the POS also asks the provider about the same order
    every 15 seconds while it remains pending. **Check now** is an optional manual
-   fallback, not a required checkout step. No automatic check creates a new QR or sale.
+   fallback, not a required checkout step. Status checks never create another QR;
+   only a fresh server response confirming success triggers the existing
+   idempotent sale-completion endpoint, with no client-supplied sale payload.
+
+If sale recording fails (for example, stock changed), the paid payment remains
+selected with a **do not pay again** warning and an explicit completion retry.
+Automatic polling does not repeatedly retry failed sale recording. A changed
+or unrelated current cart is retained. Done/receipt waits for the payment dialog
+to finish closing so the two modals and their backdrops do not overlap.
 
 The configured callback must reach `/webhooks/myanmyanpay` on the public POS HTTPS
 host. If the provider reports success but the POS remains pending, inspect the

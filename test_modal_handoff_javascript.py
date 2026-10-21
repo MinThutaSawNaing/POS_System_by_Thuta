@@ -24,6 +24,14 @@ def test_bulk_due_date_waits_for_hide_transition():
     assert out["overlaps"] == []
 
 
+def test_verified_mmqr_sale_waits_for_payment_dialog_before_showing_receipt():
+    out = _run_handler("showSaleSuccessModal",
+                       "showSaleSuccessModal('verified-sale', null, false)", "mmqrPaymentModal")
+    assert out["before"] == ["mmqrPaymentModal"]
+    assert out["after"] == ["saleSuccessModal"]
+    assert out["overlaps"] == []
+
+
 def test_payment_fetch_failure_keeps_customer_details_open():
     out = _run_handler("showMakePaymentModal", "showMakePaymentModal(7)",
                        "customerDetailsModal", fail_fetch=True)
@@ -40,11 +48,12 @@ def _run_handler(name, invocation, source_id, fail_fetch=False):
         helpers = _function(source, "showModalAfterHiding") + "\n" + helpers
     script = """
 const elements = new Map(), instances = new Map(), fields = {}, pending = [];
+let currentSaleTransactionId;
 const overlaps = [], toasts = [];
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
-    id, visible: false, listeners: {},
-    classList: { contains: (name) => name === 'show' && element(id).visible },
+    id, visible: false, listeners: {}, style: {},
+    classList: { contains: (name) => name === 'show' && element(id).visible, toggle() {} },
     get value() { return fields[id]; }, set value(v) { fields[id] = v; },
     addEventListener(name, callback, options) {
       (this.listeners[name] ||= []).push({ callback, once: options?.once });

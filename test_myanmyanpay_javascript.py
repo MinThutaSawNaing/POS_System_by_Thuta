@@ -102,7 +102,7 @@ const document = {getElementById(id) {
     classList: {toggle(name, hidden) { this.hidden = hidden; }}});
   return elements.get(id);
 }};
-const bootstrap = {Modal: class {show() {}}};
+function showModalAfterHiding(id) { assert.equal(id, 'saleSuccessModal'); }
 let currentSaleTransactionId;
 __HELPERS__
 showSaleSuccessModal('manual', null, false, 'Manual — not verified by MyanMyanPay');

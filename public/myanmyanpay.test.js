@@ -73,6 +73,127 @@ test('payment recovery is labelled as discovery until an order can actually be r
   assert.equal(h.calls.filter(c => c.options.method === 'POST').length, posts);
 });
 
+test('empty discovery finishes without a generating message, QR controls or checkout action', async () => {
+  const h = await buttonHarness();
+  let finish;
+  h.intercept = url => url.endsWith('/intents') ? new Promise(resolve => { finish = resolve; }) : undefined;
+  const searching = h.element('mmp-open-existing').onclick();
+  await new Promise(setImmediate);
+  assert.doesNotMatch(h.element('pos-mmqr-missing').textContent, /Generating/);
+  finish({ok: true, json: async () => ({payments: []})});
+  await searching;
+  assert.match(h.element('pos-mmqr-missing').textContent, /No unfinished payments/);
+  assert.doesNotMatch(h.element('pos-mmqr-missing').textContent, /Generating/);
+  assert.equal(h.hidden('confirm-mmqr-payment-btn'), true);
+  assert.equal(h.hidden('mmqr-timer-box'), true);
+  assert.equal(h.hidden('mmqr-downloads'), true);
+  assert.equal(h.hidden('mmqr-amount-summary'), true);
+  assert.equal(h.element('mmqr-payment-title').textContent, 'Find unfinished payments');
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+});
+
+test('server-verified payment opens Done/receipt automatically exactly once', async () => {
+  const h = await buttonHarness();
+  await h.checkout.start({items: [1]});
+  h.status = 'SUCCESS';
+  await h.tick();
+  assert.equal(h.completions.length, 1);
+  assert.equal(h.checkout.state().active, null);
+  assert.equal(h.checkout.state().busy, false);
+  await h.tick();
+  await h.checkout.action('complete');
+  assert.equal(h.calls.filter(c => c.url.endsWith('/complete')).length, 1);
+});
+
+test('automatic sale-recording failure keeps paid order and retries only on explicit action', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  await h.checkout.start({items: [1]});
+  h.status = 'SUCCESS';
+  h.intercept = path => path.endsWith('/complete') ? {
+    ok: false, json: async () => ({message: 'Stock changed; reconcile this sale'})
+  } : undefined;
+  await h.tick();
+  assert.equal(h.calls.filter(c => c.path.endsWith('/complete')).length, 1);
+  assert.equal(h.checkout.state().active.status, 'SUCCESS');
+  assert.equal(h.checkout.state().busy, false);
+  assert.match(h.rendered.text, /do not pay again/);
+  await h.tick(); await h.tick();
+  assert.equal(h.calls.filter(c => c.path.endsWith('/complete')).length, 1);
+  h.intercept = null;
+  await h.checkout.action('complete');
+  assert.equal(h.completed.length, 1);
+});
+
+test('automatic completion holds the busy lock and never submits a second completion', async () => {
+  const h = harness(); await h.checkout.loadConfig(); await h.checkout.start({items: [1]});
+  let finish;
+  h.intercept = path => path.endsWith('/complete') ? new Promise(resolve => { finish = resolve; }) : undefined;
+  h.status = 'SUCCESS';
+  const polling = h.tick();
+  await new Promise(setImmediate);
+  assert.equal(h.checkout.state().busy, true);
+  await h.checkout.action('complete'); await h.checkout.action('refresh'); await h.tick();
+  assert.equal(h.calls.filter(c => c.path.endsWith('/complete')).length, 1);
+  finish({ok: true, json: async () => ({success: true, transaction_id: 'sale1'})});
+  await polling;
+  assert.equal(h.completed.length, 1);
+  assert.equal(h.completed[0][1], true);
+  assert.equal(h.checkout.state().busy, false);
+});
+
+test('late automatic completion response cannot finish a sale in a different branch', async () => {
+  const h = harness(); await h.checkout.loadConfig(); await h.checkout.start({items: [1]});
+  let finish;
+  h.intercept = path => path.endsWith('/complete') ? new Promise(resolve => { finish = resolve; }) : undefined;
+  h.status = 'SUCCESS'; const polling = h.tick(); await new Promise(setImmediate);
+  h.scope = 'other-branch';
+  finish({ok: true, json: async () => ({success: true, transaction_id: 'sale1'})});
+  await polling;
+  assert.equal(h.completed.length, 0);
+});
+
+test('cached or listed success is revalidated before automatic completion', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  h.intercept = path => path.endsWith('/intents/7') ? {ok: false, json: async () => ({message: 'Unavailable'})} : undefined;
+  h.checkout.preview(); h.checkout.resume({id: 7, status: 'SUCCESS'});
+  await new Promise(setImmediate);
+  assert.equal(h.calls.filter(c => c.path.endsWith('/complete')).length, 0);
+  assert.equal(h.completed.length, 0);
+});
+
+test('recovering a paid order records its sale while retaining an unrelated cart', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  h.status = 'SUCCESS'; h.checkout.preview(); h.checkout.resume({id: 7, status: 'PENDING'});
+  await new Promise(setImmediate);
+  assert.equal(h.completed.length, 1);
+  assert.equal(h.completed[0][1], false);
+  assert.equal(h.calls.filter(c => c.path.endsWith('/intents') && c.options.method === 'POST').length, 0);
+});
+
+test('reload revalidates a saved paid order and automatically opens its receipt without a new payment', async () => {
+  const h = harness(); h.status = 'SUCCESS'; h.env.restore = () => ({id: 7, status: 'SUCCESS'});
+  await h.checkout.loadConfig(); await new Promise(setImmediate);
+  assert.equal(h.completed.length, 1);
+  assert.equal(h.completed[0][1], false);
+  assert.equal(h.checkout.state().busy, false);
+  assert.equal(h.calls.filter(c => c.path.endsWith('/complete')).length, 1);
+  assert.equal(h.calls.filter(c => c.path.endsWith('/intents') && c.options.method === 'POST').length, 0);
+});
+
+test('discovery hides the uploaded manual QR without enabling automatic manual sales', async () => {
+  const h = await buttonHarness({enabled: false, configured: false, manual_allowed: true});
+  h.element('pos-mmqr-image').style.display = 'block';
+  await h.element('mmp-open-existing').onclick();
+  assert.equal(h.element('pos-mmqr-image').style.display, 'none');
+  assert.match(h.element('pos-mmqr-missing').textContent, /No unfinished payments/);
+  assert.equal(h.hidden('confirm-mmqr-payment-btn'), true);
+  assert.equal(h.completions.length, 0);
+  h.checkout.preview('checkout');
+  assert.equal(h.hidden('confirm-mmqr-payment-btn'), false);
+  assert.equal(h.hidden('mmqr-qr-surface'), false);
+  assert.equal(h.hidden('mmqr-timer-box'), false);
+});
+
 test('resume reopens the active order without searching or creating another payment', async () => {
   const h = await buttonHarness();
   await h.checkout.start({items: [1]});
@@ -143,7 +264,7 @@ test('pending order promotes status check and hides sale completion and discover
   assert.equal(h.hidden('mmqr-close-note'), false);
 });
 
-test('status refresh disables payment actions, restores labels, and promotes verified completion', async () => {
+test('status refresh disables payment actions and automatically records verified payment', async () => {
   const h = await buttonHarness();
   await h.checkout.start({items: [1]});
   let finish;
@@ -157,11 +278,9 @@ test('status refresh disables payment actions, restores labels, and promotes ver
   finish({ok: true, json: async () => ({payment: {id: 7, status: 'SUCCESS', amount: 1000}})});
   await refreshing;
   assert.equal(h.hidden('mmp-refresh'), true);
-  assert.equal(h.hidden('mmp-cancel'), true, 'verified payments cannot be cancelled in this dialog');
-  assert.equal(h.hidden('mmp-resume'), true);
-  assert.equal(h.hidden('confirm-mmqr-payment-btn'), false);
-  assert.equal(h.element('confirm-mmqr-payment-btn').disabled, false);
-  assert.equal(h.element('confirm-mmqr-payment-btn').textContent, 'Complete verified sale');
+  assert.equal(h.checkout.state().active, null);
+  assert.equal(h.completions.length, 1);
+  assert.equal(h.calls.filter(c => c.url.endsWith('/complete')).length, 1);
   assert.equal(h.element('confirm-mmqr-payment-btn').getAttribute('aria-busy'), 'false');
 });
 
@@ -184,16 +303,14 @@ test('failed refresh and failed completion restore usable buttons without allowi
   assert.match(h.element('mmp-status').textContent, /reconciliation/);
 });
 
-test('webhook success automatically updates the real dialog without a refresh click or sale creation', async () => {
+test('webhook success automatically records the sale without a refresh or completion click', async () => {
   const h = await buttonHarness();
   await h.checkout.start({items: [1]});
   h.status = 'SUCCESS'; // Next GET reads the state persisted by the verified callback.
   await h.tick();
   assert.equal(h.hidden('mmp-auto-status'), true);
-  assert.equal(h.hidden('confirm-mmqr-payment-btn'), false);
-  assert.equal(h.element('confirm-mmqr-payment-btn').disabled, false);
-  assert.equal(h.element('confirm-mmqr-payment-btn').textContent, 'Complete verified sale');
-  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 1, 'only the initial create posts');
+  assert.equal(h.completions.length, 1);
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 2, 'one create and one idempotent sale completion');
 });
 
 test('rejected creation offers retry and discovery; cancellation restores checkout actions', async () => {
@@ -247,7 +364,7 @@ test('sandbox checkout distinguishes simulated success from real money', async (
   assert.match(h.element('mmqr-payment-help').textContent, /SANDBOX.*no real money/);
   h.status = 'SUCCESS';
   await h.tick();
-  assert.equal(h.element('confirm-mmqr-payment-btn').textContent, 'Complete sandbox sale');
+  assert.equal(h.checkout.state().active, null);
   assert.match(h.element('mmqr-payment-help').textContent, /stock|reports/);
   await h.checkout.action('complete');
   assert.equal(h.completions.length, 1);
@@ -285,7 +402,7 @@ function harness() {
   h.checkout = createCheckout(h.env); return h;
 }
 
-test('automatic checks recover a missed callback periodically and never create or complete an order', async () => {
+test('automatic checks recover a missed callback and record its verified sale without another QR', async () => {
   const h = harness(); await h.checkout.loadConfig();
   await h.checkout.start({items: [1]});
   const realNow = Date.now;
@@ -297,10 +414,11 @@ test('automatic checks recover a missed callback periodically and never create o
       ok: true, json: async () => ({payment: {id: 7, status: 'SUCCESS', amount: 1000}})
     } : undefined;
     await h.tick();
-    assert.equal(h.checkout.state().active.status, 'SUCCESS');
+    assert.equal(h.checkout.state().active, null);
     assert.equal(h.calls.filter(c => c.path.endsWith('/refresh')).length, 1);
     assert.equal(h.calls.filter(c => c.path.endsWith('/intents') && c.options.method === 'POST').length, 1);
-    assert.equal(h.calls.filter(c => c.path.endsWith('/complete')).length, 0);
+    assert.equal(h.calls.filter(c => c.path.endsWith('/complete')).length, 1);
+    assert.equal(h.completed.length, 1);
   } finally { Date.now = realNow; }
 });
 
@@ -315,7 +433,8 @@ test('an older status GET cannot overwrite a verified payment returned by a manu
   await h.checkout.action('refresh');
   finish({ok: true, json: async () => ({payment: {id: 7, status: 'PENDING'}})});
   await polling;
-  assert.equal(h.checkout.state().active.status, 'SUCCESS');
+  assert.equal(h.checkout.state().active, null);
+  assert.equal(h.completed.length, 1);
 });
 
 test('automatic provider checks are throttled and stop after close or a branch change', async () => {
@@ -355,7 +474,8 @@ test('in-flight GET cannot change closed checkout, and reopening continues autom
   h.intercept = null; h.status = 'SUCCESS';
   h.checkout.preview();
   await h.tick();
-  assert.equal(h.checkout.state().active.status, 'SUCCESS');
+  assert.equal(h.checkout.state().active, null);
+  assert.equal(h.completed.length, 1);
 });
 
 test('automatic refresh failure backs off while a later webhook still enables completion', async () => {
@@ -375,10 +495,10 @@ test('automatic refresh failure backs off while a later webhook still enables co
     now += 3000;
     h.status = 'SUCCESS';
     await h.tick();
-    assert.equal(h.checkout.state().active.status, 'SUCCESS');
+    assert.equal(h.checkout.state().active, null);
     assert.doesNotMatch(h.rendered.text, /Provider status unavailable/);
     assert.equal(h.calls.filter(c => c.path.endsWith('/refresh')).length, 1);
-    assert.equal(h.completed.length, 0);
+    assert.equal(h.completed.length, 1);
   } finally { Date.now = realNow; }
 });
 test('uncertain create error remains visible after finally and status polling', async () => {
@@ -423,7 +543,7 @@ test('create freezes full payload and transaction ID; polling only GET; complete
   assert.equal(frozen.transaction_id, 'stable-txn'); assert.deepEqual(frozen.delivery, {enabled: true});
   await h.tick(); assert.equal(h.calls.at(-1).options.method, 'GET');
   await h.checkout.action('complete'); assert.equal(h.completed.length, 0);
-  h.status = 'SUCCESS'; await h.tick(); h.snapshot = 'new-cart'; await h.checkout.action('complete');
+  h.snapshot = 'new-cart'; h.status = 'SUCCESS'; await h.tick(); await h.checkout.action('complete');
   assert.equal(h.calls.at(-1).options.body, undefined);
   assert.deepEqual(h.completed[0], [{success: true, transaction_id: 'sale1'}, false]);
 });
@@ -448,8 +568,8 @@ test('duplicate creates blocked; late result ignored after branch changes', asyn
 test('offline never posts; failed complete retains paid intent and reconciliation warning', async () => {
   const h = harness(); await h.checkout.loadConfig(); h.online = false;
   await h.checkout.start({items: [1]}); assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
-  h.online = true; h.status = 'SUCCESS'; await h.checkout.start({items: [1]});
   h.intercept = async path => { if (path.endsWith('/complete')) throw Error('inventory changed'); };
+  h.online = true; h.status = 'SUCCESS'; await h.checkout.start({items: [1]});
   await h.checkout.action('complete'); assert.equal(h.checkout.state().active.id, 7);
   assert.match(h.texts.at(-1), /reconciliation, do not pay again/); assert.equal(h.completed.length, 0);
 });
