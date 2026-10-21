@@ -164,9 +164,41 @@ use a 32-character UUID hex string and the adapter validates this before I/O.
 Older `POS-` plus UUID-hex IDs were 36 characters and were rejected before QR
 creation. Choose **Cancel payment** explicitly to close an old overlength
 `CREATING` order with no QR or provider references, then create a new checkout.
-Valid-length uncertain orders still require provider reconciliation/cancellation;
-they are never automatically released. Provider errors remain visible while
-local status polling runs, and the checkout explains when no QR has been issued.
+
+Valid-length uncertain orders are never released automatically. A **definitive**
+provider rejection (HTTP 400/401/403/404/405/422) proves nothing was created, so
+it closes the local order instead of blocking the register with "retry later":
+create returns `422` with a `FAILED` order, and refresh/cancel releases a
+`CREATING` order with no QR. Transport errors, timeouts, 408/409/429 and 5xx stay
+ambiguous and keep the order for reconciliation.
+
+Provider errors remain visible while local status polling runs, and the checkout
+explains when no QR has been issued instead of showing a blank frame.
+
+### Amount formatting (verified against the sandbox provider)
+
+The sandbox rejects whole Kyat sent as a JSON float: `6400.0` returned **403**
+while `6400` returned `PENDING` and `6400.5` returned `PENDING`. The adapter
+therefore serializes integral amounts as JSON integers and keeps only real
+subunits as decimals. Never send `Decimal`/float amounts straight to the API.
+
+### Settings persistence across restarts
+
+Stored Settings values are applied by the module-level `apply_payment_settings()`
+call that runs during application import, so they survive a container restart for
+both entrypoints (`python app.py` and Waitress `app:app`). This was verified on
+the server with `docker exec ... python -c "import app"` reporting the saved
+switch and keys. After any restart, confirm
+`GET /api/payments/myanmyanpay/config` reports `configured: true` and the
+expected `sandbox` flag before accepting a payment.
+
+### Do not hand-edit the deployed checkout
+
+`/opt/parrot-pos` is a git checkout guarded by `parrot-pos-deploy`. Copying files
+into it makes the tree dirty, and the guarded deploy (`git diff --quiet`) then
+fails and **rolls back**, silently reverting the application to the older
+revision. Deploy by pushing a commit and running the deploy script, or reset the
+checkout to the target commit before rebuilding.
 
 - Create sandbox QR; scan/pay; confirm webhook reaches public HTTPS callback.
 - Verify app automatically shows verified status; completing creates exactly one
