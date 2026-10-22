@@ -15,9 +15,12 @@ CHILD = os.environ.get('POS_PERMISSION_CHILD') == '1'
 def test_isolated_backend_permissions():
     with tempfile.TemporaryDirectory(prefix='pos-permissions-') as directory:
         env = dict(os.environ, POS_PERMISSION_CHILD='1', POS_PERMISSION_INSTANCE=directory)
+        # The child imports and migrates the whole app, then exercises every
+        # permission route. Measured at ~6 minutes on Windows; the cap still
+        # turns a genuine hang into a failure instead of waiting forever.
         result = subprocess.run([sys.executable, '-m', 'pytest', str(Path(__file__).resolve()),
                                  '-q', '--tb=short'], env=env, capture_output=True,
-                                text=True, timeout=240, cwd=Path(__file__).resolve().parent)
+                                text=True, timeout=600, cwd=Path(__file__).resolve().parent)
     assert result.returncode == 0, result.stdout + '\n' + result.stderr
 
 

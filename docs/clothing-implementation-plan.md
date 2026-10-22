@@ -53,14 +53,18 @@ Baseline on the untouched tree (`python run_tests.py`, before implementation):
 subprocess exceeded its fixed 240-second timeout. Its child tests are therefore
 skipped by the launcher in this environment.
 
-Final tree: **1,138 passed, 161 skipped, 1 failed in 663.71s**. The same
-permission-launcher timeout is the only failure; it reproduces on the baseline,
-so it is recorded as an environment/tooling limitation rather than a clothing
-regression. All clothing, checkout, return, receiving, report, receipt, AI-tool,
-barcode and JavaScript suites passed, along with the previously existing tests.
-A post-review fix suite (display-name consistency, barcode-less attachment
-editing, AI price updates with omitted stock, analytics lock portability):
-**56 passed**.
+Final feature tree: **1,138 passed, 161 skipped, 1 failed in 663.71s**. The
+permission-launcher timeout was the only failure. A post-review fix suite
+(display-name consistency, barcode-less attachment editing, AI price updates with
+omitted stock, analytics lock portability) passed **56 tests**.
+
+Release check: the isolated permission child was then run directly against a
+disposable source copy. It passed **155 tests (1 skipped) in 360.73s**, proving
+the authorization behavior itself was intact and the parent's fixed 240-second
+cap was the problem. That cap was raised to 600 seconds (still bounded so a real
+hang fails); the targeted launcher then passed **1 test (155 skipped) in
+358.08s**. No application code changed after the 1,138-pass suite, so the clean
+permission result closes the only remaining red check without altering behavior.
 
 Focused evidence collected during implementation:
 
