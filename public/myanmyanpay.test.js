@@ -8,7 +8,7 @@ const vm = require('node:vm');
 
 // Exercise the real browser adapter as well as the state machine. No browser
 // dependency is needed for button visibility, labels and in-flight guards.
-async function buttonHarness({enabled = true, configured = true, manual_allowed = false, sandbox = false, dashboard = false} = {}) {
+async function buttonHarness({enabled = true, configured = true, manual_allowed = false, sandbox = false, dashboard = false, intercept, imageComplete = true, cached = null} = {}) {
   const elements = new Map();
   const element = id => {
     if (!elements.has(id)) {
@@ -24,15 +24,21 @@ async function buttonHarness({enabled = true, configured = true, manual_allowed 
         setAttribute: (name, value) => attributes.set(name, value),
         getAttribute: name => attributes.get(name),
         removeAttribute: name => attributes.delete(name),
+        complete: imageComplete, naturalWidth: imageComplete ? 180 : 0,
         listeners: {}, focus() {},
         addEventListener(name, fn) { this.listeners[name] = fn; },
         replaceChildren() { this.children = []; },
         appendChild(child) { this.children.push(child); },
       });
+      Object.defineProperty(elements.get(id), 'src', {
+        get: () => attributes.get('src'),
+        set: value => attributes.set('src', value),
+      });
     }
     return elements.get(id);
   };
-  const h = {element, status: 'PENDING', calls: [], completions: [], opens: 0, notices: [], sequence: 0};
+  const h = {element, status: 'PENDING', calls: [], completions: [], opens: 0, notices: [], sequence: 0, intercept};
+  element('mmqr-qr-loading').classList.add('d-none');
   const context = {
     document: {getElementById: element, createElement: () => element(Symbol()), addEventListener() {}},
     currentBranch: {id: 1}, CACHE_USER_ID: 1, cart: [], navigator: {onLine: true},
@@ -46,7 +52,7 @@ async function buttonHarness({enabled = true, configured = true, manual_allowed 
     })}},
     crypto: {randomUUID: () => `button-test-${++h.sequence}`},
     setTimeout: fn => { h.tick = fn; return 1; }, clearTimeout() {},
-    resetMMQRCountdown() {}, stopMMQRCountdown() {}, setMMQRDownloadState() {},
+    resetMMQRCountdown() {}, stopMMQRCountdown() {}, setMMQRDownloadState(value) { h.downloadEnabled = value; },
     confirmMMQRPayment() {},
     updateCartDisplay() {}, resetSplitPaymentFields() {}, togglePosDeliveryFields() {},
     updateCashRefundDisplay() {}, loadSales() {}, loadDashboardStats() {}, invalidateProductsCache() {},
@@ -63,6 +69,10 @@ async function buttonHarness({enabled = true, configured = true, manual_allowed 
       return {ok: true, json: async () => data};
     },
   };
+  if (cached) {
+    const store = new Map(Object.entries(cached));
+    context.localStorage = {getItem: key => store.get(key), setItem: (key, value) => store.set(key, value), removeItem: key => store.delete(key)};
+  }
   if (dashboard) {
     const source = fs.readFileSync(path.join(__dirname, '..', 'templates', 'dashboard.html'), 'utf8');
     const functions = ['addToCartToInternal', 'updateCartDisplay', 'showMMQRPaymentModal',
@@ -93,6 +103,338 @@ async function buttonHarness({enabled = true, configured = true, manual_allowed 
   h.hidden = id => element(id).classList.contains('d-none');
   return h;
 }
+
+test('readiness loading is explicit, immediate, and ends after configuration failure or close', async () => {
+  const h = harness(); let finish;
+  h.intercept = path => path.endsWith('/config') ? new Promise(resolve => { finish = resolve; }) : undefined;
+  await h.checkout.start({items: [1]});
+  assert.equal(h.rendered.loading, 'readiness');
+  h.checkout.close();
+  assert.equal(h.rendered.loading, '');
+  finish({ok: false, json: async () => ({message: 'Configuration unavailable'})});
+  await new Promise(setImmediate);
+  h.checkout.preview();
+  assert.equal(h.rendered.loading, '', 'a failed config is not an ongoing operation');
+  assert.match(h.rendered.text, /Cannot verify/);
+  assert.equal(h.calls.length, 1, 'preview must not duplicate readiness requests');
+});
+
+test('browser spinner spans pending search, create and image load without exposing QR early', async () => {
+  const h = await buttonHarness({imageComplete: false});
+  assert.equal(h.hidden('mmqr-qr-loading'), true, 'idle setup is not a QR operation');
+  let finishSearch, finishCreate;
+  h.intercept = (url, options) => url.endsWith('/intents') ? new Promise(resolve => {
+    if (options.method === 'GET') finishSearch = resolve; else finishCreate = resolve;
+  }) : undefined;
+  const starting = h.checkout.start({items: [1]});
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  assert.equal(h.hidden('mmqr-qr-surface'), false);
+  assert.equal(h.element('mmqr-qr-surface').getAttribute('aria-busy'), 'true');
+  assert.equal(h.element('pos-mmqr-image').style.display, 'none');
+  assert.equal(h.downloadEnabled, false);
+  finishSearch({ok: true, json: async () => ({payments: []})});
+  await new Promise(setImmediate);
+  assert.match(h.element('mmqr-qr-loading-text').textContent, /Generating/);
+  finishCreate({ok: true, json: async () => ({payment: {id: 7, status: 'PENDING', qr_url: '/qr'}})});
+  await starting;
+  assert.match(h.element('mmqr-qr-loading-text').textContent, /Loading/);
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  const image = h.element('pos-mmqr-image');
+  assert.equal(image.style.display, 'none');
+  assert.equal(h.downloadEnabled, false);
+  h.intercept = null;
+  await h.tick();
+  assert.equal(h.hidden('mmqr-qr-loading'), false, 'poll does not finish the image load');
+  image.naturalWidth = 180;
+  image.onload();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(h.element('mmqr-qr-surface').getAttribute('aria-busy'), 'false');
+  assert.equal(image.style.display, 'block');
+  assert.equal(h.downloadEnabled, true);
+  assert.equal(h.calls.filter(c => c.url.endsWith('/intents') && c.options.method === 'POST').length, 1);
+});
+
+test('image errors survive polling and retry only the same image; stale close/reopen events are ignored', async () => {
+  const h = await buttonHarness({imageComplete: false});
+  await h.checkout.start({items: [1]});
+  const image = h.element('pos-mmqr-image'), firstLoad = image.onload, firstError = image.onerror;
+  image.onerror();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(h.downloadEnabled, false);
+  assert.match(h.element('pos-mmqr-missing').textContent, /could not be loaded.*same QR/);
+  await h.tick();
+  assert.equal(h.hidden('mmqr-qr-loading'), true, 'poll must not silently retry the failed image');
+  const calls = h.calls.length;
+  h.element('pos-mmqr-missing').children.at(-1).onclick();
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  assert.equal(h.calls.length, calls, 'image retry never searches, creates or completes a payment');
+  firstLoad(); firstError();
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  const retryLoad = image.onload;
+  h.checkout.close();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  retryLoad();
+  assert.equal(image.style.display, 'none');
+  h.checkout.preview();
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  retryLoad();
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  image.naturalWidth = 180; image.onload();
+  assert.equal(h.downloadEnabled, true);
+  await h.tick();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  const stale = image.onload;
+  h.context.currentBranch.id = 2;
+  stale();
+  assert.equal(h.downloadEnabled, false, 'branch-stale images must not stay usable');
+});
+
+test('browser readiness spinner covers deferred config and saved-order recovery, never duplicate creates', async () => {
+  let finishConfig, finishRecovery;
+  const h = await buttonHarness({imageComplete: false,
+    cached: {'mmpay_active:[1,1]': JSON.stringify({id: 7})},
+    intercept: url => url.endsWith('/config') ? new Promise(resolve => { finishConfig = resolve; })
+      : url.endsWith('/intents/7') ? new Promise(resolve => { finishRecovery = resolve; }) : undefined,
+  });
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  await h.checkout.start({items: [1]});
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  assert.match(h.element('mmqr-qr-loading-text').textContent, /readiness/);
+  finishConfig({ok: true, json: async () => ({enabled: true, configured: true})});
+  await new Promise(setImmediate);
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  finishRecovery({ok: true, json: async () => ({payment: {id: 7, status: 'PENDING', qr_url: '/qr'}})});
+  await new Promise(setImmediate);
+  assert.match(h.element('mmqr-qr-loading-text').textContent, /Loading/);
+  assert.equal(h.calls.filter(c => c.url.endsWith('/config')).length, 1);
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+});
+
+test('cached QR synchronously complete is visible without waiting for a load event', async () => {
+  const h = await buttonHarness({cached: {'mmpay_qr:[1,1]': JSON.stringify({id: 7, svg: '<svg></svg>'})}});
+  await h.checkout.start({items: [1]});
+  assert.match(h.element('pos-mmqr-image').src, /^data:image\/svg/);
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(h.element('pos-mmqr-image').style.display, 'block');
+  assert.equal(h.downloadEnabled, true);
+  assert.equal(h.calls.filter(c => c.url.endsWith('/qr')).length, 0);
+});
+
+test('closing during saved-order recovery does not reopen checkout or leave a spinner', async () => {
+  const h = harness(); let finish;
+  h.env.restore = () => ({id: 7});
+  h.intercept = path => path.endsWith('/intents/7') ? new Promise(resolve => { finish = resolve; }) : undefined;
+  const loading = h.checkout.loadConfig();
+  await new Promise(setImmediate);
+  h.checkout.preview();
+  assert.equal(h.rendered.loading, 'readiness');
+  h.checkout.close();
+  finish({ok: true, json: async () => ({payment: {id: 7, status: 'PENDING', qr_url: '/qr'}})});
+  await loading;
+  assert.equal(h.rendered.loading, '');
+  assert.equal(h.checkout.state().visible, false);
+  assert.equal(h.checkout.state().active.id, 7, 'keep the recovered order without reopening it');
+  h.checkout.preview();
+  assert.equal(h.checkout.state().visible, true);
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+});
+
+test('spinner ends on discovery empty/error, rejected create, blocked setup, and terminal orders', async () => {
+  const h = await buttonHarness({imageComplete: false});
+  await h.element('mmp-open-existing').onclick();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  h.intercept = () => { throw Error('Service unavailable'); };
+  await h.checkout.list();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  await h.checkout.start({items: [1]});
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(h.element('mmqr-qr-surface').getAttribute('aria-busy'), 'false');
+  h.intercept = null;
+  await h.checkout.start({items: [1]});
+  const stale = h.element('pos-mmqr-image').onload;
+  h.status = 'CANCELLED'; await h.checkout.action('cancel');
+  stale();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(h.downloadEnabled, false);
+  h.status = 'PENDING';
+  const next = h.checkout.start({items: [1]});
+  assert.equal(h.hidden('mmqr-qr-loading'), false, 'new checkout after cancellation still shows progress');
+  await next;
+  const blocked = await buttonHarness({configured: false});
+  blocked.checkout.preview();
+  assert.equal(blocked.hidden('mmqr-qr-loading'), true);
+});
+
+test('state machine exposes only in-flight readiness/search/generation as QR loading', async () => {
+  const h = harness(); await h.checkout.loadConfig();
+  let search, create;
+  h.intercept = (url, options) => url.endsWith('/intents') ? new Promise(resolve => {
+    if (options.method === 'GET') search = resolve; else create = resolve;
+  }) : undefined;
+  const starting = h.checkout.start({items: [1]});
+  assert.equal(h.rendered.loading, 'search');
+  search({ok: true, json: async () => ({payments: []})});
+  await new Promise(setImmediate);
+  assert.equal(h.rendered.loading, 'generate');
+  create({ok: false, json: async () => ({message: 'Provider unavailable', payment: {id: 7, status: 'CREATING'}})});
+  await starting;
+  assert.equal(h.rendered.loading, '', 'uncertain CREATING is recovery, not an endless spinner');
+  h.intercept = null; h.status = 'CREATING';
+  await h.tick();
+  assert.equal(h.rendered.loading, '');
+  assert.match(h.rendered.text, /Provider unavailable/);
+});
+
+test('browser config failure stops readiness spinner and later checkout retries safely', async () => {
+  let finish;
+  const h = await buttonHarness({intercept: url => url.endsWith('/config') ? new Promise(resolve => { finish = resolve; }) : undefined});
+  await h.checkout.start({items: [1]});
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  finish({ok: false, json: async () => ({message: 'Cannot connect'})});
+  await new Promise(setImmediate);
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(h.element('mmqr-qr-surface').getAttribute('aria-busy'), 'false');
+  assert.equal(h.element('confirm-mmqr-payment-btn').disabled, true);
+  assert.match(h.element('mmp-status').textContent, /Cannot verify/);
+  h.intercept = null;
+  await h.checkout.start({items: [1]});
+  await new Promise(setImmediate);
+  assert.equal(h.checkout.mode(), 'provider');
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+});
+
+test('old order image events cannot hide the new order spinner', async () => {
+  const h = await buttonHarness({imageComplete: false});
+  await h.checkout.start({items: [1]});
+  const image = h.element('pos-mmqr-image'), staleLoad = image.onload, staleError = image.onerror;
+  h.status = 'CANCELLED'; await h.tick();
+  h.status = 'PENDING';
+  h.intercept = (url, options) => url.endsWith('/intents') && options.method === 'POST'
+    ? {ok: true, json: async () => ({payment: {id: 8, status: 'PENDING', qr_url: '/qr'}})} : undefined;
+  await h.checkout.start({items: [1]});
+  assert.match(image.src, /intents\/8\/qr$/);
+  image.naturalWidth = 180; staleLoad(); staleError();
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  assert.equal(h.downloadEnabled, false);
+  image.onload();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(h.downloadEnabled, true);
+});
+
+test('closing while pending-order search is in flight stops progress and does not create a payment', async () => {
+  const h = await buttonHarness({imageComplete: false}); let finish;
+  h.intercept = (url, options) => url.endsWith('/intents') && options.method === 'GET'
+    ? new Promise(resolve => { finish = resolve; }) : undefined;
+  const starting = h.checkout.start({items: [1]});
+  h.checkout.close();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  finish({ok: true, json: async () => ({payments: []})});
+  await starting;
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+});
+
+test('closing during config also suppresses later cached-order recovery reopening', async () => {
+  const h = harness(); let finish;
+  h.env.restore = () => ({id: 7});
+  h.intercept = path => path.endsWith('/config') ? new Promise(resolve => { finish = resolve; }) : undefined;
+  await h.checkout.start({items: [1]});
+  h.checkout.close();
+  finish({ok: true, json: async () => ({enabled: true, configured: true})});
+  await new Promise(setImmediate);
+  assert.equal(h.checkout.state().visible, false);
+  assert.equal(h.checkout.state().active.id, 7);
+  assert.equal(h.rendered.loading, '');
+});
+
+test('unavailable identity-pinned QR shows recovery guidance rather than a blank or endless load', async () => {
+  const h = await buttonHarness({imageComplete: false});
+  h.context.dashboardIdentityUrl = () => null;
+  await h.checkout.start({items: [1]});
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(h.downloadEnabled, false);
+  assert.equal(h.element('pos-mmqr-image').style.display, 'none');
+  assert.match(h.element('pos-mmqr-missing').textContent, /unavailable.*reload/i);
+});
+
+test('legacy QR uses the same loading/error/retry gates without provider requests or changing manual confirmation', async () => {
+  const h = await buttonHarness({enabled: false, manual_allowed: true, imageComplete: false});
+  h.checkout.preview('checkout');
+  const calls = h.calls.length;
+  h.context.showLegacyMMQRImage('/uploads/manual-qr.png');
+  const image = h.element('pos-mmqr-image');
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  assert.equal(h.element('mmqr-qr-surface').getAttribute('aria-busy'), 'true');
+  assert.equal(image.style.display, 'none');
+  assert.equal(h.downloadEnabled, false);
+  assert.equal(h.element('confirm-mmqr-payment-btn').textContent, 'Record manually confirmed sale');
+  assert.equal(h.element('confirm-mmqr-payment-btn').disabled, false);
+  image.onerror();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(h.downloadEnabled, false);
+  assert.match(h.element('pos-mmqr-missing').textContent, /could not be loaded/);
+  h.checkout.preview();
+  assert.equal(h.hidden('mmqr-qr-loading'), true, 'preview does not retry a failed manual QR');
+  h.element('pos-mmqr-missing').children.at(-1).onclick();
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  image.naturalWidth = 180; image.onload();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(image.style.display, 'block');
+  assert.equal(h.downloadEnabled, true);
+  assert.equal(h.calls.length, calls, 'manual image lifecycle never calls the payment provider');
+});
+
+test('legacy slow image ignores stale close/reopen and discovery events, including cached completion', async () => {
+  const h = await buttonHarness({enabled: false, manual_allowed: true, imageComplete: false});
+  h.checkout.preview('checkout');
+  h.context.showLegacyMMQRImage('/uploads/manual.png');
+  const image = h.element('pos-mmqr-image'), oldLoad = image.onload, oldError = image.onerror;
+  h.checkout.close();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(h.downloadEnabled, false);
+  assert.equal(image.style.display, 'none');
+  h.checkout.preview('checkout');
+  h.context.showLegacyMMQRImage('/uploads/manual.png');
+  image.naturalWidth = 180; oldLoad(); oldError();
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  assert.equal(h.downloadEnabled, false);
+  image.onload();
+  assert.equal(h.downloadEnabled, true);
+  await h.element('mmp-open-existing').onclick();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(image.style.display, 'none');
+  assert.equal(h.downloadEnabled, false);
+  h.checkout.preview('checkout'); image.complete = true;
+  h.context.showLegacyMMQRImage('/uploads/manual.png');
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(image.style.display, 'block');
+  assert.equal(h.downloadEnabled, true);
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+  const provider = await buttonHarness(); provider.checkout.preview();
+  assert.equal(provider.context.showLegacyMMQRImage('/uploads/manual.png'), false);
+  assert.equal(provider.calls.filter(c => c.options.method === 'POST').length, 0);
+});
+
+test('dashboard manual checkout delegates image readiness without overriding slow load or synchronous errors', async () => {
+  const h = await buttonHarness({enabled: false, manual_allowed: true, imageComplete: false, dashboard: true});
+  Object.assign(h.context, {
+    legacyMMQRDeadline: () => Date.now() + 900000,
+    mmqrStoreUsesMMK: () => true, formatMMKAmount: value => 'MMK ' + value, setMMQRCurrencyNote() {},
+  });
+  h.context.APP_SETTINGS.mmqrUrl = '/uploads/manual.png';
+  h.context.showMMQRPaymentModal();
+  assert.equal(h.hidden('mmqr-qr-loading'), false);
+  assert.equal(h.element('pos-mmqr-image').style.display, 'none');
+  assert.equal(h.downloadEnabled, false);
+  h.checkout.close();
+  const image = h.element('pos-mmqr-image'); image.complete = true; image.naturalWidth = 0;
+  h.context.showMMQRPaymentModal();
+  assert.equal(h.hidden('mmqr-qr-loading'), true);
+  assert.equal(h.downloadEnabled, false);
+  assert.equal(h.element('pos-mmqr-missing').style.display, 'block');
+  assert.match(h.element('pos-mmqr-missing').textContent, /manual.*could not be loaded/);
+  assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 0);
+});
 
 test('after a finished mobile sale, selecting products builds the next cart without reopening MMQR', async () => {
   const h = await buttonHarness({dashboard: true});

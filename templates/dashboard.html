@@ -1861,6 +1861,9 @@
                 />
               </div>
               <div class="col-12 col-md-7 d-flex flex-wrap gap-2 justify-content-md-end">
+                <button class="btn btn-success" data-capability="catalog.write" data-bs-toggle="modal" data-bs-target="#importProductsModal">
+                  <i class="bi bi-upload"></i> Import Excel
+                </button>
                 <button class="btn btn-outline-success" onclick="exportProductList('xlsx')" title="Export product list to Excel">
                   <i class="bi bi-file-earmark-spreadsheet"></i> <span data-i18n="exportExcel">Export Excel</span>
                 </button>
@@ -6342,6 +6345,72 @@
       </div>
     </div>
 
+    <!-- Product import writes only after a validated preview and confirmation. -->
+    <div class="modal fade" id="importProductsModal" tabindex="-1" aria-labelledby="product-import-title" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="product-import-title"><i class="bi bi-upload me-2"></i>Import products from Excel</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p>Import into <strong id="product-import-branch"></strong>. Preview first; nothing is saved until you confirm.</p>
+            <div class="alert alert-info small">
+              <strong>Stock is protected.</strong> This imports catalog details only. Existing stock and photos are kept;
+              new products start at zero stock. Use Warehouse / Purchase &amp; Receiving to add stock.
+              Blank spreadsheet cells never erase existing values.
+            </div>
+            <div class="row g-3 align-items-end">
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="product-import-file">1. Choose your spreadsheet</label>
+                <input type="file" class="form-control" id="product-import-file" accept=".xlsx,.csv" aria-describedby="product-import-file-help">
+                <div id="product-import-file-help" class="form-text">Excel .xlsx or UTF-8 CSV, up to 5 MB and 2,000 products. For .xls, save as .xlsx first. Use the first data sheet; keep barcodes as text to preserve leading zeros.</div>
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="product-import-mode">2. When a barcode already exists in this branch</label>
+                <select class="form-select" id="product-import-mode">
+                  <option value="skip">Skip existing products (recommended)</option>
+                  <option value="update">Update supplied catalog fields; keep stock and photos</option>
+                </select>
+                <div class="form-text">Updates require a matching barcode. Unclear name matches are flagged instead of overwritten.</div>
+              </div>
+            </div>
+            <button type="button" class="btn btn-link px-0 mt-2" id="product-import-template-btn"><i class="bi bi-download me-1"></i>Download Excel template</button>
+            <div class="form-check mt-2">
+              <input class="form-check-input" type="checkbox" id="product-import-create-categories">
+              <label class="form-check-label" for="product-import-create-categories">Create missing categories in this branch</label>
+              <div class="form-text">Leave unchecked to require existing categories. New category names will appear in the preview before saving.</div>
+            </div>
+            <div id="product-import-mapping" class="d-none border rounded p-3 mt-3">
+              <h6>3. Match your spreadsheet columns</h6>
+              <p class="small text-muted">Common headings are matched automatically. Adjust these if needed, then preview again. Name and price are required for new products.</p>
+              <div id="product-import-columns" class="row g-2"></div>
+            </div>
+            <div id="product-import-working" class="d-none py-3" role="status" aria-live="polite">
+              <span class="spinner-border spinner-border-sm text-success me-2" aria-hidden="true"></span>Processing spreadsheet. Please wait…
+            </div>
+            <div id="product-import-error" class="alert alert-danger d-none mt-3" role="alert"></div>
+            <div id="product-import-preview" class="d-none mt-3">
+              <h6 id="product-import-summary" role="status" aria-live="polite"></h6>
+              <ul id="product-import-warnings" class="small text-muted"></ul>
+              <p class="small">Review the actions below. Fix all error rows in Excel and upload again before importing. Duplicate rows within the file are never silently applied.</p>
+              <div class="table-responsive" style="max-height: 22rem;">
+                <table class="table table-sm table-striped align-middle">
+                  <thead><tr><th>Excel row</th><th>Product</th><th>Barcode</th><th>Action</th><th>Details</th></tr></thead>
+                  <tbody id="product-import-rows"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            <button type="button" class="btn btn-outline-primary" id="product-import-preview-btn">Preview import</button>
+            <button type="button" class="btn btn-success" id="product-import-confirm-btn" disabled>Confirm import</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- MMQR Payment Modal -->
     <div class="modal fade" id="mmqrPaymentModal" tabindex="-1" aria-labelledby="mmqr-payment-title" aria-hidden="true">
       <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
@@ -6362,6 +6431,10 @@
             <!-- The QR is rendered unmodified by the server. The white surface is
                  the mandatory quiet zone, not a wrapper that alters the symbol. -->
             <div class="mmqr-qr-surface mx-auto" id="mmqr-qr-surface">
+              <div id="mmqr-qr-loading" class="d-none py-4" role="status" aria-live="polite">
+                <div class="spinner-border text-success" aria-hidden="true"></div>
+                <p id="mmqr-qr-loading-text" class="small text-muted mt-3 mb-0">Preparing your payment QR. Please wait…</p>
+              </div>
               <img id="pos-mmqr-image" alt="MMQR payment QR" class="mmqr-qr-image" style="display: none;" />
             </div>
             <div id="pos-mmqr-missing" class="mb-0" style="display: none;">Checking payment setup…</div>
@@ -6473,7 +6546,7 @@
       // workspace deliberate and prevents stale navigation from invoking admin loaders.
       const CASHIER_SECTIONS = new Set(["pos", "products", "categories", "sales", "returns", "deliveries", "reports", "memory"]);
       const MANAGER_CAPABILITIES = new Set(["catalog.write", "deliveries.write", "labels", "debts", "branches.switch", "admin"]);
-      const MANAGER_MODAL_IDS = new Set(["addProductModal", "editProductModal", "addCategoryModal", "editCategoryModal", "barcodeLabelModal", "addDebtModal", "makePaymentModal", "debtDetailsModal", "addCommunicationModal", "createDeliveryModal", "updateDeliveryModal"]);
+      const MANAGER_MODAL_IDS = new Set(["addProductModal", "editProductModal", "importProductsModal", "addCategoryModal", "editCategoryModal", "barcodeLabelModal", "addDebtModal", "makePaymentModal", "debtDetailsModal", "addCommunicationModal", "createDeliveryModal", "updateDeliveryModal"]);
 
       function hasCapability(capability) {
         if (capability.startsWith("section.")) {
@@ -11283,7 +11356,7 @@
               item.className = "list-group-item list-group-item-action";
               item.innerHTML = `
                                   <div class="d-flex w-100 justify-content-between">
-                                      <h6 class="mb-1">${product.name}</h6>
+                                      <h6 class="mb-1">${escapeHtml(product.name)}</h6>
                                       <small>${formatCurrency(product.sales_amount || 0)}</small>
                                   </div>
                                   <div class="d-flex w-100 justify-content-between">
@@ -12010,19 +12083,12 @@
         }
         // Reset discovery-only UI before restoring the manual installation's QR.
         MyanMyanPayCheckout.preview("checkout");
-        const image = document.getElementById("pos-mmqr-image");
-        const missing = document.getElementById("pos-mmqr-missing");
         const total = document.getElementById("pos-mmqr-total");
-        if (image) {
-          image.src = APP_SETTINGS.mmqrUrl;
-          image.style.display = "block";
-        }
-        if (missing) missing.style.display = "none";
+        showLegacyMMQRImage(APP_SETTINGS.mmqrUrl);
         const help = document.getElementById("mmqr-payment-help");
         if (help) help.textContent = "Manual payment — not verified by MyanMyanPay. No provider request will be sent. Independently check the merchant account before recording the sale.";
         const confirm = document.getElementById("confirm-mmqr-payment-btn");
         if (confirm) confirm.textContent = "Record manually confirmed sale";
-        setMMQRDownloadState(true);
         resetMMQRCountdown(legacyMMQRDeadline());
         let amountToPay = getCurrentCartTotal();
         if (document.getElementById("payment-method")?.value === "split_payment" && splitUsesMobilePayment()) {
@@ -13705,12 +13771,12 @@
             : "";
           row.innerHTML = `
                                   <td>${getProductPhotoHtml(product.photo_url, product.name, "product-thumb")}</td>
-                                  <td>${product.barcode || "N/A"}</td>
-                                  <td>${product.name}</td>
+                                  <td>${escapeHtml(product.barcode || "N/A")}</td>
+                                  <td>${escapeHtml(product.name)}</td>
                                   <td>$${product.price.toFixed(2)}</td>
                                   <td>${product.stock}</td>
                                   <td class="d-none d-md-table-cell">${product.unit_symbol ? escapeHtml(product.unit_symbol) : "—"}</td>
-                                  <td>${product.category || "N/A"}</td>
+                                  <td>${escapeHtml(product.category || "N/A")}</td>
                                   <td>${product.tax_rate}%</td>
                                   <td ${hasCapability("catalog.write") ? "" : "hidden"}>
                                       <button class="btn btn-sm btn-primary me-1" onclick="editProduct(${
@@ -18498,6 +18564,7 @@
     </script>
 
     <script src="/public/myanmyanpay.js"></script>
+    <script src="/public/product-import.js"></script>
     <!-- AI Agent Widget -->
     {% include 'ai_agent_widget.html' %}
   </body>

@@ -27,6 +27,7 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
   - Cost, category, tax rate, stock control
   - Centralized category management with color coding
   - Reorder points and automated low-stock alerts
+  - [Previewed Excel product imports](docs/product-excel-import.md) with column matching and explicit duplicate handling
 
 - **Sales, Analytics & Reporting**
   - Transaction history and sale details
