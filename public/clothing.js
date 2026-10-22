@@ -196,8 +196,9 @@
       panel.grid = el("div"); host.append(panel.status, panel.grid);
       panel.style.addEventListener("change", () => loadVariants(panel));
       reset(panel);
-      host.closest("details").addEventListener("toggle", () => {
-        if (host.closest("details").open) return loadStyles(panel);
+      const details = host.closest("details");
+      if (details) details.addEventListener("toggle", () => {
+        if (details.open) return loadStyles(panel);
       });
       return panel;
     }
@@ -280,7 +281,12 @@
       const admin = doc.querySelector("[data-clothing-admin]");
       if (admin && env.canWrite()) setupAdmin(setupPicker(admin, true));
     }
-    return {mount, invalidate};
+    function load(adminOnly) {
+      panels.forEach((panel) => {
+        if (!adminOnly || panel.admin) loadStyles(panel);
+      });
+    }
+    return {mount, invalidate, load};
   }
   return {displayName, exactProduct, createUI};
 });

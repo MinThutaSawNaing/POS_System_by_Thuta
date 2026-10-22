@@ -1825,10 +1825,6 @@
 
       <!-- Products Section -->
       <div id="products-section" style="display: none">
-        <details id="clothing-admin" data-capability="catalog.write" class="card p-3 mb-3">
-          <summary>Clothing styles, variants &amp; reviewed CSV import</summary>
-          <div data-clothing-admin class="mt-2"></div>
-        </details>
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Product Management</h2>
@@ -3372,6 +3368,10 @@
                 <i class="bi bi-rulers"></i>
                 <span>Units<small>Measures &amp; conversions</small></span>
               </button>
+              <button type="button" class="settings-nav-item" data-group="clothing" aria-controls="settings-group-clothing" onclick="showSettingsGroup('clothing')">
+                <i class="bi bi-tags"></i>
+                <span>Clothing<small>Styles, variants &amp; CSV</small></span>
+              </button>
               <button type="button" class="settings-nav-item" data-group="receipt" aria-controls="settings-group-receipt" onclick="showSettingsGroup('receipt')">
                 <i class="bi bi-receipt"></i>
                 <span>Receipt &amp; branding<small>Logo, contacts, MMQR</small></span>
@@ -3557,6 +3557,29 @@
           </div>
         </div>
         </div><!-- /settings-group-units -->
+
+        <!-- Clothing group -->
+        <div id="settings-group-clothing" class="settings-group" role="group" aria-label="Clothing catalog" style="display: none">
+          <div class="card settings-card">
+            <div class="card-header">
+              <span class="settings-icon-chip"><i class="bi bi-tags"></i></span>
+              <div class="settings-card-header-title">
+                <h5>Clothing Styles &amp; Variants</h5>
+                <span class="settings-card-subtitle">Optional shared metadata; branch stock always comes from purchasing</span>
+              </div>
+            </div>
+            <div class="card-body">
+              <p class="text-muted small mb-2">
+                Create explicit styles and exact size/color variants, attach existing branch products, or paste a reviewed CSV.
+                New variants start at zero stock; receive stock through purchase orders and transfers.
+              </p>
+              <details id="clothing-admin" data-capability="catalog.write" class="border rounded p-2" open>
+                <summary>Style, variant and CSV tools</summary>
+                <div data-clothing-admin class="mt-2"></div>
+              </details>
+            </div>
+          </div>
+        </div><!-- /settings-group-clothing -->
 
         <!-- Receipt & branding group -->
         <div id="settings-group-receipt" class="settings-group" role="group" aria-label="Receipt and branding" style="display: none">
@@ -13655,6 +13678,8 @@
         // Payment credentials live on the server; refresh them when opened so a
         // value saved on another device is visible without a reload.
         if (groupId === "payments" && typeof loadPaymentSettings === "function") loadPaymentSettings();
+        if (groupId === "clothing" && window.ClothingUI &&
+            typeof window.ClothingUI.load === "function") window.ClothingUI.load(true);
         document.querySelectorAll("#settings-section .settings-nav-item").forEach((item) => {
           const isActive = item.dataset.group === groupId;
           item.classList.toggle("active", isActive);

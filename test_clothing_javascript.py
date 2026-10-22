@@ -157,4 +157,12 @@ def test_template_additions_preserve_external_script_and_safe_cart_display():
     assert '${cartName}</h6>' in source
     assert 'return-item-disposition' in source
     assert 'idempotency_key: receivingKey' in source
+    # Admin clothing controls live in Settings, not in the Products catalog tab.
+    settings = source.index('id="settings-section"')
+    clothing_group = source.index('id="settings-group-clothing"')
+    admin_controls = source.index('data-clothing-admin')
+    assert settings < clothing_group < admin_controls
+    assert 'data-group="clothing"' in source
+    assert 'window.ClothingUI.load(true)' in source
+    assert 'data-clothing-admin' not in source[:settings]
     assert "Product.name" not in (ROOT / "public" / "clothing.js").read_text(encoding="utf-8")
