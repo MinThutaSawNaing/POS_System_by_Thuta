@@ -671,6 +671,52 @@ List categories and their active-branch product and supplier counts.
 }
 ```
 
+## `get_clothing_inventory`
+
+Read-only clothing variant stock in the authenticated active branch. Filter by style ID or style name/code, exact size/color, or low stock. Cashier-safe: no costs, margins, stock ages or cross-branch access.
+
+- Category: `inventory`
+- Mutates data: `False`
+- Required role metadata: `None` (runtime policy also applies)
+- Autonomy: `approval`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "style_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "style": {
+      "type": "string",
+      "description": "Style name or code contains this text."
+    },
+    "size": {
+      "type": "string",
+      "description": "Exact size (case insensitive)."
+    },
+    "color": {
+      "type": "string",
+      "description": "Exact color (case insensitive)."
+    },
+    "low_stock_only": {
+      "type": "boolean",
+      "default": false
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 50
+    }
+  }
+}
+```
+
 ## `get_current_branch_context`
 
 Get the active POS branch that scopes all assistant results.
@@ -1796,7 +1842,7 @@ Create a product or update an existing product's price, cost, tax rate, stock, c
     },
     "stock": {
       "type": "integer",
-      "description": "Initial/updated stock level, >= 0. Default 0."
+      "description": "Initial stock for a new product, or an explicit new level when updating; omit to preserve existing stock. Default 0 for new products. Clothing variant stock cannot be overwritten."
     },
     "category": {
       "type": "string",

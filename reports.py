@@ -399,6 +399,21 @@ def build_sales_payment_summary_sheet(report):
 
 
 
+def _optional_inventory_details(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Only carry supplied identity details; never infer stock age or quantities."""
+    return {key: record[key] for key in ("style_name", "size", "color", "branch_name")
+            if key in record}
+
+
+def _inventory_detail_columns(columns, rows):
+    result = [dict(entry) for entry in columns]
+    for key, label, width in (("style_name", "Style", 24), ("size", "Size", 10),
+                              ("color", "Color", 14), ("branch_name", "Branch", 20)):
+        if any(row.get(key) not in (None, "") for row in rows):
+            result.append(column(key, label, width=width))
+    return result
+
+
 def build_warehouse_stock_report(
     records: Iterable[Mapping[str, Any]],
     *,
@@ -434,6 +449,7 @@ def build_warehouse_stock_report(
             product_ids.add(product_id)
 
         rows.append({
+            **_optional_inventory_details(record),
             "product_name": str(record.get("product_name") or "Unknown"),
             "product_branch": str(record.get("product_branch") or ""),
             "barcode": record.get("barcode"),
@@ -465,7 +481,7 @@ def build_warehouse_stock_report(
         subtitle="Stock held in the warehouse before restocking the shop floor",
         sheet_name="Stock List",
         file_stem="warehouse_stock_list",
-        columns=WAREHOUSE_STOCK_COLUMNS,
+        columns=_inventory_detail_columns(WAREHOUSE_STOCK_COLUMNS, rows),
         rows=rows,
         totals={"quantity": total_units, "total_value": total_value},
         summary=summary,
@@ -491,6 +507,7 @@ def build_product_catalog_report(
 ) -> dict[str, Any]:
     """Build a simple catalog list for checking products outside the dashboard."""
     rows = [{
+        **_optional_inventory_details(record),
         "barcode": record.get("barcode"),
         "product_name": str(record.get("product_name") or ""),
         "category": record.get("category"),
@@ -504,7 +521,7 @@ def build_product_catalog_report(
         subtitle="Product catalog for reference",
         sheet_name="Products",
         file_stem="product_list",
-        columns=(
+        columns=_inventory_detail_columns((
             column("barcode", "Barcode", width=18),
             column("product_name", "Product Name", width=32),
             column("category", "Category", width=18),
@@ -512,7 +529,7 @@ def build_product_catalog_report(
             column("stock", "Stock", width=10, align="right", kind="int"),
             column("unit", "Unit", width=10, align="center"),
             column("tax_rate", "Tax rate", width=10, align="right", kind="percent"),
-        ),
+        ), rows),
         rows=rows,
         totals={"stock": sum(row["stock"] for row in rows)},
         summary=[
@@ -627,8 +644,9 @@ def build_purchase_order_item_rows(
                 else round_money_value(ordered * unit_cost)
             )
             rows.append({
+                **_optional_inventory_details(item),
                 "po_number": po_number,
-                "product_branch": str(record.get("product_branch") or ""),
+                "product_branch": str(item.get("product_branch") or record.get("product_branch") or ""),
                 "product_name": str(item.get("product_name") or "Unknown product"),
                 "ordered_qty": ordered,
                 "received_qty": received,
@@ -649,7 +667,7 @@ def build_purchase_order_item_sheet(
     return {
         "name": "PO Line Items",
         "title": "Purchase Order Line Items",
-        "columns": [dict(entry) for entry in PURCHASE_ORDER_ITEM_COLUMNS],
+        "columns": _inventory_detail_columns(PURCHASE_ORDER_ITEM_COLUMNS, rows),
         "rows": rows,
         "totals": {
             "ordered_qty": sum(row["ordered_qty"] for row in rows),

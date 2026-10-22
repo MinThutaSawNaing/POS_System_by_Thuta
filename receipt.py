@@ -139,6 +139,9 @@ def build_receipt_snapshot(
         snapshot_items.append({
             "product_id": item.get("product_id"),
             "name": str(item.get("name") or "Unavailable item"),
+            **{key: item[key] for key in (
+                'variant_id', 'catalog_id', 'style_id', 'style_name', 'style_code', 'size', 'color',
+            ) if key in item},
             "quantity": quantity,
             "unit_price": unit_price,
             "tax_rate": _money(item.get("tax_rate")),
@@ -342,8 +345,8 @@ def build_return_exchange_view(record: Mapping[str, Any], paper_size: Any) -> di
     returned lines, exchanged lines and money totals). Money values are
     quantized with the same helper used for sale receipts so every document
     stays consistent. Like :func:`build_delivery_slip_view` this is built on the
-    fly (no stored snapshot), so a reprint always reflects current catalog names
-    and the current branch identity.
+    fly (no stored document snapshot). Callers supply original line descriptions
+    from sale snapshots where available, and the current branch identity.
     """
     record = record or {}
     profile = get_paper_profile(paper_size)
@@ -372,6 +375,8 @@ def build_return_exchange_view(record: Mapping[str, Any], paper_size: Any) -> di
             tax_rate = _money(line.get("tax_rate"))
             lines.append({
                 "name": str(line.get("name") or "Item"),
+                "reason": str(line.get("reason") or ""),
+                "disposition": str(line.get("disposition") or "sellable"),
                 "quantity": quantity,
                 "unit_price_display": format_receipt_money(unit_price, suffix),
                 "line_subtotal_display": format_receipt_money(line_subtotal, suffix),
@@ -424,6 +429,7 @@ def build_return_exchange_view(record: Mapping[str, Any], paper_size: Any) -> di
         "created_at": created_at,
         "processed_by": str(record.get("processed_by") or "Unknown"),
         "notes": str(record.get("notes") or ""),
+        "reason": str(record.get("reason") or ""),
         "settlement_label": settlement_label,
         "return_items": return_items,
         "exchange_items": exchange_items,

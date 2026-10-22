@@ -82,6 +82,52 @@ products are **not** automatically merged or renamed: review their identity and
 stock history explicitly before reconciling them. Do not infer identity from
 names or barcode suffixes alone.
 
+## October 2026 optional clothing variants
+
+This is an **additive** release. Existing Products, stock balances, barcodes,
+prices, sales, payments, returns and receipt snapshots are not rewritten. The
+empty clothing catalog after upgrade is intentional; no Product is guessed to be
+a clothing variant from its name or barcode.
+
+### What startup changes
+
+- New tables: `clothing_style`, `clothing_variant`, `clothing_import_commit`
+  and `receiving_request`. The clothing models are registered before the normal
+  startup `db.create_all()`; the repeatable new-table-only `migrate_clothing()`
+  helper is also available and tested for explicit upgrades.
+- New nullable `sale_item.display_snapshot` column. Only sales created after the
+  upgrade receive a snapshot. Legacy lines stay `NULL` and are deliberately not
+  reclassified from today's clothing metadata in reports, receipts or returns.
+- New optional `return_exchange` columns (`reason`, `idempotency_key`,
+  `request_fingerprint`, `response_json`) plus a unique index on
+  `idempotency_key`, and `return_exchange_item.reason`/`disposition`.
+  `migrate_clothing_returns()` is repeatable and adds only missing columns.
+  Existing return rows read `disposition = sellable`, matching prior behavior.
+- `receiving_request` records optional durable purchase-receiving retries. It is
+  independent of mutable purchase-order status, so a conflict on a completed
+  order is still detected instead of double-received.
+
+All migrations run inside the existing startup SQLite writer lock. Rehearse on a
+staging copy and start only one application process during upgrade, as described
+above. Back up `instance/pos.db` and `uploads/` before upgrading.
+
+### Operational limits
+
+- Clothing import creates Products with **zero stock** and never adjusts stock.
+  Receive through approved purchase orders and transfer through the existing
+  warehouse workflow.
+- CSV import preview tokens bind rows, user and active branch for 30 minutes.
+  Durable idempotency receipts remain replayable after that window.
+- Return/exchange reasons and damaged disposal are additive. Damaged items are
+  not restocked. Manual mobile-payment refund policy is unchanged and this
+  release does **not** call a provider refund API; the receipt records the
+  bookkeeping refund only.
+- Reverting the application without restoring the database leaves the new tables
+  and nullable columns in place; the prior version ignores them. However it also
+  loses the new retry receipts and return metadata, so do not assume duplicate
+  protection or reason/damaged behavior on the older version. Restore the
+  verified pre-upgrade database when a full rollback is required.
+
 ## Earlier Float → NUMERIC(12,2) money migration
 
 ## Scope

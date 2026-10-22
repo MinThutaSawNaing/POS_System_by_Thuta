@@ -72,6 +72,9 @@ import hashlib
 import zlib
 import sqlite3
 from contextlib import closing
+from clothing_integration import (
+    migrate_sale_display, variant_metadata, product_display_snapshot, sale_item_display,
+)
 from urllib.parse import urlsplit
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -852,6 +855,8 @@ def delete_product_image(filename):
     # Never remove a file still referenced by any branch's product.
     if Product.query.filter_by(photo_filename=filename).first():
         return
+    if ClothingStyle.query.filter_by(photo_filename=filename).first():
+        return
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     if os.path.exists(file_path):
         os.remove(file_path)
@@ -879,11 +884,24 @@ def serialize_product(product):
         'photo_filename': product.photo_filename,
         'photo_url': product_photo_url(product.photo_filename)
     }
+    variant = ClothingVariant.query.filter_by(catalog_id=product.catalog_id).first() if product.catalog_id else None
+    if variant:
+        data.update(variant_metadata(product, variant))
+        if not product.photo_filename and variant.style.photo_filename:
+            data['photo_url'] = product_photo_url(variant.style.photo_filename)
     if has_request_context() and session.get('role') == 'cashier':
         data.pop('cost', None)
         for key in ('reorder_point', 'reorder_quantity', 'reorder_enabled'):
             data.pop(key, None)
     return data
+
+
+def product_clothing_display(product):
+    """Optional variant display metadata, never a second inventory identity."""
+    if not product:
+        return {}
+    variant = ClothingVariant.query.filter_by(catalog_id=product.catalog_id).first() if product.catalog_id else None
+    return variant_metadata(product, variant) if variant else {}
 
 # --- Unit system helpers ---
 
@@ -1059,6 +1077,8 @@ CASHIER_API_METHODS = {
     'api_units': {'GET'}, 'api_units_convert': {'GET'},
     'api_products': {'GET'}, 'export_product_catalog': {'GET'},
     'api_single_product': {'GET'}, 'api_search_products': {'GET'},
+    'clothing_styles': {'GET'}, 'clothing_style': {'GET'},
+    'clothing_variants': {'GET'}, 'clothing_variant': {'GET'},
     'api_create_sale': {'POST'}, 'api_sales': {'GET'}, 'api_single_sale': {'GET'},
     'print_receipt': {'GET'}, 'api_report_sales': {'GET'},
     'api_returns_exchanges': {'GET', 'POST'}, 'api_single_return_exchange': {'GET'},
@@ -1872,6 +1892,7 @@ class SaleItem(db.Model):
     quantity = db.Column(db.Integer, nullable=False)
     price = db.Column(db.Float, nullable=False)
     tax = db.Column(db.Float, nullable=False)
+    display_snapshot = db.Column(db.Text)
 
 class ReturnExchange(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -1886,6 +1907,10 @@ class ReturnExchange(db.Model):
     collected_amount = db.Column(db.Float, default=0.0)
     settlement_method = db.Column(db.String(30))
     notes = db.Column(db.String(300))
+    reason = db.Column(db.String(300))
+    idempotency_key = db.Column(db.String(128), unique=True)
+    request_fingerprint = db.Column(db.String(64))
+    response_json = db.Column(db.Text)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -1901,6 +1926,8 @@ class ReturnExchangeItem(db.Model):
     # only unlinked from them, so refunds and returned quantities stay intact.
     product_id = db.Column(db.Integer, db.ForeignKey('product.id'))
     movement = db.Column(db.String(20), nullable=False)  # return or exchange
+    reason = db.Column(db.String(300))
+    disposition = db.Column(db.String(20), default='sellable', server_default='sellable')
     quantity = db.Column(db.Integer, nullable=False)
     unit_price = db.Column(db.Float, nullable=False)
     tax_rate = db.Column(db.Float, default=0.0)
@@ -2043,6 +2070,7 @@ AUDIT_CATEGORY_BY_ENTITY = {
     'User': 'Users', 'Branch': 'Settings', 'AppSetting': 'Settings',
     'AgentTask': 'AI Assistant', 'MemoryRegistry': 'AI Assistant',
     'MemoryAudit': 'AI Assistant',
+    'ClothingStyle': 'Products', 'ClothingVariant': 'Products',
 }
 AUDIT_SENSITIVE_FIELDS = {
     'password', 'value', 'receipt_snapshot', 'command', 'plan_json',
@@ -2585,6 +2613,15 @@ def _migrate_branch_unique(table, column):
 from payment_routes import register_payment_routes
 PaymentIntent, PaymentWebhookEvent = register_payment_routes(app, db, globals())
 
+# Clothing metadata shares existing Product/catalog identities and never owns stock.
+from clothing import register_clothing
+clothing_models = register_clothing(app, db, globals())
+globals().update(clothing_models)
+from clothing_analytics import register_clothing_analytics
+register_clothing_analytics(app, db, globals())
+from purchase_receiving import register_receiving_requests
+ReceivingRequest = register_receiving_requests(db)
+
 # Create database tables and admin user
 with app.app_context():
     # Harden SQLite for concurrent POS writes: WAL journaling plus a busy timeout
@@ -2599,6 +2636,9 @@ with app.app_context():
     db.session.execute(text('PRAGMA journal_mode=WAL'))
     db.session.execute(text('PRAGMA busy_timeout=5000'))
     db.create_all()
+    migrate_sale_display(db)
+    from clothing_returns import migrate_clothing_returns
+    migrate_clothing_returns(db)
     inspector = inspect(db.engine)
 
     # Audit-detail storage migration: compact existing JSON into a BLOB in bounded,
@@ -4290,7 +4330,7 @@ def api_products():
             pos_query = db.session.query(
                 Product.id, Product.barcode, Product.name, Product.price,
                 Product.stock, Product.tax_rate, Product.photo_filename,
-                Product.unit_id,
+                Product.unit_id, Product.catalog_id,
             ).filter(Product.branch_id == branch_id)
             if cursor:
                 pos_query = pos_query.filter(Product.id < cursor)
@@ -4312,6 +4352,14 @@ def api_products():
                 'unit_symbol': unit_symbols.get(row.unit_id),
                 'photo_url': product_photo_url(row.photo_filename),
             } for row in rows]
+            variant_map = {v.catalog_id: v for v in ClothingVariant.query.filter(
+                ClothingVariant.catalog_id.in_([row.catalog_id for row in rows if row.catalog_id])).all()}
+            for row, item in zip(rows, items):
+                variant = variant_map.get(row.catalog_id)
+                if variant:
+                    item.update(variant_metadata(row, variant))
+                    if not row.photo_filename and variant.style.photo_filename:
+                        item['photo_url'] = product_photo_url(variant.style.photo_filename)
             return jsonify({
                 'items': items,
                 'has_more': has_more,
@@ -4391,6 +4439,10 @@ def api_products():
             existing = Product.query.filter_by(barcode=barcode, branch_id=branch_id).first()
             if existing:
                 return jsonify({'success': False, 'message': 'Barcode already in use in this branch'}), 400
+            clothing_barcode = Product.query.join(ClothingVariant,
+                ClothingVariant.catalog_id == Product.catalog_id).filter(Product.barcode == barcode).first()
+            if clothing_barcode:
+                return jsonify(success=False, message='Barcode belongs to a clothing variant. Transfer the existing variant instead.'), 409
 
         photo_filename = None
         photo_file = request.files.get('photo') if is_multipart else None
@@ -4465,6 +4517,7 @@ def export_product_catalog():
         'stock': product.stock,
         'unit': product.unit_ref.symbol if product.unit_ref else None,
         'tax_rate': product.tax_rate,
+        **variant_metadata(product, ClothingVariant.query.filter_by(catalog_id=product.catalog_id).first()),
     } for product in products]
     report_format = normalize_report_format(request.args.get('format'))
     report = build_product_catalog_report(
@@ -4632,8 +4685,19 @@ def api_single_product(product_id):
         if not data:
             return jsonify({'success': False, 'message': 'No data provided'}), 400
 
+        variant = ClothingVariant.query.filter_by(catalog_id=product.catalog_id).first() if product.catalog_id else None
+        if variant and 'barcode' in data and (data.get('barcode') or None) != (product.barcode or None):
+            return jsonify(success=False, message='Variant barcodes are stable identities; create a new variant instead.'), 409
+        if variant and 'stock' in data and str(data.get('stock')) != str(product.stock):
+            return jsonify(success=False, message='Receive and transfer variant stock through inventory movements.'), 409
+
         # Check for duplicate barcode within same branch
         if 'barcode' in data and data['barcode']:
+            clothing_barcode = Product.query.join(ClothingVariant,
+                ClothingVariant.catalog_id == Product.catalog_id).filter(
+                    Product.barcode == data['barcode'], Product.catalog_id != product.catalog_id).first()
+            if clothing_barcode:
+                return jsonify(success=False, message='Barcode belongs to another clothing variant.'), 409
             existing = Product.query.filter(
                 Product.barcode == data['barcode'], 
                 Product.id != product_id,
@@ -4753,6 +4817,9 @@ def api_single_product(product_id):
                 'success': False,
                 'message': 'Only a manager can delete products.'
             }), 403
+
+        if ClothingVariant.query.filter_by(catalog_id=product.catalog_id).first():
+            return jsonify(success=False, message='Archive this clothing variant instead of deleting its stable inventory identity.'), 409
 
         # A product that was already sold is only removed after the user
         # confirms the cleanup window, which retries with force=1 (keep the
@@ -4896,7 +4963,8 @@ def api_search_products():
         'stock': p.stock,
         'tax_rate': p.tax_rate,
         'unit_symbol': p.unit_ref.symbol if p.unit_ref else None,
-        'photo_url': product_photo_url(p.photo_filename)
+        'photo_url': product_photo_url(p.photo_filename),
+        **product_clothing_display(p),
     } for p in products])
 
 # ==================== Barcode Label Printing (thermal 3-up roll) ====================
@@ -5050,7 +5118,7 @@ def print_barcode_labels():
                 max_width_mm=svg_max_width,
                 height_mm=svg_height,
             ),
-            'name': product.name or f'Product #{product.id}',
+            'name': variant_metadata(product, ClothingVariant.query.filter_by(catalog_id=product.catalog_id).first())['display_name'] or f'Product #{product.id}',
             'price_display': format_currency(product.price),
         }
         for _ in range(qty):
@@ -5148,7 +5216,9 @@ def generate_barcode_labels():
                 )
 
                 # Create text flowables
-                product_name = Paragraph(product.name, normal_style)
+                from xml.sax.saxutils import escape
+                label_name = variant_metadata(product, ClothingVariant.query.filter_by(catalog_id=product.catalog_id).first())['display_name']
+                product_name = Paragraph(escape(label_name), normal_style)
                 price = Paragraph(format_currency(product.price), normal_style)
 
                 # Stack vertically
@@ -5315,6 +5385,10 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             if not product:
                 return jsonify({'success': False, 'message': f'Product {item["product_id"]} not found'}), 404
 
+            variant = ClothingVariant.query.filter_by(catalog_id=product.catalog_id).first() if product.catalog_id else None
+            if variant and (variant.archived or variant.style.archived):
+                return jsonify(success=False, message='This clothing variant is archived. Select an active variant.'), 409
+
             quantity = int(item.get('quantity', 0))
             if quantity <= 0:
                 return jsonify({'success': False, 'message': 'Quantity must be greater than 0'}), 400
@@ -5401,6 +5475,16 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
                     or to_decimal(intent.amount) != to_decimal(mobile_amount)
                     or intent.currency != get_currency_code()):
                 return jsonify(success=False, message='Payment does not match this checkout.'), 409
+            # Even internal callers may only spend the immutable saved checkout.
+            # Amount equality alone cannot distinguish two sizes at the same price.
+            try:
+                checkout_hash = hashlib.sha256(json.dumps(
+                    data, sort_keys=True, separators=(',', ':'), ensure_ascii=False,
+                    allow_nan=False).encode()).hexdigest()
+            except (ValueError, TypeError):
+                return jsonify(success=False, message='Invalid saved payment checkout.'), 409
+            if not hmac.compare_digest(intent.checkout_hash, checkout_hash):
+                return jsonify(success=False, message='Payment does not match these checkout items. Resume the saved payment.'), 409
             # Claim within the SAME transaction as sale/stock changes. Concurrent
             # completions cannot spend one payment twice; rollback releases claim.
             claimed = PaymentIntent.query.filter_by(
@@ -5436,7 +5520,10 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
                 product_id=item['product'].id,
                 quantity=item['quantity'],
                 price=item['price'],
-                tax=round_money(item['tax'])
+                tax=round_money(item['tax']),
+                display_snapshot=json.dumps(product_display_snapshot(
+                    item['product'], variant_metadata(item['product'], ClothingVariant.query.filter_by(
+                        catalog_id=item['product'].catalog_id).first())), ensure_ascii=False, default=json_default),
             )
             db.session.add(sale_item)
             # Update product stock atomically: only decrement when sufficient stock remains.
@@ -5532,7 +5619,8 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
                 payment_breakdown=get_sale_payment_breakdown(sale),
                 items=[{
                     'product_id': item['product'].id,
-                    'name': item['product'].name,
+                    **product_display_snapshot(item['product'], variant_metadata(item['product'], ClothingVariant.query.filter_by(
+                        catalog_id=item['product'].catalog_id).first())),
                     'quantity': item['quantity'],
                     'unit_price': item['price'],
                     'tax_rate': item['product'].tax_rate or 0,
@@ -5695,11 +5783,11 @@ def api_single_sale(transaction_id):
         sale_data['items'].append({
             'sale_item_id': item.id,
             'product_id': item.product_id,
-            'name': product.name if product else DELETED_PRODUCT_LABEL,
+            **sale_item_display(item, product),
             'price': item.price,
             'quantity': item.quantity,
             'tax': item.tax,
-            'tax_rate': product.tax_rate if product else 0.0,
+            'tax_rate': sale_item_display(item, product).get('tax_rate', product.tax_rate if product else 0.0),
             'already_returned_quantity': already_returned,
             'available_return_quantity': available_to_return
         })
@@ -5765,6 +5853,7 @@ def serialize_return_exchange(record):
         'refund_amount': money_float(record.refund_amount),
         'collected_amount': money_float(record.collected_amount),
         'settlement_method': record.settlement_method,
+        'reason': record.reason,
         'created_at': local_created.isoformat() if local_created else None,
         'processed_by': record.user.username if record.user else 'Unknown',
     }
@@ -5797,7 +5886,11 @@ def summarize_return_exchanges(records):
     }
 
 
+from clothing_returns import positive_quantity, return_exchange_writer
+
+
 @app.route('/api/returns_exchanges', methods=['GET', 'POST'])
+@return_exchange_writer(db)
 def api_returns_exchanges():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
@@ -5836,8 +5929,13 @@ def api_returns_exchanges():
         records = query.all()
         return jsonify([serialize_return_exchange(record) for record in records])
 
-    data = request.get_json() or {}
-    original_transaction_id = (data.get('original_transaction_id') or '').strip()
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(success=False, message='A JSON object is required'), 400
+    original_transaction_id = data.get('original_transaction_id') or ''
+    if not isinstance(original_transaction_id, str):
+        return jsonify(success=False, message='Invalid original transaction ID'), 400
+    original_transaction_id = original_transaction_id.strip()
     if not original_transaction_id:
         return jsonify({'success': False, 'message': 'Original transaction ID is required'}), 400
 
@@ -5845,12 +5943,44 @@ def api_returns_exchanges():
     if not cashier_can_access_sale(original_sale):
         return jsonify({'success': False, 'message': 'Original sale not found'}), 404
 
+    key = data.get('idempotency_key', request.headers.get('Idempotency-Key'))
+    if key is not None and (not isinstance(key, str) or not key.strip() or len(key) > 128):
+        return jsonify(success=False, message='Invalid idempotency key'), 400
+    key = key.strip() if key is not None else None
+    fingerprint_data = {name: value for name, value in data.items() if name != 'idempotency_key'}
+    try:
+        fingerprint = hashlib.sha256(json.dumps(
+            [session['user_id'], original_sale.branch_id, fingerprint_data],
+            sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    except (ValueError, TypeError):
+        return jsonify(success=False, message='Invalid return/exchange payload'), 400
+    if key:
+        previous = ReturnExchange.query.filter_by(idempotency_key=key).first()
+        if previous:
+            if (previous.request_fingerprint != fingerprint or previous.user_id != session['user_id']
+                    or previous.original_sale_id != original_sale.id):
+                return jsonify(success=False, message='Idempotency key already used for another request'), 409
+            result = json.loads(previous.response_json)
+            result['replayed'] = True
+            return jsonify(result), 200
+
+    reason = data.get('reason') or None
+    notes = data.get('notes') or None
+    if any(value is not None and (not isinstance(value, str) or len(value) > 300)
+           for value in (reason, notes)):
+        return jsonify(success=False, message='Reason and notes must be at most 300 characters'), 400
+    reason = reason.strip() or None if reason else None
+
     original_sale_items = SaleItem.query.filter_by(sale_id=original_sale.id).all()
     sale_item_map = {item.id: item for item in original_sale_items}
     returned_qty_map = get_returned_quantity_map_for_sale(original_sale.id)
 
     return_items_payload = data.get('return_items') or []
     exchange_items_payload = data.get('exchange_items') or []
+
+    if (not isinstance(return_items_payload, list) or not isinstance(exchange_items_payload, list)
+            or any(not isinstance(row, dict) for row in return_items_payload + exchange_items_payload)):
+        return jsonify(success=False, message='Return and exchange items must be lists of objects'), 400
 
     if not return_items_payload:
         return jsonify({'success': False, 'message': 'At least one return item is required'}), 400
@@ -5860,11 +5990,21 @@ def api_returns_exchanges():
     return_tax_total = Decimal('0.00')
 
     try:
+        seen_return_items = set()
         for row in return_items_payload:
-            sale_item_id = int(row.get('sale_item_id', 0) or 0)
-            quantity = int(row.get('quantity', 0) or 0)
+            sale_item_id = positive_quantity(row.get('sale_item_id'))
+            quantity = positive_quantity(row.get('quantity'))
             if sale_item_id <= 0 or quantity <= 0:
                 return jsonify({'success': False, 'message': 'Invalid return item values'}), 400
+            if sale_item_id in seen_return_items:
+                return jsonify(success=False, message='Duplicate return items are not allowed'), 400
+            seen_return_items.add(sale_item_id)
+            disposition = row.get('disposition', 'sellable')
+            if disposition not in ('sellable', 'damaged'):
+                return jsonify(success=False, message='Disposition must be sellable or damaged'), 400
+            line_reason = row.get('reason', reason)
+            if line_reason is not None and (not isinstance(line_reason, str) or len(line_reason) > 300):
+                return jsonify(success=False, message='Return reason must be at most 300 characters'), 400
 
             sale_item = sale_item_map.get(sale_item_id)
             if not sale_item:
@@ -5890,8 +6030,11 @@ def api_returns_exchanges():
                 'sale_item': sale_item,
                 'product': product,
                 'quantity': quantity,
+                'reason': line_reason.strip() or None if line_reason else None,
+                'disposition': disposition,
                 'unit_price': unit_price,
-                'tax_rate': float(product.tax_rate or 0),
+                'tax_rate': float(sale_item_display(sale_item, product).get('tax_rate',
+                    (unit_tax / unit_price * Decimal('100')) if unit_price else 0)),
                 'line_total': line_total,
                 'line_tax': line_tax
             })
@@ -5903,22 +6046,27 @@ def api_returns_exchanges():
     exchange_tax_total = Decimal('0.00')
 
     try:
+        exchange_quantities = {}
         for row in exchange_items_payload:
-            product_id = int(row.get('product_id', 0) or 0)
-            quantity = int(row.get('quantity', 0) or 0)
+            product_id = positive_quantity(row.get('product_id'))
+            quantity = positive_quantity(row.get('quantity'))
             if product_id <= 0 or quantity <= 0:
                 return jsonify({'success': False, 'message': 'Invalid exchange item values'}), 400
 
             product = Product.query.filter_by(id=product_id, branch_id=original_sale.branch_id).first()
             if not product:
                 return jsonify({'success': False, 'message': f'Exchange product {product_id} not found'}), 404
+            variant = ClothingVariant.query.filter_by(catalog_id=product.catalog_id).first()
+            if variant and (variant.archived or variant.style.archived):
+                return jsonify(success=False, message='Archived clothing variants cannot be exchanged as replacements'), 400
 
-            if quantity > int(product.stock or 0):
+            exchange_quantities[product_id] = exchange_quantities.get(product_id, 0) + quantity
+            if exchange_quantities[product_id] > int(product.stock or 0):
                 return jsonify({'success': False, 'message': f'Insufficient stock for exchange product {product.name}. Available: {product.stock}'}), 400
 
             raw_price = row.get('price', product.price)
             unit_price = to_decimal(raw_price)
-            if unit_price < 0:
+            if not unit_price.is_finite() or unit_price < 0:
                 return jsonify({'success': False, 'message': 'Exchange item price cannot be negative'}), 400
             if session.get('role') == 'cashier' and unit_price != to_decimal(product.price):
                 if not any(abs(unit_price - price) <= Decimal('0.01') for price in active_promotion_prices(product)):
@@ -5937,14 +6085,24 @@ def api_returns_exchanges():
                 'line_total': line_total,
                 'line_tax': line_tax
             })
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, ArithmeticError):
         return jsonify({'success': False, 'message': 'Invalid exchange item values'}), 400
 
     mode = 'exchange' if exchange_lines else 'return'
     net_total = (exchange_total - return_total).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
     refund_amount = abs(net_total) if net_total < 0 else Decimal('0.00')
     collected_amount = net_total if net_total > 0 else Decimal('0.00')
-    settlement_method = (data.get('settlement_method') or 'cash').strip().lower()
+    settlement_method = data.get('settlement_method') or 'cash'
+    if not isinstance(settlement_method, str) or len(settlement_method) > 30:
+        return jsonify(success=False, message='Invalid settlement method'), 400
+    settlement_method = settlement_method.strip().lower()
+    if settlement_method not in ('cash', 'credit_card', 'debit_card', 'mobile_payment'):
+        return jsonify(success=False, message='Invalid settlement method'), 400
+    # Preserve legacy manual mobile bookkeeping, but never bypass configured
+    # provider verification when collecting additional money for an exchange.
+    from payment_routes import manual_payment_allowed
+    if settlement_method == 'mobile_payment' and collected_amount > 0 and not manual_payment_allowed():
+        return jsonify(success=False, message='Verified mobile exchange collection is not supported. Use cash or card settlement.'), 409
 
     try:
         adjustment_sale = None
@@ -5958,6 +6116,7 @@ def api_returns_exchanges():
                 cash_received=round_money(collected_amount) if collected_amount > 0 else None,
                 refund_amount=0.0,
                 payment_method='exchange',
+                branch_id=original_sale.branch_id,
                 user_id=session['user_id']
             )
             db.session.add(adjustment_sale)
@@ -5969,7 +6128,10 @@ def api_returns_exchanges():
                     product_id=line['product'].id,
                     quantity=line['quantity'],
                     price=round_money(line['unit_price']),
-                    tax=round_money(line['line_tax'])
+                    tax=round_money(line['line_tax']),
+                    display_snapshot=json.dumps(product_display_snapshot(
+                        line['product'], variant_metadata(line['product'], ClothingVariant.query.filter_by(
+                            catalog_id=line['product'].catalog_id).first())), ensure_ascii=False)
                 )
                 db.session.add(sale_item)
                 line['product'].stock -= line['quantity']
@@ -5986,18 +6148,24 @@ def api_returns_exchanges():
             collected_amount=round_money(collected_amount),
             settlement_method=settlement_method,
             notes=(data.get('notes') or '').strip() or None,
+            reason=reason,
+            idempotency_key=key,
+            request_fingerprint=fingerprint if key else None,
             user_id=session['user_id']
         )
         db.session.add(workflow)
         db.session.flush()
 
         for line in return_lines:
-            line['product'].stock += line['quantity']
+            if line['disposition'] == 'sellable':
+                line['product'].stock += line['quantity']
             item = ReturnExchangeItem(
                 return_exchange_id=workflow.id,
                 original_sale_item_id=line['sale_item'].id,
                 product_id=line['product'].id,
                 movement='return',
+                reason=line['reason'],
+                disposition=line['disposition'],
                 quantity=line['quantity'],
                 unit_price=round_money(line['unit_price']),
                 tax_rate=line['tax_rate'],
@@ -6020,8 +6188,7 @@ def api_returns_exchanges():
             )
             db.session.add(item)
 
-        db.session.commit()
-        return jsonify({
+        result = {
             'success': True,
             'message': 'Return/exchange processed successfully',
             'workflow_id': workflow.workflow_id,
@@ -6032,8 +6199,12 @@ def api_returns_exchanges():
             'exchange_total': workflow.exchange_total,
             'net_total': workflow.net_total,
             'refund_amount': workflow.refund_amount,
-            'collected_amount': workflow.collected_amount
-        }), 201
+            'collected_amount': workflow.collected_amount,
+            'provider_refund_processed': False
+        }
+        workflow.response_json = app.json.dumps(result, sort_keys=True) if key else None
+        db.session.commit()
+        return jsonify(result), 201
     except Exception as e:
         db.session.rollback()
         # Expire all in-memory ORM instances (including product.stock values mutated
@@ -6068,13 +6239,18 @@ def api_single_return_exchange(workflow_id):
         'collected_amount': workflow.collected_amount,
         'settlement_method': workflow.settlement_method,
         'notes': workflow.notes,
+        'reason': workflow.reason,
         'created_at': workflow.created_at.isoformat() if workflow.created_at else None,
         'processed_by': workflow.user.username if workflow.user else 'Unknown',
         'items': [{
             'id': item.id,
             'movement': item.movement,
             'product_id': item.product_id,
-            'product_name': item.product.name if item.product else DELETED_PRODUCT_LABEL,
+            'product_name': (sale_item_display(item.original_sale_item, item.product).get('name')
+                             if item.original_sale_item else
+                             (item.product.name if item.product else DELETED_PRODUCT_LABEL)),
+            'reason': item.reason,
+            'disposition': item.disposition or 'sellable',
             'quantity': item.quantity,
             'unit_price': item.unit_price,
             'tax_rate': item.tax_rate,
@@ -6146,7 +6322,11 @@ def print_return_exchange_receipt(workflow_id):
                 continue
             product = item.product
             lines.append({
-                'name': product.name if product else DELETED_PRODUCT_LABEL,
+                'name': (sale_item_display(item.original_sale_item, product).get('name')
+                         if item.original_sale_item else
+                         (product.name if product else DELETED_PRODUCT_LABEL)),
+                'reason': item.reason,
+                'disposition': item.disposition or 'sellable',
                 'quantity': item.quantity,
                 'unit_price': item.unit_price,
                 'tax_rate': item.tax_rate,
@@ -6173,6 +6353,7 @@ def print_return_exchange_receipt(workflow_id):
                        if workflow.created_at else ''),
         'processed_by': workflow.user.username if workflow.user else 'Unknown',
         'notes': workflow.notes or '',
+        'reason': workflow.reason,
         'settlement_method': workflow.settlement_method or '',
         'return_items': movement_lines('return'),
         'exchange_items': movement_lines('exchange'),
@@ -6353,7 +6534,7 @@ def print_delivery_slip(delivery_id):
                 continue
             product = db.session.get(Product, sale_item.product_id)
             packing_items.append({
-                'name': product.name if product else f'Unavailable item #{sale_item.product_id}',
+                'name': sale_item_display(sale_item, product)['name'],
                 'quantity': quantity,
             })
 
@@ -6565,7 +6746,7 @@ def print_receipt(transaction_id):
             tax_rate = (tax_amount / line_subtotal * Decimal('100')) if line_subtotal else Decimal('0')
             legacy_items.append({
                 'product_id': sale_item.product_id,
-                'name': product.name if product else f'Unavailable item #{sale_item.product_id}',
+                **sale_item_display(sale_item, product),
                 'quantity': int(sale_item.quantity or 0),
                 'unit_price': float(unit_price),
                 'tax_rate': tax_rate,
@@ -7447,6 +7628,11 @@ def purchase_order_product_branch_label(po):
     return branch.name if branch else 'Unassigned'
 
 
+def product_branch_name(product):
+    branch = db.session.get(Branch, product.branch_id) if product and product.branch_id else None
+    return branch.name if branch else ''
+
+
 def serialize_purchase_order(po, include_items=False):
     """Purchase order payload shared by the list API and the exports."""
     payload = {
@@ -7473,6 +7659,8 @@ def serialize_purchase_order(po, include_items=False):
     if include_items:
         payload['items'] = [{
             'product_name': item.product.name if item.product else 'Unknown product',
+            **product_clothing_display(item.product),
+            'branch_name': product_branch_name(item.product),
             'ordered_qty': item.ordered_qty,
             'received_qty': item.received_qty,
             'unit_cost': item.unit_cost,
@@ -7579,6 +7767,7 @@ def api_purchase_order_products():
     return jsonify([{
         'id': product.id,
         'name': product.name,
+        **product_clothing_display(product),
         'price': product.price,
         'cost': product.cost,
         'branch_name': branch_names.get(product.branch_id, 'Unassigned'),
@@ -7713,6 +7902,8 @@ def api_single_purchase_order(po_id):
                 'id': item.id,
                 'product_id': item.product_id,
                 'product_name': item.product.name if item.product else 'Unknown',
+                **product_clothing_display(item.product),
+                'branch_name': product_branch_name(item.product),
                 'product_sku': item.product.barcode if item.product else None,
                 'ordered_qty': item.ordered_qty,
                 'received_qty': item.received_qty,
@@ -7812,7 +8003,10 @@ def api_receive_purchase_order(po_id):
     try:
         result, status = receive_purchase_order(db, {
             'PurchaseOrder': PurchaseOrder, 'WarehouseInventory': WarehouseInventory,
-        }, po_id, data.get('items'))
+            'ReceivingRequest': ReceivingRequest,
+        }, po_id, data.get('items'),
+            idempotency_key=data.get('idempotency_key', request.headers.get('Idempotency-Key')),
+            user_id=session.get('user_id'))
         return jsonify(result), status
     except Exception:
         app.logger.exception('Error receiving purchase order')
@@ -8371,6 +8565,7 @@ def warehouse_inventory_records(search_query='', low_stock=False):
             'id': item.id,
             'product_id': item.product_id,
             'product_name': item.product.name if item.product else 'Unknown',
+            **product_clothing_display(item.product),
             'product_branch': branch_names.get(item.product.branch_id, '') if item.product else '',
             'barcode': item.product.barcode if item.product else None,
             'quantity': item.quantity,
@@ -8532,6 +8727,12 @@ def api_warehouse_transfer():
             return jsonify(success=False, message='Destination catalog barcode differs. Reconcile product barcodes before transferring.'), 409
         if not target_product and product.barcode:
             target_product = Product.query.filter_by(branch_id=target_branch_id, barcode=product.barcode).first()
+            if target_product and target_product.catalog_id != product.catalog_id:
+                clothing_ids = ClothingVariant.query.filter(ClothingVariant.catalog_id.in_(
+                    [product.catalog_id, target_product.catalog_id])).first()
+                if clothing_ids:
+                    db.session.rollback()
+                    return jsonify(success=False, message='Barcode identifies a different catalog item. Reconcile explicitly before transferring.'), 409
         warehouse_query = WarehouseInventory.query.filter_by(product_id=product_id)
         if batch_number:
             warehouse_query = warehouse_query.filter_by(batch_number=batch_number)
@@ -9216,6 +9417,8 @@ AI_MODELS = {
     'Branch': Branch,
     'Category': Category,
     'Product': Product,
+    'ClothingStyle': ClothingStyle,
+    'ClothingVariant': ClothingVariant,
     'Supplier': Supplier,
     'PurchaseOrder': PurchaseOrder,
     'PurchaseOrderItem': PurchaseOrderItem,

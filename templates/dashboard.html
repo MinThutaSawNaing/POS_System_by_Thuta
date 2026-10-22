@@ -1682,6 +1682,10 @@
                 <i class="bi bi-search"></i> Search
               </button>
             </div>
+            <details id="clothing-pos" class="card p-3 mb-3">
+              <summary>Clothing — choose a style, then an exact size / color</summary>
+              <div data-clothing-picker class="mt-2"></div>
+            </details>
             <div class="pos-products-scroll">
               <div id="product-grid">
                 <!-- Products will be loaded here -->
@@ -1821,6 +1825,10 @@
 
       <!-- Products Section -->
       <div id="products-section" style="display: none">
+        <details id="clothing-admin" data-capability="catalog.write" class="card p-3 mb-3">
+          <summary>Clothing styles, variants &amp; reviewed CSV import</summary>
+          <div data-clothing-admin class="mt-2"></div>
+        </details>
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">Product Management</h2>
@@ -8553,6 +8561,7 @@
       ];
 
       function invalidateProductsCache() {
+        if (typeof window !== "undefined" && window.ClothingUI) window.ClothingUI.invalidate();
         // Called after a product/stock mutation: drop the cached list payloads and
         // (when online) the persistent offline snapshot so the next load refreshes
         // it. When offline the snapshot is kept so ringing up keeps working.
@@ -9149,6 +9158,9 @@
         return {
           id: p.id,
           name: p.name,
+          ...(p.variant_id ? {display_name: p.display_name, style_id: p.style_id,
+            style_name: p.style_name, size: p.size, color: p.color,
+            variant_id: p.variant_id, archived: p.archived} : {}),
           price: p.price,
           stock: p.stock,
           tax_rate: p.tax_rate || 0,
@@ -11652,6 +11664,10 @@
 
       // Internal function to add product to cart
       function addToCartToInternal(product, quantity) {
+        if (product.variant_id && product.archived) {
+          showToast("This clothing variant is archived.", "warning");
+          return;
+        }
         const productId = product.id;
         // Apply promotions (if any)
         let finalPrice = product.price;
@@ -11701,7 +11717,7 @@
         } else {
           cart.push({
             product_id: productId,
-            name: product.name,
+            name: product.display_name || product.name,
             price: finalPrice,
             quantity: quantity,
             tax_rate: product.tax_rate || 0,
@@ -11752,9 +11768,12 @@
           itemElement.className =
             "d-flex justify-content-between align-items-center mb-2 border-bottom pb-2";
           const itemTotal = (itemTotalCents / 100).toFixed(2);
+          const cartName = String(item.name || "").replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;").replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
           itemElement.innerHTML = `
                   <div>
-                      <h6 class="mb-0">${item.name}</h6>
+                      <h6 class="mb-0">${cartName}</h6>
       ${
         item.original_price && item.original_price > item.price
           ? `<small class="text-danger">Was ${formatCurrency(item.original_price)}</small>`
@@ -14584,6 +14603,8 @@
           <div class="col-7"><select class="form-select searchable-select return-item-select" data-search-placeholder="Search item..."></select></div>
           <div class="col-3"><input type="number" min="1" value="1" class="form-control return-item-qty" /></div>
           <div class="col-2"><button class="btn btn-outline-danger w-100" onclick="this.closest('.return-item-row').remove(); refreshReturnExchangeSummary();"><i class="bi bi-x"></i></button></div>
+          <div class="col-7"><input class="form-control return-item-reason" maxlength="300" aria-label="Return reason" placeholder="Return reason (optional)" /></div>
+          <div class="col-5"><select class="form-select return-item-disposition" aria-label="Returned item condition"><option value="sellable">Sellable — restock</option><option value="damaged">Damaged — do not restock</option></select></div>
         `;
         const select = row.querySelector(".return-item-select");
         select.innerHTML = '<option value="">Select item</option>';
@@ -14656,7 +14677,10 @@
           .map((row) => {
             const saleItemId = parseInt(row.querySelector(".return-item-select").value || "0", 10);
             const quantity = parseInt(row.querySelector(".return-item-qty").value || "0", 10);
-            return saleItemId > 0 && quantity > 0 ? { sale_item_id: saleItemId, quantity } : null;
+            const reason = row.querySelector(".return-item-reason")?.value?.trim();
+            const disposition = row.querySelector(".return-item-disposition")?.value;
+            return saleItemId > 0 && quantity > 0 ? { sale_item_id: saleItemId, quantity,
+              ...(reason ? {reason} : {}), ...(disposition ? {disposition} : {}) } : null;
           })
           .filter(Boolean);
 
@@ -17774,7 +17798,7 @@
               const row = document.createElement("div");
               row.className = "row g-2 mb-2 align-items-center";
               row.innerHTML = `
-                <div class="col-md-5"><strong>${item.product_name}</strong></div>
+                <div class="col-md-5"><strong>${escapeHtml(item.product_name)}</strong></div>
                 <div class="col-md-3"><small>Remaining: ${remaining}</small></div>
                 <div class="col-md-4">
                   <input type="number" min="0" max="${remaining}" value="0" class="form-control receive-item-qty" data-po-item-id="${item.id}" />
@@ -17806,6 +17830,17 @@
           return;
         }
 
+        const receivingPO = selectedReceivePO;
+        const receivingFingerprint = JSON.stringify(items);
+        if (receivingPO._receivingRequest?.fingerprint !== receivingFingerprint) {
+          receivingPO._receivingRequest = {
+            fingerprint: receivingFingerprint,
+            key: typeof crypto !== "undefined" && crypto.randomUUID
+              ? crypto.randomUUID() : `receive-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          };
+        }
+        const receivingKey = receivingPO._receivingRequest.key;
+
         // Calculate total receiving quantity for confirmation message
         const totalQty = items.reduce((sum, item) => sum + item.received_qty, 0);
         const itemNames = items.map(item => {
@@ -17818,6 +17853,7 @@
           'Confirm Receiving',
           `Receive ${totalQty} item(s) into inventory?\n${itemNames}`,
           () => {
+            if (selectedReceivePO !== receivingPO) return;
             const confirmBtn = document.querySelector('#receivePurchaseOrderModal .btn-success');
             const originalBtnContent = confirmBtn ? confirmBtn.innerHTML : '';
             const restoreConfirmButton = () => {
@@ -17836,10 +17872,10 @@
               confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Processing...';
             }
 
-            fetch(`/api/purchase_orders/${selectedReceivePO.id}/receive`, {
+            fetch(`/api/purchase_orders/${receivingPO.id}/receive`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ items }),
+              body: JSON.stringify({ items, idempotency_key: receivingKey }),
             })
               .then((r) => r.json())
               .then((data) => {
@@ -18498,6 +18534,7 @@
     </script>
 
     <script src="/public/myanmyanpay.js"></script>
+    <script src="/public/clothing.js"></script>
     <!-- AI Agent Widget -->
     {% include 'ai_agent_widget.html' %}
   </body>

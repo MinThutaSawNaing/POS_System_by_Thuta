@@ -1,12 +1,25 @@
 """Shared atomic purchase receiving for the HTTP API and authorized AI tools."""
 
 from datetime import datetime
+import hashlib
+import json
 import re
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 
-def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False):
+def register_receiving_requests(db):
+    """Durable optional retry receipts, independent of mutable PO status."""
+    class ReceivingRequest(db.Model):
+        __tablename__ = 'receiving_request'
+        key = db.Column(db.String(128), primary_key=True)
+        fingerprint = db.Column(db.String(64), nullable=False)
+        response_json = db.Column(db.Text, nullable=False)
+    return ReceivingRequest
+
+
+def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False,
+                           idempotency_key=None, user_id=None):
     """Return (payload, HTTP status). Authorization belongs to the caller.
 
     Acquire the SQLite writer lock before reading quantities. Validation happens
@@ -14,6 +27,7 @@ def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False):
     """
     PurchaseOrder = models['PurchaseOrder']
     WarehouseInventory = models['WarehouseInventory']
+    ReceivingRequest = models.get('ReceivingRequest')
 
     def integer(value, *, zero=False):
         if isinstance(value, bool) or not re.fullmatch(r'[0-9]+', str(value)):
@@ -29,6 +43,11 @@ def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False):
 
     try:
         po_id = integer(po_id)
+        if idempotency_key is not None:
+            if (not isinstance(idempotency_key, str) or not idempotency_key.strip()
+                    or len(idempotency_key) > 128 or ReceivingRequest is None):
+                return fail('Invalid receiving idempotency key')
+            idempotency_key = idempotency_key.strip()
         requested = {}
         if not receive_all:
             if not isinstance(items, list) or not items:
@@ -45,6 +64,18 @@ def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False):
     try:
         db.session.rollback()
         db.session.execute(text('BEGIN IMMEDIATE'))
+        fingerprint = hashlib.sha256(json.dumps(
+            [po_id, sorted(requested.items()), bool(receive_all), user_id],
+            separators=(',', ':')).encode()).hexdigest()
+        if idempotency_key:
+            prior = db.session.get(ReceivingRequest, idempotency_key)
+            if prior:
+                if prior.fingerprint != fingerprint:
+                    return fail('Idempotency key already used for another receiving request', 409)
+                result = json.loads(prior.response_json)
+                result['replayed'] = True
+                db.session.rollback()
+                return result, 200
         po = db.session.get(PurchaseOrder, po_id)
         if not po:
             return fail('Purchase order not found', 404)
@@ -89,6 +120,9 @@ def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False):
             po.supplier.total_orders = (po.supplier.total_orders or 0) + 1
         result = {'success': True, 'message': 'Receiving recorded', 'po_id': po.id,
                   'po_number': po.po_number, 'status': po.status, 'received_lines': received_lines}
+        if idempotency_key:
+            db.session.add(ReceivingRequest(key=idempotency_key, fingerprint=fingerprint,
+                                           response_json=json.dumps(result)))
         db.session.commit()
         return result, 200
     except (OperationalError, IntegrityError):

@@ -81,6 +81,7 @@
         {% if exchange.original_transaction_id %}<div class="meta-row"><span>Original receipt</span><span>{{ exchange.original_transaction_id }}</span></div>{% endif %}
         {% if exchange.adjustment_transaction_id %}<div class="meta-row"><span>New receipt</span><span>{{ exchange.adjustment_transaction_id }}</span></div>{% endif %}
         {% if exchange.processed_by %}<div class="meta-row"><span>Processed by</span><span>{{ exchange.processed_by }}</span></div>{% endif %}
+        {% if exchange.reason %}<div class="meta-row"><span>Reason</span><span>{{ exchange.reason }}</span></div>{% endif %}
 
         {% if exchange.has_return %}
           <hr class="rule" />
@@ -88,6 +89,8 @@
           {% for item in exchange.return_items %}
             <section class="item">
               <div class="item-name">{{ item.name }}</div>
+              {% if item.reason %}<div>Reason: {{ item.reason }}</div>{% endif %}
+              <div>Disposition: {{ item.disposition }}{% if item.disposition == 'damaged' %} (not restocked){% endif %}</div>
               <div class="item-detail"><span>{{ item.quantity }} &times; {{ item.unit_price_display }}</span><span>{{ item.line_subtotal_display }}</span></div>
               {% if item.tax_amount %}<div class="item-detail"><span>Tax {{ item.tax_rate_display }}</span><span>{{ item.tax_amount_display }}</span></div>{% endif %}
             </section>

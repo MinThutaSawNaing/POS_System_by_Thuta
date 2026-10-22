@@ -84,6 +84,18 @@ def round_money(value):
 # Tool schema definitions for the AI (parameter schemas only; enriched into
 # TOOL_METADATA right below -- do not add metadata fields here).
 _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
+    "get_clothing_inventory": {
+        "name": "get_clothing_inventory",
+        "description": "Read-only clothing variant stock in the authenticated active branch. Filter by style ID or style name/code, exact size/color, or low stock. Cashier-safe: no costs, margins, stock ages or cross-branch access.",
+        "parameters": {"type": "object", "additionalProperties": False, "properties": {
+            "style_id": {"type": "integer", "minimum": 1},
+            "style": {"type": "string", "description": "Style name or code contains this text."},
+            "size": {"type": "string", "description": "Exact size (case insensitive)."},
+            "color": {"type": "string", "description": "Exact color (case insensitive)."},
+            "low_stock_only": {"type": "boolean", "default": False},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}
+        }}
+    },
     "get_inventory_status": {
         "name": "get_inventory_status",
         "description": "Get the current inventory status for all products or a specific product. Returns stock levels, reorder points, and stock status.",
@@ -421,7 +433,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "price": {"type": "number", "description": "Selling price, >= 0 (required)."},
                 "cost": {"type": "number", "description": "Unit cost, >= 0. Optional."},
                 "tax_rate": {"type": "number", "description": "Tax rate percent between 0 and 100. Default 0."},
-                "stock": {"type": "integer", "description": "Initial/updated stock level, >= 0. Default 0."},
+                "stock": {"type": "integer", "description": "Initial stock for a new product, or an explicit new level when updating; omit to preserve existing stock. Default 0 for new products. Clothing variant stock cannot be overwritten."},
                 "category": {"type": "string", "description": "Optional category name."},
                 "reorder_point": {"type": "integer", "description": "Reorder point, >= 0. Default 10."},
                 "reorder_quantity": {"type": "integer", "description": "Reorder quantity, >= 0. Default 50."},
@@ -841,6 +853,7 @@ _AUTO_EXECUTE_TOOLS = {"register_customer", "create_supplier", "update_supplier"
 # ==============================================================================
 _TOOL_META = {
     # --- read tools ---
+    "get_clothing_inventory":          ("inventory",   False, None,     "Read-only active-branch clothing variants by style, size, color and low stock; no cost data.", "medium"),
     "get_inventory_status":            ("inventory",   False, None,     "Current stock levels and reorder status for all or one product.", "medium"),
     "get_low_stock_items":             ("inventory",   False, None,     "Products at or below reorder point with suggested reorder quantities.", "medium"),
     "search_products":                 ("inventory",   False, None,     "Search active-branch products by name; returns stock, price, cost.", "small"),
@@ -901,6 +914,7 @@ _TOOL_META = {
 
 # Explicit allowlist: new tools are managerial until reviewed for cashier safety.
 CASHIER_SAFE_TOOLS = frozenset({
+    'get_clothing_inventory',
     'get_inventory_status', 'get_low_stock_items', 'search_products',
     'get_product_details', 'get_current_branch_context',
 })
@@ -1002,6 +1016,65 @@ class AITools:
     def _get_model(self, name):
         """Get a model class by name"""
         return self.models.get(name)
+
+    def _clothing_variant(self, product):
+        Variant = self._get_model('ClothingVariant')
+        catalog_id = getattr(product, 'catalog_id', None)
+        return Variant.query.filter_by(catalog_id=catalog_id).first() if Variant is not None and catalog_id else None
+
+    def get_clothing_inventory(self, style_id: int = None, style: str = None,
+                               size: str = None, color: str = None,
+                               low_stock_only: bool = False, limit: int = 50) -> Dict[str, Any]:
+        """Query real branch stock; metadata never supplies or estimates inventory."""
+        branch_id = self._branch_id()
+        if type(branch_id) is not int or branch_id <= 0:
+            return {"error": "A trusted active branch is required"}
+        if style_id is not None and (type(style_id) is not int or style_id <= 0):
+            return {"error": "style_id must be a positive integer"}
+        if type(low_stock_only) is not bool or type(limit) is not int or not 1 <= limit <= 100:
+            return {"error": "low_stock_only must be boolean and limit must be an integer from 1 to 100"}
+        for value in (style, size, color):
+            if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 100):
+                return {"error": "style, size and color must be nonempty strings up to 100 characters"}
+        Product = self._get_model('Product')
+        Variant = self._get_model('ClothingVariant')
+        Style = self._get_model('ClothingStyle')
+        if any(model is None for model in (Product, Variant, Style)):
+            return {"error": "Clothing inventory is unavailable"}
+        query = self.db.session.query(Product, Variant, Style).join(
+            Variant, Product.catalog_id == Variant.catalog_id).join(
+            Style, Variant.style_id == Style.id).filter(
+            Product.branch_id == branch_id, Variant.archived.is_(False))
+        if hasattr(Style, 'archived'):
+            query = query.filter(Style.archived.is_(False))
+        if style_id is not None:
+            query = query.filter(Style.id == style_id)
+        if style is not None:
+            pattern = '%' + style.strip().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+            query = query.filter(self.db.or_(Style.name.ilike(pattern, escape='\\'),
+                                              Style.code.ilike(pattern, escape='\\')))
+        for value, field in ((size, Variant.size), (color, Variant.color)):
+            if value is not None:
+                query = query.filter(self.db.func.lower(field) == value.strip().lower())
+        if low_stock_only:
+            query = query.filter(Product.reorder_enabled.is_(True),
+                self.db.func.coalesce(Product.stock, 0) <= self.db.func.coalesce(Product.reorder_point, 0))
+        total = query.count()
+        inventory = []
+        for product, variant, clothing_style in query.order_by(Style.id, Variant.id, Product.id).limit(limit).all():
+            stock = int(product.stock or 0)
+            low = bool(product.reorder_enabled) and stock <= max(int(product.reorder_point or 0), 0)
+            inventory.append({
+                "product_id": product.id, "catalog_id": product.catalog_id,
+                "variant_id": variant.id, "style_id": clothing_style.id,
+                "style_name": clothing_style.name, "code": clothing_style.code,
+                "name": product.name, "barcode": product.barcode,
+                "size": variant.size, "color": variant.color,
+                "current_stock": stock, "price": money_plain(product.price),
+                "status": "out_of_stock" if stock <= 0 else ("low_stock" if low else "ok"),
+            })
+        return self._scope({"total_products": total, "inventory": inventory,
+                            "truncated": total > len(inventory)})
 
     def _supplier_category(self, category=None, category_id=None):
         """Shared supplier choices must never resolve ambiguous names with first()."""
@@ -1484,6 +1557,19 @@ class AITools:
             if total_available < quantity:
                 self.db.session.rollback()
                 return {"error": f"Insufficient warehouse stock. Available: {total_available}, Requested: {quantity}"}
+            target = Product.query.filter_by(branch_id=target_branch_id,
+                catalog_id=product.catalog_id).first() if product.catalog_id else None
+            if target and product.barcode and target.barcode != product.barcode:
+                self.db.session.rollback()
+                return {"error": "Destination catalog product barcode differs from the source physical barcode. Explicit barcode reconciliation is required before transfer."}
+            if not target and product.barcode:
+                target = Product.query.filter_by(branch_id=target_branch_id, barcode=product.barcode).first()
+            if not target and product.branch_id == target_branch_id:
+                target = product
+            if target and target.catalog_id != product.catalog_id and (
+                    self._clothing_variant(product) or self._clothing_variant(target)):
+                self.db.session.rollback()
+                return {"error": "Clothing barcode belongs to a different catalog variant; reconcile identity before transfer"}
             remaining, transferred_from = quantity, []
             for item in warehouse_items:
                 if remaining <= 0:
@@ -1497,16 +1583,6 @@ class AITools:
                     raise RuntimeError('Warehouse stock changed; retry the transfer')
                 remaining -= deduct
                 transferred_from.append({"batch": item.batch_number, "deducted": deduct})
-
-            target = Product.query.filter_by(branch_id=target_branch_id,
-                catalog_id=product.catalog_id).first() if product.catalog_id else None
-            if target and product.barcode and target.barcode != product.barcode:
-                self.db.session.rollback()
-                return {"error": "Destination catalog product barcode differs from the source physical barcode. Explicit barcode reconciliation is required before transfer."}
-            if not target and product.barcode:
-                target = Product.query.filter_by(branch_id=target_branch_id, barcode=product.barcode).first()
-            if not target and product.branch_id == target_branch_id:
-                target = product
             if not target:
                 source_category = product.category_ref
                 category_name = source_category.name if source_category else product.category
@@ -1868,11 +1944,15 @@ class AITools:
     # serialize money as plain 2-decimal strings via money_plain().
     # ==================================================================
 
-    def upsert_product(self, name: str, price, cost=None, tax_rate=0.0, stock: int = 0,
+    def upsert_product(self, name: str, price, cost=None, tax_rate=0.0, stock: int = None,
                        category: str = None, reorder_point: int = 10,
                        reorder_quantity: int = 50, barcode: str = None,
                        product_id: int = None) -> Dict[str, Any]:
-        """Create a product or update an existing one (manager only)."""
+        """Create a product or update an existing one (manager only).
+
+        Omitting ``stock`` preserves an existing product's balance. New products
+        default to zero. Clothing balances can only change through inventory work.
+        """
         Product = self._get_model('Product')
         Category = self._get_model('Category')
         if not isinstance(name, str) or not name.strip():
@@ -1891,19 +1971,35 @@ class AITools:
         if not (0 <= tax_rate_val <= 100):
             return {"error": "tax_rate must be between 0 and 100"}
         try:
-            stock_val = int(stock)
+            stock_val = None if stock is None else int(stock)
             reorder_point_val = int(reorder_point)
             reorder_quantity_val = int(reorder_quantity)
         except (TypeError, ValueError):
             return {"error": "stock, reorder_point and reorder_quantity must be integers"}
-        if stock_val < 0 or reorder_point_val < 0 or reorder_quantity_val < 0:
+        if ((stock_val is not None and stock_val < 0)
+                or reorder_point_val < 0 or reorder_quantity_val < 0):
             return {"error": "stock, reorder_point and reorder_quantity must be >= 0"}
+
+        existing = None
+        if product_id is not None:
+            existing = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
+            if not existing:
+                return {"error": f"Product with ID {product_id} not found in the active branch"}
+            if self._clothing_variant(existing):
+                if barcode is not None and (not isinstance(barcode, str) or barcode.strip() != existing.barcode):
+                    return {"error": "Clothing variant barcodes are immutable; archive the variant instead"}
+                if stock_val is not None and stock_val != int(existing.stock or 0):
+                    return {"error": "Clothing stock cannot be overwritten; use receiving, transfer, sale, return or an approved stock adjustment"}
 
         if barcode is not None:
             if not isinstance(barcode, str):
                 return {"error": "barcode must be a string"}
             barcode = barcode.strip() or None
             if barcode:
+                for reserved in Product.query.filter_by(barcode=barcode).all():
+                    if self._clothing_variant(reserved) and (
+                            existing is None or existing.catalog_id != reserved.catalog_id):
+                        return {"error": "Barcode is reserved for a different clothing catalog variant"}
                 duplicate_query = self._branch_filter(Product.query.filter_by(barcode=barcode), Product)
                 if product_id is not None:
                     duplicate_query = duplicate_query.filter(Product.id != product_id)
@@ -1928,7 +2024,8 @@ class AITools:
             product.price = float(price_dec)
             product.cost = float(cost_dec) if cost_dec is not None else product.cost
             product.tax_rate = tax_rate_val
-            product.stock = stock_val
+            if stock_val is not None:
+                product.stock = stock_val
             if category is not None:
                 product.category_id = category_record.id if category_record else None
                 product.category = category_record.name if category_record else None
@@ -1945,7 +2042,7 @@ class AITools:
                 price=float(price_dec),
                 cost=float(cost_dec) if cost_dec is not None else None,
                 tax_rate=tax_rate_val,
-                stock=stock_val,
+                stock=stock_val if stock_val is not None else 0,
                 category=category_record.name if category_record else None,
                 category_id=category_record.id if category_record else None,
                 reorder_point=reorder_point_val,
@@ -2361,6 +2458,9 @@ class AITools:
         if not product:
             return {"error": f"Product with ID {product_id} not found in the active branch"}
 
+        if self._clothing_variant(product):
+            return {"error": "Clothing variants cannot be deleted; archive the variant to preserve barcode and history"}
+
         returns_count = ReturnExchangeItem.query.filter_by(product_id=product.id).count()
 
         usage = {
@@ -2666,6 +2766,8 @@ class AITools:
                 product = Product.query.get(sale_item.product_id)
                 if not product:
                     return {"error": "Product not found for return item"}
+                if self._clothing_variant(product):
+                    return {"error": "Use Returns & Exchanges for clothing returns so reason, condition and stock locking are recorded"}
 
                 unit_price = money_dec(sale_item.price)
                 line_total = (unit_price * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
@@ -2685,6 +2787,8 @@ class AITools:
                 product = Product.query.get(product_id)
                 if not product:
                     return {"error": f"Exchange product {product_id} not found"}
+                if self._clothing_variant(product):
+                    return {"error": "Use Returns & Exchanges for clothing exchanges so reason, condition and stock locking are recorded"}
                 if self._branch_id() is not None and product.branch_id not in (None, self._branch_id()):
                     return {"error": f"Exchange product {product.name} belongs to a different branch"}
                 if quantity > int(product.stock or 0):
@@ -3143,6 +3247,7 @@ class AITools:
 # Defense in depth for direct tool calls as well as both agent executors.
 # Projection is an allowlist, so future result fields cannot leak financial data.
 _CASHIER_RESULT_FIELDS = frozenset({
+    'catalog_id', 'variant_id', 'style_id', 'style_name', 'size', 'color', 'truncated',
     'branch_id', 'message', 'name', 'code', 'is_default', 'error',
     'total_products', 'inventory', 'summary', 'items', 'low_stock_count',
     'out_of_stock_count', 'product_id', 'barcode', 'category', 'current_stock',
