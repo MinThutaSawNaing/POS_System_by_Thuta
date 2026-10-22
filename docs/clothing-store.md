@@ -207,7 +207,7 @@ python run_tests.py -q test_clothing_checkout.py test_clothing_returns.py test_c
 
 ## Store operation and demonstration
 
-1. Open the POS tab, expand the optional clothing panel, and create a style.
+1. Open **Settings → Clothing** (managers/bosses) and create a style.
    Styles are explicit; a similar Product name never groups items automatically.
 2. Create variants (size, color, unique barcode, price), or attach existing
    current-branch Products with an explicit CSV `product_id`. New Products start
@@ -217,7 +217,9 @@ python run_tests.py -q test_clothing_checkout.py test_clothing_returns.py test_c
    existing transfer workflow. The clothing stock grid is read-only and links to
    receiving; it never overwrites balances.
 4. On the POS tab, choose a style and filter by size/color, then add the exact
-   Product. Ordinary barcode search and scanning still use Product identities.
+   Product. The admin style/variant/CSV controls live under
+   **Settings → Clothing**; ordinary barcode search and scanning still use
+   Product identities.
 5. Complete a sale with the existing payment, receipt and offline flows. New
    lines store an immutable description snapshot; editing or archiving the style
    later does not rewrite that receipt or its tax amounts.
