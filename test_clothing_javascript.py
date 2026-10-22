@@ -150,6 +150,15 @@ def test_csv_edits_invalidate_preview_and_late_preview_response():
 """)
 
 
+def test_settings_group_can_load_admin_styles():
+    run_node(DOM + r"""
+(async () => {
+  next.push({success: true, styles: [{id: 7, name: 'Settings Shirt', code: 'SET'}]});
+  await ui.load(true);
+  assert.equal(selects(admin)[0].children[1].textContent, 'Settings Shirt · SET');
+})().catch(e => {console.error(e); process.exitCode = 1;});
+""")
+
 def test_template_additions_preserve_external_script_and_safe_cart_display():
     source = (ROOT / "templates" / "dashboard.html").read_text(encoding="utf-8")
     assert '<script src="/public/clothing.js"></script>' in source

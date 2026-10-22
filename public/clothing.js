@@ -282,9 +282,9 @@
       if (admin && env.canWrite()) setupAdmin(setupPicker(admin, true));
     }
     function load(adminOnly) {
-      panels.forEach((panel) => {
-        if (!adminOnly || panel.admin) loadStyles(panel);
-      });
+      return Promise.all(panels
+        .filter((panel) => !adminOnly || panel.admin)
+        .map((panel) => loadStyles(panel)));
     }
     return {mount, invalidate, load};
   }
