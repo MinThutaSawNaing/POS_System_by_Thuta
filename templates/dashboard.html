@@ -1758,7 +1758,7 @@
                     <option value="cash">Cash</option>
                     <option value="credit_card">Credit Card</option>
                     <option value="debit_card">Debit Card</option>
-                    <option value="mobile_payment">Mobile Payment</option>
+                    <option value="mobile_payment">Mobile Payment (MMQR)</option>
                     <option value="split_payment">Split Payment</option>
                     <option value="debt">Charge to Customer</option>
                   </select>
@@ -12070,14 +12070,9 @@
         if (select?.value === "debt" && !hasCapability("debts")) select.value = "cash";
         toggleCashPaymentFields();
         updateCashRefundDisplay();
-        const paymentMethod = document.getElementById("payment-method")?.value;
-        if (paymentMethod === "mobile_payment" && cart.length > 0) {
-          showMMQRPaymentModal();
-        } else if (paymentMethod === "split_payment" && cart.length > 0 && splitUsesMobilePayment()) {
-          showMMQRPaymentModal();
-        } else {
-          bootstrap.Modal.getInstance(document.getElementById("mmqrPaymentModal"))?.hide();
-        }
+        // The QR is created only when Complete Sale is pressed, never by choosing
+        // a method, so delivery details and the whole cart can still be edited.
+        bootstrap.Modal.getInstance(document.getElementById("mmqrPaymentModal"))?.hide();
       }
 
       function splitUsesMobilePayment() {
@@ -12086,11 +12081,9 @@
 
       function handleSplitPaymentChange() {
         updateSplitPaymentDisplay();
-        if (document.getElementById("payment-method")?.value === "split_payment" && splitUsesMobilePayment() && cart.length > 0) {
-          showMMQRPaymentModal();
-        } else {
-          bootstrap.Modal.getInstance(document.getElementById("mmqrPaymentModal"))?.hide();
-        }
+        // Changing a split method invalidates any open QR; a new one is created
+        // only when Complete Sale is pressed.
+        bootstrap.Modal.getInstance(document.getElementById("mmqrPaymentModal"))?.hide();
       }
 
       function resetSplitPaymentFields() {
@@ -12116,11 +12109,6 @@
           ? "Payment amounts match the total."
           : `Remaining: ${formatCurrency(Math.abs(difference) / 100)}${difference < 0 ? " over" : ""}`;
         remaining.className = difference === 0 ? "text-success mt-1" : "text-danger mt-1";
-        const modalElement = document.getElementById("mmqrPaymentModal");
-        if (cart.length > 0 && document.getElementById("payment-method")?.value === "split_payment"
-            && modalElement?.classList.contains("show") && splitUsesMobilePayment()) {
-          showMMQRPaymentModal();
-        }
       }
 
       // ===== MMQR compliance: MMK-only display, 15-minute timer, downloads =====

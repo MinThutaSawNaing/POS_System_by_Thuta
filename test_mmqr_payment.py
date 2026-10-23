@@ -124,6 +124,11 @@ class MMQRPaymentTests(unittest.TestCase):
         self.assertIn('text-success', dashboard)
         self.assertIn('function showMMQRPaymentModal()', dashboard)
         self.assertIn('mobile_payment" || (paymentMethod === "split_payment"', dashboard)
+        self.assertIn('Mobile Payment (MMQR)', dashboard)
+        # The QR is created by Complete Sale only, never by choosing a method.
+        method_handler = dashboard.split('function handlePaymentMethodChange()', 1)[1].split(
+            'function splitUsesMobilePayment()', 1)[0]
+        self.assertNotIn('showMMQRPaymentModal()', method_handler)
 
     def test_dashboard_and_checkout_enforce_mmqr_compliance(self):
         dashboard = Path(app.root_path, 'templates', 'dashboard.html').read_text(encoding='utf-8')
