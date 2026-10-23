@@ -78,7 +78,8 @@ async function buttonHarness({enabled = true, configured = true, manual_allowed 
     const functions = ['addToCartToInternal', 'updateCartDisplay', 'showMMQRPaymentModal',
       'completeSale', 'splitUsesMobilePayment', 'resetSplitPaymentFields',
       'updateSplitPaymentDisplay', 'handlePaymentMethodChange', 'toggleCashPaymentFields',
-      'getCurrentCartTotal', 'toCents', 'centsToNumber', 'mulMoney'];
+      'getCurrentCartTotal', 'getPosDeliveryPreview', 'updatePosDeliveryFeeRow',
+      'toCents', 'centsToNumber', 'mulMoney'];
     const helpers = functions.map(name => {
       const match = new RegExp(`function ${name}\\([^)]*\\)\\s*\\{`).exec(source);
       assert.ok(match, `dashboard function ${name} exists`);

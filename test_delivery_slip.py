@@ -111,6 +111,39 @@ class DeliverySlipViewTests(unittest.TestCase):
         self.assertEqual(view["payment_status"], "cash_on_delivery")
         self.assertEqual(view["collect_total_display"], "3,650.00 MMK")
 
+    def test_fee_charged_with_the_sale_is_not_collected_twice(self):
+        view = build_delivery_slip_view(
+            _slip_data(
+                payment_status="cash_on_delivery",
+                fee_included_in_sale=True,
+                order_total=2000,
+                delivery_fee=500,
+                collect_total=None,
+            ),
+            RECEIPT_PAPER_80MM,
+        )
+        self.assertEqual(view["order_total_display"], "2,000.00 MMK")
+        self.assertEqual(view["delivery_fee_display"], "500.00 MMK")
+        self.assertEqual(view["paid_amount_display"], "500.00 MMK")
+        self.assertEqual(view["collect_total_display"], "2,000.00 MMK")
+        self.assertIn("already paid", view["collect_note"])
+
+    def test_paid_fee_charged_with_the_sale_settles_the_whole_bill(self):
+        view = build_delivery_slip_view(
+            _slip_data(
+                payment_status="paid",
+                fee_included_in_sale=True,
+                order_total=2000,
+                delivery_fee=500,
+                collect_total=None,
+            ),
+            RECEIPT_PAPER_80MM,
+        )
+        self.assertTrue(view["is_prepaid"])
+        self.assertEqual(view["bill_total_display"], "2,500.00 MMK")
+        self.assertEqual(view["paid_amount_display"], "2,500.00 MMK")
+        self.assertEqual(view["collect_total_display"], "0.00 MMK")
+
     def test_large_amounts_are_rendered_on_wrapping_rows(self):
         template_folder = Path(__file__).resolve().parent / "templates"
         flask_app = Flask(__name__, template_folder=str(template_folder))

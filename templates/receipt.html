@@ -99,6 +99,9 @@
         <hr class="rule" />
         <div class="total-row"><span>Subtotal</span><span>{{ receipt.subtotal_display }}</span></div>
         <div class="total-row"><span>Tax</span><span>{{ receipt.tax_display }}</span></div>
+        {% if receipt.has_delivery_fee %}
+          <div class="total-row"><span>Delivery fee</span><span>{{ receipt.delivery_fee_display }}</span></div>
+        {% endif %}
         <hr class="rule strong" />
         <div class="total-row grand"><span>TOTAL</span><span>{{ receipt.total_display }}</span></div>
         {% if receipt.is_cash %}

@@ -88,3 +88,32 @@ def test_ambiguous_money_helpers_cannot_reintroduce_double_conversion():
 
     ambiguous_helper = re.search(r"\b(?:addMoney|subMoney)\s*(?:=|\()", source)
     assert ambiguous_helper is None
+
+
+def test_already_paid_delivery_fee_is_added_to_the_cart_total():
+    """Already Paid charges the fee now; cash on delivery leaves it at the door."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+    functions = "\n".join(
+        _javascript_function(source, name)
+        for name in ("toCents", "mulMoney", "getCurrentCartTotal")
+    )
+
+    def run(payment_status):
+        script = f"""
+{functions}
+globalThis.document = {{
+  getElementById: (id) => ({{
+    "pos-enable-delivery": {{ checked: true }},
+    "pos-delivery-fee": {{ value: "500" }},
+    "pos-delivery-payment-status": {{ value: {json.dumps(payment_status)} }},
+  }})[id] || null,
+}};
+const cart = [{{ price: 1000, quantity: 2, tax_rate: 0 }}];
+console.log(JSON.stringify({{ total: getCurrentCartTotal() }}));
+"""
+        result = subprocess.run(
+            [NODE, "-e", script], check=True, capture_output=True, text=True)
+        return json.loads(result.stdout)["total"]
+
+    assert run("paid") == 2500
+    assert run("cash_on_delivery") == 2000

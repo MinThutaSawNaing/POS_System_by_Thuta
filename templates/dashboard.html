@@ -1744,6 +1744,10 @@
                   <span>Tax</span>
                   <span id="tax">$0.00</span>
                 </div>
+                <div class="d-flex justify-content-between small mb-1" id="pos-delivery-fee-row" style="display: none">
+                  <span id="pos-delivery-fee-label">Delivery fee</span>
+                  <span id="pos-delivery-fee-total">$0.00</span>
+                </div>
                 <div class="d-flex justify-content-between fw-bold mb-2 pos-total-row">
                   <span>Total</span>
                   <span id="total">$0.00</span>
@@ -1779,12 +1783,12 @@
                         </select>
                       </div>
                       <div class="col-6">
-                        <input type="number" min="0" step="0.01" class="form-control form-control-sm" id="pos-delivery-fee" placeholder="Fee" />
+                        <input type="number" min="0" step="0.01" class="form-control form-control-sm" id="pos-delivery-fee" placeholder="Fee" oninput="updateCartDisplay()" />
                       </div>
                     </div>
-                    <select class="form-select form-select-sm mt-1" id="pos-delivery-payment-status">
+                    <select class="form-select form-select-sm mt-1" id="pos-delivery-payment-status" onchange="updateCartDisplay()">
                       <option value="cash_on_delivery">Cash on Delivery</option>
-                      <option value="paid">Already Paid</option>
+                      <option value="paid">Already Paid - add fee to total</option>
                     </select>
                   </div>
                 </div>
@@ -4082,6 +4086,7 @@
               <option value="cash_on_delivery">Cash on Delivery - driver collects</option>
               <option value="paid">Already Paid - do not collect</option>
             </select>
+            <div class="form-text">At POS checkout an Already Paid fee is added to the sale total. For a sale that already exists the fee stays on this delivery slip.</div>
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -10658,7 +10663,8 @@
               <div class="center muted">OFFLINE SALE — pending sync</div><hr>
               ${itemRows}<hr>
               <div class="row"><span>Subtotal</span><span>${money(receipt.subtotal)}</span></div>
-              <div class="row"><span>Tax</span><span>${money(receipt.tax)}</span></div><hr>
+              <div class="row"><span>Tax</span><span>${money(receipt.tax)}</span></div>${Number(receipt.deliveryFee) ? `
+              <div class="row"><span>Delivery fee</span><span>${money(receipt.deliveryFee)}</span></div>` : ""}<hr>
               <div class="row grand"><span>TOTAL</span><span>${money(receipt.total)}</span></div>${cashRows}${splitRows}
               <hr><footer class="center">Thank you for your purchase.<br>Please keep your receipt.</footer>
             </main>
@@ -11924,9 +11930,36 @@
         searchInput.focus({ preventScroll: true });
       }
 
+      function getPosDeliveryPreview() {
+        // Delivery money mirrors the backend: an "already paid" fee is charged
+        // with the sale total; a cash-on-delivery fee is collected by the driver.
+        const enabled = Boolean(document.getElementById("pos-enable-delivery")?.checked);
+        const feeCents = enabled
+          ? Math.max(0, toCents(document.getElementById("pos-delivery-fee")?.value || "0"))
+          : 0;
+        const included = enabled
+          && document.getElementById("pos-delivery-payment-status")?.value === "paid";
+        return { enabled, feeCents, included, chargeCents: included ? feeCents : 0 };
+      }
+
+      function updatePosDeliveryFeeRow(delivery) {
+        const feeRow = document.getElementById("pos-delivery-fee-row");
+        if (!feeRow) return;
+        const showFee = delivery.enabled && delivery.feeCents > 0;
+        feeRow.style.display = showFee ? "flex" : "none";
+        if (!showFee) return;
+        document.getElementById("pos-delivery-fee-label").textContent = delivery.included
+          ? "Delivery fee"
+          : "Delivery fee (collect at door)";
+        document.getElementById("pos-delivery-fee-total").textContent =
+          formatCurrency(delivery.feeCents / 100);
+      }
+
       function updateCartDisplay() {
         const cartItems = document.getElementById("cart-items");
         const cartCount = document.getElementById("cart-item-count");
+        const deliveryPreview = getPosDeliveryPreview();
+        updatePosDeliveryFeeRow(deliveryPreview);
         if (cartCount) {
           const totalQty = cart.reduce((sum, item) => sum + item.quantity, 0);
           cartCount.textContent = totalQty + " item" + (totalQty !== 1 ? "s" : "");
@@ -11937,6 +11970,8 @@
           document.getElementById("subtotal").textContent = formatCurrency(0);
           document.getElementById("tax").textContent = formatCurrency(0);
           document.getElementById("total").textContent = formatCurrency(0);
+          const emptyFeeRow = document.getElementById("pos-delivery-fee-row");
+          if (emptyFeeRow) emptyFeeRow.style.display = "none";
           bootstrap.Modal.getInstance(document.getElementById("mmqrPaymentModal"))?.hide();
           return;
         }
@@ -11982,7 +12017,7 @@
               `;
           cartItems.appendChild(itemElement);
         });
-        const totalCents = subtotalCents + taxCents;
+        const totalCents = subtotalCents + taxCents + deliveryPreview.chargeCents;
         document.getElementById("subtotal").textContent = formatCurrency(subtotalCents / 100);
         document.getElementById("tax").textContent = formatCurrency(taxCents / 100);
         document.getElementById("total").textContent = formatCurrency(totalCents / 100);
@@ -11995,9 +12030,9 @@
 
       function getCurrentCartTotal() {
         // Must match updateCartDisplay() and the backend (app.py create_sale):
-        // per-item tax = ROUND_HALF_UP(item_total_cents * tax_rate / 100).
-        return (
-          cart.reduce((sum, item) => {
+        // per-item tax = ROUND_HALF_UP(item_total_cents * tax_rate / 100), plus
+        // the delivery fee only when it is charged with the sale (already paid).
+        const itemsTotalCents = cart.reduce((sum, item) => {
             const itemTotalCents = mulMoney(item.price, item.quantity);
             const itemTaxCents = Math.round(
               (itemTotalCents * Number(item.tax_rate || 0)) / 100
@@ -12005,8 +12040,20 @@
             // Both values are already integer cents; converting them again would
             // inflate the cart total by 100 and break the cash-change calculation.
             return sum + itemTotalCents + itemTaxCents;
-          }, 0) / 100
-        );
+          }, 0);
+        let deliveryChargeCents = 0;
+        // Guarded so money helpers can run outside a browser (unit tests).
+        if (typeof document !== "undefined") {
+          const deliveryEnabled = document.getElementById("pos-enable-delivery")?.checked;
+          const alreadyPaid = document.getElementById("pos-delivery-payment-status")?.value === "paid";
+          if (deliveryEnabled && alreadyPaid) {
+            deliveryChargeCents = Math.max(
+              0,
+              toCents(document.getElementById("pos-delivery-fee")?.value || "0")
+            );
+          }
+        }
+        return (itemsTotalCents + deliveryChargeCents) / 100;
       }
 
       function toggleCashPaymentFields() {
@@ -12394,6 +12441,12 @@
           };
         });
         const totalCents = subtotalCents + taxCents;
+        // An already-paid delivery fee is charged with the sale and must be in
+        // the offline receipt total exactly like the server-side receipt.
+        const delivery = saleData.delivery && saleData.delivery.enabled ? saleData.delivery : null;
+        const deliveryFeeCents = delivery ? Math.max(0, toCents(delivery.delivery_fee || 0)) : 0;
+        const deliveryFeeCharged = Boolean(delivery && delivery.payment_status === "paid");
+        const grandTotalCents = totalCents + (deliveryFeeCharged ? deliveryFeeCents : 0);
         const paymentMethod = saleData.payment_method || "cash";
         const paymentBreakdown = saleData.payment_breakdown || null;
         const cashReceived = paymentMethod === "cash"
@@ -12415,11 +12468,13 @@
           paymentMethod: paymentMethod,
           paymentBreakdown: paymentBreakdown,
           cashReceived: cashReceived,
-          change: centsToNumber(Math.max(0, toCents(cashReceived) - totalCents)),
+          change: centsToNumber(Math.max(0, toCents(cashReceived) - grandTotalCents)),
           items: items,
           subtotal: centsToNumber(subtotalCents),
           tax: centsToNumber(taxCents),
-          total: centsToNumber(totalCents),
+          deliveryFee: centsToNumber(deliveryFeeCharged ? deliveryFeeCents : 0),
+          deliveryPaymentStatus: delivery ? (delivery.payment_status || "cash_on_delivery") : null,
+          total: centsToNumber(grandTotalCents),
         };
       }
 
@@ -14661,6 +14716,10 @@
 
             const tax = sale.tax || 0;
             const total = sale.total || subtotal + tax;
+            // Only a fee charged with this sale belongs in this receipt's math.
+            const deliveryFeeCharged = sale.delivery && sale.delivery.fee_included_in_sale
+              ? Number(sale.delivery.delivery_fee || 0)
+              : 0;
             const returnHistoryHtml = (sale.return_exchange_history || []).length
               ? `
                   <h6 class="mt-4">Return / Exchange History</h6>
@@ -14695,6 +14754,11 @@
                   <div><strong>${sale.delivery.delivery_number}</strong> (${sale.delivery.stage_label})</div>
                   <div>${sale.delivery.recipient_name || "-"} | ${sale.delivery.recipient_phone || "-"}</div>
                   <div>${sale.delivery.delivery_address || "-"}</div>
+                  <div class="mt-1">
+                    <span class="badge bg-${sale.delivery.payment_status === "paid" ? "success" : "primary"}">${sale.delivery.payment_status_label || "Cash on Delivery"}</span>
+                    <span class="ms-2">Fee: ${formatCurrency(sale.delivery.delivery_fee || 0)}</span>
+                    <span class="ms-2">Collect: ${formatCurrency(sale.delivery.collect_total || 0)}</span>
+                  </div>
                 </div>
               `
               : "";
@@ -14737,6 +14801,10 @@
                                               <th colspan="4" class="text-end">Tax:</th>
                                               <th>$${tax.toFixed(2)}</th>
                                           </tr>
+                                          ${deliveryFeeCharged ? `<tr>
+                                              <th colspan="4" class="text-end">Delivery fee:</th>
+                                              <th>${formatCurrency(deliveryFeeCharged)}</th>
+                                          </tr>` : ""}
                                           <tr class="table-active">
                                               <th colspan="4" class="text-end">Total:</th>
                                               <th>$${total.toFixed(2)}</th>
@@ -18291,6 +18359,7 @@
           const paymentStatus = document.getElementById("pos-delivery-payment-status");
           if (paymentStatus) paymentStatus.value = "cash_on_delivery";
         }
+        updateCartDisplay();
       }
 
       function loadDeliveryStats() {

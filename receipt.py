@@ -154,6 +154,7 @@ def build_receipt_snapshot(
     subtotal: Any,
     tax: Any,
     total: Any,
+    delivery_fee: Any = 0,
     receipt_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     snapshot_items = []
@@ -207,6 +208,7 @@ def build_receipt_snapshot(
         "items": snapshot_items,
         "subtotal": _money(subtotal),
         "tax": _money(tax),
+        "delivery_fee": _money(delivery_fee),
         "total": _money(total),
     }
 
@@ -249,16 +251,27 @@ def build_delivery_slip_view(slip: Mapping[str, Any], paper_size: Any) -> dict[s
 
     order_total = _money(slip.get("order_total"))
     delivery_fee = _money(slip.get("delivery_fee"))
+    fee_included_in_sale = bool(slip.get("fee_included_in_sale"))
     bill_total = _money(order_total + delivery_fee)
     payment_status = normalize_delivery_payment_status(slip.get("payment_status")) or DEFAULT_DELIVERY_PAYMENT_STATUS
     is_prepaid = payment_status == DELIVERY_PAYMENT_PAID
     if slip.get("collect_total") is not None:
         collect_total = _money(slip.get("collect_total"))
+    elif is_prepaid:
+        # Already paid: the whole bill was settled, the driver collects nothing.
+        collect_total = Decimal("0.00")
+    elif fee_included_in_sale:
+        # The fee was charged with the sale, so only the goods are collected.
+        collect_total = order_total
     else:
-        # Cash on delivery collects the whole bill; a prepaid bill leaves the
-        # driver with nothing to collect at the door.
-        collect_total = Decimal("0.00") if is_prepaid else bill_total
-    paid_amount = bill_total if is_prepaid else Decimal("0.00")
+        collect_total = bill_total
+    paid_amount = _money(bill_total - collect_total)
+    if is_prepaid:
+        collect_note = "No cash collection - already paid"
+    elif fee_included_in_sale and delivery_fee:
+        collect_note = "Delivery fee already paid - collect the order total only"
+    else:
+        collect_note = "Collect cash on delivery"
 
     created_at = str(slip.get("created_at") or "")
     try:
@@ -288,7 +301,8 @@ def build_delivery_slip_view(slip: Mapping[str, Any], paper_size: Any) -> dict[s
         "payment_status_label": DELIVERY_PAYMENT_LABELS[payment_status],
         "is_cod": payment_status == DELIVERY_PAYMENT_COD,
         "is_prepaid": is_prepaid,
-        "collect_note": "No cash collection - already paid" if is_prepaid else "Collect cash on delivery",
+        "fee_included_in_sale": fee_included_in_sale,
+        "collect_note": collect_note,
         "recipient_name": str(slip.get("recipient_name") or ""),
         "recipient_phone": str(slip.get("recipient_phone") or ""),
         "delivery_address_lines": delivery_address.splitlines() if delivery_address else [],
@@ -377,6 +391,9 @@ def build_receipt_view(snapshot: Mapping[str, Any], paper_size: Any) -> dict[str
         "items": items,
         "subtotal_display": format_receipt_money(snapshot.get("subtotal"), suffix),
         "tax_display": format_receipt_money(snapshot.get("tax"), suffix),
+        "delivery_fee": _money(snapshot.get("delivery_fee")),
+        "delivery_fee_display": format_receipt_money(snapshot.get("delivery_fee"), suffix),
+        "has_delivery_fee": _money(snapshot.get("delivery_fee")) > 0,
         "total_display": format_receipt_money(snapshot.get("total"), suffix),
         "cash_received_display": format_receipt_money(payment.get("cash_received"), suffix),
         "change_display": format_receipt_money(payment.get("change_given"), suffix),

@@ -226,6 +226,28 @@ class ReceiptTests(unittest.TestCase):
             # The old fixed-width price/amount grid overlapped long amounts.
             self.assertNotIn("32px 70px 76px", html)
 
+    def test_delivery_fee_charged_with_the_sale_prints_on_the_receipt(self):
+        snapshot = self._snapshot()
+        snapshot["delivery_fee"] = 500
+        snapshot["total"] = 3650
+        view = build_receipt_view(snapshot, RECEIPT_PAPER_80MM)
+        self.assertTrue(view["has_delivery_fee"])
+        self.assertEqual(view["delivery_fee_display"], "500.00 MMK")
+        self.assertEqual(view["total_display"], "3,650.00 MMK")
+
+        template_folder = Path(__file__).resolve().parent / "templates"
+        flask_app = Flask(__name__, template_folder=str(template_folder))
+        with flask_app.app_context():
+            html = render_template("receipt.html", receipt=view)
+        self.assertIn("Delivery fee", html)
+        self.assertIn("500.00 MMK", html)
+        self.assertIn("3,650.00 MMK", html)
+
+    def test_legacy_snapshot_without_delivery_fee_hides_the_row(self):
+        view = build_receipt_view(self._snapshot(), RECEIPT_PAPER_80MM)
+        self.assertFalse(view["has_delivery_fee"])
+        self.assertEqual(view["delivery_fee_display"], "0.00 MMK")
+
     def test_template_renders_logo_and_escapes_custom_text(self):
         snapshot = self._snapshot()
         snapshot["receipt_identity"] = {

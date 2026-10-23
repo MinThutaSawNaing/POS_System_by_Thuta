@@ -122,7 +122,9 @@
         <div class="total-row"><span>Order total</span><span>{{ slip.order_total_display }}</span></div>
         <div class="total-row"><span>Delivery fee</span><span>{{ slip.delivery_fee_display }}</span></div>
         {% if slip.is_prepaid %}
-          <div class="total-row"><span>Paid at counter</span><span>-{{ slip.paid_amount_display }}</span></div>
+          <div class="total-row"><span>{% if slip.fee_included_in_sale %}Paid at counter{% else %}Settled{% endif %}</span><span>-{{ slip.paid_amount_display }}</span></div>
+        {% elif slip.fee_included_in_sale %}
+          <div class="total-row"><span>Delivery fee paid</span><span>-{{ slip.paid_amount_display }}</span></div>
         {% endif %}
         <hr class="rule strong" />
         <div class="total-row grand"><span>COLLECT</span><span>{{ slip.collect_total_display }}</span></div>

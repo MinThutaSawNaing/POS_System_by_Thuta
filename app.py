@@ -177,18 +177,43 @@ def parse_delivery_payment_status(data, default=DEFAULT_DELIVERY_PAYMENT_STATUS)
         return None, "Payment status must be 'cash_on_delivery' or 'paid'"
     return value, None
 
+def parse_delivery_fee(payload):
+    """Return ``(fee, error)`` for an operator-supplied delivery fee."""
+    raw = payload.get('delivery_fee')
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return Decimal('0.00'), None
+    try:
+        fee = round_money(to_decimal(raw))
+    except (TypeError, ValueError, ArithmeticError):
+        return None, 'Delivery fee must be a number'
+    if not fee.is_finite() or fee < 0:
+        return None, 'Delivery fee cannot be negative'
+    return fee, None
+
 def delivery_amounts(delivery):
-    """Order total, collected-at-door total and prepaid total for one delivery."""
-    sale_total = safe_to_decimal(delivery.sale.total) if delivery.sale else safe_to_decimal(0)
-    fee = safe_to_decimal(delivery.delivery_fee)
+    """Money split for a delivery, aware of fees already charged with the sale.
+
+    A checkout delivery that was marked "already paid" has its fee baked into
+    ``sale.total`` (``fee_included_in_sale``). Everything downstream must use
+    these helpers so the fee is never counted twice or collected twice.
+    """
+    sale_total = round_money(safe_to_decimal(delivery.sale.total) if delivery.sale else 0)
+    fee = round_money(safe_to_decimal(delivery.delivery_fee))
     status = normalize_delivery_payment_status(getattr(delivery, 'payment_status', None))
-    bill_total = sale_total + fee
-    collect_total = safe_to_decimal(0) if status == DELIVERY_PAYMENT_PAID else bill_total
+    fee_included = bool(getattr(delivery, 'fee_included_in_sale', False)) and fee > 0
+    goods_total = round_money(sale_total - fee) if fee_included and sale_total >= fee else sale_total
+    bill_total = round_money(goods_total + fee)
+    if status == DELIVERY_PAYMENT_PAID:
+        collect_total = Decimal('0.00')
+    else:
+        # A fee already taken at the counter must not be collected again.
+        collect_total = goods_total if fee_included else bill_total
     return {
-        'order_total': sale_total,
+        'order_total': goods_total,
         'bill_total': bill_total,
         'collect_total': collect_total,
-        'paid_total': bill_total if status == DELIVERY_PAYMENT_PAID else safe_to_decimal(0),
+        'paid_total': round_money(bill_total - collect_total),
+        'fee_included_in_sale': fee_included,
     }
 
 
@@ -2020,6 +2045,9 @@ class Delivery(db.Model):
     # 'paid' means the bill was already settled at the counter.
     payment_status = db.Column(db.String(20), default=DEFAULT_DELIVERY_PAYMENT_STATUS,
                                server_default=DEFAULT_DELIVERY_PAYMENT_STATUS, nullable=False)
+    # True when the delivery fee was charged with the sale total at checkout
+    # (an "already paid" delivery), so it must never be collected twice.
+    fee_included_in_sale = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
     recipient_name = db.Column(db.String(120))
     recipient_phone = db.Column(db.String(30))
     delivery_address = db.Column(db.String(300))
@@ -2507,6 +2535,7 @@ def serialize_delivery(delivery):
         'payment_status': payment_status,
         'payment_status_label': DELIVERY_PAYMENT_LABELS[payment_status],
         'is_prepaid': payment_status == DELIVERY_PAYMENT_PAID,
+        'fee_included_in_sale': bool(getattr(delivery, 'fee_included_in_sale', False)),
         'order_total': float(amounts['order_total']),
         'bill_total': float(amounts['bill_total']),
         'collect_total': float(amounts['collect_total']),
@@ -2947,6 +2976,7 @@ with app.app_context():
         delivery_migrations = [
             ('priority', "ALTER TABLE delivery ADD COLUMN priority VARCHAR(20) DEFAULT 'normal'"),
             ('payment_status', "ALTER TABLE delivery ADD COLUMN payment_status VARCHAR(20) DEFAULT 'cash_on_delivery'"),
+            ('fee_included_in_sale', 'ALTER TABLE delivery ADD COLUMN fee_included_in_sale BOOLEAN DEFAULT 0'),
             ('township', 'ALTER TABLE delivery ADD COLUMN township VARCHAR(120)'),
             ('instructions', 'ALTER TABLE delivery ADD COLUMN instructions VARCHAR(400)'),
             ('delivery_fee', 'ALTER TABLE delivery ADD COLUMN delivery_fee FLOAT DEFAULT 0'),
@@ -5487,6 +5517,43 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             if existing:
                 return _sale_replay_response(existing)
 
+        # Delivery is validated before the totals: an "already paid" delivery fee
+        # is charged with this sale, so it must be part of the cart total that
+        # the cashier, the receipt and the sales history all see.
+        delivery_payload = data.get('delivery') or {}
+        delivery_request = None
+        delivery_fee_amount = Decimal('0.00')
+        delivery_payment_status = DEFAULT_DELIVERY_PAYMENT_STATUS
+        delivery_fee_included = False
+        if delivery_payload.get('enabled'):
+            delivery_recipient_name = (delivery_payload.get('recipient_name') or '').strip()
+            delivery_recipient_phone = (delivery_payload.get('recipient_phone') or '').strip()
+            delivery_address = (delivery_payload.get('delivery_address') or '').strip()
+            if not delivery_recipient_name or not delivery_recipient_phone or not delivery_address:
+                return jsonify({'success': False, 'message': 'Recipient name, phone and address are required for delivery'}), 400
+            delivery_payment_status, payment_error = parse_delivery_payment_status(delivery_payload)
+            if payment_error:
+                return jsonify({'success': False, 'message': payment_error}), 400
+            delivery_fee_amount, fee_error = parse_delivery_fee(delivery_payload)
+            if fee_error:
+                return jsonify({'success': False, 'message': fee_error}), 400
+            if delivery_payment_status == DELIVERY_PAYMENT_PAID and delivery_fee_amount > 0:
+                if payment_method == 'debt':
+                    return jsonify({'success': False, 'message': 'A credit sale cannot be marked as already paid for delivery'}), 400
+                delivery_fee_included = True
+            delivery_request = {
+                'recipient_name': delivery_recipient_name,
+                'recipient_phone': delivery_recipient_phone,
+                'delivery_address': delivery_address,
+                'township': (delivery_payload.get('township') or '').strip() or None,
+                'instructions': (delivery_payload.get('instructions') or '').strip() or None,
+                'courier_name': (delivery_payload.get('courier_name') or '').strip() or None,
+                'courier_phone': (delivery_payload.get('courier_phone') or '').strip() or None,
+                'tracking_code': (delivery_payload.get('tracking_code') or '').strip() or None,
+                'priority': normalize_delivery_priority(delivery_payload.get('priority')),
+                'scheduled_at': parse_iso_datetime(delivery_payload.get('scheduled_at')),
+            }
+
         # Calculate totals
         subtotal = Decimal('0.00')
         tax_total = Decimal('0.00')
@@ -5531,6 +5598,9 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             })
 
         total = subtotal + tax_total
+        if delivery_fee_included:
+            # Already-paid delivery: the fee is charged now and stored in sale.total.
+            total += delivery_fee_amount
         total_rounded = round_money(total)
 
         allowed_payment_methods = {'cash', 'credit_card', 'debit_card', 'mobile_payment', 'debt', 'split_payment'}
@@ -5663,34 +5733,25 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             # Update sale payment method to indicate debt
             sale.payment_method = 'debt'
 
-        delivery_payload = data.get('delivery') or {}
-        if delivery_payload.get('enabled'):
-            recipient_name = (delivery_payload.get('recipient_name') or '').strip()
-            recipient_phone = (delivery_payload.get('recipient_phone') or '').strip()
-            delivery_address = (delivery_payload.get('delivery_address') or '').strip()
-            if not recipient_name or not recipient_phone or not delivery_address:
-                return jsonify({'success': False, 'message': 'Recipient name, phone and address are required for delivery'}), 400
-            delivery_payment_status, payment_error = parse_delivery_payment_status(delivery_payload)
-            if payment_error:
-                return jsonify({'success': False, 'message': payment_error}), 400
-
+        if delivery_request:
             delivery = Delivery(
                 delivery_number=generate_delivery_number(),
                 sale_id=sale.id,
                 customer_id=data.get('customer_id'),
                 stage='to_deliver',
-                priority=normalize_delivery_priority(delivery_payload.get('priority')),
+                priority=delivery_request['priority'],
                 payment_status=delivery_payment_status,
-                recipient_name=recipient_name,
-                recipient_phone=recipient_phone,
-                delivery_address=delivery_address,
-                township=(delivery_payload.get('township') or '').strip() or None,
-                instructions=(delivery_payload.get('instructions') or '').strip() or None,
-                courier_name=(delivery_payload.get('courier_name') or '').strip() or None,
-                courier_phone=(delivery_payload.get('courier_phone') or '').strip() or None,
-                tracking_code=(delivery_payload.get('tracking_code') or '').strip() or None,
-                delivery_fee=round_money(delivery_payload.get('delivery_fee') or 0),
-                scheduled_at=parse_iso_datetime(delivery_payload.get('scheduled_at')),
+                fee_included_in_sale=delivery_fee_included,
+                recipient_name=delivery_request['recipient_name'],
+                recipient_phone=delivery_request['recipient_phone'],
+                delivery_address=delivery_request['delivery_address'],
+                township=delivery_request['township'],
+                instructions=delivery_request['instructions'],
+                courier_name=delivery_request['courier_name'],
+                courier_phone=delivery_request['courier_phone'],
+                tracking_code=delivery_request['tracking_code'],
+                delivery_fee=float(delivery_fee_amount),
+                scheduled_at=delivery_request['scheduled_at'],
                 created_by=session.get('user_id'),
                 branch_id=sale.branch_id
             )
@@ -5727,6 +5788,7 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
                 subtotal=subtotal,
                 tax=tax_total,
                 total=total_rounded,
+                delivery_fee=delivery_fee_amount if delivery_fee_included else Decimal('0.00'),
                 receipt_identity=get_receipt_identity(receipt_branch)
             ),
             ensure_ascii=False,
@@ -6437,6 +6499,10 @@ def api_deliveries():
     if payment_error:
         return jsonify({'success': False, 'message': payment_error}), 400
 
+    new_delivery_fee, fee_error = parse_delivery_fee(data)
+    if fee_error:
+        return jsonify({'success': False, 'message': fee_error}), 400
+
     delivery = Delivery(
         delivery_number=generate_delivery_number(),
         sale_id=sale.id,
@@ -6452,7 +6518,7 @@ def api_deliveries():
         courier_name=(data.get('courier_name') or '').strip() or None,
         courier_phone=(data.get('courier_phone') or '').strip() or None,
         tracking_code=(data.get('tracking_code') or '').strip() or None,
-        delivery_fee=round_money(data.get('delivery_fee') or 0),
+        delivery_fee=float(new_delivery_fee),
         scheduled_at=parse_iso_datetime(data.get('scheduled_at')),
         created_by=session.get('user_id'),
         branch_id=branch_id
@@ -6493,6 +6559,11 @@ def api_single_delivery(delivery_id):
         )
         if payment_error:
             return jsonify({'success': False, 'message': payment_error}), 400
+        if delivery.fee_included_in_sale and payment_status != DELIVERY_PAYMENT_PAID:
+            return jsonify({
+                'success': False,
+                'message': 'This delivery fee was already charged with the sale, so the delivery cannot go back to cash on delivery.',
+            }), 400
         delivery.payment_status = payment_status
 
     editable_fields = [
@@ -6504,7 +6575,15 @@ def api_single_delivery(delivery_id):
             setattr(delivery, field, (data.get(field) or '').strip() or None)
 
     if 'delivery_fee' in data:
-        delivery.delivery_fee = round_money(data.get('delivery_fee') or 0)
+        new_fee, fee_error = parse_delivery_fee(data)
+        if fee_error:
+            return jsonify({'success': False, 'message': fee_error}), 400
+        if delivery.fee_included_in_sale and new_fee != round_money(delivery.delivery_fee):
+            return jsonify({
+                'success': False,
+                'message': 'This delivery fee was already charged with the sale and cannot be edited.',
+            }), 400
+        delivery.delivery_fee = new_fee
     if 'scheduled_at' in data:
         delivery.scheduled_at = parse_iso_datetime(data.get('scheduled_at'))
 
@@ -6589,6 +6668,7 @@ def print_delivery_slip(delivery_id):
         'items': packing_items,
         'order_total': delivery_money['order_total'],
         'delivery_fee': delivery_fee,
+        'fee_included_in_sale': delivery_money['fee_included_in_sale'],
         'collect_total': delivery_money['collect_total'],
     }, get_receipt_paper_size(branch))
     slip_view['logo_url'] = receipt_logo_url(slip_view.get('logo_filename'))
