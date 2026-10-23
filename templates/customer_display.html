@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>{{ pos_name }} — Customer Screen</title>
+  <!-- Customer-facing display. This page makes no server calls: every value is
+       pushed from the cashier tab in the same browser. It has no buttons, so a
+       curious customer cannot change anything. -->
+  <link rel="icon" href="/public/photos/logo.ico" />
+  <style>
+    :root {
+      --ink: #14202b;
+      --muted: #5c6b7a;
+      --line: #dde4ec;
+      --accent: #0f7b4f;
+      --accent-soft: #e8f5ee;
+      --warn: #b3261e;
+      --warn-soft: #fdecea;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: "Segoe UI", "Myanmar Text", system-ui, sans-serif;
+      background: #f4f7fb;
+      color: var(--ink);
+      /* Touch screens: nothing on this page is interactive. */
+      pointer-events: none;
+      user-select: none;
+    }
+    [hidden] { display: none !important; }
+
+    #cd-shell { display: flex; flex-direction: column; min-height: 100vh; }
+    .cd-head {
+      display: flex; align-items: center; gap: 14px;
+      padding: 16px 26px; background: #fff; border-bottom: 1px solid var(--line);
+    }
+    .cd-head img { height: 44px; width: auto; }
+    .cd-head h1 { font-size: 22px; margin: 0; letter-spacing: .2px; }
+    .cd-head .spacer { flex: 1; }
+    .cd-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #c6d0da; display: inline-block;
+    }
+    .cd-dot.is-live { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+
+    #cd-banner {
+      background: var(--warn-soft); color: var(--warn);
+      border-bottom: 1px solid #f3c9c4;
+      padding: 14px 26px; font-size: 18px; font-weight: 700;
+    }
+    .is-disconnected .cd-main { opacity: .55; filter: saturate(.35); }
+
+    .cd-main { flex: 1; display: grid; grid-template-columns: 1.35fr 1fr; gap: 22px; padding: 22px 26px; }
+    .cd-panel {
+      background: #fff; border: 1px solid var(--line); border-radius: 16px;
+      padding: 20px 22px; display: flex; flex-direction: column; min-height: 0;
+    }
+
+    #cd-idle {
+      grid-column: 1 / -1; align-items: center; justify-content: center;
+      text-align: center; gap: 10px;
+    }
+    #cd-idle .cd-logo { height: 96px; width: auto; }
+    #cd-idle h2 { font-size: 34px; margin: 6px 0 0; }
+    #cd-idle p { color: var(--muted); font-size: 18px; margin: 0; }
+
+    .cd-list-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+    .cd-list-head h2 { font-size: 17px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0; }
+    #cd-count { color: var(--muted); font-size: 14px; }
+    #cd-items { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+    .cd-item {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+      padding: 12px 0; border-bottom: 1px dashed var(--line); font-size: 20px;
+    }
+    .cd-item:last-child { border-bottom: 0; }
+    .cd-item-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .cd-item-name strong { font-weight: 650; overflow-wrap: anywhere; }
+    .cd-item-qty { color: var(--muted); font-size: 15px; }
+    .cd-item-total { font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 650; }
+
+    .cd-totals { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 8px; }
+    .cd-row { display: flex; justify-content: space-between; font-size: 17px; color: var(--muted); padding: 5px 0; }
+    .cd-row span:last-child { font-variant-numeric: tabular-nums; color: var(--ink); }
+    .cd-grand {
+      display: flex; justify-content: space-between; align-items: baseline;
+      margin-top: 10px; padding-top: 12px; border-top: 2px solid var(--ink);
+    }
+    .cd-grand span:first-child { font-size: 18px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+    #cd-total { font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    #cd-qr-panel { justify-content: center; align-items: center; text-align: center; gap: 10px; }
+    #cd-qr-panel h2 { font-size: 17px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0; }
+    #cd-qr-amount { font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .cd-qr-frame {
+      background: #fff; border: 1px solid var(--line); border-radius: 14px;
+      padding: 12px; line-height: 0;
+    }
+    #cd-qr-image { width: min(46vh, 320px); height: auto; display: block; }
+    #cd-qr-order { color: var(--muted); font-size: 14px; }
+    #cd-timer {
+      font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums;
+      background: var(--accent-soft); color: var(--accent);
+      border-radius: 999px; padding: 6px 16px;
+    }
+    #cd-timer.is-expired { background: var(--warn-soft); color: var(--warn); }
+    #cd-qr-expired { color: var(--warn); font-size: 20px; font-weight: 700; }
+    #cd-qr-note { color: var(--warn); font-size: 16px; font-weight: 600; margin: 0; }
+
+    #cd-paid { grid-column: 1 / -1; align-items: center; justify-content: center; text-align: center; gap: 8px; }
+    #cd-paid .cd-tick { font-size: 64px; line-height: 1; color: var(--accent); }
+    #cd-paid h2 { font-size: 40px; margin: 0; }
+    #cd-paid .cd-row { font-size: 22px; justify-content: center; gap: 18px; }
+    #cd-paid-total { font-size: 32px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    #cd-paid-change { font-size: 34px; font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; }
+    #cd-paid p { color: var(--muted); font-size: 18px; margin: 6px 0 0; }
+
+    @media (max-width: 900px) {
+      .cd-main { grid-template-columns: 1fr; }
+      #cd-total { font-size: 32px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="cd-shell">
+    <header class="cd-head">
+      <img src="/public/photos/logo.png" alt="" />
+      <h1 id="cd-shop-name">{{ pos_name }}</h1>
+      <span class="spacer"></span>
+      <span class="cd-dot" id="cd-connection" title="Cashier connection"></span>
+    </header>
+
+    <div id="cd-banner" role="alert" hidden>
+      Screen disconnected — the cashier screen is closed. Please ask the cashier.
+    </div>
+
+    <main class="cd-main">
+      <section class="cd-panel" id="cd-idle">
+        <img class="cd-logo" src="/public/photos/logo.png" alt="" />
+        <h2>Welcome</h2>
+        <p>Waiting for the cashier…</p>
+      </section>
+
+      <section class="cd-panel" id="cd-sale" hidden>
+        <div class="cd-list-head">
+          <h2>Your items</h2>
+          <span id="cd-count"></span>
+        </div>
+        <ul id="cd-items"></ul>
+        <div class="cd-totals">
+          <div class="cd-row"><span>Subtotal</span><span id="cd-subtotal"></span></div>
+          <div class="cd-row"><span>Tax</span><span id="cd-tax"></span></div>
+          <div class="cd-row" id="cd-delivery-row" hidden>
+            <span>Delivery fee</span><span id="cd-delivery"></span>
+          </div>
+          <div class="cd-grand"><span>Total</span><span id="cd-total"></span></div>
+        </div>
+      </section>
+
+      <section class="cd-panel" id="cd-qr-panel" hidden>
+        <h2>Scan to pay</h2>
+        <div class="cd-qr-amount" id="cd-qr-amount"></div>
+        <div class="cd-qr-frame"><img id="cd-qr-image" alt="Payment QR code" hidden /></div>
+        <div id="cd-qr-order"></div>
+        <div id="cd-timer" hidden></div>
+        <div id="cd-qr-expired" hidden>QR expired — please ask the cashier</div>
+        <p id="cd-qr-note"></p>
+      </section>
+
+      <section class="cd-panel" id="cd-paid" hidden>
+        <div class="cd-tick" aria-hidden="true">✓</div>
+        <h2>Thank you</h2>
+        <div class="cd-row"><span>Paid</span><span id="cd-paid-total"></span></div>
+        <div class="cd-row" id="cd-paid-change-row" hidden>
+          <span>Change</span><span id="cd-paid-change"></span>
+        </div>
+        <p>Please come again.</p>
+      </section>
+    </main>
+  </div>
+
+  <script src="/public/customer-display.js"></script>
+</body>
+</html>

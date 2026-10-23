@@ -424,6 +424,14 @@
         color: #198754;
       }
       .mmqr-timer.is-expired { color: #dc3545; }
+      /* Customer screen launcher + connection dot */
+      .customer-screen-btn { display: inline-flex; align-items: center; gap: 8px; }
+      .customer-screen-dot {
+        width: 9px; height: 9px; border-radius: 50%;
+        background: #adb5bd; display: inline-block; flex: 0 0 auto;
+      }
+      .customer-screen-dot.is-live { background: #198754; box-shadow: 0 0 0 3px rgba(25, 135, 84, .18); }
+      .customer-screen-dot.is-closed { background: #dc3545; }
       .mmqr-settings-logo {
         height: 64px;
         width: auto;
@@ -1552,7 +1560,7 @@
           </a>
         </li>
         <li class="nav-item mt-3">
-          <a class="nav-link text-danger" href="/logout">
+          <a class="nav-link text-danger" href="/logout" onclick="if (window.CustomerDisplay) CustomerDisplay.reset()">
             <i class="bi bi-box-arrow-right"></i>Logout
           </a>
         </li>
@@ -1668,6 +1676,13 @@
             </span>
           </div>
           <div class="d-flex gap-2">
+            <button class="btn btn-outline-secondary customer-screen-btn" type="button"
+                    id="customer-screen-btn"
+                    onclick="CustomerDisplay.open()"
+                    title="Open or focus the customer-facing screen">
+              <span class="customer-screen-dot is-closed" id="customer-screen-dot" aria-hidden="true"></span>
+              Customer Screen
+            </button>
             <div class="form-check form-switch auto-barcode-scanner-control mb-0 d-flex align-items-center gap-1" title="Auto Barcode Scanner Detection">
               <input class="form-check-input mt-0" type="checkbox" role="switch" id="auto-barcode-scanner-toggle" />
               <label class="form-check-label text-muted" for="auto-barcode-scanner-toggle"><i class="bi bi-upc-scan"></i> Scanner</label>
@@ -8075,6 +8090,9 @@
             // Do not repaint new-branch widgets while old forms/cart still exist.
             invalidateProductsCache();
             currentBranch = data.branch;
+            // A branch change must never leave the previous branch's cart on the
+            // customer screen.
+            if (typeof CustomerDisplay !== "undefined") CustomerDisplay.reset();
             offlineCacheSet(CURRENT_BRANCH_CACHE_KEY, data.branch);
             clearPendingMMQR();
             pendingReceiptLogoFile = null;
@@ -10488,6 +10506,9 @@
       }
 
       function showSaleSuccessModal(transactionId, deliveryNumber, isDebt, paymentNotice = "") {
+        // The customer screen shows the thank-you state for every sale path,
+        // including offline sales where no server call happens at all.
+        if (typeof CustomerDisplay !== "undefined") CustomerDisplay.paid();
         currentSaleTransactionId = transactionId;
         document.getElementById("saleTransactionId").textContent = transactionId;
         const notice = document.getElementById("salePaymentNotice");
@@ -11973,6 +11994,7 @@
           const emptyFeeRow = document.getElementById("pos-delivery-fee-row");
           if (emptyFeeRow) emptyFeeRow.style.display = "none";
           bootstrap.Modal.getInstance(document.getElementById("mmqrPaymentModal"))?.hide();
+          if (typeof CustomerDisplay !== "undefined") CustomerDisplay.publishCart();
           return;
         }
         let subtotalCents = 0;
@@ -12022,6 +12044,8 @@
         document.getElementById("tax").textContent = formatCurrency(taxCents / 100);
         document.getElementById("total").textContent = formatCurrency(totalCents / 100);
         updateCashRefundDisplay();
+        // Customer-facing screen: mirror the same totals the cashier can see.
+        if (typeof CustomerDisplay !== "undefined") CustomerDisplay.publishCart();
         // Cart redraws are not checkout actions. In particular, Mobile Payment
         // stays selected after a sale; adding the next product must not open an
         // empty MMQR dialog or freeze a payment for a partially built cart.
@@ -19018,6 +19042,7 @@
       }
     </script>
 
+    <script src="/public/customer-display-publisher.js"></script>
     <script src="/public/myanmyanpay.js"></script>
     <script src="/public/product-import.js"></script>
     <!-- AI Agent Widget -->

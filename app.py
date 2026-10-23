@@ -3400,6 +3400,18 @@ def logout():
     session.clear()
     return redirect(url_for('login'))
 
+# Customer-facing display. Deliberately public and data-free: the page only
+# renders what the cashier tab pushes over BroadcastChannel in the same browser,
+# so it needs no session and makes no API calls of its own.
+@app.route('/display')
+def customer_display():
+    response = make_response(render_template(
+        'customer_display.html',
+        pos_name='Parrot POS',
+    ))
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
 # Dashboard route
 @app.route('/')
 def dashboard():

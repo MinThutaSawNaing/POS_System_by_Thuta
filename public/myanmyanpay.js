@@ -343,6 +343,22 @@
   }
   const snapshot = () => JSON.stringify({cart, fields: ["payment-method", "pos-customer-select", "split-method-one", "split-method-two", "split-amount-one", "split-amount-two", "pos-enable-delivery", "pos-delivery-recipient-name", "pos-delivery-recipient-phone", "pos-delivery-address", "pos-delivery-priority", "pos-delivery-fee"].map(id => [id, el(id)?.value, el(id)?.checked])});
   let lastActionState = null;
+  // Optional customer-facing mirror. A display failure must never break checkout,
+  // so every call is guarded and swallowed.
+  function publishDisplay(state, qrSource) {
+    const publisher = root.CustomerDisplay;
+    if (!publisher || typeof publisher.publishPayment !== "function") return;
+    const payment = state.payment || null;
+    const source = qrSource || (payment
+      ? readCachedQr(payment.id) || BASE + "/intents/" + encodeURIComponent(payment.id) + "/qr"
+      : null);
+    try {
+      publisher.publishPayment({
+        mode: state.mode, payment, deadline: state.deadline || null,
+        text: state.text || "", view: state.view || "checkout", qrSrc: source,
+      });
+    } catch (error) { /* ignore: the customer screen is not part of payment */ }
+  }
   function renderActions({mode, payment, busy, sandbox = false, recovery = false, view = "checkout"}) {
     lastActionState = {mode, payment, busy, sandbox, recovery, view};
     const recover = recovery || mode === "provider" || mode === "legacy";
@@ -475,6 +491,9 @@
         : "No QR is active. Return to checkout to generate a payment, or find an unfinished payment.";
       missing.style.display = "block";
     }
+    // Publish the QR exactly as rendered (cached data URL first, then the
+    // server image) so the customer screen never re-derives an amount or timer.
+    publishDisplay(state, legacy ? (legacyQrSource?.src || null) : (showQr && !imageError ? source : null));
   }
   const checkout = createCheckout({
     fetch: (...args) => root.fetch(...args), online: () => navigator.onLine !== false,
@@ -534,6 +553,7 @@
       el("mmqr-amount-summary").classList.toggle("d-none", discovery);
       el("mmqr-attribution").classList.toggle("d-none", discovery);
       renderQrSurface({mode, payment, recovery, view, loading, visible, deadline, text, busy});
+      publishDisplay({mode, payment, deadline, view, text}, null);
     },
     list(payments, resume) {
       el("mmp-existing").replaceChildren();
