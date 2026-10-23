@@ -89,21 +89,43 @@
     }
     .cd-grand span:first-child { font-size: 18px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
     #cd-total { font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; }
-    #cd-qr-panel { justify-content: center; align-items: center; text-align: center; gap: 10px; }
-    #cd-qr-panel h2 { font-size: 17px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0; }
-    #cd-qr-amount { font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums; }
-    .cd-qr-frame {
-      background: #fff; border: 1px solid var(--line); border-radius: 14px;
-      padding: 12px; line-height: 0;
+    /* MMQR payment surface. Mirrors the cashier modal exactly: official logo,
+       white quiet zone around the untouched symbol, mandatory attribution and
+       the validity timer. Deliberately no controls of any kind. */
+    #cd-qr-panel { align-items: center; text-align: center; gap: 8px; }
+    .cd-qr-heading {
+      background: #198754; color: #fff; margin: 0;
+      width: 100%;
+      padding: 10px 18px; border-radius: 12px;
+      font-size: 19px; font-weight: 700; letter-spacing: .02em;
+      text-transform: none;
     }
-    #cd-qr-image { width: min(46vh, 320px); height: auto; display: block; }
-    #cd-qr-order { color: var(--muted); font-size: 14px; }
+    .cd-mmqr-logo {
+      display: block; height: 84px; width: auto;
+      margin: 4px auto 8px; object-fit: contain;
+    }
+    .cd-pay-amount { font-size: 24px; font-weight: 700; color: #198754; }
+    .cd-pay-amount strong { font-size: 30px; font-variant-numeric: tabular-nums; }
+    .cd-pay-currency { font-size: 14px; color: var(--muted); }
+    .cd-qr-surface {
+      background: #fff; padding: 16px; /* mandatory quiet zone */
+      width: fit-content; max-width: 100%; margin: 6px auto 0;
+    }
+    .cd-qr-image {
+      display: block; width: 260px; max-width: 60vw; height: auto;
+      border: 0; border-radius: 0; image-rendering: pixelated;
+    }
+    .cd-qr-attribution {
+      margin-top: 10px; font-size: .72rem; font-weight: 700;
+      letter-spacing: .14em; color: #1f3a93;
+    }
+    .cd-qr-timer { margin-top: 6px; font-size: 1.05rem; color: #495057; }
     #cd-timer {
-      font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums;
-      background: var(--accent-soft); color: var(--accent);
-      border-radius: 999px; padding: 6px 16px;
+      font-variant-numeric: tabular-nums; font-weight: 700;
+      color: #198754; font-size: 1.2rem;
     }
-    #cd-timer.is-expired { background: var(--warn-soft); color: var(--warn); }
+    #cd-timer-box.is-expired #cd-timer { color: var(--warn); }
+    #cd-qr-order { color: var(--muted); font-size: 14px; }
     #cd-qr-expired { color: var(--warn); font-size: 20px; font-weight: 700; }
     #cd-qr-note { color: var(--warn); font-size: 16px; font-weight: 600; margin: 0; }
 
@@ -158,23 +180,36 @@
       </section>
 
       <section class="cd-panel" id="cd-qr-panel" hidden>
-        <h2>Scan to pay</h2>
-        <div class="cd-qr-amount" id="cd-qr-amount"></div>
-        <div class="cd-qr-frame"><img id="cd-qr-image" alt="Payment QR code" hidden /></div>
+        <h2 class="cd-qr-heading">Scan MMQR to Pay</h2>
+        <!-- Official MMQR logo, displayed exactly as supplied: no crop,
+             recolor, distortion or overlay. -->
+        <img class="cd-mmqr-logo" src="/public/photos/mmqr-logo.png"
+             alt="MyanmarPay MMQR official logo" />
+        <div class="cd-pay-amount">Amount to pay: <strong id="cd-qr-amount"></strong></div>
+        <div class="cd-pay-currency">Prices are charged in <strong>MMK</strong> only.</div>
+        <!-- The QR is rendered unmodified by the server. The white surface is
+             the mandatory quiet zone, not a wrapper that alters the symbol. -->
+        <div class="cd-qr-surface">
+          <img id="cd-qr-image" class="cd-qr-image" alt="MMQR payment QR" hidden />
+        </div>
+        <div class="cd-qr-attribution">PAYMENT POWERED BY MYANMYANPAY</div>
+        <div class="cd-qr-timer" id="cd-timer-box">
+          QR valid for <span id="cd-timer">15:00</span>
+        </div>
         <div id="cd-qr-order"></div>
-        <div id="cd-timer" hidden></div>
         <div id="cd-qr-expired" hidden>QR expired — please ask the cashier</div>
         <p id="cd-qr-note"></p>
       </section>
 
       <section class="cd-panel" id="cd-paid" hidden>
         <div class="cd-tick" aria-hidden="true">✓</div>
-        <h2>Thank you</h2>
+        <h2>Payment Successful</h2>
         <div class="cd-row"><span>Paid</span><span id="cd-paid-total"></span></div>
         <div class="cd-row" id="cd-paid-change-row" hidden>
           <span>Change</span><span id="cd-paid-change"></span>
         </div>
-        <p>Please come again.</p>
+        <p id="cd-paid-note" class="cd-paid-note" hidden></p>
+        <p>Thank you — please come again.</p>
       </section>
     </main>
   </div>

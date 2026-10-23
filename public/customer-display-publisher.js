@@ -10,7 +10,7 @@
   const STORAGE_KEY = "pos_customer_display_message";
   const WINDOW_NAME = "pos-customer-display";
   const HEARTBEAT_MS = 3000;
-  const DISPLAY_STALE_MS = 10000;
+  const DISPLAY_STALE_MS = 8000;
   const PAID_HOLD_MS = 10000;
 
   const doc = root.document;
@@ -28,6 +28,9 @@
   let lastTotalCents = 0;
   let lastTotalText = "";
   let paidTimer = null;
+  let paidState = null;       // held thank-you screen
+  let paidUntil = 0;
+  let lastStatus = null;      // previous display connection state
 
   // ---------------------------------------------------------------- formatting
   function money(value) {
@@ -101,6 +104,8 @@
   }
 
   function publishCart() {
+    // The thank-you screen owns the display for a few seconds after a sale.
+    if (paidState && Date.now() < paidUntil) { publish(paidState); return; }
     // While a payment QR is live the screen keeps the frozen sale, because that
     // is exactly what the QR pays for. Live cart edits wait for this order.
     if (frozen) { publish(frozen); return; }
@@ -113,20 +118,34 @@
   function publishPayment(info) {
     const payment = info && info.payment;
     const legacy = !!info && info.mode === "legacy" && !!info.qrSrc;
+    // Reuse the amount already rendered on the payment surface so both screens
+    // can never disagree about the currency or the formatting.
+    const amountShown = text("pos-mmqr-total");
+    const amount = payment
+      ? (amountShown && amountShown !== "—" ? amountShown : money(payment.amount))
+      : (lastTotalText || text("total"));
+
+    // The customer has already paid: say so immediately, even before the sale
+    // is recorded. Keeping the QR up here is what people read as "failed".
+    if (payment && payment.status === "SUCCESS") {
+      const reconciling = String(info.text || "").toLowerCase().includes("reconciliation");
+      paidState = {
+        kind: "paid", total: amount, change: paidState ? paidState.change : "",
+        note: reconciling ? "Payment received — please speak to the cashier." : "",
+      };
+      paidUntil = Date.now() + PAID_HOLD_MS;
+      publish(paidState);
+      return;
+    }
+    // A new pending order means a new sale: release the previous thank-you.
+    if (payment) { paidState = null; paidUntil = 0; }
     if (!payment && !legacy) {
       frozen = null;
       publishCart();
       return;
     }
     const base = cartState();
-    // Reuse the amount already rendered on the payment surface so both screens
-    // can never disagree about the currency or the formatting.
-    const amountShown = text("pos-mmqr-total");
-    const amount = payment
-      ? (amountShown && amountShown !== "—" ? amountShown : money(payment.amount))
-      : (base.total || lastTotalText);
-    const reconciling = !!payment && payment.status === "SUCCESS"
-      && String(info.text || "").toLowerCase().includes("reconciliation");
+    if (base.kind === "cart" && base.total) lastTotalText = base.total;
     frozen = Object.assign({}, base, {
       kind: "qr",
       payment: {
@@ -134,7 +153,7 @@
         orderId: payment ? String(payment.order_id || payment.id || "") : "",
         qrSrc: info.qrSrc || null,
         deadlineAt: info.deadline || null,
-        note: reconciling ? "Payment received — please speak to the cashier." : "",
+        note: "",
       },
     });
     publish(frozen);
@@ -146,14 +165,23 @@
     const cashCents = raw ? Math.round(Number(raw) * 100) : 0;
     const change = cashCents > 0 && lastTotalCents > 0 && cashCents > lastTotalCents
       ? money((cashCents - lastTotalCents) / 100) : "";
+    const total = lastTotalText || text("total");
     frozen = null;
-    publish({ kind: "paid", total: lastTotalText, change });
+    paidState = { kind: "paid", total, change };
+    paidUntil = Date.now() + PAID_HOLD_MS;
+    publish(paidState);
     root.clearTimeout(paidTimer);
-    paidTimer = root.setTimeout(() => publish(cartState()), PAID_HOLD_MS);
+    paidTimer = root.setTimeout(() => {
+      paidState = null;
+      paidUntil = 0;
+      publish(cartState());
+    }, PAID_HOLD_MS);
   }
 
   function reset() {
     frozen = null;
+    paidState = null;
+    paidUntil = 0;
     root.clearTimeout(paidTimer);
     current = { kind: "idle" };
     revision += 1;
@@ -187,8 +215,18 @@
 
   function paintStatus() {
     const dot = doc.getElementById("customer-screen-dot");
-    if (!dot) return;
     const live = isConnected();
+    // Tell the cashier loudly when the customer screen is gone: a silently
+    // closed screen is the one thing cashiers never notice.
+    if (lastStatus === true && !live) {
+      try {
+        if (typeof showToast === "function") {
+          showToast("Customer screen closed. Click Customer Screen to reopen it.", "warning");
+        }
+      } catch (error) { /* toast is optional */ }
+    }
+    lastStatus = live;
+    if (!dot) return;
     dot.classList.toggle("is-live", live);
     dot.classList.toggle("is-closed", !live);
     dot.setAttribute("title", live
@@ -200,6 +238,12 @@
     if (!message || message.from !== "display") return;
     if (message.type === "display-alive") {
       lastDisplaySeen = Date.now();
+      paintStatus();
+      return;
+    }
+    // Closed on purpose (or navigated away): no need to wait for the timeout.
+    if (message.type === "display-closing") {
+      lastDisplaySeen = 0;
       paintStatus();
       return;
     }

@@ -23,6 +23,7 @@
   let lastSeen = 0;
   let revision = -1;
   let state = null;
+  let ticker = null;
 
   const now = () => Date.now();
   const idle = () => ({ kind: "idle" });
@@ -157,16 +158,18 @@
     !!payment && payment.deadlineAt ? now() >= Number(payment.deadlineAt) : false;
 
   function renderCountdown(payment, expired) {
-    const box = el("cd-timer");
+    const box = el("cd-timer-box");
+    const digits = el("cd-timer");
     if (!box) return;
     if (!payment || !payment.deadlineAt) { box.hidden = true; box.classList.remove("is-expired"); return; }
     box.hidden = false;
-    if (expired) { box.textContent = "QR expired"; box.classList.add("is-expired"); return; }
+    box.classList.toggle("is-expired", expired);
+    if (!digits) return;
+    if (expired) { digits.textContent = "00:00"; return; }
     const left = Math.max(0, Number(payment.deadlineAt) - now());
     const minutes = Math.floor(left / 60000);
     const seconds = Math.floor((left % 60000) / 1000);
-    box.textContent = `${minutes}:${String(seconds).padStart(2, "0")}`;
-    box.classList.remove("is-expired");
+    digits.textContent = `${minutes}:${String(seconds).padStart(2, "0")}`;
   }
 
   function renderPayment(next) {
@@ -210,6 +213,11 @@
       const changeRow = el("cd-paid-change-row");
       if (changeRow) changeRow.hidden = !next.change;
       if (next.change && el("cd-paid-change")) el("cd-paid-change").textContent = value(next.change);
+      const note = el("cd-paid-note");
+      if (note) {
+        note.textContent = next.note ? String(next.note) : "";
+        note.hidden = !next.note;
+      }
     }
 
     if (next.brand && el("cd-shop-name")) el("cd-shop-name").textContent = String(next.brand);
@@ -228,12 +236,23 @@
     transport = createTransport(handleMessage);
     askForState();
     let ticks = 0;
-    root.setInterval(() => {
+    ticker = root.setInterval(() => {
       checkLiveness();
       ticks += 1;
       if (ticks % ALIVE_EVERY === 0) send("display-alive");
     }, TICK_MS);
-    root.addEventListener("beforeunload", () => { if (transport) transport.close(); }, { once: true });
+    // Announce the close immediately so the cashier's dot turns red at once
+    // instead of waiting for the stale timeout. Timers are cleared too, so a
+    // closed screen leaves nothing running behind it.
+    const shutdown = () => {
+      send("display-closing");
+      if (ticker) root.clearInterval(ticker);
+      ticker = null;
+      if (transport) transport.close();
+      transport = null;
+    };
+    root.addEventListener("pagehide", shutdown, { once: true });
+    root.addEventListener("beforeunload", shutdown, { once: true });
     setState(idle());
     // A screen opened after the cashier already started must recover at once.
     root.setTimeout(askForState, 400);

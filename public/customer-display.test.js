@@ -48,13 +48,16 @@ function element(id) {
 }
 
 const nodes = {};
+const toasts = [];
+globalThis.showToast = (message, tone) => toasts.push({ message, tone });
 globalThis.document = {
   readyState: 'complete',
   getElementById: (id) => (nodes[id] = nodes[id] || element(id)),
   createElement: (tag) => element(tag),
   addEventListener: () => {},
 };
-globalThis.addEventListener = () => {};
+const listeners = {};
+globalThis.addEventListener = (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); };
 
 // Deterministic clock so the countdown and the stale-publisher rule are testable.
 let clock = 1000000;
@@ -157,7 +160,12 @@ try {
   report.resetIdleHidden = nodes['cd-idle'].hidden;
   report.resetSaleHidden = nodes['cd-sale'].hidden;
 
-  // 7. Paid state carries the change for cash sales.
+  // 7. The display reports it is open; the cashier dot turns green.
+  tick(); tick(); tick();  // display-alive is sent every third tick
+  report.dotLiveWhileOpen = nodes['customer-screen-dot'].classList.contains('is-live');
+  report.dotClosedWhileOpen = nodes['customer-screen-dot'].classList.contains('is-closed');
+
+  // 8. Paid state carries the change for cash sales.
   cart = [{ name: 'Coffee', price: 2, quantity: 1, tax_rate: 0 }];
   setTotals(2, 0, 2);
   CustomerDisplay.publishCart();
@@ -167,6 +175,29 @@ try {
   report.paidPanelHidden = nodes['cd-paid'].hidden;
   report.paidTotalShown = nodes['cd-paid-total'].textContent;
   report.paidChangeShown = nodes['cd-paid-change'].textContent;
+
+  // 9. The thank-you screen must survive both a cart redraw and the MMQR
+  // module re-rendering a SUCCESS payment. This is what hid it in the field.
+  CustomerDisplay.publishCart();
+  report.paidAfterCart = last().kind;
+  CustomerDisplay.publishPayment({
+    mode: 'provider', payment: { id: 'intent-1', status: 'SUCCESS', amount: 2 },
+    deadline: null, text: '', qrSrc: null,
+  });
+  report.paidAfterSuccess = last().kind;
+  report.thankYouShown = nodes['cd-paid'].hidden;
+
+  // 10. Closing the customer screen turns the dot red immediately and warns
+  // the cashier, without waiting for the 8-second stale timeout.
+  (listeners['pagehide'] || []).forEach((fn) => fn());
+  report.dotClosedAfterClose = nodes['customer-screen-dot'].classList.contains('is-closed');
+  report.dotLiveAfterClose = nodes['customer-screen-dot'].classList.contains('is-live');
+  report.closedToast = toasts.length ? toasts[toasts.length - 1].tone : null;
+
+  // 11. Nothing keeps running after the screen closes (no timer left behind).
+  const beforeClose = outbox.length;
+  tick();
+  report.noTrafficAfterClose = outbox.length === beforeClose;
 
   console.log(JSON.stringify(report));
 } catch (error) {

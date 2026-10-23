@@ -25,7 +25,25 @@ def test_display_page_is_public_and_calls_no_api():
     assert '/api/' not in body
     assert 'fetch(' not in body
     assert 'XMLHttpRequest' not in body
-    assert 'mmqr' not in body.lower()
+    # Read-only: the customer can tap the screen and nothing happens.
+    assert '<button' not in body
+    assert 'onclick' not in body
+
+
+def test_payment_surface_matches_the_cashier_mmqr_requirements():
+    """Same MMQR compliance surface as the cashier modal, minus the controls."""
+    body = (ROOT / 'templates' / 'customer_display.html').read_text(encoding='utf-8')
+    assert '/public/photos/mmqr-logo.png' in body
+    assert 'alt="MyanmarPay MMQR official logo"' in body
+    assert 'PAYMENT POWERED BY MYANMYANPAY' in body
+    assert 'Scan MMQR to Pay' in body
+    assert 'Amount to pay:' in body
+    assert 'Prices are charged in <strong>MMK</strong> only.' in body
+    assert 'QR valid for' in body
+    # The white quiet zone around the untouched symbol.
+    assert 'cd-qr-surface' in body
+    # Explicit success screen after a completed payment.
+    assert 'Payment Successful' in body
 
 
 @needs_node
@@ -85,6 +103,22 @@ def test_customer_display_contract():
     assert data['paidPanelHidden'] is False
     assert data['paidTotalShown'] == 'MMK 2.00'
     assert data['paidChangeShown'] == 'MMK 3.00'
+
+    # The success screen survives a cart redraw and the MMQR module reporting
+    # the payment as SUCCESS. Losing it was the reported bug.
+    assert data['paidAfterCart'] == 'paid'
+    assert data['paidAfterSuccess'] == 'paid'
+    assert data['thankYouShown'] is False
+
+    # The customer screen reports it is open, and closing it flips the cashier's
+    # dot immediately with a warning instead of waiting for the timeout.
+    assert data['dotLiveWhileOpen'] is True
+    assert data['dotClosedWhileOpen'] is False
+    assert data['dotClosedAfterClose'] is True
+    assert data['dotLiveAfterClose'] is False
+    assert data['closedToast'] == 'warning'
+    # No timers or traffic are left behind by a closed screen.
+    assert data['noTrafficAfterClose'] is True
 
 
 @needs_node
