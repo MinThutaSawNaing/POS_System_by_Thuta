@@ -1,4 +1,4 @@
-"""Regression tests for the scalable POS product catalog endpoint."""
+"""Regression tests for POS cursor and Products management pagination."""
 
 import unittest
 import uuid
@@ -72,6 +72,34 @@ class PosProductPaginationTests(unittest.TestCase):
         self.assertIsNone(second_data['next_cursor'])
         self.assertFalse({item['id'] for item in first_data['items']} &
                          {item['id'] for item in second_data['items']})
+
+    def test_management_catalog_serves_thirty_products_then_remainder(self):
+        products = [
+            Product(name=f'Management Widget {index}', price=10, stock=5,
+                    tax_rate=0, branch_id=self.branch.id)
+            for index in range(31)
+        ]
+        db.session.add_all(products)
+        db.session.commit()
+        self.product_ids = [product.id for product in products]
+        client = self._client()
+
+        first = client.get('/api/products?page=1&per_page=30&q=Management%20Widget')
+        self.assertEqual(first.status_code, 200)
+        first_data = first.get_json()
+        self.assertEqual(len(first_data['items']), 30)
+        self.assertEqual(first_data['per_page'], 30)
+        self.assertEqual(first_data['total'], 31)
+        self.assertEqual(first_data['total_pages'], 2)
+        self.assertEqual([item['id'] for item in first_data['items']],
+                         list(reversed(self.product_ids[1:])))
+
+        second = client.get('/api/products?page=2&per_page=30&q=Management%20Widget')
+        self.assertEqual(second.status_code, 200)
+        second_data = second.get_json()
+        self.assertEqual(second_data['page'], 2)
+        self.assertEqual([item['id'] for item in second_data['items']],
+                         self.product_ids[:1])
 
 
 if __name__ == '__main__':

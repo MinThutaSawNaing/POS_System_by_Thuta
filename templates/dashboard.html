@@ -751,6 +751,27 @@
         color: #495057;
       }
 
+      /* Keep Products search and pagination outside the scrolling row area. */
+      .products-table-scroll {
+        max-height: min(62vh, 620px);
+        overflow: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+      }
+
+      .products-table-scroll:focus-visible {
+        outline: 2px solid #86b7fe;
+        outline-offset: 2px;
+      }
+
+      .products-table-scroll thead th {
+        position: sticky;
+        top: 0;
+        z-index: 3;
+        background: #fff;
+        box-shadow: inset 0 -1px 0 #dee2e6;
+      }
+
       /* Barcode label picker: the product list owns its own scrollbar so the
          modal header, search controls, and footer stay pinned in view while
          the rows scroll. */
@@ -1872,8 +1893,14 @@
                 </button>
               </div>
             </div>
-            <div class="table-responsive">
-              <table class="table table-striped table-hover">
+            <div
+              class="table-responsive products-table-scroll"
+              id="products-table-scroll"
+              role="region"
+              aria-label="Product list"
+              tabindex="0"
+            >
+              <table class="table table-striped table-hover mb-0">
                 <thead>
                   <tr>
                     <th>Photo</th>
@@ -8262,7 +8289,7 @@
         returns: 1,
       };
       const pageSize = {
-        products: 10,
+        products: 30,
         sales: 10,
         users: 10,
         promotions: 10,
@@ -13746,6 +13773,8 @@
 
       function renderProductsResponse(payload) {
         const productsTable = document.getElementById("products-table");
+        const productsScroll = document.getElementById("products-table-scroll");
+        if (productsScroll) productsScroll.scrollTop = 0;
         const data = parsePagedResponse(payload);
         productsTable.innerHTML = "";
 
