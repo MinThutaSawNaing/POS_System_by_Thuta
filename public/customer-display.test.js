@@ -81,6 +81,8 @@ globalThis.clearInterval = () => {};
 globalThis.setTimeout = () => 0;
 globalThis.clearTimeout = () => {};
 globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+globalThis.screen = { availWidth: 1024 };
+globalThis.open = () => null;   // individual scenarios replace this
 
 // Dashboard globals the publisher reads.
 globalThis.formatCurrency = (value) => 'MMK ' + Number(value).toFixed(2);
@@ -164,6 +166,23 @@ try {
   tick(); tick(); tick();  // display-alive is sent every third tick
   report.dotLiveWhileOpen = nodes['customer-screen-dot'].classList.contains('is-live');
   report.dotClosedWhileOpen = nodes['customer-screen-dot'].classList.contains('is-closed');
+
+  // 7b. Closing the window is caught through the window handle itself, with no
+  // message and no timeout. This is the path that failed in the field.
+  const fakeWin = { closed: false, focus() {} };
+  globalThis.open = () => fakeWin;
+  CustomerDisplay.open({ width: 800, height: 600 });
+  fakeWin.closed = true;
+  intervals[0]();   // publisher watch tick
+  report.handleCloseRed = nodes['customer-screen-dot'].classList.contains('is-closed');
+  report.handleCloseLive = nodes['customer-screen-dot'].classList.contains('is-live');
+  report.handleCloseToast = toasts.length ? toasts[toasts.length - 1].tone : null;
+
+  // 7c. Reopening turns it green again as soon as the screen says hello.
+  globalThis.open = () => ({ closed: false, focus() {} });
+  CustomerDisplay.open();
+  tick(); tick(); tick();
+  report.reopenedGreen = nodes['customer-screen-dot'].classList.contains('is-live');
 
   // 8. Paid state carries the change for cash sales.
   cart = [{ name: 'Coffee', price: 2, quantity: 1, tax_rate: 0 }];

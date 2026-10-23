@@ -114,6 +114,11 @@ def test_customer_display_contract():
     # dot immediately with a warning instead of waiting for the timeout.
     assert data['dotLiveWhileOpen'] is True
     assert data['dotClosedWhileOpen'] is False
+    # Closing the window is detected through the window handle itself.
+    assert data['handleCloseRed'] is True
+    assert data['handleCloseLive'] is False
+    assert data['handleCloseToast'] == 'warning'
+    assert data['reopenedGreen'] is True
     assert data['dotClosedAfterClose'] is True
     assert data['dotLiveAfterClose'] is False
     assert data['closedToast'] == 'warning'

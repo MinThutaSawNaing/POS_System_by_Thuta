@@ -227,7 +227,9 @@
   // ----------------------------------------------------------------- liveness
   function checkLiveness() {
     const connected = publisherId !== null && now() - lastSeen < STALE_MS;
-    showBanner(!connected && state !== null);
+    // Warn only when something is actually on screen: an idle welcome screen has
+    // nothing to hold, and a warning there would just be noise.
+    showBanner(!connected && !!state && state.kind !== "idle");
     // Keep the QR timer honest without waiting for the next cashier message.
     if (state && state.kind === "qr") renderPayment(state);
   }

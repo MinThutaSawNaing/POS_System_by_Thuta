@@ -9,7 +9,7 @@
   const CHANNEL = "pos-customer-display";
   const STORAGE_KEY = "pos_customer_display_message";
   const WINDOW_NAME = "pos-customer-display";
-  const HEARTBEAT_MS = 3000;
+  const WATCH_MS = 1000;          // how often we check the display window
   const DISPLAY_STALE_MS = 8000;
   const PAID_HOLD_MS = 10000;
 
@@ -31,6 +31,7 @@
   let paidState = null;       // held thank-you screen
   let paidUntil = 0;
   let lastStatus = null;      // previous display connection state
+  let displayWindow = null;   // handle from window.open, when we opened it
 
   // ---------------------------------------------------------------- formatting
   function money(value) {
@@ -213,6 +214,24 @@
     return lastDisplaySeen > 0 && Date.now() - lastDisplaySeen < DISPLAY_STALE_MS;
   }
 
+  // The window handle is the only *exact* signal: it flips the moment the popup
+  // is closed, with no message and no timeout involved. If the cashier opened the
+  // screen some other way (launcher, manual URL) there is no handle and the
+  // heartbeat timeout below is the fallback.
+  function displayGone() {
+    if (!displayWindow) return false;
+    let closed = false;
+    try { closed = displayWindow.closed === true; } catch (error) { closed = false; }
+    if (!closed) return false;
+    displayWindow = null;
+    return true;
+  }
+
+  function refreshStatus() {
+    if (displayGone()) lastDisplaySeen = 0;
+    paintStatus();
+  }
+
   function paintStatus() {
     const dot = doc.getElementById("customer-screen-dot");
     const live = isConnected();
@@ -236,18 +255,18 @@
 
   function handle(message) {
     if (!message || message.from !== "display") return;
-    if (message.type === "display-alive") {
+    if (message.type === "display-alive" || message.type === "hello") {
       lastDisplaySeen = Date.now();
       paintStatus();
+      if (message.type === "hello") post("snapshot", { state: current });
       return;
     }
     // Closed on purpose (or navigated away): no need to wait for the timeout.
     if (message.type === "display-closing") {
       lastDisplaySeen = 0;
+      displayWindow = null;
       paintStatus();
-      return;
     }
-    if (message.type === "hello") post("snapshot", { state: current });
   }
 
   // ----------------------------------------------------------------------- open
@@ -260,7 +279,11 @@
     const top = Number.isFinite(opts.top) ? opts.top : 0;
     const win = root.open("/display", WINDOW_NAME,
       `popup=yes,width=${width},height=${height},left=${left},top=${top}`);
-    if (win) { try { win.focus(); } catch (error) { /* ignore */ } }
+    if (win) {
+      // Keep the handle: `win.closed` is the exact, instant close signal.
+      displayWindow = win;
+      try { win.focus(); } catch (error) { /* ignore */ }
+    }
     return win;
   }
 
@@ -268,10 +291,19 @@
     if (transport) return;
     transport = createTransport(handle);
     paintStatus();
+    let ticks = 0;
     root.setInterval(() => {
-      post("heartbeat");
-      paintStatus();
-    }, HEARTBEAT_MS);
+      ticks += 1;
+      if (ticks % 3 === 0) post("heartbeat");
+      refreshStatus();
+    }, WATCH_MS);
+    // Browsers throttle timers in an unfocused window, so re-check the moment
+    // the cashier touches this window again. That is exactly when they look at
+    // the indicator, so a closed screen turns red immediately.
+    ["visibilitychange", "focus", "pointerdown", "keydown"].forEach((type) => {
+      try { doc.addEventListener(type, refreshStatus, { passive: true }); } catch (error) { /* ignore */ }
+    });
+    try { root.addEventListener("focus", refreshStatus); } catch (error) { /* ignore */ }
   }
 
   root.CustomerDisplay = {
