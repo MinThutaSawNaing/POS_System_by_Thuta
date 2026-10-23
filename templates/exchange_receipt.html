@@ -38,14 +38,18 @@
       .rule { border: 0; border-top: 1px dashed #111; margin: 6px 0; }
       .rule.strong { border-top-style: solid; border-top-width: 2px; }
       .doc-title { font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if exchange.is_narrow %}14px{% else %}16px{% endif %}; font-weight: 900; letter-spacing: 1.5px; margin: 2px 0; }
-      .meta-row, .total-row { display: flex; justify-content: space-between; gap: 8px; }
-      .meta-row span:first-child, .total-row span:first-child { flex: 0 0 auto; }
-      .meta-row span:last-child, .total-row span:last-child { text-align: right; overflow-wrap: anywhere; }
+      /* Money rows wrap instead of overlapping when an amount is wider than the
+         printable width (e.g. 1,600,000.00 MMK on 55/58 mm paper). */
+      .meta-row, .total-row { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 2px 8px; }
+      .meta-row > *, .total-row > * { min-width: 0; }
+      .meta-row span:first-child, .total-row span:first-child { flex: 0 1 auto; }
+      .meta-row span:last-child, .total-row span:last-child { flex: 0 1 auto; margin-left: auto; text-align: right; overflow-wrap: anywhere; word-break: break-word; font-variant-numeric: tabular-nums; }
       .block-label { font-weight: 800; letter-spacing: .8px; margin: 2px 0; }
       .item { break-inside: avoid; page-break-inside: avoid; margin: 0 0 7px; }
       .item-name { font-weight: 800; overflow-wrap: anywhere; }
-      .item-detail { display: flex; justify-content: space-between; gap: 6px; padding-left: {% if exchange.is_narrow %}4px{% else %}10px{% endif %}; }
-      .item-detail span:last-child { text-align: right; white-space: nowrap; }
+      .item-detail { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 6px; padding-left: {% if exchange.is_narrow %}4px{% else %}10px{% endif %}; }
+      .item-detail > span { min-width: 0; }
+      .item-detail span:last-child { flex: 0 1 auto; margin-left: auto; text-align: right; overflow-wrap: anywhere; word-break: break-word; font-variant-numeric: tabular-nums; }
       .total-row { padding: 1px 0; }
       .total-row.grand { padding: 4px 0; font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if exchange.is_narrow %}15px{% else %}17px{% endif %}; font-weight: 900; }
       .footer { margin-top: 8px; text-align: center; font-size: .92em; }

@@ -35,6 +35,33 @@ PAPER_PROFILES = {
     },
 }
 
+# Delivery payment states: the driver either collects the money at the door or
+# the customer already settled the bill at the counter.
+DELIVERY_PAYMENT_COD = "cash_on_delivery"
+DELIVERY_PAYMENT_PAID = "paid"
+DELIVERY_PAYMENT_STATUSES = {DELIVERY_PAYMENT_COD, DELIVERY_PAYMENT_PAID}
+DELIVERY_PAYMENT_LABELS = {
+    DELIVERY_PAYMENT_COD: "Cash on Delivery",
+    DELIVERY_PAYMENT_PAID: "Already Paid",
+}
+DEFAULT_DELIVERY_PAYMENT_STATUS = DELIVERY_PAYMENT_COD
+
+
+def normalize_delivery_payment_status(
+    value: Any,
+    default: str | None = DEFAULT_DELIVERY_PAYMENT_STATUS,
+) -> str | None:
+    """Normalize a delivery payment state, falling back to ``default``.
+
+    Callers that must reject unknown input pass ``default=None`` and check for
+    ``None``; the print views use the cash-on-delivery default so legacy rows
+    keep printing a collect total.
+    """
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in DELIVERY_PAYMENT_STATUSES:
+        return normalized
+    return default
+
 
 def normalize_receipt_paper_size(value: Any) -> str:
     normalized = str(value or "").strip().upper()
@@ -222,7 +249,16 @@ def build_delivery_slip_view(slip: Mapping[str, Any], paper_size: Any) -> dict[s
 
     order_total = _money(slip.get("order_total"))
     delivery_fee = _money(slip.get("delivery_fee"))
-    collect_total = _money(slip.get("collect_total"))
+    bill_total = _money(order_total + delivery_fee)
+    payment_status = normalize_delivery_payment_status(slip.get("payment_status")) or DEFAULT_DELIVERY_PAYMENT_STATUS
+    is_prepaid = payment_status == DELIVERY_PAYMENT_PAID
+    if slip.get("collect_total") is not None:
+        collect_total = _money(slip.get("collect_total"))
+    else:
+        # Cash on delivery collects the whole bill; a prepaid bill leaves the
+        # driver with nothing to collect at the door.
+        collect_total = Decimal("0.00") if is_prepaid else bill_total
+    paid_amount = bill_total if is_prepaid else Decimal("0.00")
 
     created_at = str(slip.get("created_at") or "")
     try:
@@ -248,6 +284,11 @@ def build_delivery_slip_view(slip: Mapping[str, Any], paper_size: Any) -> dict[s
         "created_at": created_at,
         "sale_transaction_id": str(slip.get("sale_transaction_id") or ""),
         "payment_method": str(slip.get("payment_method") or "").replace("_", " ").title(),
+        "payment_status": payment_status,
+        "payment_status_label": DELIVERY_PAYMENT_LABELS[payment_status],
+        "is_cod": payment_status == DELIVERY_PAYMENT_COD,
+        "is_prepaid": is_prepaid,
+        "collect_note": "No cash collection - already paid" if is_prepaid else "Collect cash on delivery",
         "recipient_name": str(slip.get("recipient_name") or ""),
         "recipient_phone": str(slip.get("recipient_phone") or ""),
         "delivery_address_lines": delivery_address.splitlines() if delivery_address else [],
@@ -257,8 +298,15 @@ def build_delivery_slip_view(slip: Mapping[str, Any], paper_size: Any) -> dict[s
         "courier_phone": str(slip.get("courier_phone") or ""),
         "tracking_code": str(slip.get("tracking_code") or ""),
         "items": items,
+        "order_total": order_total,
         "order_total_display": format_receipt_money(order_total, suffix),
+        "delivery_fee": delivery_fee,
         "delivery_fee_display": format_receipt_money(delivery_fee, suffix),
+        "bill_total": bill_total,
+        "bill_total_display": format_receipt_money(bill_total, suffix),
+        "paid_amount": paid_amount,
+        "paid_amount_display": format_receipt_money(paid_amount, suffix),
+        "collect_total": collect_total,
         "collect_total_display": format_receipt_money(collect_total, suffix),
     }
 

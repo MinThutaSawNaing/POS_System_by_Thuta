@@ -29,15 +29,19 @@ from reportlab.lib import colors
 import pandas as pd
 from reportlab.graphics.barcode import createBarcodeDrawing
 from receipt import (
+    DEFAULT_DELIVERY_PAYMENT_STATUS,
     DEFAULT_RECEIPT_BRAND_NAME,
     DEFAULT_RECEIPT_FOOTER,
     DEFAULT_RECEIPT_PAPER_SIZE,
+    DELIVERY_PAYMENT_LABELS,
+    DELIVERY_PAYMENT_PAID,
     RECEIPT_PAPER_OPTIONS,
     build_delivery_slip_view,
     build_receipt_snapshot,
     build_receipt_view,
     build_return_exchange_view,
     detect_receipt_logo_extension,
+    normalize_delivery_payment_status,
     normalize_receipt_identity,
     normalize_receipt_paper_size,
 )
@@ -162,6 +166,31 @@ DELIVERY_STAGE_LABELS = {
     'cancelled': 'Cancelled'
 }
 DELIVERY_PRIORITIES = {'low', 'normal', 'high', 'urgent'}
+
+def parse_delivery_payment_status(data, default=DEFAULT_DELIVERY_PAYMENT_STATUS):
+    """Return ``(status, error)``; only the two driver-facing states are valid."""
+    raw = data.get('payment_status')
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default, None
+    value = normalize_delivery_payment_status(raw, default=None)
+    if value is None:
+        return None, "Payment status must be 'cash_on_delivery' or 'paid'"
+    return value, None
+
+def delivery_amounts(delivery):
+    """Order total, collected-at-door total and prepaid total for one delivery."""
+    sale_total = safe_to_decimal(delivery.sale.total) if delivery.sale else safe_to_decimal(0)
+    fee = safe_to_decimal(delivery.delivery_fee)
+    status = normalize_delivery_payment_status(getattr(delivery, 'payment_status', None))
+    bill_total = sale_total + fee
+    collect_total = safe_to_decimal(0) if status == DELIVERY_PAYMENT_PAID else bill_total
+    return {
+        'order_total': sale_total,
+        'bill_total': bill_total,
+        'collect_total': collect_total,
+        'paid_total': bill_total if status == DELIVERY_PAYMENT_PAID else safe_to_decimal(0),
+    }
+
 
 def to_decimal(value):
     return Decimal(str(value))
@@ -1987,6 +2016,10 @@ class Delivery(db.Model):
     customer_id = db.Column(db.Integer, db.ForeignKey('customer.id'))
     stage = db.Column(db.String(20), default='to_deliver', nullable=False)
     priority = db.Column(db.String(20), default='normal', nullable=False)
+    # Driver-facing money state: 'cash_on_delivery' collects at the door,
+    # 'paid' means the bill was already settled at the counter.
+    payment_status = db.Column(db.String(20), default=DEFAULT_DELIVERY_PAYMENT_STATUS,
+                               server_default=DEFAULT_DELIVERY_PAYMENT_STATUS, nullable=False)
     recipient_name = db.Column(db.String(120))
     recipient_phone = db.Column(db.String(30))
     delivery_address = db.Column(db.String(300))
@@ -2458,6 +2491,8 @@ def _discard_rolled_back_audit_changes(db_session):
     db_session.info.pop('_audit_collecting', None)
 
 def serialize_delivery(delivery):
+    payment_status = normalize_delivery_payment_status(getattr(delivery, 'payment_status', None))
+    amounts = delivery_amounts(delivery)
     return {
         'id': delivery.id,
         'delivery_number': delivery.delivery_number,
@@ -2469,6 +2504,13 @@ def serialize_delivery(delivery):
         'stage': delivery.stage,
         'stage_label': DELIVERY_STAGE_LABELS.get(delivery.stage, delivery.stage),
         'priority': delivery.priority,
+        'payment_status': payment_status,
+        'payment_status_label': DELIVERY_PAYMENT_LABELS[payment_status],
+        'is_prepaid': payment_status == DELIVERY_PAYMENT_PAID,
+        'order_total': float(amounts['order_total']),
+        'bill_total': float(amounts['bill_total']),
+        'collect_total': float(amounts['collect_total']),
+        'paid_total': float(amounts['paid_total']),
         'recipient_name': delivery.recipient_name,
         'recipient_phone': delivery.recipient_phone,
         'delivery_address': delivery.delivery_address,
@@ -2904,6 +2946,7 @@ with app.app_context():
         delivery_columns = [col['name'] for col in inspector.get_columns('delivery')]
         delivery_migrations = [
             ('priority', "ALTER TABLE delivery ADD COLUMN priority VARCHAR(20) DEFAULT 'normal'"),
+            ('payment_status', "ALTER TABLE delivery ADD COLUMN payment_status VARCHAR(20) DEFAULT 'cash_on_delivery'"),
             ('township', 'ALTER TABLE delivery ADD COLUMN township VARCHAR(120)'),
             ('instructions', 'ALTER TABLE delivery ADD COLUMN instructions VARCHAR(400)'),
             ('delivery_fee', 'ALTER TABLE delivery ADD COLUMN delivery_fee FLOAT DEFAULT 0'),
@@ -2920,6 +2963,11 @@ with app.app_context():
                 db.session.execute(text(migration_sql))
                 if column_name == 'updated_at':
                     db.session.execute(text('UPDATE delivery SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL'))
+                if column_name == 'payment_status':
+                    db.session.execute(text(
+                        "UPDATE delivery SET payment_status = 'cash_on_delivery' "
+                        "WHERE payment_status IS NULL OR TRIM(payment_status) = ''"
+                    ))
                 db.session.commit()
 
     # Debt table migrations for enhanced debt management
@@ -5622,6 +5670,9 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             delivery_address = (delivery_payload.get('delivery_address') or '').strip()
             if not recipient_name or not recipient_phone or not delivery_address:
                 return jsonify({'success': False, 'message': 'Recipient name, phone and address are required for delivery'}), 400
+            delivery_payment_status, payment_error = parse_delivery_payment_status(delivery_payload)
+            if payment_error:
+                return jsonify({'success': False, 'message': payment_error}), 400
 
             delivery = Delivery(
                 delivery_number=generate_delivery_number(),
@@ -5629,6 +5680,7 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
                 customer_id=data.get('customer_id'),
                 stage='to_deliver',
                 priority=normalize_delivery_priority(delivery_payload.get('priority')),
+                payment_status=delivery_payment_status,
                 recipient_name=recipient_name,
                 recipient_phone=recipient_phone,
                 delivery_address=delivery_address,
@@ -6334,12 +6386,15 @@ def api_deliveries():
         query = operational_delivery_query()
         stage = normalize_delivery_stage(request.args.get('stage'))
         priority = normalize_delivery_priority(request.args.get('priority') or 'normal') if request.args.get('priority') else None
+        payment_status = normalize_delivery_payment_status(request.args.get('payment_status'), default=None)
         q = (request.args.get('q') or '').strip().lower()
 
         if stage:
             query = query.filter(Delivery.stage == stage)
         if priority:
             query = query.filter(Delivery.priority == priority)
+        if payment_status:
+            query = query.filter(Delivery.payment_status == payment_status)
 
         deliveries = query.order_by(Delivery.created_at.desc()).all()
         if q:
@@ -6378,12 +6433,17 @@ def api_deliveries():
     if not recipient_name or not recipient_phone or not delivery_address:
         return jsonify({'success': False, 'message': 'Recipient name, phone and address are required'}), 400
 
+    payment_status, payment_error = parse_delivery_payment_status(data)
+    if payment_error:
+        return jsonify({'success': False, 'message': payment_error}), 400
+
     delivery = Delivery(
         delivery_number=generate_delivery_number(),
         sale_id=sale.id,
         customer_id=customer_id or None,
         stage='to_deliver',
         priority=normalize_delivery_priority(data.get('priority')),
+        payment_status=payment_status,
         recipient_name=recipient_name,
         recipient_phone=recipient_phone,
         delivery_address=delivery_address,
@@ -6426,6 +6486,14 @@ def api_single_delivery(delivery_id):
 
     if 'priority' in data:
         delivery.priority = normalize_delivery_priority(data.get('priority'))
+
+    if 'payment_status' in data:
+        payment_status, payment_error = parse_delivery_payment_status(
+            data, default=delivery.payment_status or DEFAULT_DELIVERY_PAYMENT_STATUS
+        )
+        if payment_error:
+            return jsonify({'success': False, 'message': payment_error}), 400
+        delivery.payment_status = payment_status
 
     editable_fields = [
         'recipient_name', 'recipient_phone', 'delivery_address', 'township', 'instructions',
@@ -6473,13 +6541,11 @@ def print_delivery_slip(delivery_id):
 
     sale = delivery.sale
     packing_items = []
-    order_total = Decimal('0.00')
     sale_transaction_id = ''
     payment_method = ''
     if sale:
         sale_transaction_id = sale.transaction_id or ''
         payment_method = sale.payment_method or ''
-        order_total = safe_to_decimal(sale.total)
         for sale_item in SaleItem.query.filter_by(sale_id=sale.id).all():
             # Skip malformed rows so bad legacy data can never break the slip.
             quantity = int(sale_item.quantity or 0)
@@ -6492,6 +6558,7 @@ def print_delivery_slip(delivery_id):
             })
 
     delivery_fee = safe_to_decimal(delivery.delivery_fee)
+    delivery_money = delivery_amounts(delivery)
     branch = db.session.get(Branch, delivery.branch_id) if delivery.branch_id else None
 
     slip_view = build_delivery_slip_view({
@@ -6510,6 +6577,7 @@ def print_delivery_slip(delivery_id):
         'created_at': delivery.created_at.isoformat() if delivery.created_at else '',
         'sale_transaction_id': sale_transaction_id,
         'payment_method': payment_method,
+        'payment_status': delivery.payment_status,
         'recipient_name': delivery.recipient_name,
         'recipient_phone': delivery.recipient_phone,
         'delivery_address': delivery.delivery_address,
@@ -6519,9 +6587,9 @@ def print_delivery_slip(delivery_id):
         'courier_phone': delivery.courier_phone,
         'tracking_code': delivery.tracking_code,
         'items': packing_items,
-        'order_total': order_total,
+        'order_total': delivery_money['order_total'],
         'delivery_fee': delivery_fee,
-        'collect_total': order_total + delivery_fee,
+        'collect_total': delivery_money['collect_total'],
     }, get_receipt_paper_size(branch))
     slip_view['logo_url'] = receipt_logo_url(slip_view.get('logo_filename'))
 

@@ -1275,6 +1275,7 @@ DELIVERY_REGISTER_COLUMNS = (
     column("township", "Township", width=13),
     column("stage_label", "Stage", width=11, align="center"),
     column("priority", "Priority", width=9, align="center"),
+    column("payment_status_label", "Payment", width=14, align="center"),
     column("courier_name", "Courier", width=13),
     column("created_at", "Created", width=12, align="center", kind="date"),
     column("delivered_at", "Delivered", width=12, align="center", kind="date"),
@@ -1282,6 +1283,7 @@ DELIVERY_REGISTER_COLUMNS = (
     column("age_hours_display", "Open age (h)", width=9, align="right"),
     column("timing_flag", "Timing", width=10, align="center"),
     column("delivery_fee", "Fee", width=11, align="right", kind="money"),
+    column("collect_total", "To collect", width=12, align="right", kind="money"),
 )
 
 
@@ -1359,6 +1361,10 @@ def build_delivery_performance_rows(
             "stage": stage,
             "stage_label": str(record.get("stage_label") or stage.replace("_", " ").title()),
             "priority": str(record.get("priority") or "normal").capitalize(),
+            "payment_status": record.get("payment_status") or "cash_on_delivery",
+            "payment_status_label": record.get("payment_status_label") or "Cash on Delivery",
+            "is_prepaid": bool(record.get("is_prepaid")),
+            "collect_total": round_money_value(record.get("collect_total")),
             "courier_name": str(record.get("courier_name") or "").strip() or UNASSIGNED_COURIER,
             "tracking_code": record.get("tracking_code"),
             "delivery_fee": record.get("delivery_fee"),
@@ -1481,15 +1487,27 @@ def build_delivery_performance_report(
 
     register: list[dict[str, Any]] = []
     total_fees = 0.0
+    total_collect = 0.0
+    cash_on_delivery_count = 0
+    prepaid_count = 0
     for row in rows:
         fee = round_money_value(row.get("delivery_fee"))
         total_fees = round_money_value(total_fees + fee)
+        collect_total = round_money_value(row.get("collect_total"))
+        # Cancelled deliveries never reach the customer, so they collect nothing.
+        if row.get("stage") != "cancelled":
+            total_collect = round_money_value(total_collect + collect_total)
+        if row.get("is_prepaid"):
+            prepaid_count += 1
+        else:
+            cash_on_delivery_count += 1
         register.append({
             "delivery_number": row.get("delivery_number"),
             "recipient_name": row.get("recipient_name"),
             "township": row.get("township"),
             "stage_label": row.get("stage_label"),
             "priority": row.get("priority"),
+            "payment_status_label": row.get("payment_status_label") or "Cash on Delivery",
             "courier_name": row.get("courier_name"),
             "created_at": row.get("created_at"),
             "delivered_at": row.get("delivered_at"),
@@ -1497,6 +1515,7 @@ def build_delivery_performance_report(
             "age_hours_display": row.get("age_hours_display") or EMPTY_CELL,
             "timing_flag": row.get("timing_flag"),
             "delivery_fee": fee,
+            "collect_total": collect_total,
         })
 
     def rate_label(value: Any) -> str:
@@ -1520,6 +1539,12 @@ def build_delivery_performance_report(
             "label": "Delivery fees",
             "value": format_report_cell(total_fees, "money", currency_suffix),
         },
+        {"label": "Cash on delivery", "value": f"{cash_on_delivery_count:,}"},
+        {"label": "Already paid", "value": f"{prepaid_count:,}"},
+        {
+            "label": "Cash to collect",
+            "value": format_report_cell(total_collect, "money", currency_suffix),
+        },
     ]
     return _common_report_fields(
         title="Delivery Performance Report",
@@ -1528,7 +1553,7 @@ def build_delivery_performance_report(
         file_stem="delivery_performance",
         columns=DELIVERY_REGISTER_COLUMNS,
         rows=register,
-        totals={"delivery_fee": total_fees},
+        totals={"delivery_fee": total_fees, "collect_total": total_collect},
         summary=summary,
         meta=_report_meta(branch_name, generated_by, filters_text, generated_at),
         notes=[
@@ -1536,6 +1561,7 @@ def build_delivery_performance_report(
             f"On-time deliveries reach the customer within {DELIVERY_ON_TIME_HOURS:g} hours of creation.",
             "Hours to deliver is measured from delivery creation to the delivered stamp.",
             "Open age counts hours since creation for deliveries that are not yet final.",
+            "Cash to collect counts cash-on-delivery bills; already-paid bills collect nothing.",
         ],
         brand=brand,
         currency_suffix=currency_suffix,

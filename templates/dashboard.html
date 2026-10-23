@@ -1782,6 +1782,10 @@
                         <input type="number" min="0" step="0.01" class="form-control form-control-sm" id="pos-delivery-fee" placeholder="Fee" />
                       </div>
                     </div>
+                    <select class="form-select form-select-sm mt-1" id="pos-delivery-payment-status">
+                      <option value="cash_on_delivery">Cash on Delivery</option>
+                      <option value="paid">Already Paid</option>
+                    </select>
                   </div>
                 </div>
                 <div class="mb-2 border rounded p-2 small" id="split-payment-fields" style="display: none">
@@ -3095,8 +3099,8 @@
         </div>
 
         <div class="row g-2 mb-3 filter-row">
-          <div class="col-12 col-sm-4"><input type="text" id="deliveries-search" class="form-control" placeholder="Search delivery #, recipient..." /></div>
-          <div class="col-6 col-sm-3">
+          <div class="col-12 col-sm-3"><input type="text" id="deliveries-search" class="form-control" placeholder="Search delivery #, recipient..." /></div>
+          <div class="col-6 col-sm-2">
             <select id="deliveries-stage-filter" class="form-select">
               <option value="">All Stages</option>
               <option value="to_deliver">To Deliver</option>
@@ -3106,7 +3110,7 @@
               <option value="cancelled">Cancelled</option>
             </select>
           </div>
-          <div class="col-6 col-sm-3">
+          <div class="col-6 col-sm-2">
             <select id="deliveries-priority-filter" class="form-select">
               <option value="">All Priorities</option>
               <option value="low">Low</option>
@@ -3115,7 +3119,14 @@
               <option value="urgent">Urgent</option>
             </select>
           </div>
-          <div class="col-12 col-sm-2"><button class="btn btn-outline-secondary w-100" onclick="loadDeliveries()"><i class="bi bi-search"></i> <span class="d-none d-sm-inline">Apply</span></button></div>
+          <div class="col-6 col-sm-3">
+            <select id="deliveries-payment-filter" class="form-select">
+              <option value="">All Payments</option>
+              <option value="cash_on_delivery">Cash on Delivery</option>
+              <option value="paid">Already Paid</option>
+            </select>
+          </div>
+          <div class="col-6 col-sm-2"><button class="btn btn-outline-secondary w-100" onclick="loadDeliveries()"><i class="bi bi-search"></i> <span class="d-none d-sm-inline">Apply</span></button></div>
         </div>
 
         <div class="card">
@@ -3129,12 +3140,14 @@
                     <th>Recipient</th>
                     <th>Stage</th>
                     <th class="d-none d-sm-table-cell">Priority</th>
+                    <th>Payment</th>
                     <th class="d-none d-lg-table-cell">Fee</th>
+                    <th class="d-none d-lg-table-cell">Collect</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody id="deliveries-table">
-                  <tr><td colspan="7" class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></td></tr>
+                  <tr><td colspan="8" class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></td></tr>
                 </tbody>
               </table>
             </div>
@@ -4065,6 +4078,10 @@
               <div class="col-6"><select id="delivery-priority" class="form-select"><option value="normal">Normal</option><option value="low">Low</option><option value="high">High</option><option value="urgent">Urgent</option></select></div>
               <div class="col-6"><input type="number" min="0" step="0.01" id="delivery-fee" class="form-control" placeholder="Delivery Fee" /></div>
             </div>
+            <select id="delivery-payment-status" class="form-select mt-2">
+              <option value="cash_on_delivery">Cash on Delivery - driver collects</option>
+              <option value="paid">Already Paid - do not collect</option>
+            </select>
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -4096,6 +4113,10 @@
               <option value="low">Low</option>
               <option value="high">High</option>
               <option value="urgent">Urgent</option>
+            </select>
+            <select id="update-delivery-payment-status" class="form-select mb-2">
+              <option value="cash_on_delivery">Cash on Delivery - driver collects</option>
+              <option value="paid">Already Paid - do not collect</option>
             </select>
             <input type="text" id="update-delivery-courier" class="form-control mb-2" placeholder="Courier Name" />
             <input type="text" id="update-delivery-courier-phone" class="form-control mb-2" placeholder="Courier Phone" />
@@ -9731,6 +9752,7 @@
                 id === "pos-delivery-address" ||
                 id === "pos-delivery-priority" ||
                 id === "pos-delivery-fee" ||
+                id === "pos-delivery-payment-status" ||
                 id === "complete-sale-btn" ||
                 cls.includes("sidebar") ||
                 cls.includes("nav-link") ||
@@ -12757,6 +12779,7 @@
             delivery_address: document.getElementById("pos-delivery-address").value.trim(),
             priority: document.getElementById("pos-delivery-priority").value,
             delivery_fee: parseFloat(document.getElementById("pos-delivery-fee").value || "0") || 0,
+            payment_status: document.getElementById("pos-delivery-payment-status")?.value || "cash_on_delivery",
           };
           if (!saleData.delivery.recipient_name || !saleData.delivery.recipient_phone || !saleData.delivery.delivery_address) {
             showToast("Recipient name, phone and address are required for delivery", "warning");
@@ -18265,6 +18288,8 @@
           });
           const p = document.getElementById("pos-delivery-priority");
           if (p) p.value = "normal";
+          const paymentStatus = document.getElementById("pos-delivery-payment-status");
+          if (paymentStatus) paymentStatus.value = "cash_on_delivery";
         }
       }
 
@@ -18283,22 +18308,24 @@
       function loadDeliveries() {
         const table = document.getElementById("deliveries-table");
         if (!table) return;
-        table.innerHTML = '<tr><td colspan="7" class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></td></tr>';
+        table.innerHTML = '<tr><td colspan="8" class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></td></tr>';
 
         const params = new URLSearchParams();
         const q = (document.getElementById("deliveries-search")?.value || "").trim();
         const stage = (document.getElementById("deliveries-stage-filter")?.value || "").trim();
         const priority = (document.getElementById("deliveries-priority-filter")?.value || "").trim();
+        const paymentStatus = (document.getElementById("deliveries-payment-filter")?.value || "").trim();
         if (q) params.set("q", q);
         if (stage) params.set("stage", stage);
         if (priority) params.set("priority", priority);
+        if (paymentStatus) params.set("payment_status", paymentStatus);
 
         fetch(`/api/deliveries${params.toString() ? `?${params.toString()}` : ""}`)
           .then((r) => r.json())
           .then((rows) => {
             table.innerHTML = "";
             if (!Array.isArray(rows) || rows.length === 0) {
-              table.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-muted">No deliveries found.</td></tr>';
+              table.innerHTML = '<tr><td colspan="8" class="text-center py-4 text-muted">No deliveries found.</td></tr>';
               renderPagination("deliveries", "deliveries-pagination", 1, loadDeliveries);
               return;
             }
@@ -18307,6 +18334,9 @@
             page.items.forEach((d) => {
               const stageBadgeClass = d.stage === "delivered" ? "success" : d.stage === "cancelled" ? "secondary" : d.stage === "delivering" ? "info" : d.stage === "packaged" ? "primary" : "warning";
               const priorityBadgeClass = d.priority === "urgent" ? "danger" : d.priority === "high" ? "warning" : d.priority === "low" ? "secondary" : "light text-dark";
+              const prepaid = d.payment_status === "paid";
+              const paymentBadgeClass = prepaid ? "success" : "primary";
+              const paymentLabel = d.payment_status_label || (prepaid ? "Already Paid" : "Cash on Delivery");
               const row = document.createElement("tr");
               row.innerHTML = `
                 <td>${d.delivery_number}</td>
@@ -18314,7 +18344,9 @@
                 <td>${d.recipient_name || "-"}<br/><small class="text-muted">${d.recipient_phone || "-"}</small></td>
                 <td><span class="badge bg-${stageBadgeClass}">${d.stage_label}</span></td>
                 <td><span class="badge bg-${priorityBadgeClass}">${d.priority}</span></td>
+                <td><span class="badge bg-${paymentBadgeClass}" title="${paymentLabel}">${prepaid ? "Paid" : "COD"}</span></td>
                 <td>${formatCurrency(d.delivery_fee || 0)}</td>
+                <td class="${prepaid ? "text-success" : "fw-semibold"}">${formatCurrency(d.collect_total || 0)}</td>
                 <td>
                   <button class="btn btn-sm btn-outline-secondary me-1" onclick="printDeliverySlip(${d.id})" title="Print Delivery Slip"><i class="bi bi-printer"></i></button>
                   ${hasCapability("deliveries.write") ? `<button class="btn btn-sm btn-outline-primary me-1" onclick="openUpdateDeliveryModal(${d.id})"><i class="bi bi-pencil"></i></button>` : ""}
@@ -18327,7 +18359,7 @@
           })
           .catch((e) => {
             console.error("Error loading deliveries", e);
-            table.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-danger">Failed to load deliveries.</td></tr>';
+            table.innerHTML = '<tr><td colspan="8" class="text-center py-4 text-danger">Failed to load deliveries.</td></tr>';
             renderPagination("deliveries", "deliveries-pagination", 1, loadDeliveries);
           });
       }
@@ -18342,6 +18374,7 @@
         document.getElementById("delivery-instructions").value = "";
         document.getElementById("delivery-priority").value = "normal";
         document.getElementById("delivery-fee").value = "";
+        document.getElementById("delivery-payment-status").value = "cash_on_delivery";
         new bootstrap.Modal(document.getElementById("createDeliveryModal")).show();
       }
 
@@ -18356,6 +18389,7 @@
           instructions: document.getElementById("delivery-instructions").value.trim() || null,
           priority: document.getElementById("delivery-priority").value,
           delivery_fee: parseFloat(document.getElementById("delivery-fee").value || "0") || 0,
+          payment_status: document.getElementById("delivery-payment-status").value,
         };
 
         if (!payload.sale_transaction_id || !payload.recipient_name || !payload.recipient_phone || !payload.delivery_address) {
@@ -18394,6 +18428,7 @@
             document.getElementById("update-delivery-id").value = d.id;
             document.getElementById("update-delivery-stage").value = d.stage;
             document.getElementById("update-delivery-priority").value = d.priority;
+            document.getElementById("update-delivery-payment-status").value = d.payment_status || "cash_on_delivery";
             document.getElementById("update-delivery-courier").value = d.courier_name || "";
             document.getElementById("update-delivery-courier-phone").value = d.courier_phone || "";
             document.getElementById("update-delivery-tracking").value = d.tracking_code || "";
@@ -18412,6 +18447,7 @@
         const payload = {
           stage: document.getElementById("update-delivery-stage").value,
           priority: document.getElementById("update-delivery-priority").value,
+          payment_status: document.getElementById("update-delivery-payment-status").value,
           courier_name: document.getElementById("update-delivery-courier").value.trim() || null,
           courier_phone: document.getElementById("update-delivery-courier-phone").value.trim() || null,
           tracking_code: document.getElementById("update-delivery-tracking").value.trim() || null,

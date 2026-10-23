@@ -72,6 +72,62 @@ class DeliverySlipViewTests(unittest.TestCase):
         self.assertEqual(view["items"], [{"name": "Item", "quantity": 0}])
         self.assertEqual(view["delivery_address_lines"], [])
         self.assertTrue(view["is_narrow"])
+        # Legacy deliveries without a payment state stay cash on delivery.
+        self.assertEqual(view["payment_status"], "cash_on_delivery")
+        self.assertEqual(view["payment_status_label"], "Cash on Delivery")
+
+    def test_cash_on_delivery_collects_order_and_fee(self):
+        view = build_delivery_slip_view(
+            _slip_data(payment_status="cash_on_delivery", collect_total=None),
+            RECEIPT_PAPER_58MM,
+        )
+        self.assertTrue(view["is_cod"])
+        self.assertFalse(view["is_prepaid"])
+        self.assertEqual(view["payment_status_label"], "Cash on Delivery")
+        self.assertEqual(view["bill_total_display"], "3,650.00 MMK")
+        self.assertEqual(view["collect_total_display"], "3,650.00 MMK")
+        self.assertEqual(view["paid_amount_display"], "0.00 MMK")
+        self.assertEqual(view["collect_note"], "Collect cash on delivery")
+
+    def test_already_paid_collects_nothing(self):
+        view = build_delivery_slip_view(
+            _slip_data(payment_status="paid", collect_total=None),
+            RECEIPT_PAPER_80MM,
+        )
+        self.assertTrue(view["is_prepaid"])
+        self.assertFalse(view["is_cod"])
+        self.assertEqual(view["payment_status_label"], "Already Paid")
+        self.assertEqual(view["order_total_display"], "3,150.00 MMK")
+        self.assertEqual(view["delivery_fee_display"], "500.00 MMK")
+        self.assertEqual(view["paid_amount_display"], "3,650.00 MMK")
+        self.assertEqual(view["collect_total_display"], "0.00 MMK")
+        self.assertIn("already paid", view["collect_note"])
+
+    def test_unknown_payment_status_falls_back_to_cash_on_delivery(self):
+        view = build_delivery_slip_view(
+            _slip_data(payment_status="buy-now-pay-later", collect_total=None),
+            RECEIPT_PAPER_80MM,
+        )
+        self.assertEqual(view["payment_status"], "cash_on_delivery")
+        self.assertEqual(view["collect_total_display"], "3,650.00 MMK")
+
+    def test_large_amounts_are_rendered_on_wrapping_rows(self):
+        template_folder = Path(__file__).resolve().parent / "templates"
+        flask_app = Flask(__name__, template_folder=str(template_folder))
+        for paper_size in (RECEIPT_PAPER_58MM, RECEIPT_PAPER_80MM):
+            slip = build_delivery_slip_view(
+                _slip_data(
+                    order_total=1600000,
+                    delivery_fee=500,
+                    collect_total=1600500,
+                    payment_status="cash_on_delivery",
+                ),
+                paper_size,
+            )
+            with flask_app.app_context():
+                html = render_template("delivery_slip.html", slip=slip)
+            self.assertIn("1,600,500.00 MMK", html)
+            self.assertIn("flex-wrap: wrap", html)
 
     def test_view_uses_stored_receipt_identity(self):
         view = build_delivery_slip_view(
@@ -198,6 +254,41 @@ class DeliverySlipRouteTests(unittest.TestCase):
         self.assertIn('Slip Street 1', html)
         self.assertIn('Delivery slip test product', html)
         self.assertIn('3,650.00', html)  # 3150 sale total + 500 delivery fee
+        self.assertIn('CASH ON DELIVERY', html)
+
+    def test_paid_delivery_slip_shows_nothing_to_collect(self):
+        updated = self.client().put(
+            f'/api/deliveries/{self.delivery.id}', json={'payment_status': 'paid'},
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.get_json()['delivery']['payment_status'], 'paid')
+        self.assertEqual(updated.get_json()['delivery']['collect_total'], 0)
+
+        response = self.client().get(f'/api/deliveries/{self.delivery.id}/print')
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn('ALREADY PAID - DO NOT COLLECT', html)
+        self.assertIn('Already Paid', html)
+        self.assertIn('No cash collection - already paid', html)
+        self.assertRegex(html, r'COLLECT</span><span>0\.00')
+
+    def test_invalid_payment_status_is_rejected(self):
+        response = self.client().put(
+            f'/api/deliveries/{self.delivery.id}', json={'payment_status': 'i-owe-you'},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('cash_on_delivery', response.get_json()['message'])
+
+    def test_delivery_list_filters_by_payment_status(self):
+        self.client().put(f'/api/deliveries/{self.delivery.id}', json={'payment_status': 'paid'})
+        paid = self.client().get('/api/deliveries?payment_status=paid').get_json()
+        cash = self.client().get('/api/deliveries?payment_status=cash_on_delivery').get_json()
+        self.assertIn(self.delivery.id, [row['id'] for row in paid])
+        self.assertNotIn(self.delivery.id, [row['id'] for row in cash])
+
+    def test_invalid_payment_status_filter_is_ignored(self):
+        rows = self.client().get('/api/deliveries?payment_status=anything').get_json()
+        self.assertIn(self.delivery.id, [row['id'] for row in rows])
 
 if __name__ == '__main__':
     unittest.main()

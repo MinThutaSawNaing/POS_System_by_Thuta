@@ -181,6 +181,51 @@ class ReceiptTests(unittest.TestCase):
         self.assertIn("width: 80mm", wide_html)
         self.assertIn("Original name", wide_html)
 
+    def test_long_amounts_wrap_instead_of_overlapping_on_both_widths(self):
+        """1,600,000.00 MMK must wrap, not spill over the neighbouring column."""
+        snapshot = build_receipt_snapshot(
+            transaction_id="00000000-0000-0000-0000-00000000beef",
+            sale_date="2026-08-12T12:00:00+06:30",
+            pos_name="Parrot POS",
+            currency_code="MMK",
+            currency_suffix="MMK",
+            branch={"name": "Main Branch", "address": "Yangon"},
+            cashier_name="admin",
+            payment_method="cash",
+            cash_received=1600000,
+            change_given=0,
+            items=[{
+                "product_id": 9,
+                "name": "Expensive machine",
+                "quantity": 1,
+                "unit_price": 1600000,
+                "tax_rate": 0,
+                "tax_amount": 0,
+            }],
+            subtotal=1600000,
+            tax=0,
+            total=1600000,
+        )
+        template_folder = Path(__file__).resolve().parent / "templates"
+        flask_app = Flask(__name__, template_folder=str(template_folder))
+        with flask_app.app_context():
+            narrow_html = render_template(
+                "receipt.html",
+                receipt=build_receipt_view(snapshot, RECEIPT_PAPER_58MM),
+            )
+            wide_html = render_template(
+                "receipt.html",
+                receipt=build_receipt_view(snapshot, RECEIPT_PAPER_80MM),
+            )
+
+        for html in (narrow_html, wide_html):
+            self.assertIn("1,600,000.00 MMK", html)
+            self.assertIn("Expensive machine", html)
+            # Money rows must be free to wrap onto a second line.
+            self.assertIn("flex-wrap: wrap", html)
+            # The old fixed-width price/amount grid overlapped long amounts.
+            self.assertNotIn("32px 70px 76px", html)
+
     def test_template_renders_logo_and_escapes_custom_text(self):
         snapshot = self._snapshot()
         snapshot["receipt_identity"] = {

@@ -760,7 +760,12 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "courier_phone": {"type": "string", "description": "Optional courier phone."},
                 "tracking_code": {"type": "string", "description": "Optional tracking code."},
                 "delivery_fee": {"type": "number", "description": "Optional delivery fee."},
-                "scheduled_at": {"type": "string", "description": "Optional ISO datetime schedule."}
+                "scheduled_at": {"type": "string", "description": "Optional ISO datetime schedule."},
+                "payment_status": {
+                    "type": "string",
+                    "enum": ["cash_on_delivery", "paid"],
+                    "description": "cash_on_delivery when the driver collects at the door; paid when the bill is already settled. Defaults to cash_on_delivery."
+                }
             },
             "required": ["sale_transaction_id", "recipient_name", "recipient_phone", "delivery_address"]
         }
@@ -2960,7 +2965,8 @@ class AITools:
                         township: str = None, instructions: str = None,
                         courier_name: str = None, courier_phone: str = None,
                         tracking_code: str = None, delivery_fee=None,
-                        scheduled_at: str = None) -> Dict[str, Any]:
+                        scheduled_at: str = None,
+                        payment_status: str = 'cash_on_delivery') -> Dict[str, Any]:
         """Create a delivery record for an existing sale."""
         Sale = self._get_model('Sale')
         Delivery = self._get_model('Delivery')
@@ -2986,6 +2992,10 @@ class AITools:
         if prio not in ('low', 'normal', 'high', 'urgent'):
             prio = 'normal'
 
+        payment_state = str(payment_status or 'cash_on_delivery').strip().lower().replace('-', '_').replace(' ', '_')
+        if payment_state not in ('cash_on_delivery', 'paid'):
+            payment_state = 'cash_on_delivery'
+
         scheduled = None
         if scheduled_at:
             try:
@@ -2999,6 +3009,7 @@ class AITools:
             customer_id=customer_id or None,
             stage='to_deliver',
             priority=prio,
+            payment_status=payment_state,
             recipient_name=recipient_name,
             recipient_phone=recipient_phone,
             delivery_address=delivery_address,
@@ -3018,6 +3029,7 @@ class AITools:
                 "delivery_number": delivery.delivery_number,
                 "sale_transaction_id": transaction_id,
                 "stage": delivery.stage, "priority": delivery.priority,
+                "payment_status": payment_state,
                 "message": f"Delivery {delivery.delivery_number} created for sale {transaction_id}."}
 
     # --- Branch management (global scope, manager only) ---

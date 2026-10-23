@@ -161,6 +161,34 @@ class DeliverySummaryTests(unittest.TestCase):
 
 
 class DeliveryReportBuilderTests(unittest.TestCase):
+    def test_report_splits_cash_on_delivery_and_prepaid_collections(self):
+        rows = build_delivery_performance_rows([
+            _record(id=1, delivery_number="DLV-1", stage="delivered",
+                    payment_status="cash_on_delivery",
+                    payment_status_label="Cash on Delivery",
+                    is_prepaid=False, collect_total=3650,
+                    created_at="2026-09-28T10:00:00",
+                    delivered_at="2026-09-28T18:00:00"),
+            _record(id=2, delivery_number="DLV-2", stage="to_deliver",
+                    payment_status="paid", payment_status_label="Already Paid",
+                    is_prepaid=True, collect_total=0,
+                    created_at="2026-09-28T10:00:00"),
+            # A cancelled cash-on-delivery bill is never collected.
+            _record(id=3, delivery_number="DLV-3", stage="cancelled",
+                    payment_status="cash_on_delivery",
+                    payment_status_label="Cash on Delivery",
+                    is_prepaid=False, collect_total=500,
+                    created_at="2026-09-28T10:00:00"),
+        ], now=datetime(2026, 9, 29, 12, 0, 0))
+        report = build_delivery_performance_report(rows, currency_suffix="MMK")
+
+        summary = {entry["label"]: entry["value"] for entry in report["summary"]}
+        self.assertEqual(summary["Cash on delivery"], "2")
+        self.assertEqual(summary["Already paid"], "1")
+        self.assertEqual(report["totals"]["collect_total"], 3650.0)
+        labels = {row["payment_status_label"] for row in report["rows"]}
+        self.assertEqual(labels, {"Cash on Delivery", "Already Paid"})
+
     def test_report_builds_pdf_and_xlsx_payloads(self):
         rows = build_delivery_performance_rows([
             _record(stage="delivered", courier_name="Aung",

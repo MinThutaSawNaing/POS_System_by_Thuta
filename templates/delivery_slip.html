@@ -38,14 +38,21 @@
       .rule { border: 0; border-top: 1px dashed #111; margin: 6px 0; }
       .rule.strong { border-top-style: solid; border-top-width: 2px; }
       .slip-title { font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if slip.is_narrow %}14px{% else %}16px{% endif %}; font-weight: 900; letter-spacing: 1.5px; margin: 2px 0; }
-      .meta-row, .total-row { display: flex; justify-content: space-between; gap: 8px; }
-      .meta-row span:first-child, .total-row span:first-child { flex: 0 0 auto; }
-      .meta-row span:last-child, .total-row span:last-child { text-align: right; overflow-wrap: anywhere; }
+      /* Money rows wrap instead of overlapping when an amount is wider than the
+         printable width (e.g. 1,600,000.00 MMK on 55/58 mm paper). */
+      .meta-row, .total-row { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 2px 8px; }
+      .meta-row > *, .total-row > * { min-width: 0; }
+      .meta-row span:first-child, .total-row span:first-child { flex: 0 1 auto; }
+      .meta-row span:last-child, .total-row span:last-child { flex: 0 1 auto; margin-left: auto; text-align: right; overflow-wrap: anywhere; word-break: break-word; font-variant-numeric: tabular-nums; }
       .block-label { font-weight: 800; letter-spacing: .8px; margin: 2px 0; }
       .block-value { overflow-wrap: anywhere; }
-      .item-row { display: flex; justify-content: space-between; gap: 6px; break-inside: avoid; page-break-inside: avoid; margin-bottom: 4px; }
-      .item-row .name { overflow-wrap: anywhere; font-weight: 700; }
-      .item-row .qty { text-align: right; white-space: nowrap; font-weight: 800; }
+      .payment-flag { margin: 6px 0 2px; padding: 4px 6px; border: 2px solid #111; text-align: center; font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if slip.is_narrow %}10px{% else %}12px{% endif %}; font-weight: 900; letter-spacing: .5px; overflow-wrap: anywhere; }
+      .payment-flag.cod { border-style: solid; }
+      .payment-flag.paid { border-style: dashed; }
+      .collect-note { margin-top: 2px; text-align: center; font-size: .9em; overflow-wrap: anywhere; }
+      .item-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 6px; break-inside: avoid; page-break-inside: avoid; margin-bottom: 4px; }
+      .item-row .name { min-width: 0; overflow-wrap: anywhere; font-weight: 700; }
+      .item-row .qty { flex: 0 1 auto; margin-left: auto; text-align: right; white-space: nowrap; font-weight: 800; }
       .total-row { padding: 1px 0; }
       .total-row.grand { padding: 4px 0; font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if slip.is_narrow %}15px{% else %}17px{% endif %}; font-weight: 900; }
       .signature-line { margin-top: 14px; display: flex; align-items: flex-end; gap: 6px; }
@@ -84,6 +91,10 @@
         <div class="meta-row"><span>Priority</span><span>{{ slip.priority }}</span></div>
         {% if slip.sale_transaction_id %}<div class="meta-row"><span>Sale Txn</span><span>{{ slip.sale_transaction_id }}</span></div>{% endif %}
         {% if slip.payment_method %}<div class="meta-row"><span>Payment</span><span>{{ slip.payment_method }}</span></div>{% endif %}
+        <div class="meta-row"><span>Collection</span><span>{{ slip.payment_status_label }}</span></div>
+        <div class="payment-flag {% if slip.is_prepaid %}paid{% else %}cod{% endif %}">
+          {% if slip.is_prepaid %}ALREADY PAID - DO NOT COLLECT{% else %}CASH ON DELIVERY - COLLECT ON ARRIVAL{% endif %}
+        </div>
         <hr class="rule" />
 
         <div class="block-label">RECIPIENT</div>
@@ -110,8 +121,12 @@
         <hr class="rule" />
         <div class="total-row"><span>Order total</span><span>{{ slip.order_total_display }}</span></div>
         <div class="total-row"><span>Delivery fee</span><span>{{ slip.delivery_fee_display }}</span></div>
+        {% if slip.is_prepaid %}
+          <div class="total-row"><span>Paid at counter</span><span>-{{ slip.paid_amount_display }}</span></div>
+        {% endif %}
         <hr class="rule strong" />
         <div class="total-row grand"><span>COLLECT</span><span>{{ slip.collect_total_display }}</span></div>
+        <div class="collect-note">{{ slip.collect_note }}</div>
 
         <div class="signature-line"><span>Received by</span><span class="line"></span></div>
         <footer class="footer">

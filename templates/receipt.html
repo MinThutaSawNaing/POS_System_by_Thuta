@@ -37,18 +37,18 @@
       .contact { margin-top: 2px; overflow-wrap: anywhere; font-size: .92em; }
       .rule { border: 0; border-top: 1px dashed #111; margin: 6px 0; }
       .rule.strong { border-top-style: solid; border-top-width: 2px; }
-      .meta-row, .total-row { display: flex; justify-content: space-between; gap: 8px; }
-      .meta-row span:first-child, .total-row span:first-child { flex: 0 0 auto; }
-      .meta-row span:last-child, .total-row span:last-child { text-align: right; overflow-wrap: anywhere; }
+      /* Money rows wrap onto a second line instead of overlapping when an amount
+         grows past the printable width (e.g. 1,600,000.00 MMK). */
+      .meta-row, .total-row { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 2px 8px; }
+      .meta-row > *, .total-row > * { min-width: 0; }
+      .meta-row span:first-child, .total-row span:first-child { flex: 0 1 auto; }
+      .meta-row span:last-child, .total-row span:last-child { flex: 0 1 auto; margin-left: auto; text-align: right; overflow-wrap: anywhere; word-break: break-word; font-variant-numeric: tabular-nums; }
       .item { break-inside: avoid; page-break-inside: avoid; margin: 0 0 7px; }
       .item-name { font-weight: 800; overflow-wrap: anywhere; }
-      .item-detail { display: flex; justify-content: space-between; gap: 6px; padding-left: {% if receipt.is_narrow %}4px{% else %}10px{% endif %}; }
-      .item-detail span:last-child { text-align: right; white-space: nowrap; }
-      .wide-head { display: grid; grid-template-columns: minmax(0, 1fr) 32px 70px 76px; gap: 4px; font-weight: 800; }
-      .wide-row { display: grid; grid-template-columns: minmax(0, 1fr) 32px 70px 76px; gap: 4px; align-items: start; break-inside: avoid; margin-bottom: 5px; }
-      .wide-head > :not(:first-child), .wide-row > :not(:first-child) { text-align: right; }
-      .wide-row .name { overflow-wrap: anywhere; font-weight: 700; }
-      .tax-line { grid-column: 1 / -1; display: flex; justify-content: space-between; padding-left: 10px; font-size: .9em; }
+      .item-detail { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 6px; padding-left: {% if receipt.is_narrow %}4px{% else %}10px{% endif %}; }
+      .item-detail > span { min-width: 0; }
+      .item-detail .amount { flex: 0 1 auto; margin-left: auto; text-align: right; overflow-wrap: anywhere; word-break: break-word; font-variant-numeric: tabular-nums; }
+      .item-detail.tax-line { font-size: .9em; }
       .total-row { padding: 1px 0; }
       .total-row.grand { padding: 4px 0; font-family: Arial, "Padauk", "Myanmar Text", sans-serif; font-size: {% if receipt.is_narrow %}15px{% else %}17px{% endif %}; font-weight: 900; }
       .footer { margin-top: 8px; text-align: center; font-size: .92em; }
@@ -88,24 +88,13 @@
         {% endif %}
         <hr class="rule" />
 
-        {% if receipt.is_narrow %}
-          {% for item in receipt["items"] %}
-            <section class="item">
-              <div class="item-name">{{ item.name }}</div>
-              <div class="item-detail"><span>{{ item.quantity }} × {{ item.unit_price_display }}</span><span>{{ item.line_subtotal_display }}</span></div>
-              {% if item.tax_amount %}<div class="item-detail"><span>Tax {{ item.tax_rate_display }}</span><span>{{ item.tax_amount_display }}</span></div>{% endif %}
-            </section>
-          {% endfor %}
-        {% else %}
-          <div class="wide-head"><span>Item</span><span>Qty</span><span>Price</span><span>Amount</span></div>
-          <hr class="rule" />
-          {% for item in receipt["items"] %}
-            <section class="wide-row">
-              <span class="name">{{ item.name }}</span><span>{{ item.quantity }}</span><span>{{ item.unit_price_display }}</span><span>{{ item.line_subtotal_display }}</span>
-              {% if item.tax_amount %}<div class="tax-line"><span>Tax {{ item.tax_rate_display }}</span><span>{{ item.tax_amount_display }}</span></div>{% endif %}
-            </section>
-          {% endfor %}
-        {% endif %}
+        {% for item in receipt["items"] %}
+          <section class="item">
+            <div class="item-name">{{ item.name }}</div>
+            <div class="item-detail"><span class="qty-price">{{ item.quantity }} × {{ item.unit_price_display }}</span><span class="amount">{{ item.line_subtotal_display }}</span></div>
+            {% if item.tax_amount %}<div class="item-detail tax-line"><span>Tax {{ item.tax_rate_display }}</span><span class="amount">{{ item.tax_amount_display }}</span></div>{% endif %}
+          </section>
+        {% endfor %}
 
         <hr class="rule" />
         <div class="total-row"><span>Subtotal</span><span>{{ receipt.subtotal_display }}</span></div>

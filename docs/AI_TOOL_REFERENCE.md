@@ -289,6 +289,14 @@ Create a delivery record for an existing sale with recipient, address, and optio
     "scheduled_at": {
       "type": "string",
       "description": "Optional ISO datetime schedule."
+    },
+    "payment_status": {
+      "type": "string",
+      "enum": [
+        "cash_on_delivery",
+        "paid"
+      ],
+      "description": "cash_on_delivery when the driver collects at the door; paid when the bill is already settled. Defaults to cash_on_delivery."
     }
   },
   "required": [
