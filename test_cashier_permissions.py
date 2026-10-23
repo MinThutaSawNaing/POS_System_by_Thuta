@@ -17,7 +17,7 @@ def test_isolated_backend_permissions():
         env = dict(os.environ, POS_PERMISSION_CHILD='1', POS_PERMISSION_INSTANCE=directory)
         result = subprocess.run([sys.executable, '-m', 'pytest', str(Path(__file__).resolve()),
                                  '-q', '--tb=short'], env=env, capture_output=True,
-                                text=True, timeout=240, cwd=Path(__file__).resolve().parent)
+                                text=True, timeout=900, cwd=Path(__file__).resolve().parent)
     assert result.returncode == 0, result.stdout + '\n' + result.stderr
 
 
@@ -37,6 +37,17 @@ def backend():
     module.app.config.update(TESTING=True)
     with module.app.app_context():
         assert str(module.db.engine.url.database).startswith(os.environ['POS_PERMISSION_INSTANCE'])
+        # Durability fsyncs add minutes on Windows disks but cannot protect this
+        # disposable database.
+        # Disable them ONLY after verifying the child-only temporary path.
+        from sqlalchemy import event, text
+
+        @event.listens_for(module.db.engine, 'connect')
+        def disposable_fast_writes(connection, record):
+            connection.execute('PRAGMA synchronous=OFF')
+
+        module.db.session.execute(text('PRAGMA synchronous=OFF'))
+        module.db.session.rollback()
     yield module
     with module.app.app_context():
         module.db.session.remove()
@@ -48,8 +59,11 @@ def world(backend):
     m = backend
     with m.app.app_context():
         m.db.session.remove()
-        m.db.drop_all()
-        m.db.create_all()
+        # Reset rows, not ~50 tables and their indexes, for every permission
+        # parameter. Keep the real startup schema/indexes under test too.
+        for table in reversed(m.db.metadata.sorted_tables):
+            m.db.session.execute(table.delete())
+        m.db.session.commit()
         branches = [m.Branch(name='Local', code='LOCAL', is_default=True),
                     m.Branch(name='Foreign', code='FOREIGN'),
                     m.Branch(name='Inactive', code='OFF', is_active=False)]

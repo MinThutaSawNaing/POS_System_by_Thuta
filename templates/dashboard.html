@@ -1878,8 +1878,10 @@
                   type="text"
                   id="products-search"
                   class="form-control"
-                  placeholder="Search by barcode, name or category"
+                  placeholder="Starts with name, barcode or category"
+                  aria-describedby="products-search-hint"
                 />
+                <small id="products-search-hint" class="text-muted">Search matches the beginning of a name, barcode or category.</small>
               </div>
               <div class="col-12 col-md-7 d-flex flex-wrap gap-2 justify-content-md-end">
                 <button class="btn btn-success" data-capability="catalog.write" data-bs-toggle="modal" data-bs-target="#importProductsModal">
@@ -2848,7 +2850,8 @@
                   type="text"
                   id="purchase-orders-search"
                   class="form-control form-control-sm"
-                  placeholder="PO number, supplier..."
+                  placeholder="Starts with PO number or supplier"
+                  title="Search matches the beginning of a PO number or supplier name."
                 />
               </div>
               <div class="col-6 col-sm-3 col-md-2">
@@ -2997,7 +3000,8 @@
             <div class="row g-2 align-items-end filter-row">
               <div class="col-12 col-sm-6 col-md-4">
                 <label class="form-label small">Search</label>
-                <input type="text" id="warehouse-search" class="form-control form-control-sm" placeholder="Product name or barcode..." />
+                <input type="text" id="warehouse-search" class="form-control form-control-sm" placeholder="Starts with product name or barcode" aria-describedby="warehouse-search-hint" />
+                <small id="warehouse-search-hint" class="text-muted">Matches the beginning of a name or barcode.</small>
               </div>
               <div class="col-6 col-sm-3 col-md-2">
                 <label class="form-label small">Low Stock</label>
@@ -4551,7 +4555,7 @@
                   >Product <span class="text-danger">*</span></label
                 >
                 <select
-                  class="form-select searchable-select"
+                  class="form-select"
                   id="promotion-product-id"
                   data-search-placeholder="Search product..."
                   required
@@ -4653,7 +4657,7 @@
                   type="search"
                   class="form-control"
                   id="barcode-product-search"
-                  placeholder="Search by name, barcode, or category"
+                  placeholder="Starts with name, barcode, or category"
                   aria-label="Search products for barcode labels"
                   aria-controls="barcode-products-table"
                   autocomplete="off"
@@ -4681,6 +4685,8 @@
               </span>
             </div>
 
+            <div id="barcode-products-pagination" class="mb-2"></div>
+            <small class="text-muted">30 results per page. Selected rows and quantities are retained across searches (up to 100 products).</small>
             <div
               class="table-responsive barcode-products-scroll"
               id="barcode-products-scroll"
@@ -6066,7 +6072,10 @@
               <span>Enter the quantities received for each item. Stock will be updated automatically.</span>
             </div>
             <p class="mb-2">PO: <strong id="receive-po-number">-</strong></p>
+            <p id="receive-po-retry-status" class="text-warning" role="status" hidden></p>
             <div id="receive-po-items-container"></div>
+            <div id="receive-po-pagination" class="mt-2"></div>
+            <small class="text-muted">Receive the displayed lines, then use Next for more items. Changing pages discards unsubmitted quantities.</small>
           </div>
           <div class="modal-footer">
             <button
@@ -8012,6 +8021,7 @@
         if (!branchId || !currentBranch || String(branchId) === String(currentBranch.id) ||
             branchSwitchInFlight || dashboardBranchStale) return;
         if (isSaleProcessing || isSyncingPendingSales ||
+            (typeof receivingInFlight !== "undefined" && receivingInFlight) ||
             (typeof warehouseTransferInFlight !== "undefined" && warehouseTransferInFlight)) {
           showToast("Please wait for sale processing, offline sale syncing or the warehouse transfer to finish before switching branches.", "warning");
           return;
@@ -8296,13 +8306,95 @@
         customers: 10,
         debts: 10,
         suppliers: 10,
-        purchases: 10,
-        warehouse: 10,
+        purchases: 30,
+        warehouse: 30,
         deliveries: 10,
         logs: 30,
         returns: 10,
       };
       
+      // Inventory cursors are opaque server tokens, never offsets or page numbers.
+      const inventoryCursorState = Object.create(null);
+
+      function inventoryIdentity() {
+        return JSON.stringify([CACHE_USER_ID, CACHE_USER_ROLE, currentBranch?.id,
+          dashboardSessionStale, dashboardBranchStale]);
+      }
+
+      function beginInventoryPage(key, params, containerId, reload) {
+        const identity = inventoryIdentity();
+        const signature = identity + ":" + params.toString();
+        let state = inventoryCursorState[key];
+        if (!state || state.signature !== signature || (pageState[key] === 1 && state.previous.length)) {
+          if (state) state.sequence++;
+          state = {signature, cursor: null, previous: [], sequence: 0, hasMore: false, next: null};
+          inventoryCursorState[key] = state;
+          pageState[key] = 1;
+        }
+        const sequence = ++state.sequence;
+        state.loading = true;
+        if (state.cursor) params.set("cursor", state.cursor);
+        renderInventoryPagination(key, containerId, reload);
+        return {
+          current: () => inventoryCursorState[key] === state && state.sequence === sequence &&
+            inventoryIdentity() === identity,
+          accept: (data) => {
+            if (!Array.isArray(data?.items) || data.items.length > 30 || typeof data.has_more !== "boolean" ||
+                (data.has_more && (typeof data.next_cursor !== "string" || !data.next_cursor))) {
+              throw new Error("Invalid inventory page response");
+            }
+            state.hasMore = data.has_more;
+            state.next = data.has_more ? data.next_cursor : null;
+            state.loading = false;
+            renderInventoryPagination(key, containerId, reload);
+            return data;
+          },
+          fail: () => {
+            state.loading = false;
+            state.hasMore = false;
+            renderInventoryPagination(key, containerId, reload);
+          },
+        };
+      }
+
+      function renderInventoryPagination(key, containerId, reload) {
+        const container = document.getElementById(containerId);
+        const state = inventoryCursorState[key];
+        if (!container || !state) return;
+        container.innerHTML = "";
+        const controls = document.createElement("div");
+        controls.className = "d-flex align-items-center gap-2";
+        controls.setAttribute("role", "group");
+        controls.setAttribute("aria-label", "Inventory pages");
+        const addButton = (label, disabled, move) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "btn btn-sm btn-outline-primary";
+          button.textContent = label;
+          button.disabled = disabled;
+          button.addEventListener("click", () => {
+            if (state.loading || inventoryCursorState[key] !== state) return;
+            move();
+            pageState[key] = state.previous.length + 1;
+            reload();
+          });
+          controls.appendChild(button);
+        };
+        addButton("Previous", state.loading || !state.previous.length, () => {
+          state.cursor = state.previous.pop();
+        });
+        const label = document.createElement("span");
+        label.className = "small text-muted";
+        label.setAttribute("aria-live", "polite");
+        label.textContent = `Page ${state.previous.length + 1}${state.loading ? " — loading" : ""}`;
+        controls.appendChild(label);
+        addButton("Next", state.loading || !state.hasMore, () => {
+          state.previous.push(state.cursor);
+          state.cursor = state.next;
+        });
+        container.appendChild(controls);
+      }
+
       // ===== SPA DATA CACHE =====
       // Every sidebar item is a section of this single page, so switching tabs
       // never reloaded the document - but it did re-fetch that section's data on
@@ -8364,6 +8456,7 @@
       // screens - see cacheReadGroupFor below - so its group is resolved by query.)
       const CACHEABLE_READ_PATHS = new Map([
         ["/api/products", "products"],
+        ["/api/products/summary", "products"],
         ["/api/products/search", "pos"],
         ["/api/categories", "categories"],
         ["/api/pos/customers", "customers"],
@@ -11171,11 +11264,18 @@
               });
           });
 
-        // Total products and low stock - USING CACHED PRODUCTS
-        loadProductsCached().then((data) => {
-          document.getElementById("total-products").textContent = data.length;
-          const lowStock = data.filter((p) => p.stock < 5).length;
-          document.getElementById("low-stock-count").textContent = lowStock;
+        // Server aggregates, not a capped catalog sample.
+        const productIdentity = inventoryIdentity();
+        fetch("/api/products/summary").then(async response => {
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.message || "Product summary unavailable");
+          if (inventoryIdentity() !== productIdentity) return;
+          document.getElementById("total-products").textContent = data.total_products;
+          document.getElementById("low-stock-count").textContent = data.low_stock;
+        }).catch(() => {
+          if (inventoryIdentity() !== productIdentity) return;
+          document.getElementById("total-products").textContent = "N/A";
+          document.getElementById("low-stock-count").textContent = "N/A";
         });
 
         // Recent transactions (last 24 hours) - FIXED
@@ -11345,29 +11445,10 @@
       }
 
       function loadProductsForPromotionModal() {
-        return new Promise((resolve, reject) => {
-          // USING CACHED PRODUCTS
-          loadProductsCached()
-            .then((products) => {
-              const select = document.getElementById("promotion-product-id");
-              select.innerHTML = "";
-              const placeholderOption = document.createElement("option");
-              placeholderOption.value = "";
-              placeholderOption.textContent = "Select a product";
-              select.appendChild(placeholderOption);
-              products.forEach((p) => {
-                const opt = document.createElement("option");
-                opt.value = p.id;
-                opt.textContent = `${p.name} ($${p.price.toFixed(2)})`;
-                select.appendChild(opt);
-              });
-              resolve();
-            })
-            .catch((err) => {
-              console.error("Error loading products:", err);
-              reject(err);
-            });
-        });
+        const select = document.getElementById("promotion-product-id");
+        if (!select.options.length) select.innerHTML = '<option value="">Select a product</option>';
+        makeRemoteInventorySelect(select, "/api/products?view=lookup", "Promotion product", "branch");
+        return Promise.resolve();
       }
 
       function loadTopProducts() {
@@ -12816,8 +12897,11 @@
       }
 
       // Barcode Label functions
+      const barcodeSelectedRows = new Map();
+      let barcodeSearchTimer = null;
       function showBarcodeLabelDialog() {
         if (!requireCapability("labels")) return;
+        barcodeSelectedRows.clear();
         clearBarcodeLabelSearch();
         const modal = new bootstrap.Modal(
           document.getElementById("barcodeLabelModal")
@@ -12847,22 +12931,35 @@
               </tr>
           `;
 
-        // USING CACHED PRODUCTS
-        loadProductsCached()
-          .then((data) => {
+        const query = (document.getElementById("barcode-product-search")?.value || "").trim();
+        const params = new URLSearchParams({view: "management", per_page: "30"});
+        if (query) params.set("q", query);
+        const request = beginInventoryPage("labels", params, "barcode-products-pagination", loadProductsForBarcodeLabels);
+        return fetch(`/api/products?${params}`)
+          .then(async response => {
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.message || "Product search failed");
+            return payload;
+          })
+          .then((payload) => {
+            if (!request.current()) return;
+            request.accept(payload);
+            const data = payload.items;
             table.innerHTML = "";
+            barcodeSelectedRows.forEach(row => { row.hidden = true; table.appendChild(row); });
 
             if (data.length === 0) {
-              table.innerHTML = `
-                          <tr>
-                              <td colspan="6" class="text-center py-4 text-muted">No products found.</td>
-                          </tr>
-                      `;
+              const emptyRow = document.createElement("tr");
+              emptyRow.innerHTML = '<td colspan="6" class="text-center py-4 text-muted">No products found.</td>';
+              table.appendChild(emptyRow);
               updateBarcodeLabelFilterStatus(0, 0);
+              updateBarcodeSelectAllState();
               return;
             }
 
             data.forEach((product) => {
+              const retained = barcodeSelectedRows.get(String(product.id));
+              if (retained) { retained.hidden = false; return; }
               const row = document.createElement("tr");
               row.className = "barcode-product-row";
               row.dataset.searchText = [
@@ -12886,12 +12983,16 @@
             });
             table.onchange = (event) => {
               if (event.target.classList.contains("product-checkbox")) {
+                rememberBarcodeSelection(event.target);
                 updateBarcodeSelectAllState();
               }
             };
-            filterBarcodeLabelProducts();
+            updateBarcodeSelectAllState();
+            if (resultCount) resultCount.textContent = `${data.length} results${payload.has_more ? " — more available" : ""}; ${barcodeSelectedRows.size} selected`;
           })
           .catch((error) => {
+            if (!request.current()) return;
+            request.fail();
             console.error("Error loading products:", error);
             table.innerHTML = `
                       <tr>
@@ -12900,6 +13001,16 @@
                   `;
             if (resultCount) resultCount.textContent = "Products unavailable";
           });
+      }
+
+      function rememberBarcodeSelection(checkbox) {
+        const id = checkbox.dataset.id;
+        if (checkbox.checked) {
+          if (!barcodeSelectedRows.has(id) && barcodeSelectedRows.size >= 100) {
+            checkbox.checked = false;
+            showToast("Print at most 100 selected products at a time.", "warning");
+          } else barcodeSelectedRows.set(id, checkbox.closest("tr"));
+        } else barcodeSelectedRows.delete(id);
       }
 
       function getVisibleBarcodeProductRows() {
@@ -12956,6 +13067,11 @@
           emptyRow.hidden = true;
         }
         updateBarcodeSelectAllState();
+        clearTimeout(barcodeSearchTimer);
+        const active = inventoryCursorState.labels;
+        if (active) active.sequence++;
+        pageState.labels = 1;
+        barcodeSearchTimer = setTimeout(loadProductsForBarcodeLabels, 250);
       }
 
       function clearBarcodeLabelSearch() {
@@ -12969,7 +13085,7 @@
         const selectAll = document.getElementById("select-all-products").checked;
         getVisibleBarcodeProductRows().forEach((row) => {
           const checkbox = row.querySelector(".product-checkbox");
-          if (checkbox) checkbox.checked = selectAll;
+          if (checkbox) { checkbox.checked = selectAll; rememberBarcodeSelection(checkbox); }
         });
         updateBarcodeSelectAllState();
       }
@@ -13377,7 +13493,7 @@
       // Load category dropdowns for product and supplier forms
       function loadCategoryDropdowns() {
         const branchId = currentBranch?.id;
-        fetch("/api/categories?active_only=true")
+        fetch("/api/categories?active_only=true&counts=false")
           .then((r) => r.json())
           .then((categories) => {
             if (currentBranch?.id !== branchId) return;
@@ -13784,7 +13900,9 @@
                                       <td colspan="9" class="text-center py-4 text-muted">No products found.</td>
                                   </tr>
                               `;
-          renderPagination("products", "products-pagination", 1, loadProducts);
+          if (typeof renderInventoryPagination === "function" && "has_more" in payload) {
+            renderInventoryPagination("products", "products-pagination", loadProducts);
+          } else renderPagination("products", "products-pagination", 1, loadProducts);
           return;
         }
 
@@ -13819,6 +13937,10 @@
           productsTable.appendChild(row);
         });
 
+        if (typeof renderInventoryPagination === "function" && "has_more" in payload) {
+          renderInventoryPagination("products", "products-pagination", loadProducts);
+          return;
+        }
         renderPagination(
           "products",
           "products-pagination",
@@ -13842,11 +13964,17 @@
         const query = (document.getElementById("products-search")?.value || "")
           .trim();
         const params = new URLSearchParams();
-        params.set("page", String(pageState.products));
+        // Legacy embedded callers may supply only the numbered paging helpers;
+        // the full dashboard always uses opaque cursor navigation.
+        const cursorPaging = typeof beginInventoryPage === "function";
+        if (cursorPaging) params.set("view", "management");
+        else params.set("page", String(pageState.products));
         params.set("per_page", String(pageSize.products));
         if (query) params.set("q", query);
+        const request = cursorPaging
+          ? beginInventoryPage("products", params, "products-pagination", loadProducts) : null;
 
-        fetch(`/api/products?${params.toString()}`)
+        return fetch(`/api/products?${params.toString()}`)
           .then((response) => {
             if (!response.ok) {
               throw new Error(`HTTP error! status: ${response.status}`);
@@ -13854,12 +13982,17 @@
             return response.json();
           })
           .then((payload) => {
-            saveProductsCache(payload);
+            if (request && !request.current()) return;
+            if (request) request.accept(payload);
+            // Do not reuse an unrelated filter/page's offline snapshot.
+            if (!request) saveProductsCache(payload);
             renderProductsResponse(payload);
           })
           .catch((error) => {
+            if (request && !request.current()) return;
+            if (request) request.fail();
             console.error("Error loading products:", error);
-            const cached = getProductsCache();
+            const cached = request ? null : getProductsCache();
             if (cached) {
               showToast("Offline — showing cached products", "warning");
               renderProductsResponse(cached.data);
@@ -13870,7 +14003,7 @@
                                   <td colspan="9" class="text-center py-4 text-danger">Failed to load products.</td>
                               </tr>
                           `;
-            renderPagination("products", "products-pagination", 1, loadProducts);
+            if (!request) renderPagination("products", "products-pagination", 1, loadProducts);
           });
       }
 
@@ -14714,24 +14847,13 @@
         const row = document.createElement("div");
         row.className = "row g-2 mb-2 exchange-item-row";
         row.innerHTML = `
-          <div class="col-6"><select class="form-select searchable-select exchange-item-select" data-search-placeholder="Search product..."></select></div>
+          <div class="col-6"><select class="form-select exchange-item-select" aria-label="Exchange product"></select></div>
           <div class="col-2"><input type="number" min="1" value="1" class="form-control exchange-item-qty" /></div>
           <div class="col-3"><input type="number" min="0" step="0.01" value="0" class="form-control exchange-item-price" /></div>
           <div class="col-1"><button class="btn btn-outline-danger w-100" onclick="this.closest('.exchange-item-row').remove(); refreshReturnExchangeSummary();"><i class="bi bi-x"></i></button></div>
         `;
         const select = row.querySelector(".exchange-item-select");
         select.innerHTML = '<option value="">Select product</option>';
-        loadProductsCached().then((products) => {
-          (products || []).forEach((p) => {
-            const opt = document.createElement("option");
-            opt.value = p.id;
-            opt.dataset.price = p.price;
-            opt.dataset.stock = p.stock;
-            opt.dataset.taxRate = p.tax_rate || 0;
-            opt.textContent = `${p.name} | Stock: ${p.stock} | ${formatCurrency(p.price)}`;
-            select.appendChild(opt);
-          });
-        });
 
         select.addEventListener("change", () => {
           const selected = select.selectedOptions[0];
@@ -14743,7 +14865,7 @@
         row.querySelector(".exchange-item-price").addEventListener("input", refreshReturnExchangeSummary);
 
         document.getElementById("exchange-items-container").appendChild(row);
-        makeSelectSearchable(select);
+        makeRemoteInventorySelect(select, "/api/products?view=lookup", "Exchange product", "branch");
       }
 
       function collectReturnExchangePayload() {
@@ -17311,27 +17433,105 @@
         );
       }
 
+      // Remote search keeps the native select visible: arrow keys, screen readers
+      // and form/change semantics remain browser-native. At most 30 results plus
+      // the selected option are retained, even when that selection is off-search.
+      function makeRemoteInventorySelect(select, endpoint, label, product = false) {
+        if (!select) return null;
+        if (select.remoteLookup) return select.remoteLookup;
+        const input = document.createElement("input");
+        input.type = "search";
+        input.className = "form-control form-control-sm mb-1";
+        input.placeholder = `Starts with ${label.toLowerCase()}…`;
+        input.setAttribute("aria-label", `Search ${label.toLowerCase()}`);
+        select.setAttribute("aria-label", label);
+        const status = document.createElement("small");
+        status.className = "text-muted d-block";
+        status.setAttribute("role", "status");
+        select.parentNode.insertBefore(input, select);
+        select.parentNode.insertBefore(status, select.nextSibling);
+        let sequence = 0, controller = null, timer = null;
+        const load = async (id = null) => {
+          const token = ++sequence;
+          controller?.abort();
+          controller = new AbortController();
+          const identity = inventoryIdentity();
+          const branchProduct = product === "branch";
+          const params = new URLSearchParams({limit: "30"});
+          if (id) params.set("id", String(id));
+          else params.set("q", input.value.trim());
+          status.textContent = "Searching…";
+          select.setAttribute("aria-busy", "true");
+          try {
+            const url = `${endpoint}${endpoint.includes("?") ? "&" : "?"}${params}`;
+            const response = await fetch(url, {signal: controller.signal});
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const items = await response.json();
+            if (token !== sequence || inventoryIdentity() !== identity || !select.isConnected) return;
+            if (!Array.isArray(items)) throw new Error("Invalid lookup response");
+            const selected = select.selectedOptions[0];
+            const value = select.value || (id ? String(id) : "");
+            // Keep only the placeholder, the capped results, and selected metadata.
+            const placeholder = select.options[0]?.cloneNode(true) || document.createElement("option");
+            placeholder.value = "";
+            select.replaceChildren(placeholder);
+            if (selected?.value && !items.slice(0, 30).some(item => String(item.id) === selected.value)) {
+              select.appendChild(selected);
+            }
+            items.slice(0, 30).forEach(item => {
+              const option = document.createElement("option");
+              option.value = String(item.id);
+              option.textContent = branchProduct ? `${item.name} | Stock: ${item.stock || 0} | ${formatCurrency(item.price || 0)}` : product
+                ? `${item.name} — ${item.branch_name || "Unassigned"} (${formatCurrency(item.price || 0)})` : item.name;
+              if (product) {
+                option.dataset.unitCost = String(item.unit_cost ?? item.cost ?? 0);
+                option.dataset.cost = String(item.cost ?? item.unit_cost ?? 0);
+                option.dataset.price = String(item.price || 0);
+                option.dataset.stock = String(item.stock || 0);
+                option.dataset.taxRate = String(item.tax_rate || 0);
+              }
+              select.appendChild(option);
+            });
+            select.value = value;
+            status.textContent = items.length >= 30 ? "First 30 results — refine your search." : `${items.length} results`;
+          } catch (error) {
+            if (token !== sequence || inventoryIdentity() !== identity || error.name === "AbortError") return;
+            status.textContent = "Search failed. Type again to retry; the selection is unchanged.";
+          } finally {
+            if (token === sequence) select.removeAttribute("aria-busy");
+          }
+        };
+        input.addEventListener("input", () => {
+          // Invalidate immediately, not only when the debounce timer fires.
+          sequence++;
+          controller?.abort();
+          clearTimeout(timer);
+          timer = setTimeout(() => load(), 250);
+        });
+        input.addEventListener("keydown", event => {
+          if (event.key === "ArrowDown") { event.preventDefault(); select.focus(); }
+          if (event.key === "Enter") { event.preventDefault(); clearTimeout(timer); load(); }
+          if (event.key === "Escape") { clearTimeout(timer); sequence++; controller?.abort(); select.focus(); }
+        });
+        select.remoteLookup = {load, reset: () => {
+          input.value = "";
+          clearTimeout(timer);
+          return load();
+        }};
+        load(select.value || null);
+        return select.remoteLookup;
+      }
+
       // Purchase workflow functions
-      let cachedSuppliersForPO = [];
       let selectedReceivePO = null;
+      let receivingInFlight = false;
+      let receivingOpenSequence = 0;
       let currentPOId = null;
       let cancelPOId = null;
 
       function loadPOSupplierFilter() {
         const select = document.getElementById("purchase-orders-supplier-filter");
-        if (!select) return;
-        select.innerHTML = '<option value="">All Suppliers</option>';
-        fetch("/api/suppliers")
-          .then((r) => r.json())
-          .then((suppliers) => {
-            (suppliers || []).forEach((s) => {
-              const opt = document.createElement("option");
-              opt.value = s.id;
-              opt.textContent = s.name;
-              select.appendChild(opt);
-            });
-          })
-          .catch((err) => console.error("Error loading suppliers filter:", err));
+        makeRemoteInventorySelect(select, "/api/suppliers?view=lookup", "Supplier filter");
       }
 
       function loadPurchaseOrders() {
@@ -17358,10 +17558,15 @@
         if (startDate) params.set("start_date", startDate);
         if (endDate) params.set("end_date", endDate);
 
+        params.set("view", "register");
+        params.set("per_page", "30");
+        const request = beginInventoryPage("purchases", params, "purchase-orders-pagination", loadPurchaseOrders);
+
         // Load summary
         fetch("/api/purchase_orders/summary")
           .then((r) => r.json())
           .then((summary) => {
+            if (!request.current()) return;
             document.getElementById("po-total").textContent = summary.total || 0;
             document.getElementById("po-pending").textContent = summary.pending_approval || 0;
             document.getElementById("po-approved").textContent = summary.approved || 0;
@@ -17371,19 +17576,19 @@
           })
           .catch(() => {});
 
-        fetch(`/api/purchase_orders${params.toString() ? "?" + params.toString() : ""}`)
-          .then((r) => r.json())
+        return fetch(`/api/purchase_orders?${params.toString()}`)
+          .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
           .then((data) => {
+            if (!request.current()) return;
+            request.accept(data);
             table.innerHTML = "";
 
-            if (!data || data.length === 0) {
+            if (data.items.length === 0) {
               table.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-muted">No purchase orders found.</td></tr>';
-              renderPagination("purchases", "purchase-orders-pagination", 1, loadPurchaseOrders);
               return;
             }
 
-            const page = paginateArray(data, "purchases");
-            page.items.forEach((po) => {
+            data.items.forEach((po) => {
               // Status badge
               const statusColors = {
                 'draft': 'secondary',
@@ -17424,7 +17629,7 @@
                         <i class="bi bi-check-lg"></i>
                       </button>
                     ` : ''}
-                    ${(po.status === 'approved' || po.status === 'partially_received') ? `
+                    ${(po.status === 'approved' || po.status === 'partially_received' || hasPurchaseReceivingRetry(po.id)) ? `
                       <button class="btn btn-success" onclick="openReceivePurchaseOrder(${po.id})" title="Receive Items">
                         <i class="bi bi-box-arrow-in-down"></i>
                       </button>
@@ -17443,10 +17648,12 @@
               table.appendChild(row);
             });
 
-            renderPagination("purchases", "purchase-orders-pagination", page.totalPages, loadPurchaseOrders);
+            renderInventoryPagination("purchases", "purchase-orders-pagination", loadPurchaseOrders);
           })
           .catch((err) => {
             console.error("Error loading purchase orders:", err);
+            if (!request.current()) return;
+            request.fail();
             table.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-danger">Failed to load purchase orders.</td></tr>';
           });
       }
@@ -17488,10 +17695,16 @@
         content.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div></div>';
         modal.show();
         currentPOId = poId;
+        const identity = inventoryIdentity();
 
         fetch(`/api/purchase_orders/${poId}`)
-          .then((r) => r.json())
+          .then(async response => {
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || "Purchase order details unavailable");
+            return data;
+          })
           .then((po) => {
+            if (currentPOId !== poId || inventoryIdentity() !== identity) return;
             const statusColors = {
               'draft': 'secondary', 'pending': 'warning', 'approved': 'info',
               'partially_received': 'primary', 'received': 'success', 'cancelled': 'danger'
@@ -17587,8 +17800,9 @@
               </table>
             `;
           })
-          .catch(() => {
-            content.innerHTML = '<div class="alert alert-danger">Failed to load purchase order details</div>';
+          .catch((error) => {
+            if (currentPOId !== poId || inventoryIdentity() !== identity) return;
+            content.innerHTML = `<div class="alert alert-danger">${escapeHtml(error.message || "Failed to load purchase order details")}</div>`;
           });
       }
 
@@ -17727,19 +17941,10 @@
         document.getElementById("po-expected-delivery").value = "";
         document.getElementById("po-items-container").innerHTML = "";
 
-        fetch("/api/suppliers")
-          .then((r) => r.json())
-          .then((suppliers) => {
-            cachedSuppliersForPO = suppliers || [];
-            const select = document.getElementById("po-supplier-id");
-            cachedSuppliersForPO.forEach((s) => {
-              const opt = document.createElement("option");
-              opt.value = s.id;
-              opt.textContent = s.name;
-              select.appendChild(opt);
-            });
-          })
-          .catch((err) => console.error("Error loading suppliers for PO:", err));
+        const supplier = document.getElementById("po-supplier-id");
+        const existingLookup = supplier.remoteLookup;
+        const lookup = makeRemoteInventorySelect(supplier, "/api/suppliers?view=lookup", "Supplier");
+        if (existingLookup) lookup.reset();
 
         addPurchaseOrderItemRow();
       }
@@ -17750,7 +17955,7 @@
         row.className = "row g-2 mb-2 po-item-row";
         row.innerHTML = `
           <div class="col-md-5">
-            <select class="form-select searchable-select po-item-product" data-search-placeholder="Search product..."></select>
+            <select class="form-select po-item-product" aria-label="Purchase product"></select>
           </div>
           <div class="col-md-3">
             <input type="number" min="1" class="form-control po-item-qty" placeholder="Qty" />
@@ -17766,15 +17971,11 @@
 
         const productSelect = row.querySelector(".po-item-product");
         productSelect.innerHTML = '<option value="">Select product</option>';
-        fetch("/api/purchase_orders/products").then((response) => response.json()).then((products) => {
-          products.forEach((p) => {
-            const opt = document.createElement("option");
-            opt.value = p.id;
-            opt.textContent = `${p.name} — ${p.branch_name} (${formatCurrency(p.price)})`;
-            productSelect.appendChild(opt);
-          });
-        }).catch((error) => console.error("Error loading purchase products:", error));
-        makeSelectSearchable(productSelect);
+        makeRemoteInventorySelect(productSelect, "/api/purchase_orders/products", "Purchase product", true);
+        productSelect.addEventListener("change", () => {
+          const option = productSelect.selectedOptions[0];
+          if (option?.value) row.querySelector(".po-item-cost").value = option.dataset.unitCost || "0";
+        });
       }
 
       function removePurchaseOrderItemRow(button) {
@@ -17851,15 +18052,39 @@
       }
 
       function openReceivePurchaseOrder(poId) {
-        fetch(`/api/purchase_orders/${poId}`)
-          .then((r) => r.json())
+        if (receivingInFlight) return;
+        let retry;
+        try { retry = readPurchaseReceivingRetry(poId); }
+        catch (error) { showToast(error.message, "error"); return; }
+        const sequence = ++receivingOpenSequence;
+        const identity = inventoryIdentity();
+        const params = new URLSearchParams({view: "receiving", per_page: "30"});
+        params.set("po_id", String(poId));
+        const request = retry ? null : beginInventoryPage("receiving", params, "receive-po-pagination", () => openReceivePurchaseOrder(poId));
+        const load = retry ? Promise.resolve({id: poId, po_number: `#${poId}`, items: JSON.parse(retry).items.map(item => ({
+          id: item.purchase_order_item_id, product_name: `Saved line #${item.purchase_order_item_id}`,
+          ordered_qty: item.received_qty, received_qty: 0,
+        }))}) : fetch(`/api/purchase_orders/${poId}?${params}`)
+          .then(async response => {
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || "Purchase order unavailable");
+            return data;
+          });
+        return load
           .then((po) => {
+            if (sequence !== receivingOpenSequence || inventoryIdentity() !== identity) return;
+            if (request) { if (!request.current()) return; request.accept(po); }
+            else document.getElementById("receive-po-pagination").innerHTML = "";
             if (!po.id) {
               showToast(po.message || "Purchase order not found", "error");
               return;
             }
 
             selectedReceivePO = po;
+            const savedItems = retry ? JSON.parse(retry).items : null;
+            const notice = document.getElementById("receive-po-retry-status");
+            notice.hidden = !retry;
+            notice.textContent = retry ? "Previous receiving outcome is uncertain. Confirm retries the exact saved quantities, even if stock has already changed." : "";
             document.getElementById("receive-po-number").textContent = `${po.po_number} — ${po.product_branch || 'Unassigned'}`;
             const container = document.getElementById("receive-po-items-container");
             container.innerHTML = "";
@@ -17869,27 +18094,73 @@
               const row = document.createElement("div");
               row.className = "row g-2 mb-2 align-items-center";
               row.innerHTML = `
-                <div class="col-md-5"><strong>${item.product_name}</strong></div>
+                <div class="col-md-5"><strong>${escapeHtml(item.product_name)}</strong></div>
                 <div class="col-md-3"><small>Remaining: ${remaining}</small></div>
                 <div class="col-md-4">
-                  <input type="number" min="0" max="${remaining}" value="0" class="form-control receive-item-qty" data-po-item-id="${item.id}" />
+                  <input type="number" min="0" max="${remaining}" value="${savedItems?.find(saved => saved.purchase_order_item_id === item.id)?.received_qty || 0}" ${retry ? "disabled" : ""} class="form-control receive-item-qty" data-po-item-id="${item.id}" />
                 </div>
               `;
               container.appendChild(row);
             });
 
-            const modal = new bootstrap.Modal(document.getElementById("receivePurchaseOrderModal"));
+            const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById("receivePurchaseOrderModal"));
             modal.show();
           })
           .catch((err) => {
+            if (sequence !== receivingOpenSequence || inventoryIdentity() !== identity) return;
+            if (request && request.current()) request.fail();
             console.error("Error loading PO details:", err);
-            showToast("Failed to load purchase order details", "error");
+            showToast(err.message || "Failed to load purchase order details", "error");
           });
       }
 
+      function purchaseReceivingStorageKey(poId) {
+        return `pos_receiving_retry_v1:${CACHE_USER_ID}:${poId}`;
+      }
+
+      function hasPurchaseReceivingRetry(poId) {
+        // A fully received PO still needs a retry action after a lost success
+        // response/reload, so its saved result can be reconciled idempotently.
+        try { return !!sessionStorage.getItem(purchaseReceivingStorageKey(poId)); }
+        catch (error) { return false; }
+      }
+
+      function readPurchaseReceivingRetry(poId) {
+        const body = sessionStorage.getItem(purchaseReceivingStorageKey(poId));
+        if (!body) return null;
+        const payload = JSON.parse(body);
+        if (!payload.idempotency_key || !Array.isArray(payload.items)) {
+          throw new Error("Cannot read previous receiving request. Reconcile receiving history before continuing.");
+        }
+        return body;
+      }
+
+      async function sendPurchaseReceiving(poId, body) {
+        // Persist BEFORE the network write; storage failure must not create an
+        // untracked receipt. Keep the exact serialized request, not edited DOM.
+        const key = purchaseReceivingStorageKey(poId);
+        const saved = readPurchaseReceivingRetry(poId);
+        if (saved) body = saved;
+        else sessionStorage.setItem(key, body);
+        const response = await fetch(`/api/purchase_orders/${poId}/receive`, {
+          method: "POST", headers: {"Content-Type": "application/json"}, body,
+        });
+        const data = await response.json();
+        if (response.ok && data.success) sessionStorage.removeItem(key);
+        else if (response.status === 400 && data.success === false) sessionStorage.removeItem(key);
+        // Network errors, malformed JSON, 5xx and conflicts retain the retry.
+        if (!response.ok || !data.success) throw new Error(data.message || "Receiving outcome is uncertain. Retry this saved request.");
+        return data;
+      }
+
       function submitPurchaseReceiving() {
-        if (!selectedReceivePO) return;
-        const items = Array.from(document.querySelectorAll(".receive-item-qty"))
+        if (!selectedReceivePO || receivingInFlight) return;
+        const poId = selectedReceivePO.id;
+        const identity = inventoryIdentity();
+        let saved;
+        try { saved = readPurchaseReceivingRetry(poId); }
+        catch (error) { showToast(error.message, "error"); return; }
+        const items = saved ? JSON.parse(saved).items : Array.from(document.querySelectorAll(".receive-item-qty"))
           .map((input) => ({
             purchase_order_item_id: parseInt(input.dataset.poItemId, 10),
             received_qty: parseInt(input.value || "0", 10),
@@ -17899,6 +18170,17 @@
         if (items.length === 0) {
           showToast("Enter at least one receiving quantity.", "warning");
           return;
+        }
+        if (items.length > 500) { showToast("Receive at most 500 lines at a time.", "warning"); return; }
+        let body = saved;
+        if (!body) {
+          if (typeof crypto === "undefined" || typeof crypto.getRandomValues !== "function") {
+            showToast("Secure receiving requires a browser with cryptographic support. Use HTTPS and a supported browser.", "error");
+            return;
+          }
+          const key = typeof crypto.randomUUID === "function" ? crypto.randomUUID() :
+            Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, "0")).join("");
+          body = JSON.stringify({items, idempotency_key: key});
         }
 
         // Calculate total receiving quantity for confirmation message
@@ -17913,9 +18195,13 @@
           'Confirm Receiving',
           `Receive ${totalQty} item(s) into inventory?\n${itemNames}`,
           () => {
+            if (receivingInFlight || inventoryIdentity() !== identity) return;
+            receivingInFlight = true;
+            receivingOpenSequence++;
             const confirmBtn = document.querySelector('#receivePurchaseOrderModal .btn-success');
             const originalBtnContent = confirmBtn ? confirmBtn.innerHTML : '';
             const restoreConfirmButton = () => {
+              receivingInFlight = false;
               if (confirmBtn) {
                 confirmBtn.disabled = false;
                 confirmBtn.innerHTML = originalBtnContent;
@@ -17923,6 +18209,7 @@
             };
 
             if (confirmBtn?.disabled) {
+              receivingInFlight = false;
               return;
             }
             
@@ -17931,13 +18218,9 @@
               confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Processing...';
             }
 
-            fetch(`/api/purchase_orders/${selectedReceivePO.id}/receive`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ items }),
-            })
-              .then((r) => r.json())
+            sendPurchaseReceiving(poId, body)
               .then((data) => {
+                if (inventoryIdentity() !== identity) return;
                 if (!data.success) {
                   showToast(data.message || "Failed to receive items", "error");
                   return;
@@ -17954,8 +18237,9 @@
                 loadDashboardStats();
               })
               .catch((err) => {
+                if (inventoryIdentity() !== identity) return;
                 console.error("Error receiving PO:", err);
-                showToast("Network error. Please try again.", "error");
+                showToast(err.message || "Outcome uncertain. Retry the saved receiving request.", "error");
               })
               .finally(() => {
                 restoreConfirmButton();
@@ -18247,19 +18531,22 @@
         if (search) params.set("q", search);
         if (lowStock) params.set("low_stock", lowStock);
 
-        fetch(`/api/warehouse?${params.toString()}`)
-          .then((r) => r.json())
+        params.set("view", "register");
+        params.set("per_page", "30");
+        const request = beginInventoryPage("warehouse", params, "warehouse-pagination", loadWarehouseInventory);
+        return fetch(`/api/warehouse?${params.toString()}`)
+          .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
           .then((data) => {
+            if (!request.current()) return;
+            request.accept(data);
             table.innerHTML = "";
 
-            if (!data || data.length === 0) {
+            if (data.items.length === 0) {
               table.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-muted">No warehouse inventory found.</td></tr>';
-              renderPagination("warehouse", "warehouse-pagination", 1, () => loadWarehouseInventory());
               return;
             }
 
-            const page = paginateArray(data, "warehouse");
-            page.items.forEach((item) => {
+            data.items.forEach((item) => {
               const row = document.createElement("tr");
               row.innerHTML = `
                 <td><strong>${escapeHtml(item.product_name)}</strong></td>
@@ -18283,9 +18570,11 @@
               table.appendChild(row);
             });
 
-            renderPagination("warehouse", "warehouse-pagination", page.totalPages, () => loadWarehouseInventory());
+            renderInventoryPagination("warehouse", "warehouse-pagination", loadWarehouseInventory);
           })
           .catch((e) => {
+            if (!request.current()) return;
+            request.fail();
             console.error("Error loading warehouse inventory", e);
             table.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-danger">Failed to load warehouse inventory.</td></tr>';
           });
@@ -18303,11 +18592,55 @@
       function openReportDownload(url) {
         url = dashboardIdentityUrl(url);
         if (!url) return false;
+        if (/^\/api\/(products|warehouse|purchase_orders)\/export\?/.test(url) &&
+            typeof openBoundedInventoryExport === "function") return openBoundedInventoryExport(url);
         const reportWindow = window.open(url, "_blank");
         if (!reportWindow) {
           showToast("Report window was blocked. Allow popups for this POS and try again.", "warning");
           return false;
         }
+        return true;
+      }
+
+      function openBoundedInventoryExport(url) {
+        const identity = inventoryIdentity();
+        // All three inventory lists use prefix search; keep downloaded rows in
+        // sync with the visible list, without changing other report contracts.
+        const target = new URL(url, window.location.href);
+        target.searchParams.set("search_mode", "prefix");
+        url = target.pathname + target.search;
+        // Reserve synchronously so browser popup policies don't block a PDF
+        // after awaiting the response. Never navigate this window to JSON errors.
+        const reportWindow = window.open("about:blank", "_blank");
+        if (!reportWindow) {
+          showToast("Report window was blocked. Allow popups for this POS and try again.", "warning");
+          return false;
+        }
+        reportWindow.opener = null;
+        if (reportWindow.document?.body) reportWindow.document.body.textContent = "Preparing report (maximum 5,000 rows)…";
+        fetch(url).then(async response => {
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.message || (response.status === 413
+              ? "Export exceeds 5,000 rows. Narrow your filters and try again." : "Report download failed."));
+          }
+          const blob = await response.blob();
+          if (inventoryIdentity() !== identity) { reportWindow.close(); return; }
+          const objectUrl = URL.createObjectURL(blob);
+          if (url.includes("format=xlsx")) {
+            const disposition = response.headers.get("content-disposition") || "";
+            const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || "inventory-report.xlsx";
+            const link = document.createElement("a");
+            link.href = objectUrl;
+            link.download = filename;
+            link.click();
+            reportWindow.close();
+          } else if (!reportWindow.closed) reportWindow.location.replace(objectUrl);
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+        }).catch(error => {
+          reportWindow.close();
+          if (inventoryIdentity() === identity) showToast(error.message || "Report download failed.", "error");
+        });
         return true;
       }
 

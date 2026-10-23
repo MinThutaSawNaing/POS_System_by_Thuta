@@ -1,5 +1,9 @@
 # Inventory tabs: million-row readiness review
 
+> Historical baseline: subsequent remediation is described in
+> `inventory-scale-rollout.md`. The findings below describe the code before that
+> remediation, not the current cursor-register implementation.
+
 Reviewed October 23, 2026. This is a source-code assessment, not a million-row
 load-test certification or a verification of the deployed production database.
 The scrollbar/page-size update does not resolve the backend limitations below.

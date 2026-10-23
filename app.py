@@ -14,9 +14,13 @@ import hmac
 import math
 import random
 import threading
-from sqlalchemy import inspect, text, func, event, or_, and_
+from sqlalchemy import inspect, text, func, event, or_, and_, case, select, union_all
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import Session as SQLAlchemySession, aliased
+from sqlalchemy.orm import Session as SQLAlchemySession, aliased, joinedload, selectinload
+from inventory_paging import (
+    InventoryQueryError, bounded_integer, prefix_pattern, cursor_rows,
+    export_rows, bounded_search_ids, EXPORT_ROW_LIMIT, ORDER_LINE_LIMIT,
+)
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -118,6 +122,11 @@ app.config['MMQR_FOLDER'] = os.path.join(app.root_path, 'uploads', 'mmqr')
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB per request
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365)
 db = SQLAlchemy(app)
+
+
+@app.errorhandler(InventoryQueryError)
+def inventory_query_error(error):
+    return jsonify(success=False, message=str(error)), error.status
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['RECEIPT_LOGO_FOLDER'], exist_ok=True)
@@ -1585,7 +1594,7 @@ class Category(db.Model):
     suppliers = db.relationship('Supplier', backref='category_ref', lazy=True, foreign_keys='Supplier.category_id')
     branch = db.relationship('Branch', backref='categories')
     
-    def to_dict(self):
+    def to_dict(self, include_counts=True):
         return {
             'id': self.id,
             'name': self.name,
@@ -1596,8 +1605,8 @@ class Category(db.Model):
             'branch_id': self.branch_id,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
-            'product_count': len(self.products) if self.products else 0,
-            'supplier_count': len(self.suppliers) if self.suppliers else 0
+            'product_count': Product.query.filter_by(category_id=self.id).count() if include_counts else 0,
+            'supplier_count': Supplier.query.filter_by(category_id=self.id).count() if include_counts else 0
         }
 
 class Unit(db.Model):
@@ -1723,6 +1732,13 @@ class PurchaseOrderItem(db.Model):
 
     purchase_order = db.relationship('PurchaseOrder', backref='items')
     product = db.relationship('Product', backref='purchase_order_items')
+
+
+class ReceiptRequest(db.Model):
+    """Independent durable receipt retry ledger, retained after history deletion."""
+    key = db.Column(db.String(128), primary_key=True)
+    fingerprint = db.Column(db.String(64), nullable=False)
+    response_json = db.Column(db.Text, nullable=False)
 
 class SupplierCommunication(db.Model):
     """Track supplier communications and interactions"""
@@ -2601,6 +2617,22 @@ with app.app_context():
     db.create_all()
     inspector = inspect(db.engine)
 
+    def schema_migration_applied(version):
+        """True when a completed startup migration has already been recorded."""
+        if not inspector.has_table('schema_migration'):
+            return False
+        return db.session.execute(
+            text('SELECT 1 FROM schema_migration WHERE version = :version'),
+            {'version': version},
+        ).fetchone() is not None
+
+    # Legacy NULL branch/category backfills below are one-time upgrade work.
+    # Re-running them on every boot scans every product/order/warehouse row and
+    # is the difference between a fast restart and minutes of full-table writes
+    # on a million-row catalogue. The marker is written only after every startup
+    # migration succeeds, so an interrupted upgrade still repeats safely.
+    branch_v2_applied = schema_migration_applied('branch_stabilization_v2')
+
     # Audit-detail storage migration: compact existing JSON into a BLOB in bounded,
     # restartable batches and stop duplicating it in the legacy text column.
     if inspector.has_table('audit_log'):
@@ -2686,13 +2718,14 @@ with app.app_context():
     default_branch = db.session.execute(text(
         'SELECT id FROM branch WHERE is_active = 1 ORDER BY is_default DESC, id ASC LIMIT 1'
     )).scalar()
-    if default_branch:
+    if default_branch and not branch_v2_applied:
         for table_name, _, _ in tables_to_migrate:
             if inspector.has_table(table_name):
                 try:
                     db.session.execute(text(f'UPDATE {table_name} SET branch_id = :branch_id WHERE branch_id IS NULL'), {'branch_id': default_branch})
                     db.session.commit()
                 except Exception as e:
+                    db.session.rollback()
                     app.logger.warning(f"Could not update branch_id in {table_name}: {str(e)}")
     
     # Category table migration
@@ -2717,13 +2750,13 @@ with app.app_context():
     db.session.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_category_branch_name ON category (branch_id, name)'))
     db.session.commit()
 
-    if default_branch:
+    if default_branch and not branch_v2_applied:
         db.session.execute(text('UPDATE category SET branch_id = :branch_id WHERE branch_id IS NULL'),
                            {'branch_id': default_branch})
         db.session.commit()
 
     # Ensure all existing categories have a default color value
-    if inspector.has_table('category'):
+    if inspector.has_table('category') and not branch_v2_applied:
         db.session.execute(text("""
             UPDATE category 
             SET color = '#6c757d' 
@@ -2746,7 +2779,8 @@ with app.app_context():
     
     # Attach legacy category names and cross-branch references to a category in
     # the item's own branch. Existing IDs remain intact when already correct.
-    for item_table in ('product', 'supplier'):
+    # Legacy-only: skipped once the branch migration marker is complete.
+    for item_table in (() if branch_v2_applied else ('product', 'supplier')):
         if not inspector.has_table(item_table):
             continue
         rows = db.session.execute(text(f'''
@@ -2800,10 +2834,13 @@ with app.app_context():
             db.session.execute(text(migration_sql))
             db.session.commit()
 
-    db.session.execute(text('UPDATE product SET reorder_point = 10 WHERE reorder_point IS NULL'))
-    db.session.execute(text('UPDATE product SET reorder_quantity = 50 WHERE reorder_quantity IS NULL'))
-    db.session.execute(text('UPDATE product SET reorder_enabled = 1 WHERE reorder_enabled IS NULL'))
-    db.session.commit()
+    # Legacy defaults for rows created before these columns existed. New rows
+    # always receive model defaults, so this full-table work is upgrade-only.
+    if not branch_v2_applied:
+        db.session.execute(text('UPDATE product SET reorder_point = 10 WHERE reorder_point IS NULL'))
+        db.session.execute(text('UPDATE product SET reorder_quantity = 50 WHERE reorder_quantity IS NULL'))
+        db.session.execute(text('UPDATE product SET reorder_enabled = 1 WHERE reorder_enabled IS NULL'))
+        db.session.commit()
 
     # Preserve scan values and every legacy column/reference; fail closed on
     # duplicate branch barcodes rather than silently merging unrelated products.
@@ -2811,8 +2848,9 @@ with app.app_context():
     product_columns = {col['name'] for col in inspect(db.engine).get_columns('product')}
     if 'catalog_id' not in product_columns:
         db.session.execute(text('ALTER TABLE product ADD COLUMN catalog_id VARCHAR(64)'))
-    db.session.execute(text("UPDATE product SET barcode = NULL WHERE barcode = ''"))
-    db.session.execute(text("UPDATE product SET catalog_id = 'legacy-' || id WHERE catalog_id IS NULL"))
+    if not branch_v2_applied:
+        db.session.execute(text("UPDATE product SET barcode = NULL WHERE barcode = ''"))
+        db.session.execute(text("UPDATE product SET catalog_id = 'legacy-' || id WHERE catalog_id IS NULL"))
     db.session.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_product_branch_barcode ON product (branch_id, barcode)'))
     db.session.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_product_branch_catalog ON product (branch_id, catalog_id)'))
     db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_branch_id ON product (branch_id, id DESC)'))
@@ -2825,13 +2863,14 @@ with app.app_context():
     db.session.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_transfer_idempotency ON warehouse_transfer (idempotency_key)'))
     # create_all created the independent retry ledger before legacy columns were
     # upgraded. Backfill once; never overwrite a durable result on later starts.
-    db.session.execute(text('''
-        INSERT OR IGNORE INTO transfer_request
-            (key, fingerprint, target_product_id, resulting_stock, transfer_id)
-        SELECT idempotency_key, request_fingerprint, target_product_id, resulting_stock, id
-        FROM warehouse_transfer
-        WHERE idempotency_key IS NOT NULL AND request_fingerprint IS NOT NULL
-    '''))
+    if not branch_v2_applied:
+        db.session.execute(text('''
+            INSERT OR IGNORE INTO transfer_request
+                (key, fingerprint, target_product_id, resulting_stock, transfer_id)
+            SELECT idempotency_key, request_fingerprint, target_product_id, resulting_stock, id
+            FROM warehouse_transfer
+            WHERE idempotency_key IS NOT NULL AND request_fingerprint IS NOT NULL
+        '''))
     db.session.execute(text('CREATE TABLE IF NOT EXISTS schema_migration (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)'))
     db.session.commit()
 
@@ -3192,6 +3231,25 @@ with app.app_context():
         'CREATE INDEX IF NOT EXISTS idx_delivery_created_at ON delivery(created_at)',
         'CREATE INDEX IF NOT EXISTS idx_warehouse_product_qty ON warehouse_inventory(product_id, quantity)',
         'CREATE INDEX IF NOT EXISTS idx_product_unit ON product(unit_id)',
+        'CREATE INDEX IF NOT EXISTS idx_product_branch_name_nocase ON product(branch_id, name COLLATE NOCASE, id DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_product_branch_barcode_nocase ON product(branch_id, barcode COLLATE NOCASE, id DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_product_branch_category_nocase ON product(branch_id, category COLLATE NOCASE, id DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_product_category_id ON product(category_id, id)',
+        'CREATE INDEX IF NOT EXISTS idx_supplier_category_id ON supplier(category_id, id)',
+        'CREATE INDEX IF NOT EXISTS idx_product_name_nocase ON product(name COLLATE NOCASE, id DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_product_barcode_nocase ON product(barcode COLLATE NOCASE, id DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_supplier_name_nocase ON supplier(name COLLATE NOCASE, id)',
+        'CREATE INDEX IF NOT EXISTS idx_po_item_order ON purchase_order_item(purchase_order_id, id)',
+        'CREATE INDEX IF NOT EXISTS idx_po_item_product ON purchase_order_item(product_id)',
+        'CREATE INDEX IF NOT EXISTS idx_po_status_id ON purchase_order(status, id DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_po_supplier_id ON purchase_order(supplier_id, id DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_po_created_id ON purchase_order(created_at, id DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_po_number_nocase ON purchase_order(po_number COLLATE NOCASE, id DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_warehouse_active_id ON warehouse_inventory(id DESC) WHERE quantity > 0',
+        'CREATE INDEX IF NOT EXISTS idx_warehouse_low_id ON warehouse_inventory(id DESC) WHERE quantity > 0 AND quantity <= 5',
+        'CREATE INDEX IF NOT EXISTS idx_warehouse_fifo ON warehouse_inventory(product_id, received_date, id) WHERE quantity > 0',
+        'CREATE INDEX IF NOT EXISTS idx_warehouse_batch_fifo ON warehouse_inventory(product_id, batch_number, received_date, id) WHERE quantity > 0',
+        'CREATE INDEX IF NOT EXISTS idx_transfer_created ON warehouse_transfer(created_at, id)',
         # Keep these explicit for databases created before the memory models
         # existed.  IF NOT EXISTS makes startup safe and idempotent on SQLite.
         'CREATE INDEX IF NOT EXISTS idx_memory_registry_owner ON memory_registry(user_id, branch_id, scope)',
@@ -3968,7 +4026,16 @@ def api_categories():
         if active_only:
             query = query.filter_by(is_active=True)
         categories = query.order_by(Category.sort_order, Category.name).all()
-        rows = [c.to_dict() for c in categories]
+        rows = [c.to_dict(include_counts=False) for c in categories]
+        if request.args.get('counts', 'true').lower() != 'false':
+            category_ids = [c.id for c in categories]
+            product_counts = dict(db.session.query(Product.category_id, func.count(Product.id))
+                .filter(Product.category_id.in_(category_ids)).group_by(Product.category_id).all())
+            supplier_counts = dict(db.session.query(Supplier.category_id, func.count(Supplier.id))
+                .filter(Supplier.category_id.in_(category_ids)).group_by(Supplier.category_id).all())
+            for row in rows:
+                row['product_count'] = product_counts.get(row['id'], 0)
+                row['supplier_count'] = supplier_counts.get(row['id'], 0)
         if session.get('role') == 'cashier':
             for row in rows:
                 row.pop('supplier_count', None)
@@ -4265,6 +4332,54 @@ def api_units_convert():
     })
 
 # Product API Endpoints
+def product_prefix_ids(search, branch_id=None, include_category=False, page_bound=False):
+    """Separate indexed prefix probes avoid an OR forcing a catalog-wide scan."""
+    pattern = prefix_pattern(search)
+    base = db.session.query(Product.id)
+    if branch_id is not None:
+        base = base.filter(Product.branch_id == branch_id)
+    probes = [base.filter(column.like(pattern, escape='\\'))
+              for column in (Product.name, Product.barcode)]
+    if include_category:
+        # The free-text `product.category` column has no usable prefix index, so
+        # probing it forces a catalogue scan on the bounded path. Category names
+        # are canonical in the indexed category table, reached through
+        # idx_product_category_id; the legacy text probe remains on the
+        # unbounded/export path where a full filtered set is expected anyway.
+        if not page_bound:
+            probes.append(base.filter(Product.category.like(pattern, escape='\\')))
+        categories = db.session.query(Category.id).filter(Category.name.like(pattern, escape='\\'))
+        if branch_id is not None:
+            categories = categories.filter(Category.branch_id == branch_id)
+        probes.append(base.filter(Product.category_id.in_(categories)))
+    return bounded_search_ids(probes, Product.id) if page_bound else probes[0].union(*probes[1:])
+
+
+def product_lookup_candidates(search, branch_id=None):
+    """Bound alphabetical remote choices inside each indexed prefix probe."""
+    size = bounded_integer('limit', 30, 50)
+    base = db.session.query(Product.id)
+    if branch_id is not None:
+        base = base.filter(Product.branch_id == branch_id)
+    pattern = prefix_pattern(search)
+    candidates = []
+    for column in (Product.name, Product.barcode):
+        probe = base.filter(column.like(pattern, escape='\\')).order_by(
+            Product.name.collate('NOCASE'), Product.id).limit(size).subquery()
+        candidates.append(select(probe.c.id))
+    return union_all(*candidates)
+
+
+@app.route('/api/products/summary', methods=['GET'])
+def api_product_summary():
+    if 'user_id' not in session:
+        return jsonify(error='Unauthorized'), 401
+    total, low_stock = db.session.query(func.count(Product.id), func.coalesce(func.sum(
+        case((Product.stock < LOW_STOCK_THRESHOLD, 1), else_=0)), 0)
+    ).filter(Product.branch_id == get_current_branch_id()).one()
+    return jsonify(total_products=total, low_stock=low_stock)
+
+
 @app.route('/api/products', methods=['GET', 'POST'])
 def api_products():
     if 'user_id' not in session:
@@ -4318,7 +4433,20 @@ def api_products():
                 'next_cursor': rows[-1].id if has_more else None,
             })
 
-        query = Product.query.filter_by(branch_id=branch_id)
+        query = Product.query.options(joinedload(Product.category_ref), joinedload(Product.unit_ref)).filter_by(branch_id=branch_id)
+        if request.args.get('view') == 'lookup':
+            if request.args.get('id'):
+                query = query.filter(Product.id == bounded_integer('id', 1, 2147483647))
+            elif q:
+                query = query.filter(Product.id.in_(product_lookup_candidates(q, branch_id)))
+            rows = query.order_by(Product.name.collate('NOCASE'), Product.id).limit(
+                bounded_integer('limit', 30, 50)).all()
+            return jsonify([serialize_product(row) for row in rows])
+        if request.args.get('view') == 'management':
+            if q:
+                query = query.filter(Product.id.in_(product_prefix_ids(q, branch_id, include_category=True, page_bound=True)))
+            rows, paging = cursor_rows(query, Product.id)
+            return jsonify(items=[serialize_product(row) for row in rows], **paging)
         if q:
             like_q = f'%{q}%'
             query = query.filter(
@@ -4330,6 +4458,8 @@ def api_products():
         query = query.order_by(Product.id.desc())
 
         if page and per_page:
+            if page < 1 or page > 100:
+                raise InventoryQueryError('Deep numbered pages are disabled; use cursor pagination')
             safe_per_page = max(1, min(per_page, 100))
             pagination = query.paginate(page=page, per_page=safe_per_page, error_out=False)
             return jsonify({
@@ -4340,7 +4470,7 @@ def api_products():
                 'total_pages': pagination.pages
             })
 
-        products = query.all()
+        products = query.limit(100).all()
         return jsonify([serialize_product(p) for p in products])
 
     elif request.method == 'POST':
@@ -4445,7 +4575,9 @@ def export_product_catalog():
 
     search = (request.args.get('q') or '').strip()
     query = Product.query.filter(Product.branch_id == branch_id)
-    if search:
+    if search and request.args.get('search_mode') == 'prefix':
+        query = query.filter(Product.id.in_(product_prefix_ids(search, branch_id, include_category=True)))
+    elif search:
         like_search = f'%{search}%'
         query = query.filter(or_(
             Product.name.ilike(like_search),
@@ -4456,7 +4588,9 @@ def export_product_catalog():
             ),
         ))
 
-    products = query.order_by(Product.name.asc(), Product.id.asc()).all()
+    products = export_rows(query, Product.id).options(
+        joinedload(Product.category_ref), joinedload(Product.unit_ref)
+    ).order_by(Product.name.asc(), Product.id.asc()).all()
     records = [{
         'barcode': product.barcode,
         'product_name': product.name,
@@ -7396,7 +7530,7 @@ def api_customers():
 
 # Purchase Order & Receiving API Endpoints
 def purchase_orders_for_filters(search_query='', status_filter='', supplier_filter='',
-                                start_date='', end_date=''):
+                                start_date='', end_date='', *, as_query=False, prefix=False, page_bound=False):
     """Purchase orders for the tab's filters, newest first.
 
     Shared by the purchase order list API and its PDF/Excel exports so a
@@ -7405,11 +7539,19 @@ def purchase_orders_for_filters(search_query='', status_filter='', supplier_filt
     query = PurchaseOrder.query
 
     if search_query:
-        like_query = f"%{search_query}%"
-        query = query.filter(
-            (PurchaseOrder.po_number.ilike(like_query)) |
-            (Supplier.name.ilike(like_query))
-        ).join(Supplier)
+        if prefix:
+            pattern = prefix_pattern(search_query)
+            if not page_bound:
+                by_number = db.session.query(PurchaseOrder.id).filter(PurchaseOrder.po_number.like(pattern, escape='\\'))
+                by_supplier = db.session.query(PurchaseOrder.id).filter(PurchaseOrder.supplier_id.in_(
+                    db.session.query(Supplier.id).filter(Supplier.name.like(pattern, escape='\\'))))
+                query = query.filter(PurchaseOrder.id.in_(by_number.union(by_supplier)))
+        else:
+            like_query = f"%{search_query}%"
+            query = query.filter(
+                (PurchaseOrder.po_number.ilike(like_query)) |
+                (Supplier.name.ilike(like_query))
+            ).join(Supplier)
 
     if status_filter:
         query = query.filter(PurchaseOrder.status == status_filter)
@@ -7418,43 +7560,107 @@ def purchase_orders_for_filters(search_query='', status_filter='', supplier_filt
         try:
             query = query.filter(PurchaseOrder.supplier_id == int(supplier_filter))
         except ValueError:
-            pass
+            raise InventoryQueryError('Invalid supplier ID') from None
 
     if start_date:
         try:
             start_dt = datetime.strptime(start_date, '%Y-%m-%d')
             query = query.filter(PurchaseOrder.created_at >= start_dt)
         except ValueError:
-            pass
+            raise InventoryQueryError('Invalid start date') from None
 
     if end_date:
         try:
             end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
             query = query.filter(PurchaseOrder.created_at < end_dt)
         except ValueError:
-            pass
+            raise InventoryQueryError('Invalid end date') from None
 
-    return query.order_by(PurchaseOrder.created_at.desc()).all()
+    if as_query:
+        if search_query and prefix and page_bound:
+            # Preserve all predicates (supplier/status/date) inside every probe.
+            probes = [query.filter(PurchaseOrder.po_number.like(pattern, escape='\\')),
+                      query.filter(PurchaseOrder.supplier_id.in_(db.session.query(Supplier.id).filter(
+                          Supplier.name.like(pattern, escape='\\'))))]
+            return query.filter(PurchaseOrder.id.in_(bounded_search_ids(probes, PurchaseOrder.id)))
+        return query
+    return query.options(joinedload(PurchaseOrder.supplier), joinedload(PurchaseOrder.creator),
+        joinedload(PurchaseOrder.approver)).order_by(PurchaseOrder.id.desc()).limit(100).all()
 
 
-def purchase_order_product_branch_label(po):
-    """Describe the catalog branches represented by a shared purchase order."""
-    branch_ids = {item.product.branch_id for item in po.items if item.product and item.product.branch_id}
-    if len(branch_ids) > 1:
+def serialize_purchase_register(orders):
+    """Aggregate only the selected orders' lines, never instantiate line graphs."""
+    ids = [po.id for po in orders]
+    stats = {row.purchase_order_id: row for row in db.session.query(
+        PurchaseOrderItem.purchase_order_id,
+        func.count(PurchaseOrderItem.id).label('items_count'),
+        func.sum(case((PurchaseOrderItem.received_qty >= PurchaseOrderItem.ordered_qty, 1), else_=0)).label('received_count'),
+        func.sum(PurchaseOrderItem.ordered_qty).label('ordered'),
+        func.sum(PurchaseOrderItem.received_qty).label('received'),
+        func.min(Product.branch_id).label('min_branch'),
+        func.max(Product.branch_id).label('max_branch'),
+    ).outerjoin(Product, Product.id == PurchaseOrderItem.product_id)
+     .filter(PurchaseOrderItem.purchase_order_id.in_(ids))
+     .group_by(PurchaseOrderItem.purchase_order_id).all()} if ids else {}
+    branch_ids = {po.branch_id for po in orders if po.branch_id}
+    branch_ids.update(row.min_branch for row in stats.values() if row.min_branch)
+    names = dict(db.session.query(Branch.id, Branch.name).filter(Branch.id.in_(branch_ids)).all()) if branch_ids else {}
+    result = []
+    for po in orders:
+        stat = stats.get(po.id)
+        branch_id = stat.min_branch if stat and stat.min_branch else po.branch_id
+        result.append({
+            'id': po.id, 'po_number': po.po_number, 'supplier_id': po.supplier_id,
+            'supplier_name': po.supplier.name if po.supplier else 'Unknown',
+            'product_branch': ('Multiple branches' if stat and stat.min_branch != stat.max_branch
+                               else names.get(branch_id, 'Unassigned')),
+            'status': po.status, 'status_label': purchase_order_status_label(po.status),
+            'total_amount': po.total_amount, 'notes': po.notes,
+            'expected_delivery_date': po.expected_delivery_date.isoformat() if po.expected_delivery_date else None,
+            'created_by': po.creator.username if po.creator else None,
+            'approved_by': po.approver.username if po.approver else None,
+            'approved_at': po.approved_at.isoformat() if po.approved_at else None,
+            'created_at': po.created_at.isoformat(),
+            'updated_at': po.updated_at.isoformat() if po.updated_at else None,
+            'items_count': stat.items_count if stat else 0,
+            'received_items_count': int(stat.received_count or 0) if stat else 0,
+            'total_ordered': int(stat.ordered or 0) if stat else 0,
+            'total_received': int(stat.received or 0) if stat else 0,
+        })
+    return result
+
+
+def purchase_order_product_branch_label(po, items=None):
+    """Describe the catalog branches represented by a shared purchase order.
+
+    Callers that already loaded the order's lines (exports) pass them in so the
+    label costs no extra query; the SQL fallback covers single-order reads.
+    """
+    if items is None:
+        minimum, maximum = db.session.query(func.min(Product.branch_id), func.max(Product.branch_id))\
+            .join(PurchaseOrderItem, PurchaseOrderItem.product_id == Product.id)\
+            .filter(PurchaseOrderItem.purchase_order_id == po.id).one()
+    else:
+        branch_ids = {item.product.branch_id for item in items
+                      if item.product and item.product.branch_id}
+        minimum = min(branch_ids) if branch_ids else None
+        maximum = max(branch_ids) if branch_ids else None
+    if minimum != maximum:
         return 'Multiple branches'
-    branch_id = next(iter(branch_ids), po.branch_id)
+    branch_id = minimum or po.branch_id
     branch = db.session.get(Branch, branch_id) if branch_id else None
     return branch.name if branch else 'Unassigned'
 
 
 def serialize_purchase_order(po, include_items=False):
     """Purchase order payload shared by the list API and the exports."""
+    items = list(po.items)
     payload = {
         'id': po.id,
         'po_number': po.po_number,
         'supplier_id': po.supplier_id,
         'supplier_name': po.supplier.name if po.supplier else 'Unknown',
-        'product_branch': purchase_order_product_branch_label(po),
+        'product_branch': purchase_order_product_branch_label(po, items),
         'status': po.status,
         'status_label': purchase_order_status_label(po.status),
         'total_amount': po.total_amount,
@@ -7465,10 +7671,10 @@ def serialize_purchase_order(po, include_items=False):
         'approved_at': po.approved_at.isoformat() if po.approved_at else None,
         'created_at': po.created_at.isoformat(),
         'updated_at': po.updated_at.isoformat() if po.updated_at else None,
-        'items_count': len(po.items),
-        'received_items_count': sum(1 for i in po.items if i.received_qty >= i.ordered_qty),
-        'total_ordered': sum(i.ordered_qty for i in po.items),
-        'total_received': sum(i.received_qty for i in po.items),
+        'items_count': len(items),
+        'received_items_count': sum(1 for i in items if i.received_qty >= i.ordered_qty),
+        'total_ordered': sum(i.ordered_qty for i in items),
+        'total_received': sum(i.received_qty for i in items),
     }
     if include_items:
         payload['items'] = [{
@@ -7479,7 +7685,7 @@ def serialize_purchase_order(po, include_items=False):
             'line_total': money_float(
                 safe_to_decimal(item.ordered_qty) * safe_to_decimal(item.unit_cost or 0)
             ),
-        } for item in po.items]
+        } for item in items]
     return payload
 
 
@@ -7494,11 +7700,16 @@ def api_purchase_orders():
         start_date = (request.args.get('start_date') or '').strip()
         end_date = (request.args.get('end_date') or '').strip()
 
-        purchase_orders = purchase_orders_for_filters(
+        register = request.args.get('view') == 'register'
+        query = purchase_orders_for_filters(
             search_query, status_filter, supplier_filter,
-            start_date, end_date,
-        )
-        return jsonify([serialize_purchase_order(po) for po in purchase_orders])
+            start_date, end_date, as_query=True, prefix=register, page_bound=register,
+        ).options(joinedload(PurchaseOrder.supplier), joinedload(PurchaseOrder.creator), joinedload(PurchaseOrder.approver))
+        if register:
+            rows, paging = cursor_rows(query, PurchaseOrder.id)
+            return jsonify(items=serialize_purchase_register(rows), **paging)
+        rows = query.order_by(PurchaseOrder.id.desc()).limit(100).all()
+        return jsonify(serialize_purchase_register(rows))
 
     data = request.get_json() or {}
     supplier_id = data.get('supplier_id')
@@ -7507,6 +7718,8 @@ def api_purchase_orders():
 
     if not supplier_id or not items:
         return jsonify({'success': False, 'message': 'Supplier and at least one item are required'}), 400
+    if not isinstance(items, list) or len(items) > ORDER_LINE_LIMIT:
+        raise InventoryQueryError(f'An order may contain at most {ORDER_LINE_LIMIT} lines')
 
     supplier = db.session.get(Supplier, supplier_id)
     if not supplier:
@@ -7574,8 +7787,17 @@ def api_purchase_orders():
 @manager_required
 def api_purchase_order_products():
     """Catalog choices from every branch for the shared purchase form."""
-    branch_names = {branch.id: branch.name for branch in Branch.query.all()}
-    products = Product.query.order_by(Product.name.asc()).all()
+    query = Product.query
+    exact_id = request.args.get('id')
+    if exact_id:
+        query = query.filter(Product.id == bounded_integer('id', 1, 2147483647))
+    else:
+        search = (request.args.get('q') or '').strip()
+        if search:
+            query = query.filter(Product.id.in_(product_lookup_candidates(search)))
+    products = query.order_by(Product.name.collate('NOCASE'), Product.id).limit(bounded_integer('limit', 30, 50)).all()
+    branch_ids = {product.branch_id for product in products if product.branch_id}
+    branch_names = dict(db.session.query(Branch.id, Branch.name).filter(Branch.id.in_(branch_ids)).all()) if branch_ids else {}
     return jsonify([{
         'id': product.id,
         'name': product.name,
@@ -7598,10 +7820,20 @@ def export_purchase_orders():
     start_date = (request.args.get('start_date') or '').strip()
     end_date = (request.args.get('end_date') or '').strip()
     report_format = normalize_report_format(request.args.get('format'))
-    purchase_orders = purchase_orders_for_filters(
+    query = purchase_orders_for_filters(
         search_query, status_filter, supplier_filter,
-        start_date, end_date,
+        start_date, end_date, as_query=True, prefix=request.args.get('search_mode') == 'prefix',
     )
+    query = export_rows(query, PurchaseOrder.id)
+    # Bound the line-item sheet too, not just the number of orders.
+    line_probe = (db.session.query(PurchaseOrderItem.id).filter(
+        PurchaseOrderItem.purchase_order_id.in_(query.with_entities(PurchaseOrder.id))
+    ).limit(EXPORT_ROW_LIMIT + 1).all())
+    if len(line_probe) > EXPORT_ROW_LIMIT:
+        raise InventoryQueryError(f'Export exceeds {EXPORT_ROW_LIMIT:,} line items. Narrow the date range.', 413)
+    purchase_orders = query.options(joinedload(PurchaseOrder.supplier), joinedload(PurchaseOrder.creator),
+        joinedload(PurchaseOrder.approver), selectinload(PurchaseOrder.items).joinedload(PurchaseOrderItem.product))
+    purchase_orders = purchase_orders.order_by(PurchaseOrder.id.desc()).all()
     supplier_name = ''
     if supplier_filter:
         supplier = db.session.get(Supplier, int(supplier_filter)) if supplier_filter.isdigit() else None
@@ -7649,47 +7881,38 @@ def api_purchase_orders_summary():
     now = datetime.utcnow()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
-    base_query = PurchaseOrder.query
-    
-    total_pos = base_query.count()
-    pending_approval = base_query.filter(PurchaseOrder.status == 'pending').count()
-    approved = base_query.filter(PurchaseOrder.status == 'approved').count()
-    partially_received = base_query.filter(PurchaseOrder.status == 'partially_received').count()
-    received = base_query.filter(PurchaseOrder.status == 'received').count()
-    cancelled = base_query.filter(PurchaseOrder.status == 'cancelled').count()
-    
-    # This month's totals
-    monthly_received = base_query.filter(
-        PurchaseOrder.status == 'received',
-        PurchaseOrder.updated_at >= month_start
-    ).count()
-    
-    monthly_amount = db.session.query(db.func.sum(PurchaseOrder.total_amount)).filter(
-        PurchaseOrder.created_at >= month_start,
-        PurchaseOrder.status != 'cancelled'
-    ).scalar() or 0
-    
-    return jsonify({
-        'total': total_pos,
-        'draft': base_query.filter(PurchaseOrder.status == 'draft').count(),
-        'pending_approval': pending_approval,
-        'approved': approved,
-        'partially_received': partially_received,
-        'received': received,
-        'cancelled': cancelled,
-        'monthly_received': monthly_received,
-        'monthly_amount': round(monthly_amount, 2)
-    })
+    fields = {'total': func.count(PurchaseOrder.id)}
+    for status in ('draft', 'pending', 'approved', 'partially_received', 'received', 'cancelled'):
+        key = 'pending_approval' if status == 'pending' else status
+        fields[key] = func.coalesce(func.sum(case((PurchaseOrder.status == status, 1), else_=0)), 0)
+    fields['monthly_received'] = func.coalesce(func.sum(case((and_(
+        PurchaseOrder.status == 'received', PurchaseOrder.updated_at >= month_start), 1), else_=0)), 0)
+    fields['monthly_amount'] = func.coalesce(func.sum(case((and_(
+        PurchaseOrder.created_at >= month_start, PurchaseOrder.status != 'cancelled'), PurchaseOrder.total_amount), else_=0)), 0)
+    values = db.session.query(*(expression.label(key) for key, expression in fields.items())).one()
+    result = dict(values._mapping)
+    result['monthly_amount'] = money_float(result['monthly_amount'])
+    return jsonify(result)
 
 @app.route('/api/purchase_orders/<int:po_id>', methods=['GET', 'PUT'])
 @manager_required
 def api_single_purchase_order(po_id):
-    po = db.session.get(PurchaseOrder, po_id)
+    po = PurchaseOrder.query.options(joinedload(PurchaseOrder.supplier), joinedload(PurchaseOrder.creator),
+        joinedload(PurchaseOrder.approver)).filter_by(id=po_id).first()
     if not po:
         return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
 
     if request.method == 'GET':
+        item_query = PurchaseOrderItem.query.filter_by(purchase_order_id=po_id).options(joinedload(PurchaseOrderItem.product))
+        if request.args.get('view') == 'receiving':
+            items, paging = cursor_rows(item_query, PurchaseOrderItem.id)
+        else:
+            items = item_query.order_by(PurchaseOrderItem.id).limit(ORDER_LINE_LIMIT + 1).all()
+            if len(items) > ORDER_LINE_LIMIT:
+                raise InventoryQueryError('This legacy order exceeds 500 detail lines. Use paged Receiving to process it.', 413)
+            paging = {'has_more': False, 'next_cursor': None}
         return jsonify({
+            **paging,
             'id': po.id,
             'po_number': po.po_number,
             'supplier_id': po.supplier_id,
@@ -7719,7 +7942,7 @@ def api_single_purchase_order(po_id):
                 'remaining_qty': item.ordered_qty - item.received_qty,
                 'unit_cost': item.unit_cost,
                 'line_total': item.ordered_qty * item.unit_cost
-            } for item in po.items]
+            } for item in items]
         })
     
     elif request.method == 'PUT':
@@ -7812,7 +8035,9 @@ def api_receive_purchase_order(po_id):
     try:
         result, status = receive_purchase_order(db, {
             'PurchaseOrder': PurchaseOrder, 'WarehouseInventory': WarehouseInventory,
-        }, po_id, data.get('items'))
+            'PurchaseOrderItem': PurchaseOrderItem, 'ReceiptRequest': ReceiptRequest,
+        }, po_id, data.get('items'), idempotency_key=(data['idempotency_key'] if 'idempotency_key' in data else request.headers.get('Idempotency-Key')),
+            actor_id=session.get('user_id'))
         return jsonify(result), status
     except Exception:
         app.logger.exception('Error receiving purchase order')
@@ -7825,6 +8050,11 @@ def api_print_purchase_order(po_id):
     po = db.session.get(PurchaseOrder, po_id)
     if not po:
         return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
+    if len(PurchaseOrderItem.query.with_entities(PurchaseOrderItem.id).filter_by(
+        purchase_order_id=po_id).limit(ORDER_LINE_LIMIT + 1).all()) > ORDER_LINE_LIMIT:
+        raise InventoryQueryError('This legacy order exceeds the 500-line print limit.', 413)
+    po = PurchaseOrder.query.options(selectinload(PurchaseOrder.items).joinedload(
+        PurchaseOrderItem.product)).filter_by(id=po_id).first()
     
     buffer = io.BytesIO()
     page_width = 210 * mm
@@ -7946,6 +8176,16 @@ def api_suppliers():
     
     if request.method == 'GET':
         query = Supplier.query
+        if request.args.get('view') == 'lookup':
+            if request.args.get('id'):
+                query = query.filter(Supplier.id == bounded_integer('id', 1, 2147483647))
+            else:
+                search = (request.args.get('q') or '').strip()
+                if search:
+                    query = query.filter(Supplier.name.like(prefix_pattern(search), escape='\\'))
+            rows = query.order_by(Supplier.name.collate('NOCASE'), Supplier.id).limit(
+                bounded_integer('limit', 30, 50)).all()
+            return jsonify([{'id': row.id, 'name': row.name, 'is_active': bool(row.is_active)} for row in rows])
         search_query = (request.args.get('q') or '').strip()
         active_filter = (request.args.get('active') or '').strip().lower()
         category_filter = (request.args.get('category') or '').strip()
@@ -8342,55 +8582,58 @@ def api_supplier_products(supplier_id):
 
 # ==================== Warehouse Management APIs ====================
 
+def warehouse_inventory_query(search_query='', low_stock=False, *, prefix=False, page_bound=False):
+    query = WarehouseInventory.query.join(Product).filter(WarehouseInventory.quantity > 0)
+    if low_stock:
+        query = query.filter(WarehouseInventory.quantity <= LOW_STOCK_THRESHOLD)
+    if search_query:
+        if prefix:
+            if page_bound:
+                pattern = prefix_pattern(search_query)
+                probes = [query.filter(Product.name.like(pattern, escape='\\')),
+                          query.filter(Product.barcode.like(pattern, escape='\\'))]
+                query = query.filter(WarehouseInventory.id.in_(bounded_search_ids(probes, WarehouseInventory.id)))
+            else:
+                query = query.filter(WarehouseInventory.product_id.in_(product_prefix_ids(search_query)))
+        else:
+            pattern = f'%{search_query}%'
+            query = query.filter(or_(Product.name.ilike(pattern), Product.barcode.ilike(pattern)))
+    return query
+
+
+def serialize_warehouse_rows(inventory):
+    product_ids = {item.product_id for item in inventory}
+    totals = dict(db.session.query(WarehouseInventory.product_id, func.sum(WarehouseInventory.quantity))
+        .filter(WarehouseInventory.product_id.in_(product_ids))
+        .group_by(WarehouseInventory.product_id).all()) if product_ids else {}
+    branch_ids = {item.product.branch_id for item in inventory if item.product and item.product.branch_id}
+    branch_names = dict(db.session.query(Branch.id, Branch.name).filter(Branch.id.in_(branch_ids)).all()) if branch_ids else {}
+    return [{
+        'id': item.id, 'product_id': item.product_id,
+        'product_name': item.product.name if item.product else 'Unknown',
+        'product_branch': branch_names.get(item.product.branch_id, '') if item.product else '',
+        'barcode': item.product.barcode if item.product else None,
+        'quantity': item.quantity, 'total_warehouse_qty': int(totals.get(item.product_id, 0) or 0),
+        'main_stock': item.product.stock if item.product else 0,
+        'location': item.location, 'batch_number': item.batch_number, 'unit_cost': item.unit_cost,
+        'total_value': money_float(safe_to_decimal(item.quantity) * safe_to_decimal(item.unit_cost or 0)),
+        'received_date': item.received_date.isoformat() if item.received_date else None,
+        'expiry_date': item.expiry_date.isoformat() if item.expiry_date else None,
+        'notes': item.notes, 'created_at': item.created_at.isoformat(),
+        'updated_at': item.updated_at.isoformat() if item.updated_at else None,
+    } for item in inventory]
+
+
 def warehouse_inventory_records(search_query='', low_stock=False):
     """Warehouse stock rows (quantity > 0) with the tab's optional filters.
 
     Shared by the stock list API and its PDF/Excel exports so a downloaded
     report always matches what the Warehouse tab is showing.
     """
-    query = WarehouseInventory.query.join(Product).filter(
-        WarehouseInventory.quantity > 0,
-    )
-
-    if search_query:
-        like_query = f"%{search_query}%"
-        query = query.filter(
-            (Product.name.ilike(like_query)) |
-            (Product.barcode.ilike(like_query))
-        )
-
-    inventory = query.order_by(WarehouseInventory.updated_at.desc()).all()
-    branch_names = {branch.id: branch.name for branch in Branch.query.all()}
-
-    result = []
-    for item in inventory:
-        total_warehouse_qty = sum(
-            w.quantity for w in item.product.warehouse_items
-        ) if item.product and item.product.warehouse_items else 0
-        result.append({
-            'id': item.id,
-            'product_id': item.product_id,
-            'product_name': item.product.name if item.product else 'Unknown',
-            'product_branch': branch_names.get(item.product.branch_id, '') if item.product else '',
-            'barcode': item.product.barcode if item.product else None,
-            'quantity': item.quantity,
-            'total_warehouse_qty': total_warehouse_qty,
-            'main_stock': item.product.stock if item.product else 0,
-            'location': item.location,
-            'batch_number': item.batch_number,
-            'unit_cost': item.unit_cost,
-            'total_value': money_float(safe_to_decimal(item.quantity) * safe_to_decimal(item.unit_cost or 0)),
-            'received_date': item.received_date.isoformat() if item.received_date else None,
-            'expiry_date': item.expiry_date.isoformat() if item.expiry_date else None,
-            'notes': item.notes,
-            'created_at': item.created_at.isoformat(),
-            'updated_at': item.updated_at.isoformat() if item.updated_at else None
-        })
-
-    if low_stock:
-        result = [r for r in result if r['quantity'] <= LOW_STOCK_THRESHOLD]
-
-    return result
+    query = export_rows(warehouse_inventory_query(search_query, low_stock,
+        prefix=request.args.get('search_mode') == 'prefix'), WarehouseInventory.id)
+    return serialize_warehouse_rows(query.options(joinedload(WarehouseInventory.product))
+        .order_by(WarehouseInventory.id.desc()).all())
 
 @app.route('/api/warehouse', methods=['GET'])
 @manager_required
@@ -8399,7 +8642,12 @@ def api_warehouse_inventory():
     search_query = (request.args.get('q') or '').strip()
     low_stock = request.args.get('low_stock', '').strip().lower() == 'true'
 
-    return jsonify(warehouse_inventory_records(search_query, low_stock))
+    register = request.args.get('view') == 'register'
+    query = warehouse_inventory_query(search_query, low_stock, prefix=register, page_bound=register).options(joinedload(WarehouseInventory.product))
+    if register:
+        rows, paging = cursor_rows(query, WarehouseInventory.id)
+        return jsonify(items=serialize_warehouse_rows(rows), **paging)
+    return jsonify(serialize_warehouse_rows(query.order_by(WarehouseInventory.id.desc()).limit(100).all()))
 
 @app.route('/api/warehouse/export', methods=['GET'])
 @manager_required
@@ -8435,18 +8683,25 @@ def export_warehouse_stock():
 @app.route('/api/warehouse/summary', methods=['GET'])
 @manager_required
 def api_warehouse_summary():
-    """Get warehouse summary statistics"""
-    inventory = WarehouseInventory.query.join(Product).filter(
-        WarehouseInventory.quantity > 0,
-    ).all()
-    
-    total_skus = len(set(item.product_id for item in inventory))
-    total_units = sum(item.quantity for item in inventory)
-    total_value = sum(
-        (round_money(safe_to_decimal(item.quantity) * safe_to_decimal(item.unit_cost or 0))
-         for item in inventory),
-        Decimal('0')
-    )
+    """Get warehouse summary statistics (SQL aggregates; no ORM hydration)."""
+    # Round each batch to cents and sum integers: the original code rounded
+    # every batch with Decimal ROUND_HALF_UP, and a per-row Python callback for
+    # a million batches took ~11s. SQLite's ROUND(..., 2) also rounds halves
+    # away from zero, so 3 x 0.105 still yields 0.32 as a batch total.
+    batch_cents = func.cast(func.round(
+        WarehouseInventory.quantity * WarehouseInventory.unit_cost, 2) * 100, db.Integer)
+    active = WarehouseInventory.quantity > 0
+    # Two passes on purpose: one grouped DISTINCT count (which can walk the
+    # product_id index) and one row aggregate, instead of forcing a single scan
+    # to build a distinct set and evaluate money math at the same time.
+    total_skus = db.session.query(
+        func.count(func.distinct(WarehouseInventory.product_id))
+    ).filter(active).scalar() or 0
+    total_units, total_cents, low_stock_count = db.session.query(
+        func.coalesce(func.sum(WarehouseInventory.quantity), 0),
+        func.coalesce(func.sum(batch_cents), 0),
+        func.coalesce(func.sum(case((WarehouseInventory.quantity <= LOW_STOCK_THRESHOLD, 1), else_=0)), 0),
+    ).join(Product).filter(active).one()
     
     # Get recent transfers count (last 7 days)
     week_ago = datetime.utcnow() - timedelta(days=7)
@@ -8454,13 +8709,10 @@ def api_warehouse_summary():
         WarehouseTransfer.created_at >= week_ago,
     ).count()
     
-    # Low stock items (quantity <= 5)
-    low_stock_count = sum(1 for item in inventory if item.quantity <= 5)
-    
     return jsonify({
         'total_skus': total_skus,
         'total_units': total_units,
-        'total_value': money_float(total_value),
+        'total_value': money_float(Decimal(total_cents) / 100),
         'recent_transfers': recent_transfers,
         'low_stock_count': low_stock_count
     })
@@ -8535,23 +8787,33 @@ def api_warehouse_transfer():
         warehouse_query = WarehouseInventory.query.filter_by(product_id=product_id)
         if batch_number:
             warehouse_query = warehouse_query.filter_by(batch_number=batch_number)
-        items = warehouse_query.filter(WarehouseInventory.quantity > 0).order_by(
-            WarehouseInventory.received_date, WarehouseInventory.id).all()
-        available = sum(item.quantity for item in items)
+        warehouse_query = warehouse_query.filter(WarehouseInventory.quantity > 0)
+        available = warehouse_query.with_entities(func.sum(WarehouseInventory.quantity)).scalar() or 0
         if available < quantity:
             db.session.rollback()
             return jsonify(success=False, message=f'Insufficient warehouse stock. Available: {available}'), 400
         remaining = quantity
-        for item in items:
-            take = min(item.quantity, remaining)
-            if not take:
-                break
-            changed = WarehouseInventory.query.filter(
-                WarehouseInventory.id == item.id, WarehouseInventory.quantity >= take
-            ).update({WarehouseInventory.quantity: WarehouseInventory.quantity - take}, synchronize_session=False)
-            if changed != 1:
-                raise RuntimeError('Warehouse stock changed during transfer')
-            remaining -= take
+        processed = 0
+        while remaining:
+            items = warehouse_query.order_by(WarehouseInventory.received_date, WarehouseInventory.id).limit(100).all()
+            for item in items:
+                if not remaining:
+                    break
+                processed += 1
+                if processed > ORDER_LINE_LIMIT:
+                    db.session.rollback()
+                    return jsonify(success=False, message='Transfer spans more than 500 batches. Transfer a smaller quantity.'), 400
+                take = min(item.quantity, remaining)
+                changed = WarehouseInventory.query.filter(
+                    WarehouseInventory.id == item.id, WarehouseInventory.quantity >= take
+                ).update({WarehouseInventory.quantity: WarehouseInventory.quantity - take}, synchronize_session=False)
+                if changed != 1:
+                    raise RuntimeError('Warehouse stock changed during transfer')
+                remaining -= take
+            # Bulk updates bypass identity synchronization; discard stale quantities
+            # before the next bounded FIFO chunk.
+            for item in items:
+                db.session.expire(item)
 
         # Catalog identity, not display name, links barcode-less copies. A
         # physical barcode is an explicit identity in the destination branch.
@@ -8612,12 +8874,14 @@ def api_warehouse_transfer():
 @manager_required
 def api_warehouse_transfers():
     """Get transfer history"""
-    page = int(request.args.get('page', 1))
-    per_page = int(request.args.get('per_page', 50))
+    page = bounded_integer('page', 1, 100)
+    per_page = bounded_integer('per_page', 50, 100)
     
-    query = WarehouseTransfer.query
+    query = WarehouseTransfer.query.options(joinedload(WarehouseTransfer.product), joinedload(WarehouseTransfer.performer))
     transfers = query.order_by(WarehouseTransfer.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
-    total = query.count()
+    # The tab only requests the latest transfers; avoid a history-wide count.
+    # Explicit numbered clients remain supported for bounded shallow browsing.
+    total = query.order_by(None).count() if 'page' in request.args else len(transfers)
     branch_names = {branch.id: branch.name for branch in Branch.query.all()}
     
     return jsonify({
