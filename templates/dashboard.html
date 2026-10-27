@@ -3156,6 +3156,7 @@
               </button>
             </div>
             <button
+              type="button"
               class="btn btn-primary"
               data-bs-toggle="modal"
               data-bs-target="#addPurchaseOrderModal"
@@ -18974,23 +18975,39 @@
         );
       }
 
+      // The cancel modal is static too, so its confirm button follows the same
+      // rule as the create modal: always come back to the idle label.
+      let cancelingPurchaseOrder = false;
+      let cancelPurchaseOrderButtonHtml = null;
+
+      function setCancelPurchaseOrderSaving(saving) {
+        cancelingPurchaseOrder = Boolean(saving);
+        const confirmBtn = document.querySelector("#cancelPurchaseOrderModal .btn-danger");
+        if (!confirmBtn) return;
+        if (!cancelPurchaseOrderButtonHtml) cancelPurchaseOrderButtonHtml = confirmBtn.innerHTML;
+        confirmBtn.disabled = cancelingPurchaseOrder;
+        confirmBtn.innerHTML = cancelingPurchaseOrder
+          ? '<span class="spinner-border spinner-border-sm me-1"></span>Cancelling...'
+          : cancelPurchaseOrderButtonHtml;
+      }
+
+      document.getElementById("cancelPurchaseOrderModal")?.addEventListener("hidden.bs.modal", () => {
+        setCancelPurchaseOrderSaving(false);
+      });
+
       function showCancelPOModal(poId, poNumber) {
         cancelPOId = poId;
         document.getElementById("cancel-po-number-display").textContent = poNumber;
         document.getElementById("cancel-po-reason").value = "";
+        setCancelPurchaseOrderSaving(false);
         new bootstrap.Modal(document.getElementById("cancelPurchaseOrderModal")).show();
       }
 
       function confirmCancelPurchaseOrder() {
+        if (cancelingPurchaseOrder) return;
         const reason = document.getElementById("cancel-po-reason").value.trim();
-        const confirmBtn = document.querySelector('#cancelPurchaseOrderModal .btn-danger');
-        const originalBtnContent = confirmBtn ? confirmBtn.innerHTML : '';
-        
-        if (confirmBtn) {
-          confirmBtn.disabled = true;
-          confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Cancelling...';
-        }
-        
+        setCancelPurchaseOrderSaving(true);
+
         fetch(`/api/purchase_orders/${cancelPOId}/cancel`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -19000,24 +19017,22 @@
           .then((data) => {
             if (data.success) {
               if (typeof markBranchFormSaved === "function") markBranchFormSaved("cancelPurchaseOrderModal");
-              bootstrap.Modal.getInstance(document.getElementById("cancelPurchaseOrderModal")).hide();
+              const modalElement = document.getElementById("cancelPurchaseOrderModal");
+              setCancelPurchaseOrderSaving(false);
+              const modal = bootstrap.Modal.getInstance(modalElement);
+              if (modal) modal.hide();
               showToast('Purchase order cancelled successfully', 'success');
               loadPurchaseOrders();
             } else {
               showToast(data.message || 'Failed to cancel purchase order', 'error');
-              if (confirmBtn) {
-                confirmBtn.disabled = false;
-                confirmBtn.innerHTML = originalBtnContent;
-              }
             }
           })
           .catch((err) => {
             console.error('Error cancelling PO:', err);
             showToast('Network error. Please try again.', 'error');
-            if (confirmBtn) {
-              confirmBtn.disabled = false;
-              confirmBtn.innerHTML = originalBtnContent;
-            }
+          })
+          .finally(() => {
+            setCancelPurchaseOrderSaving(false);
           });
       }
 
@@ -19031,11 +19046,35 @@
         return openReportDownload(`/api/purchase_orders/${poId}/print`);
       }
 
+      // The Create PO modal is static markup, so its submit button has to be
+      // reset explicitly. Leaving it in the "Creating..." state used to stick
+      // across tab switches and only a full page reload cleared it.
+      let purchaseOrderSaving = false;
+      let purchaseOrderSaveButtonHtml = null;
+
+      function setPurchaseOrderSaving(saving) {
+        purchaseOrderSaving = Boolean(saving);
+        const saveBtn = document.querySelector("#addPurchaseOrderModal .btn-primary");
+        if (!saveBtn) return;
+        if (!purchaseOrderSaveButtonHtml) purchaseOrderSaveButtonHtml = saveBtn.innerHTML;
+        saveBtn.disabled = purchaseOrderSaving;
+        saveBtn.innerHTML = purchaseOrderSaving
+          ? '<span class="spinner-border spinner-border-sm me-1"></span>Creating...'
+          : purchaseOrderSaveButtonHtml;
+      }
+
+      document.getElementById("addPurchaseOrderModal")?.addEventListener("hidden.bs.modal", () => {
+        // Closing the modal always restores the button, whatever path closed it.
+        setPurchaseOrderSaving(false);
+      });
+
       function preparePurchaseOrderModal() {
         document.getElementById("po-supplier-id").innerHTML = '<option value="">Select supplier</option>';
         document.getElementById("po-notes").value = "";
         document.getElementById("po-expected-delivery").value = "";
         document.getElementById("po-items-container").innerHTML = "";
+        // Reopening the modal must never inherit a spinner from an earlier save.
+        setPurchaseOrderSaving(false);
 
         const supplier = document.getElementById("po-supplier-id");
         const existingLookup = supplier.remoteLookup;
@@ -19084,6 +19123,7 @@
       }
 
       function savePurchaseOrder() {
+        if (purchaseOrderSaving) return;
         const supplierId = parseInt(document.getElementById("po-supplier-id").value || "0", 10);
         const notes = document.getElementById("po-notes").value.trim();
         const expectedDelivery = document.getElementById("po-expected-delivery").value;
@@ -19108,42 +19148,44 @@
         const payload = { supplier_id: supplierId, notes, items };
         if (expectedDelivery) payload.expected_delivery_date = expectedDelivery;
 
-        // Get save button and show loading state
-        const saveBtn = document.querySelector('#addPurchaseOrderModal .btn-primary');
-        const originalBtnContent = saveBtn ? saveBtn.innerHTML : '';
-        if (saveBtn) {
-          saveBtn.disabled = true;
-          saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Creating...';
-        }
+        // Show the busy state through one helper so every exit path (success,
+        // validation error, HTTP error, network failure) restores the label.
+        setPurchaseOrderSaving(true);
 
         fetch("/api/purchase_orders", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         })
-          .then((r) => r.json())
+          .then((r) => {
+            if (!r.ok && r.headers?.get?.("content-type")?.includes?.("json") === false) {
+              throw new Error(`HTTP ${r.status}`);
+            }
+            return r.json();
+          })
           .then((data) => {
             if (!data.success) {
               showToast(data.message || "Failed to create purchase order", "error");
-              if (saveBtn) {
-                saveBtn.disabled = false;
-                saveBtn.innerHTML = originalBtnContent;
-              }
               return;
             }
             showToast("Purchase order created successfully!", "success");
-            const modal = bootstrap.Modal.getInstance(document.getElementById("addPurchaseOrderModal"));
+            const modalElement = document.getElementById("addPurchaseOrderModal");
             if (typeof markBranchFormSaved === "function") markBranchFormSaved("addPurchaseOrderModal");
-            modal.hide();
+            setPurchaseOrderSaving(false);
+            const modal = bootstrap.Modal.getInstance(modalElement);
+            if (modal) modal.hide();
+            else if (modalElement && window.bootstrap?.Modal) {
+              window.bootstrap.Modal.getOrCreateInstance(modalElement).hide();
+            }
             loadPurchaseOrders();
           })
           .catch((err) => {
             console.error("Error creating PO:", err);
             showToast("Network error. Please try again.", "error");
-            if (saveBtn) {
-              saveBtn.disabled = false;
-              saveBtn.innerHTML = originalBtnContent;
-            }
+          })
+          .finally(() => {
+            // Whatever happened, the modal must not be left spinning.
+            setPurchaseOrderSaving(false);
           });
       }
 
