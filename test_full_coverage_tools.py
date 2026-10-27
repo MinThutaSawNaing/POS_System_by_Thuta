@@ -198,19 +198,26 @@ class CategoryToolTests(FullCoverageToolsTestBase):
         self.assertTrue(child["success"])
         self.assertEqual(child["parent_name"], parent_name)
 
-        # One level only, and the parent name must exist in the active branch.
-        self.assertIn("error", self.tools.create_category(grandchild_name, parent=child_name))
-        self.assertIn("error", self.tools.create_category(grandchild_name, parent="NoSuchParent"))
-        self.assertIn("error", self.tools.delete_category(parent["category_id"]))
+        # Any depth is allowed: Shoes → Nike → AirMax.
+        grandchild = self.tools.create_category(grandchild_name, parent=child_name)
+        self.assertTrue(grandchild["success"])
+        self.assertEqual(grandchild["parent_name"], child_name)
+        self.assertIn("error", self.tools.create_category(f"Deep-{suffix}", parent="NoSuchParent"))
+
+        # Moving a category under its own descendant would loop, so it is refused.
+        self.assertIn("error", self.tools.update_category(parent["category_id"], parent_name, parent=child_name))
+        self.assertIn("error", self.tools.update_category(child["category_id"], child_name, parent=grandchild_name))
+        self.assertIn("error", self.tools.update_category(parent["category_id"], parent_name, parent=parent_name))
 
         summary = self.tools.get_category_summary()
         rows = {row["name"]: row for row in summary["categories"]}
-        self.assertEqual(rows[child_name]["parent_name"], parent_name)
+        self.assertEqual(rows[grandchild_name]["parent_name"], child_name)
+        self.assertEqual(rows[grandchild_name]["path"], f"{parent_name} / {child_name} / {grandchild_name}")
 
-        renamed = self.tools.update_category(child["category_id"], child_name, parent=parent_name)
-        self.assertTrue(renamed["success"])
-        self.assertIn("error", self.tools.update_category(parent["category_id"], parent_name, parent=child_name))
-
+        # Every ancestor is protected while it still has subcategories below it.
+        self.assertIn("error", self.tools.delete_category(parent["category_id"]))
+        self.assertIn("error", self.tools.delete_category(child["category_id"]))
+        self.assertTrue(self.tools.delete_category(grandchild["category_id"])["success"])
         self.assertTrue(self.tools.delete_category(child["category_id"])["success"])
         self.assertTrue(self.tools.delete_category(parent["category_id"])["success"])
 

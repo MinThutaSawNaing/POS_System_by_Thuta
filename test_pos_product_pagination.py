@@ -87,18 +87,50 @@ class PosProductPaginationTests(unittest.TestCase):
         self.category_ids.append(child['id'])
         self.assertEqual(child['parent_name'], 'Shoes')
         self.assertEqual(child['parent_id'], parent['id'])
-        self.assertEqual(client.post('/api/categories', json={'name': 'Too deep', 'parent_id': child['id']}).status_code, 400)
-        self.assertEqual(client.put(f"/api/categories/{parent['id']}", json={'name': 'Shoes', 'parent_id': child['id']}).status_code, 400)
-        self.assertEqual(client.delete(f"/api/categories/{parent['id']}").status_code, 400)
-        item = Product(name='Nike item', price=5, stock=2, branch_id=self.branch.id, category_id=child['id'])
+
+        # Nesting is not limited to one level: Shoes → Nike → Air Max.
+        grandchild_response = client.post('/api/categories', json={'name': 'Air Max', 'parent_id': child['id']})
+        self.assertEqual(grandchild_response.status_code, 201)
+        grandchild = grandchild_response.get_json()['category']
+        self.category_ids.append(grandchild['id'])
+        self.assertEqual(grandchild['path'], 'Shoes / Nike / Air Max')
+        self.assertEqual(grandchild['depth'], 2)
+
+        # A category can never be moved under itself or its own descendants.
+        self.assertEqual(client.put(f"/api/categories/{parent['id']}",
+                                    json={'name': 'Shoes', 'parent_id': child['id']}).status_code, 400)
+        self.assertEqual(client.put(f"/api/categories/{parent['id']}",
+                                    json={'name': 'Shoes', 'parent_id': grandchild['id']}).status_code, 400)
+        self.assertEqual(client.put(f"/api/categories/{child['id']}",
+                                    json={'name': 'Nike', 'parent_id': child['id']}).status_code, 400)
+
+        item = Product(name='Nike item', price=5, stock=2, branch_id=self.branch.id,
+                       category_id=grandchild['id'])
         db.session.add(item)
         db.session.commit()
         self.product_ids.append(item.id)
-        for category in (parent, child):
+        # Every shelf above the product (parent, child, leaf) finds it.
+        for category in (parent, child, grandchild):
             result = client.get(f"/api/products?view=pos&category_id={category['id']}").get_json()
             self.assertEqual([row['id'] for row in result['items']], [item.id])
-        self.assertEqual(client.put(f"/api/categories/{child['id']}", json={'name': 'Nike', 'parent_id': None}).status_code, 200)
+
+        # Deep nesting blocks deleting any ancestor, not only the direct parent.
+        self.assertEqual(client.delete(f"/api/categories/{parent['id']}").status_code, 400)
+        self.assertEqual(client.delete(f"/api/categories/{child['id']}").status_code, 400)
+
+        # Detaching the subtree frees the old parent again, while the moved
+        # category keeps protecting its own descendants.
+        self.assertEqual(client.put(f"/api/categories/{child['id']}",
+                                    json={'name': 'Nike', 'parent_id': None}).status_code, 200)
+        self.assertEqual(client.get(f"/api/categories/{child['id']}").get_json()['path'], 'Nike')
         self.assertEqual(client.delete(f"/api/categories/{parent['id']}").status_code, 200)
+        self.assertEqual(client.delete(f"/api/categories/{child['id']}").status_code, 400)
+
+        db.session.delete(item)
+        db.session.commit()
+        self.product_ids.remove(item.id)
+        self.assertEqual(client.delete(f"/api/categories/{grandchild['id']}").status_code, 200)
+        self.assertEqual(client.delete(f"/api/categories/{child['id']}").status_code, 200)
 
     def test_parent_must_belong_to_active_branch(self):
         branch = Branch(name=f'Foreign {uuid.uuid4().hex}', code=f'F{uuid.uuid4().hex[:8]}', is_active=True)

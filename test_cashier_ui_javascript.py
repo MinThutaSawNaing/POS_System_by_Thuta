@@ -154,10 +154,90 @@ console.log(JSON.stringify({ requested, html: grid.innerHTML }));
     assert "No products in this branch" in out["html"]
 
 
+def run_category_table_js(body):
+    """Render the category management table against a tiny DOM stub."""
+    helpers = "\n".join(_function(SOURCE, name) for name in (
+        "categoryTreeOrder", "categoryDescendantIds", "categoryDepthOf",
+        "renderCategoriesView",
+    ))
+    script = """
+function makeElement(tagName) {
+  const element = {
+    tagName: String(tagName).toUpperCase(), children: [], innerHTML: "", textContent: "",
+    appendChild(child) { this.children.push(child); return child; },
+  };
+  return element;
+}
+const table = makeElement("tbody");
+const totals = {};
+globalThis.document = {
+  getElementById: (id) => id === "categories-table" ? table : (totals[id] = totals[id] || makeElement("span")),
+  createElement: (tag) => makeElement(tag),
+};
+function escapeHtml(value) { return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;'); }
+function hasCapability() { return true; }
+""" + helpers + "\n(async () => {\n" + body + "\n})().catch(e => { console.error(e); process.exit(1); });"
+    result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
+
+
+def test_category_table_indents_each_nesting_level():
+    out = run_category_table_js("""
+const rows = [
+  {id: 1, name: 'Electronics', parent_id: null, path: 'Electronics', depth: 0, product_count: 0, supplier_count: 0, is_active: true},
+  {id: 2, name: 'iOS', parent_id: 1, path: 'Electronics / iOS', depth: 1, product_count: 0, supplier_count: 0, is_active: true},
+  {id: 3, name: 'iPhones', parent_id: 2, path: 'Electronics / iOS / iPhones', depth: 2, product_count: 4, supplier_count: 0, is_active: true},
+];
+renderCategoriesView(rows, '', '');
+console.log(JSON.stringify({
+  rows: table.children.length,
+  html: table.children.map(row => row.innerHTML),
+  total: totals['cat-total'].textContent,
+  products: totals['cat-products'].textContent,
+}));
+""")
+    assert out["rows"] == 3
+    assert "padding-left: 0px" in out["html"][0]
+    assert "padding-left: 18px" in out["html"][1]
+    assert "Electronics / iOS" in out["html"][1]
+    assert "padding-left: 36px" in out["html"][2]
+    assert "Electronics / iOS / iPhones" in out["html"][2]
+    assert out["total"] == 3
+    assert out["products"] == 4
+
+
+def test_category_table_escapes_nested_names_and_paths():
+    out = run_category_table_js("""
+const rows = [
+  {id: 1, name: 'Root', parent_id: null, path: 'Root', depth: 0, product_count: 0, supplier_count: 0, is_active: true},
+  {id: 2, name: '<img src=x>', parent_id: 1, path: 'Root / <img src=x>', depth: 1, product_count: 0, supplier_count: 0, is_active: false},
+];
+renderCategoriesView(rows, '', '');
+console.log(JSON.stringify({ html: table.children[1].innerHTML }));
+""")
+    assert "<img" not in out["html"]
+    assert "&lt;img src=x&gt;" in out["html"]
+    assert "Inactive" in out["html"]
+
+
+def test_category_search_matches_the_full_shelf_path():
+    out = run_category_table_js("""
+const rows = [
+  {id: 1, name: 'Electronics', parent_id: null, path: 'Electronics', depth: 0, description: '', product_count: 0, supplier_count: 0, is_active: true},
+  {id: 2, name: 'iPhone 17', parent_id: 1, path: 'Electronics / iPhone 17', depth: 1, description: '', product_count: 0, supplier_count: 0, is_active: true},
+];
+renderCategoriesView(rows, 'electronics / iphone', '');
+console.log(JSON.stringify({ rows: table.children.length, html: table.children.map(row => row.innerHTML) }));
+""")
+    assert out["rows"] == 1
+    assert "iPhone 17" in out["html"][0]
+
+
 def run_quick_access_js(body):
     """Run the cashier quick-access helpers against a tiny DOM stub."""
     helpers = "\n".join(_function(SOURCE, name) for name in (
-        "posCategoryAccent", "groupPOSCategories", "posCategoriesFromCache",
+        "posCategoryAccent", "categoryTreeOrder", "categoryDescendantIds",
+        "groupPOSCategories", "posCategoriesFromCache",
         "renderPOSCategoryChips", "setPOSCategoryFilter", "clearPOSSearchAndFilter",
         "focusPOSSearchInput",
     ))
@@ -298,6 +378,30 @@ const grouped = groupPOSCategories([
 console.log(JSON.stringify(grouped.map(category => category.id)));
 """)
     assert out == [5, 9, 8, 7, 11]
+
+def test_deep_nesting_keeps_every_level_under_its_parent():
+    """Electronics → iOS → iPhones → iPhone 17 must read as one branch."""
+    out = run_quick_access_js("""
+const rows = [
+  {id: 1, name: 'Electronics', parent_id: null},
+  {id: 2, name: 'iOS', parent_id: 1},
+  {id: 3, name: 'iPhones', parent_id: 2},
+  {id: 4, name: 'iPhone 17 Pro Max', parent_id: 3},
+  {id: 5, name: 'Android', parent_id: 1},
+  {id: 6, name: 'Clothing', parent_id: null},
+];
+const grouped = groupPOSCategories(rows);
+console.log(JSON.stringify({
+  order: grouped.map(row => row.id),
+  descendantsOfElectronics: categoryDescendantIds(rows, 1).sort((a, b) => a - b),
+  descendantsOfIPhones: categoryDescendantIds(rows, 3),
+}));
+""")
+    assert out["order"] == [1, 2, 3, 4, 5, 6]
+    assert out["descendantsOfElectronics"] == [2, 3, 4, 5]
+    assert out["descendantsOfIPhones"] == [4]
+
+
 
 
 def test_pos_quick_actions_offer_receipts_history_but_no_catalog_shortcut():

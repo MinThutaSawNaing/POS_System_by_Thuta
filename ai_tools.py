@@ -551,7 +551,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "create_category": {
         "name": "create_category",
-        "description": "Create a new product/supplier category in the active branch. Refuses duplicate category names. Pass parent to create a subcategory under an existing top-level category.",
+        "description": "Create a new product/supplier category in the active branch. Refuses duplicate category names. Pass parent to create a subcategory under an existing category (nesting can be any depth).",
         "parameters": {
             "type": "object",
             "properties": {
@@ -559,7 +559,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "description": {"type": "string", "description": "Optional description."},
                 "color": {"type": "string", "description": "Optional hex color for UI display (e.g. '#6c757d')."},
                 "sort_order": {"type": "integer", "description": "Optional sort order for UI listing."},
-                "parent": {"type": "string", "description": "Optional name of an existing top-level category; creates this category as its subcategory."}
+                "parent": {"type": "string", "description": "Optional name of an existing category; creates this category as its subcategory (nesting can be any depth)."}
             },
             "required": ["name"]
         }
@@ -693,7 +693,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "update_category": {
         "name": "update_category",
-        "description": "Rename or edit a category in the active branch; propagates a renamed legacy category name to products and suppliers. Pass parent to move the category under a top-level category as a subcategory.",
+        "description": "Rename or edit a category in the active branch; propagates a renamed legacy category name to products and suppliers. Pass parent to nest the category under another category; moves that would loop are refused.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -702,7 +702,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "description": {"type": "string", "description": "Optional description."},
                 "color": {"type": "string", "description": "Optional display color."},
                 "sort_order": {"type": "integer", "description": "Optional display sort order."},
-                "parent": {"type": "string", "description": "Optional name of an existing top-level category that becomes this category's parent."}
+                "parent": {"type": "string", "description": "Optional name of an existing category that becomes this category's parent; refused when it would create a loop."}
             },
             "required": ["category_id", "name"]
         }
@@ -1758,9 +1758,17 @@ class AITools:
         categories = query.order_by(Category.sort_order.asc(), Category.name.asc()).all()
         rows = []
         for category in categories:
+            chain, node, seen = [], category, set()
+            while node is not None and node.id not in seen and len(chain) < 64:
+                seen.add(node.id)
+                chain.append(node.name)
+                node = node.parent
+            chain.reverse()
             rows.append({"id": category.id, "name": category.name,
                          "parent_id": category.parent_id,
                          "parent_name": category.parent.name if category.parent else None,
+                         "path": ' / '.join(chain) or category.name,
+                         "depth": max(len(chain) - 1, 0),
                          "description": category.description,
                          "is_active": bool(category.is_active), "product_count": self._branch_filter(Product.query.filter_by(category_id=category.id), Product).count(),
                           "supplier_count": Supplier.query.filter_by(category_id=category.id).count()})
@@ -2318,8 +2326,8 @@ class AITools:
 
         Note: app.py's Category model has no type/kind column, so optional
         description/color/sort_order are supported instead. Passing the name of
-        a top-level category in ``parent`` creates a subcategory; nesting stops
-        at one level so the category tree stays predictable.
+        an existing category in ``parent`` nests this category under it; the
+        hierarchy may be as deep as the shop needs (Electronics → iOS → iPhones).
         """
         Category = self._get_model('Category')
         if not isinstance(name, str) or not name.strip():
@@ -2343,8 +2351,6 @@ class AITools:
             ).first()
             if not parent_category:
                 return {"error": f"Parent category '{parent_name}' not found in the active branch"}
-            if parent_category.parent_id is not None:
-                return {"error": "Subcategories cannot have subcategories"}
 
         category = Category(
             name=name,
@@ -2853,8 +2859,9 @@ class AITools:
                         parent: str = None) -> Dict[str, Any]:
         """Rename or edit a category; propagates renames to products/suppliers.
 
-        ``parent`` names an existing top-level category in the active branch;
-        the category then becomes that category's subcategory.
+        ``parent`` names an existing category in the active branch; the category
+        then becomes that category's subcategory. The move is refused when it
+        would create a loop (a category under its own descendant).
         """
         Category = self._get_model('Category')
         Product = self._get_model('Product')
@@ -2887,10 +2894,12 @@ class AITools:
                 return {"error": f"Parent category '{parent_name}' not found in the active branch"}
             if parent_category.id == category.id:
                 return {"error": "A category cannot be its own parent"}
-            if parent_category.parent_id is not None:
-                return {"error": "Subcategories cannot have subcategories"}
-            if Category.query.filter_by(parent_id=category.id).first():
-                return {"error": "A category with subcategories cannot itself be a subcategory"}
+            node, seen = parent_category, set()
+            while node is not None and node.id not in seen:
+                if node.id == category.id:
+                    return {"error": "A category cannot be moved under its own subcategory"}
+                seen.add(node.id)
+                node = node.parent
 
         changed = ["name"]
         category.name = name
@@ -2919,7 +2928,7 @@ class AITools:
                 "message": f"Category updated to '{category.name}'."}
 
     def delete_category(self, category_id: int) -> Dict[str, Any]:
-        """Delete a category; refuses while products or suppliers still use it."""
+        """Delete a category; refuses while products, suppliers or subcategories use it."""
         Category = self._get_model('Category')
         Product = self._get_model('Product')
         Supplier = self._get_model('Supplier')
@@ -2929,8 +2938,22 @@ class AITools:
         if not category:
             return {"error": f"Category with ID {category_id} not found in the active branch"}
 
-        if Category.query.filter_by(parent_id=category_id).first():
-            return {"error": "Cannot delete a category with subcategories. Delete or move them first."}
+        # Any depth of nesting blocks the delete, not only direct children.
+        children = Category.query.filter_by(parent_id=category_id).all()
+        descendant_count = 0
+        pending = [child.id for child in children]
+        seen = {category_id}
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            descendant_count += 1
+            pending.extend(row.id for row in Category.query.filter_by(parent_id=current).all())
+        if descendant_count:
+            return {"error": (f"Cannot delete category '{category.name}': {descendant_count} "
+                              f"subcategor{'y' if descendant_count == 1 else 'ies'} still sit under it. "
+                              "Delete or move them first.")}
 
         product_count = Product.query.filter_by(category_id=category_id).count()
         supplier_count = Supplier.query.filter_by(category_id=category_id).count()

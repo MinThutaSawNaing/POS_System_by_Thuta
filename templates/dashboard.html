@@ -12106,33 +12106,18 @@
 
       // Offline fallback: the saved catalogue already knows its categories.
       function groupPOSCategories(categories) {
-        // Keep the server's order for top-level shelves and slot each
-        // subcategory directly behind its parent so the bar reads naturally.
-        const ordered = [];
-        const childrenByParent = new Map();
-        (categories || []).forEach((category) => {
-          if (!category.parent_id) return;
-          if (!childrenByParent.has(category.parent_id)) childrenByParent.set(category.parent_id, []);
-          childrenByParent.get(category.parent_id).push(category);
-        });
-        (categories || []).filter((category) => !category.parent_id).forEach((parent) => {
-          ordered.push(parent);
-          (childrenByParent.get(parent.id) || []).forEach((child) => ordered.push(child));
-        });
-        // A subcategory whose parent is hidden (inactive or deleted) still
-        // needs a chip of its own, so append the leftovers unchanged.
-        (categories || []).forEach((category) => {
-          if (category.parent_id && !ordered.includes(category)) ordered.push(category);
-        });
-        return ordered;
+        // Categories nest to any depth, so reuse the shared tree walker: each
+        // subcategory chip sits directly behind its parent shelf.
+        return categoryTreeOrder(categories);
       }
 
       function posCategoriesFromCache() {
         const saved = offlineCacheGet(categoryCacheKey(true));
         if (saved && Array.isArray(saved.data)) {
           return groupPOSCategories(saved.data.filter(row => row.is_active !== false).map(row => ({
-            id: Number(row.id), name: row.parent_name ? row.parent_name + " / " + row.name : row.name,
-            color: row.color || "", parent_id: row.parent_id ? Number(row.parent_id) : null,
+            id: Number(row.id), name: String(row.name || "").trim(),
+            path: row.path || row.name, parent_id: row.parent_id ? Number(row.parent_id) : null,
+            color: row.color || "",
           })));
         }
         const categories = new Map();
@@ -12154,14 +12139,17 @@
           return;
         }
         bar.hidden = false;
-        const chips = [{ id: null, name: "All products", color: "" }].concat(posCategories);
+        const chips = [{ id: null, name: "All products", color: "", path: "All products" }].concat(posCategories);
         chips.forEach((category) => {
           const active = (category.id === null ? null : Number(category.id)) === posCategoryFilterId;
           const chip = document.createElement("button");
           chip.type = "button";
           chip.className = "pos-category-chip" + (active ? " is-active" : "");
           chip.setAttribute("aria-pressed", active ? "true" : "false");
-          chip.title = active ? "Showing " + category.name : "Show " + category.name + " only";
+          // Deep categories keep their short name on the button and explain the
+          // full shelf path (Electronics / iOS / iPhones / iPhone 17) on hover.
+          const fullPath = category.path || category.name;
+          chip.title = active ? "Showing " + fullPath : "Show " + fullPath + " only";
           chip.addEventListener("click", () => setPOSCategoryFilter(category.id));
           const accent = posCategoryAccent(category.color);
           if (accent) {
@@ -12200,7 +12188,8 @@
               .filter((row) => row && Number(row.id) > 0 && String(row.name || "").trim())
               .map((row) => ({
                 id: Number(row.id),
-                name: row.parent_name ? String(row.parent_name) + " / " + String(row.name).trim() : String(row.name).trim(),
+                name: String(row.name).trim(),
+                path: String(row.path || row.name).trim(),
                 color: String(row.color || ""),
                 parent_id: row.parent_id ? Number(row.parent_id) : null,
               })));
@@ -12411,8 +12400,11 @@
         // The offline snapshot uses the management payload, so it still knows
         // which category each product belongs to.
         if (posCategoryFilterId !== null) {
-          const childIds = new Set(posCategories.filter(category => category.parent_id === posCategoryFilterId).map(category => category.id));
-          products = products.filter((product) => Number(product.category_id) === posCategoryFilterId || childIds.has(Number(product.category_id)));
+          // Match the live grid: a shelf includes products filed anywhere
+          // beneath it, not just in its direct subcategories.
+          const branchCategoryIds = new Set([posCategoryFilterId]
+            .concat(categoryDescendantIds(posCategories, posCategoryFilterId)));
+          products = products.filter((product) => branchCategoryIds.has(Number(product.category_id)));
         }
         setPOSCatalogNotice("Using saved product data", "Live product data is unavailable. These saved prices and stock levels may have changed. Confirm availability before completing the sale.");
 
@@ -13991,67 +13983,7 @@
             cachedCategories = categories;
             fillCategoryParents(categories, "add-category-parent");
             offlineCacheSet(categoryCacheKey(), categories);
-            table.innerHTML = "";
-
-            // Filter categories
-            let filtered = categories || [];
-            if (search) {
-              const searchLower = search.toLowerCase();
-              filtered = filtered.filter(c => 
-                c.name.toLowerCase().includes(searchLower) ||
-                (c.description || "").toLowerCase().includes(searchLower)
-              );
-            }
-            if (statusFilter === "active") {
-              filtered = filtered.filter(c => c.is_active);
-            } else if (statusFilter === "inactive") {
-              filtered = filtered.filter(c => !c.is_active);
-            }
-
-            // Update summary cards
-            const totalCats = (categories || []).length;
-            const activeCats = (categories || []).filter(c => c.is_active).length;
-            const totalProducts = (categories || []).reduce((sum, c) => sum + (c.product_count || 0), 0);
-            const totalSuppliers = (categories || []).reduce((sum, c) => sum + (c.supplier_count || 0), 0);
-            
-            document.getElementById("cat-total").textContent = totalCats;
-            document.getElementById("cat-active").textContent = activeCats;
-            document.getElementById("cat-products").textContent = totalProducts;
-            document.getElementById("cat-suppliers").textContent = totalSuppliers;
-
-            if (filtered.length === 0) {
-              table.innerHTML = `
-                <tr>
-                  <td colspan="7" class="text-center py-4 text-muted">No categories found.</td>
-                </tr>
-              `;
-              return;
-            }
-
-            filtered.forEach((cat) => {
-              const row = document.createElement("tr");
-              row.innerHTML = `
-                <td><span class="badge" style="background-color: ${cat.color || '#6c757d'}; width: 30px; height: 30px; border-radius: 4px; display: inline-block;">&nbsp;</span></td>
-                <td><strong>${cat.parent_name ? escapeHtml(cat.parent_name) + ' / ' : ''}${escapeHtml(cat.name)}</strong></td>
-                <td class="d-none d-md-table-cell">${escapeHtml(cat.description || '-')}</td>
-                <td class="text-center"><span class="badge bg-primary">${cat.product_count || 0}</span></td>
-                <td data-capability="admin" ${hasCapability("admin") ? "" : "hidden"} class="text-center"><span class="badge bg-info">${cat.supplier_count || 0}</span></td>
-                <td class="text-center">
-                  <span class="badge ${cat.is_active ? 'bg-success' : 'bg-secondary'}">${cat.is_active ? 'Active' : 'Inactive'}</span>
-                </td>
-                <td ${hasCapability("catalog.write") ? "" : "hidden"}>
-                  <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-primary" onclick="editCategory(${cat.id})" title="Edit">
-                      <i class="bi bi-pencil"></i>
-                    </button>
-                    <button class="btn btn-outline-danger" onclick="deleteCategory(${cat.id}, '${escapeHtml(cat.name)}')" title="Delete">
-                      <i class="bi bi-trash"></i>
-                    </button>
-                  </div>
-                </td>
-              `;
-              table.appendChild(row);
-            });
+            renderCategoriesView(categories, search, statusFilter);
           })
           .catch((err) => {
             if (currentBranch?.id !== branchId) return;
@@ -14072,6 +14004,69 @@
           });
       }
 
+      // Categories nest to any depth (Electronics → iOS → iPhones → iPhone 17),
+      // so these helpers always walk parent links instead of assuming one level.
+      function categoryTreeOrder(categories) {
+        const childrenByParent = new Map();
+        (categories || []).forEach((cat) => {
+          if (!cat.parent_id) return;
+          const parentId = Number(cat.parent_id);
+          if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+          childrenByParent.get(parentId).push(cat);
+        });
+        const ordered = [];
+        const placed = new Set();
+        const walk = (cat) => {
+          if (!cat || placed.has(cat.id)) return;
+          placed.add(cat.id);
+          ordered.push(cat);
+          (childrenByParent.get(Number(cat.id)) || []).forEach(walk);
+        };
+        (categories || []).filter((cat) => !cat.parent_id).forEach(walk);
+        // Subcategories whose parent was filtered out (inactive, deleted or
+        // hidden by search) still need a row of their own.
+        (categories || []).forEach((cat) => {
+          if (!placed.has(cat.id)) walk(cat);
+        });
+        return ordered;
+      }
+
+      function categoryDescendantIds(categories, categoryId) {
+        const target = Number(categoryId);
+        const childrenByParent = new Map();
+        (categories || []).forEach((cat) => {
+          if (!cat.parent_id) return;
+          const parentId = Number(cat.parent_id);
+          if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+          childrenByParent.get(parentId).push(Number(cat.id));
+        });
+        const found = [];
+        const seen = new Set([target]);
+        const pending = (childrenByParent.get(target) || []).slice();
+        while (pending.length) {
+          const current = pending.shift();
+          if (seen.has(current)) continue;
+          seen.add(current);
+          found.push(current);
+          pending.push(...(childrenByParent.get(current) || []));
+        }
+        return found;
+      }
+
+      function categoryDepthOf(cat, byId) {
+        if (!cat) return 0;
+        if (Number.isFinite(Number(cat.depth))) return Number(cat.depth);
+        let depth = 0;
+        let node = cat;
+        const seen = new Set();
+        while (node && node.parent_id && !seen.has(node.id) && depth < 64) {
+          seen.add(node.id);
+          node = byId.get(Number(node.parent_id));
+          depth += 1;
+        }
+        return depth;
+      }
+
       function renderCategoriesView(categories, search, statusFilter) {
         const table = document.getElementById("categories-table");
         table.innerHTML = "";
@@ -14082,6 +14077,7 @@
           const searchLower = search.toLowerCase();
           filtered = filtered.filter(c =>
             c.name.toLowerCase().includes(searchLower) ||
+            (c.path || "").toLowerCase().includes(searchLower) ||
             (c.description || "").toLowerCase().includes(searchLower)
           );
         }
@@ -14111,11 +14107,19 @@
           return;
         }
 
-        filtered.forEach((cat) => {
+        const byId = new Map((categories || []).map((cat) => [Number(cat.id), cat]));
+        categoryTreeOrder(filtered).forEach((cat) => {
+          const depth = categoryDepthOf(cat, byId);
           const row = document.createElement("tr");
           row.innerHTML = `
             <td><span class="badge" style="background-color: ${cat.color || '#6c757d'}; width: 30px; height: 30px; border-radius: 4px; display: inline-block;">&nbsp;</span></td>
-            <td><strong>${cat.parent_name ? escapeHtml(cat.parent_name) + ' / ' : ''}${escapeHtml(cat.name)}</strong></td>
+            <td>
+              <div style="padding-left: ${Math.min(depth, 8) * 18}px">
+                ${depth > 0 ? '<i class="bi bi-arrow-return-right text-muted me-1" aria-hidden="true"></i>' : ''}
+                <strong>${escapeHtml(cat.name)}</strong>
+                ${depth > 0 && cat.path ? `<div class="small text-muted">${escapeHtml(cat.path)}</div>` : ''}
+              </div>
+            </td>
             <td class="d-none d-md-table-cell">${escapeHtml(cat.description || '-')}</td>
             <td class="text-center"><span class="badge bg-primary">${cat.product_count || 0}</span></td>
             <td data-capability="admin" ${hasCapability("admin") ? "" : "hidden"} class="text-center"><span class="badge bg-info">${cat.supplier_count || 0}</span></td>
@@ -14319,17 +14323,21 @@
         const select = document.getElementById(id);
         if (!select) return;
         const selected = select.value;
-        // A category that already owns subcategories cannot be nested itself,
-        // so it is only offered while creating a new top-level category.
-        const parentIds = new Set((categories || []).filter(cat => cat.parent_id).map(cat => Number(cat.parent_id)));
+        const rows = categories || [];
+        const byId = new Map(rows.map((cat) => [Number(cat.id), cat]));
+        // A category can be nested as deep as needed, but never under itself or
+        // one of its own subcategories (that would create a loop).
+        const blocked = new Set();
+        if (excludeId !== null) {
+          blocked.add(Number(excludeId));
+          categoryDescendantIds(rows, excludeId).forEach((value) => blocked.add(Number(value)));
+        }
         select.innerHTML = '<option value="">None (top-level category)</option>';
-        (categories || []).filter(cat => {
-          if (cat.parent_id || Number(cat.id) === Number(excludeId)) return false;
-          return excludeId === null || !parentIds.has(Number(cat.id));
-        }).forEach(cat => {
+        categoryTreeOrder(rows).forEach((cat) => {
+          if (blocked.has(Number(cat.id))) return;
           const option = document.createElement("option");
           option.value = cat.id;
-          option.textContent = cat.name;
+          option.textContent = `${"\u00a0\u00a0".repeat(categoryDepthOf(cat, byId))}${cat.path || cat.name}`;
           select.appendChild(option);
         });
         select.value = selected;
@@ -14356,6 +14364,8 @@
       }
 
       function fillCategoryDropdowns(categories) {
+        const rows = categories || [];
+        const byId = new Map(rows.map((cat) => [Number(cat.id), cat]));
         const dropdowns = [
           "add-category", "edit-product-category", "add-supplier-category", "edit-supplier-category"
         ];
@@ -14366,10 +14376,12 @@
             // Use "All Categories" for filter dropdowns, "Select category" for form dropdowns
             const defaultOption = id.includes("filter") ? "All Categories" : "Select category";
             select.innerHTML = `<option value="">${defaultOption}</option>`;
-            (categories || []).forEach((cat) => {
+            // Deep categories keep their full shelf path (indented for depth) so
+            // two similar names under different parents stay distinguishable.
+            categoryTreeOrder(rows).forEach((cat) => {
               const opt = document.createElement("option");
               opt.value = cat.id;
-              opt.textContent = cat.parent_name ? cat.parent_name + " / " + cat.name : cat.name;
+              opt.textContent = `${"\u00a0\u00a0".repeat(categoryDepthOf(cat, byId))}${cat.path || cat.name}`;
               select.appendChild(opt);
             });
             // Restore previous value if it exists
@@ -17913,7 +17925,7 @@
               const selected = select.value;
               select.innerHTML = '<option value="">Select category</option>';
               categories.forEach((category) =>
-                select.add(new Option(`${category.name} (${category.branch_name})`, String(category.id)))
+                select.add(new Option(`${category.path || category.name} (${category.branch_name})`, String(category.id)))
               );
               if (selected) select.value = selected;
             }

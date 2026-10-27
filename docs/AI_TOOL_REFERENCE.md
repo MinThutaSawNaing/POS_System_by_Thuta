@@ -187,7 +187,7 @@ Create a new branch with a unique code.
 
 ## `create_category`
 
-Create a new product/supplier category in the active branch. Refuses duplicate category names. Pass parent to create a subcategory under an existing top-level category.
+Create a new product/supplier category in the active branch. Refuses duplicate category names. Pass parent to create a subcategory under an existing category (nesting can be any depth).
 
 - Category: `inventory`
 - Mutates data: `True`
@@ -218,7 +218,7 @@ Create a new product/supplier category in the active branch. Refuses duplicate c
     },
     "parent": {
       "type": "string",
-      "description": "Optional name of an existing top-level category; creates this category as its subcategory."
+      "description": "Optional name of an existing category; creates this category as its subcategory (nesting can be any depth)."
     }
   },
   "required": [
@@ -1530,7 +1530,7 @@ Update a branch's name, code, contact details, or active status.
 
 ## `update_category`
 
-Rename or edit a category in the active branch; propagates a renamed legacy category name to products and suppliers. Pass parent to move the category under a top-level category as a subcategory.
+Rename or edit a category in the active branch; propagates a renamed legacy category name to products and suppliers. Pass parent to nest the category under another category; moves that would loop are refused.
 
 - Category: `inventory`
 - Mutates data: `True`
@@ -1565,7 +1565,7 @@ Rename or edit a category in the active branch; propagates a renamed legacy cate
     },
     "parent": {
       "type": "string",
-      "description": "Optional name of an existing top-level category that becomes this category's parent."
+      "description": "Optional name of an existing category that becomes this category's parent; refused when it would create a loop."
     }
   },
   "required": [

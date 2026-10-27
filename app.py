@@ -1630,6 +1630,97 @@ class AgentTask(db.Model):
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
         }
 
+def category_chain(category, limit=64):
+    """Return ``category``'s ancestors from the root down to the category itself.
+
+    The walk stops after ``limit`` hops (or if a loop somehow exists in the
+    data) so a corrupt parent link can never hang a request.
+    """
+    chain = []
+    seen = set()
+    node = category
+    while node is not None and node.id not in seen and len(chain) < limit:
+        seen.add(node.id)
+        chain.append(node)
+        node = node.parent
+    chain.reverse()
+    return chain
+
+
+def category_descendant_ids(category_id, branch_id):
+    """Every category below ``category_id`` in the branch, at any depth."""
+    rows = db.session.query(Category.id, Category.parent_id).filter(
+        Category.branch_id == branch_id).all()
+    children = {}
+    for row_id, row_parent in rows:
+        children.setdefault(row_parent, []).append(row_id)
+
+    descendants = []
+    seen = {category_id}
+    pending = list(children.get(category_id, []))
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        descendants.append(current)
+        pending.extend(children.get(current, []))
+    return descendants
+
+
+def category_paths(categories):
+    """Map ``id → (path, depth)`` using only the rows passed in.
+
+    List endpoints already have every category in memory, so this keeps the
+    path/depth enrichment free of lazy parent queries per row.
+    """
+    names = {category.id: category.name for category in categories}
+    parents = {category.id: category.parent_id for category in categories}
+    paths = {}
+    for category_id in names:
+        parts, seen, node = [], set(), category_id
+        while node and node not in seen and len(parts) < 64:
+            seen.add(node)
+            if names.get(node):
+                parts.append(names[node])
+            node = parents.get(node)
+        parts.reverse()
+        paths[category_id] = (' / '.join(parts) or names.get(category_id, ''),
+                              max(len(parts) - 1, 0))
+    return paths
+
+
+def order_categories_by_tree(categories):
+    """Order rows so every subcategory sits directly under its parent.
+
+    Siblings keep the incoming order (``sort_order`` then name), which is what
+    the category table and the POS shelf buttons both want.
+    """
+    by_parent = {}
+    for category in categories:
+        by_parent.setdefault(category.parent_id, []).append(category)
+
+    ordered = []
+    placed = set()
+
+    def walk(category):
+        if category.id in placed:
+            return
+        placed.add(category.id)
+        ordered.append(category)
+        for child in by_parent.get(category.id, []):
+            walk(child)
+
+    for category in by_parent.get(None, []):
+        walk(category)
+    # A subcategory whose parent is filtered out (inactive) or missing still
+    # needs a home at the end of the list instead of disappearing.
+    for category in categories:
+        if category.id not in placed:
+            walk(category)
+    return ordered
+
+
 class Category(db.Model):
     """Categories belong to one branch and may share names across branches."""
     id = db.Column(db.Integer, primary_key=True)
@@ -1651,6 +1742,7 @@ class Category(db.Model):
     parent = db.relationship('Category', remote_side=[id], backref=db.backref('children', lazy=True))
     
     def to_dict(self, include_counts=True):
+        chain = category_chain(self)
         return {
             'id': self.id,
             'name': self.name,
@@ -1661,6 +1753,10 @@ class Category(db.Model):
             'branch_id': self.branch_id,
             'parent_id': self.parent_id,
             'parent_name': self.parent.name if self.parent else None,
+            # Full shelf path and nesting depth, so the dashboard can indent
+            # trees and the POS can explain a deep subcategory on hover.
+            'path': ' / '.join(node.name for node in chain) if chain else self.name,
+            'depth': max(len(chain) - 1, 0),
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'product_count': Product.query.filter_by(category_id=self.id).count() if include_counts else 0,
@@ -4129,6 +4225,12 @@ def service_worker_js():
 
 # Category API Endpoints
 def validate_category_parent(parent_id, branch_id, category=None):
+    """Resolve the requested parent, rejecting cross-branch links and cycles.
+
+    Categories may nest as deep as a shop needs (Electronics → iOS → iPhones →
+    iPhone 17 Pro Max), so the only structural rule is that a category can
+    never be moved underneath itself or one of its own descendants.
+    """
     if parent_id in (None, ''):
         return None, None
     try:
@@ -4136,12 +4238,20 @@ def validate_category_parent(parent_id, branch_id, category=None):
     except (TypeError, ValueError):
         return None, 'Invalid parent category'
     parent = Category.query.filter_by(id=parent_id, branch_id=branch_id).first()
-    if not parent or (category and parent.id == category.id):
+    if not parent:
         return None, 'Parent category not found in this branch'
-    if parent.parent_id is not None:
-        return None, 'Subcategories cannot have subcategories'
-    if category and Category.query.filter_by(parent_id=category.id).first():
-        return None, 'A category with subcategories cannot itself be a subcategory'
+    if category is not None:
+        if parent.id == category.id:
+            return None, 'A category cannot be its own parent'
+        # Walk up from the requested parent: if this category appears anywhere
+        # in that chain, the move would create a loop.
+        node = parent
+        seen = set()
+        while node is not None and node.id not in seen:
+            if node.id == category.id:
+                return None, 'A category cannot be moved under its own subcategory'
+            seen.add(node.id)
+            node = node.parent
     return parent, None
 
 
@@ -4160,7 +4270,14 @@ def api_categories():
             query = query.filter_by(is_active=True)
         categories = (query.options(joinedload(Category.parent))
                       .order_by(Category.sort_order, Category.name).all())
+        # Parents first so the table and POS buttons read as a tree, while the
+        # counts below stay direct counts (totals never double-count children).
+        categories = order_categories_by_tree(categories)
         rows = [c.to_dict(include_counts=False) for c in categories]
+        # Enrich path/depth from the rows already in memory (no per-row queries).
+        paths = category_paths(categories)
+        for row in rows:
+            row['path'], row['depth'] = paths.get(row['id'], (row['name'], 0))
         if request.args.get('counts', 'true').lower() != 'false':
             category_ids = [c.id for c in categories]
             product_counts = dict(db.session.query(Product.category_id, func.count(Product.id))
@@ -4267,8 +4384,15 @@ def api_single_category(category_id):
 
     elif request.method == 'DELETE':
         # Check if category is in use
-        if Category.query.filter_by(parent_id=category_id).first():
-            return jsonify({'success': False, 'message': 'Cannot delete a category with subcategories. Delete or move them first.'}), 400
+        descendants = category_descendant_ids(category_id, branch_id)
+        if descendants:
+            return jsonify({
+                'success': False,
+                'message': (f'Cannot delete this category: {len(descendants)} subcategor'
+                            f'{"y" if len(descendants) == 1 else "ies"} still sit under it. '
+                            'Delete or move them first.'),
+                'subcategory_count': len(descendants),
+            }), 400
         product_count = Product.query.filter_by(category_id=category_id).count()
         supplier_count = Supplier.query.filter_by(category_id=category_id).count()
         
@@ -4562,8 +4686,10 @@ def api_products():
                 Product.unit_id,
             ).filter(Product.branch_id == branch_id)
             if category_id:
-                children = select(Category.id).where(Category.parent_id == category_id, Category.branch_id == branch_id)
-                pos_query = pos_query.filter(or_(Product.category_id == category_id, Product.category_id.in_(children)))
+                # Selecting a shelf includes everything filed under it at any
+                # depth, so "Electronics" also finds iOS → iPhones → iPhone 17.
+                category_ids = [category_id] + category_descendant_ids(category_id, branch_id)
+                pos_query = pos_query.filter(Product.category_id.in_(category_ids))
             if cursor:
                 pos_query = pos_query.filter(Product.id < cursor)
             rows = pos_query.order_by(Product.id.desc()).limit(safe_per_page + 1).all()
@@ -8390,10 +8516,16 @@ def api_supplier_categories():
     """Category choices for the shared supplier form, independent of active branch."""
     branch_names = {branch.id: branch.name for branch in Branch.query.all()}
     categories = Category.query.order_by(Category.name.asc()).all()
+    # This endpoint spans every branch, so resolve the parent chains from the
+    # rows already loaded instead of a lazy query per category.
+    paths = category_paths(categories)
     return jsonify([{
         'id': category.id,
         'name': category.name,
         'branch_name': branch_names.get(category.branch_id, 'Unassigned'),
+        # Supplier forms show the full shelf path when a category is nested.
+        'path': paths.get(category.id, (category.name, 0))[0],
+        'depth': paths.get(category.id, (category.name, 0))[1],
     } for category in categories])
 
 
