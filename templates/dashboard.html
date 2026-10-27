@@ -5264,6 +5264,11 @@
                 <input type="text" class="form-control" id="add-category-name" required placeholder="e.g., Electronics, Food, Beauty" />
               </div>
               <div class="mb-3">
+                <label class="form-label" for="add-category-parent">Parent category</label>
+                <select class="form-select" id="add-category-parent"><option value="">None (top-level category)</option></select>
+                <div class="form-text">Choose a parent to create a subcategory.</div>
+              </div>
+              <div class="mb-3">
                 <label class="form-label">Description</label>
                 <textarea class="form-control" id="add-category-description" rows="2" placeholder="Optional description..."></textarea>
               </div>
@@ -5310,6 +5315,10 @@
               <div class="mb-3">
                 <label class="form-label">Category Name <span class="text-danger">*</span></label>
                 <input type="text" class="form-control" id="edit-category-name" required />
+              </div>
+              <div class="mb-3">
+                <label class="form-label" for="edit-category-parent">Parent category</label>
+                <select class="form-select" id="edit-category-parent"><option value="">None (top-level category)</option></select>
               </div>
               <div class="mb-3">
                 <label class="form-label">Description</label>
@@ -12096,7 +12105,36 @@
       }
 
       // Offline fallback: the saved catalogue already knows its categories.
+      function groupPOSCategories(categories) {
+        // Keep the server's order for top-level shelves and slot each
+        // subcategory directly behind its parent so the bar reads naturally.
+        const ordered = [];
+        const childrenByParent = new Map();
+        (categories || []).forEach((category) => {
+          if (!category.parent_id) return;
+          if (!childrenByParent.has(category.parent_id)) childrenByParent.set(category.parent_id, []);
+          childrenByParent.get(category.parent_id).push(category);
+        });
+        (categories || []).filter((category) => !category.parent_id).forEach((parent) => {
+          ordered.push(parent);
+          (childrenByParent.get(parent.id) || []).forEach((child) => ordered.push(child));
+        });
+        // A subcategory whose parent is hidden (inactive or deleted) still
+        // needs a chip of its own, so append the leftovers unchanged.
+        (categories || []).forEach((category) => {
+          if (category.parent_id && !ordered.includes(category)) ordered.push(category);
+        });
+        return ordered;
+      }
+
       function posCategoriesFromCache() {
+        const saved = offlineCacheGet(categoryCacheKey(true));
+        if (saved && Array.isArray(saved.data)) {
+          return groupPOSCategories(saved.data.filter(row => row.is_active !== false).map(row => ({
+            id: Number(row.id), name: row.parent_name ? row.parent_name + " / " + row.name : row.name,
+            color: row.color || "", parent_id: row.parent_id ? Number(row.parent_id) : null,
+          })));
+        }
         const categories = new Map();
         getCachedProducts().forEach((product) => {
           const id = Number(product.category_id);
@@ -12157,13 +12195,15 @@
           .then(posResponseJSON)
           .then((rows) => {
             if (!Array.isArray(rows)) throw new Error("Invalid category list");
-            posCategories = rows
+            offlineCacheSet(categoryCacheKey(true), rows);
+            posCategories = groupPOSCategories(rows
               .filter((row) => row && Number(row.id) > 0 && String(row.name || "").trim())
               .map((row) => ({
                 id: Number(row.id),
-                name: String(row.name).trim(),
+                name: row.parent_name ? String(row.parent_name) + " / " + String(row.name).trim() : String(row.name).trim(),
                 color: String(row.color || ""),
-              }));
+                parent_id: row.parent_id ? Number(row.parent_id) : null,
+              })));
             // A deleted or deactivated category must not keep filtering the grid.
             if (posCategoryFilterId !== null &&
                 !posCategories.some((category) => category.id === posCategoryFilterId)) {
@@ -12371,7 +12411,8 @@
         // The offline snapshot uses the management payload, so it still knows
         // which category each product belongs to.
         if (posCategoryFilterId !== null) {
-          products = products.filter((product) => Number(product.category_id) === posCategoryFilterId);
+          const childIds = new Set(posCategories.filter(category => category.parent_id === posCategoryFilterId).map(category => category.id));
+          products = products.filter((product) => Number(product.category_id) === posCategoryFilterId || childIds.has(Number(product.category_id)));
         }
         setPOSCatalogNotice("Using saved product data", "Live product data is unavailable. These saved prices and stock levels may have changed. Confirm availability before completing the sale.");
 
@@ -13948,6 +13989,7 @@
           .then((categories) => {
             if (currentBranch?.id !== branchId) return;
             cachedCategories = categories;
+            fillCategoryParents(categories, "add-category-parent");
             offlineCacheSet(categoryCacheKey(), categories);
             table.innerHTML = "";
 
@@ -13990,7 +14032,7 @@
               const row = document.createElement("tr");
               row.innerHTML = `
                 <td><span class="badge" style="background-color: ${cat.color || '#6c757d'}; width: 30px; height: 30px; border-radius: 4px; display: inline-block;">&nbsp;</span></td>
-                <td><strong>${escapeHtml(cat.name)}</strong></td>
+                <td><strong>${cat.parent_name ? escapeHtml(cat.parent_name) + ' / ' : ''}${escapeHtml(cat.name)}</strong></td>
                 <td class="d-none d-md-table-cell">${escapeHtml(cat.description || '-')}</td>
                 <td class="text-center"><span class="badge bg-primary">${cat.product_count || 0}</span></td>
                 <td data-capability="admin" ${hasCapability("admin") ? "" : "hidden"} class="text-center"><span class="badge bg-info">${cat.supplier_count || 0}</span></td>
@@ -14073,7 +14115,7 @@
           const row = document.createElement("tr");
           row.innerHTML = `
             <td><span class="badge" style="background-color: ${cat.color || '#6c757d'}; width: 30px; height: 30px; border-radius: 4px; display: inline-block;">&nbsp;</span></td>
-            <td><strong>${escapeHtml(cat.name)}</strong></td>
+            <td><strong>${cat.parent_name ? escapeHtml(cat.parent_name) + ' / ' : ''}${escapeHtml(cat.name)}</strong></td>
             <td class="d-none d-md-table-cell">${escapeHtml(cat.description || '-')}</td>
             <td class="text-center"><span class="badge bg-primary">${cat.product_count || 0}</span></td>
             <td data-capability="admin" ${hasCapability("admin") ? "" : "hidden"} class="text-center"><span class="badge bg-info">${cat.supplier_count || 0}</span></td>
@@ -14120,6 +14162,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name,
+            parent_id: document.getElementById("add-category-parent").value || null,
             description,
             color,
             sort_order: sortOrder,
@@ -14162,6 +14205,13 @@
         fetch(`/api/categories/${categoryId}`)
           .then((r) => r.json())
           .then((cat) => {
+            fillCategoryParents(cachedCategories || [], "edit-category-parent", cat.id);
+            const parentSelect = document.getElementById("edit-category-parent");
+            if (parentSelect && cat.parent_id &&
+                !Array.from(parentSelect.options).some((option) => option.value === String(cat.parent_id))) {
+              parentSelect.add(new Option(cat.parent_name || "Current parent", String(cat.parent_id)));
+            }
+            if (parentSelect) parentSelect.value = cat.parent_id || "";
             document.getElementById("edit-category-id").value = cat.id;
             document.getElementById("edit-category-name").value = cat.name;
             document.getElementById("edit-category-description").value = cat.description || "";
@@ -14203,6 +14253,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name,
+            parent_id: document.getElementById("edit-category-parent").value || null,
             description,
             color,
             sort_order: sortOrder,
@@ -14264,6 +14315,26 @@
       }
 
       // Load category dropdowns for product and supplier forms
+      function fillCategoryParents(categories, id, excludeId = null) {
+        const select = document.getElementById(id);
+        if (!select) return;
+        const selected = select.value;
+        // A category that already owns subcategories cannot be nested itself,
+        // so it is only offered while creating a new top-level category.
+        const parentIds = new Set((categories || []).filter(cat => cat.parent_id).map(cat => Number(cat.parent_id)));
+        select.innerHTML = '<option value="">None (top-level category)</option>';
+        (categories || []).filter(cat => {
+          if (cat.parent_id || Number(cat.id) === Number(excludeId)) return false;
+          return excludeId === null || !parentIds.has(Number(cat.id));
+        }).forEach(cat => {
+          const option = document.createElement("option");
+          option.value = cat.id;
+          option.textContent = cat.name;
+          select.appendChild(option);
+        });
+        select.value = selected;
+      }
+
       function loadCategoryDropdowns() {
         const branchId = currentBranch?.id;
         fetch("/api/categories?active_only=true&counts=false")
@@ -14298,7 +14369,7 @@
             (categories || []).forEach((cat) => {
               const opt = document.createElement("option");
               opt.value = cat.id;
-              opt.textContent = cat.name;
+              opt.textContent = cat.parent_name ? cat.parent_name + " / " + cat.name : cat.name;
               select.appendChild(opt);
             });
             // Restore previous value if it exists

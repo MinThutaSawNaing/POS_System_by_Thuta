@@ -77,6 +77,45 @@ class PosProductPaginationTests(unittest.TestCase):
         self.assertFalse({item['id'] for item in first_data['items']} &
                          {item['id'] for item in second_data['items']})
 
+    def test_subcategories_creation_validation_and_pos_filter(self):
+        client = self._client()
+        parent = client.post('/api/categories', json={'name': 'Shoes'}).get_json()['category']
+        self.category_ids.append(parent['id'])
+        child_response = client.post('/api/categories', json={'name': 'Nike', 'parent_id': parent['id']})
+        self.assertEqual(child_response.status_code, 201)
+        child = child_response.get_json()['category']
+        self.category_ids.append(child['id'])
+        self.assertEqual(child['parent_name'], 'Shoes')
+        self.assertEqual(child['parent_id'], parent['id'])
+        self.assertEqual(client.post('/api/categories', json={'name': 'Too deep', 'parent_id': child['id']}).status_code, 400)
+        self.assertEqual(client.put(f"/api/categories/{parent['id']}", json={'name': 'Shoes', 'parent_id': child['id']}).status_code, 400)
+        self.assertEqual(client.delete(f"/api/categories/{parent['id']}").status_code, 400)
+        item = Product(name='Nike item', price=5, stock=2, branch_id=self.branch.id, category_id=child['id'])
+        db.session.add(item)
+        db.session.commit()
+        self.product_ids.append(item.id)
+        for category in (parent, child):
+            result = client.get(f"/api/products?view=pos&category_id={category['id']}").get_json()
+            self.assertEqual([row['id'] for row in result['items']], [item.id])
+        self.assertEqual(client.put(f"/api/categories/{child['id']}", json={'name': 'Nike', 'parent_id': None}).status_code, 200)
+        self.assertEqual(client.delete(f"/api/categories/{parent['id']}").status_code, 200)
+
+    def test_parent_must_belong_to_active_branch(self):
+        branch = Branch(name=f'Foreign {uuid.uuid4().hex}', code=f'F{uuid.uuid4().hex[:8]}', is_active=True)
+        db.session.add(branch)
+        db.session.flush()
+        foreign = Category(name='Foreign parent', branch_id=branch.id)
+        db.session.add(foreign)
+        db.session.commit()
+        try:
+            result = self._client().post('/api/categories', json={'name': 'Foreign child', 'parent_id': foreign.id})
+            self.assertEqual(result.status_code, 400)
+            self.assertIsNone(Category.query.filter_by(name='Foreign child', branch_id=self.branch.id).first())
+        finally:
+            db.session.delete(foreign)
+            db.session.delete(branch)
+            db.session.commit()
+
     def test_pos_catalog_filters_by_category_for_the_quick_buttons(self):
         drinks = Category(name=f'Drinks {uuid.uuid4().hex[:6]}', color='#0d6efd',
                           is_active=True, branch_id=self.branch.id)

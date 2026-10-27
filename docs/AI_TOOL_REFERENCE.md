@@ -187,7 +187,7 @@ Create a new branch with a unique code.
 
 ## `create_category`
 
-Create a new product/supplier category in the active branch. Refuses duplicate category names.
+Create a new product/supplier category in the active branch. Refuses duplicate category names. Pass parent to create a subcategory under an existing top-level category.
 
 - Category: `inventory`
 - Mutates data: `True`
@@ -215,6 +215,10 @@ Create a new product/supplier category in the active branch. Refuses duplicate c
     "sort_order": {
       "type": "integer",
       "description": "Optional sort order for UI listing."
+    },
+    "parent": {
+      "type": "string",
+      "description": "Optional name of an existing top-level category; creates this category as its subcategory."
     }
   },
   "required": [
@@ -1526,7 +1530,7 @@ Update a branch's name, code, contact details, or active status.
 
 ## `update_category`
 
-Rename or edit a category in the active branch; propagates a renamed legacy category name to products and suppliers.
+Rename or edit a category in the active branch; propagates a renamed legacy category name to products and suppliers. Pass parent to move the category under a top-level category as a subcategory.
 
 - Category: `inventory`
 - Mutates data: `True`
@@ -1558,6 +1562,10 @@ Rename or edit a category in the active branch; propagates a renamed legacy cate
     "sort_order": {
       "type": "integer",
       "description": "Optional display sort order."
+    },
+    "parent": {
+      "type": "string",
+      "description": "Optional name of an existing top-level category that becomes this category's parent."
     }
   },
   "required": [

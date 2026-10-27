@@ -1639,6 +1639,7 @@ class Category(db.Model):
     is_active = db.Column(db.Boolean, default=True)
     sort_order = db.Column(db.Integer, default=0)
     branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
+    parent_id = db.Column(db.Integer, db.ForeignKey('category.id'))
     __table_args__ = (db.UniqueConstraint('branch_id', 'name', name='uq_category_branch_name'),)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -1647,6 +1648,7 @@ class Category(db.Model):
     products = db.relationship('Product', backref='category_ref', lazy=True, foreign_keys='Product.category_id')
     suppliers = db.relationship('Supplier', backref='category_ref', lazy=True, foreign_keys='Supplier.category_id')
     branch = db.relationship('Branch', backref='categories')
+    parent = db.relationship('Category', remote_side=[id], backref=db.backref('children', lazy=True))
     
     def to_dict(self, include_counts=True):
         return {
@@ -1657,6 +1659,8 @@ class Category(db.Model):
             'is_active': self.is_active,
             'sort_order': self.sort_order,
             'branch_id': self.branch_id,
+            'parent_id': self.parent_id,
+            'parent_name': self.parent.name if self.parent else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'product_count': Product.query.filter_by(category_id=self.id).count() if include_counts else 0,
@@ -2848,6 +2852,15 @@ with app.app_context():
         """))
         db.session.commit()
     
+    # Existing categories remain top-level when upgrading an existing database.
+    if inspector.has_table('category'):
+        category_columns = [col['name'] for col in inspector.get_columns('category')]
+        if 'parent_id' not in category_columns:
+            db.session.execute(text('ALTER TABLE category ADD COLUMN parent_id INTEGER REFERENCES category (id)'))
+            db.session.commit()
+        db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_category_parent ON category (parent_id)'))
+        db.session.commit()
+
     # Add category_id columns to product and supplier tables
     if inspector.has_table('product'):
         product_columns = [col['name'] for col in inspector.get_columns('product')]
@@ -4115,6 +4128,23 @@ def service_worker_js():
     return response
 
 # Category API Endpoints
+def validate_category_parent(parent_id, branch_id, category=None):
+    if parent_id in (None, ''):
+        return None, None
+    try:
+        parent_id = int(parent_id)
+    except (TypeError, ValueError):
+        return None, 'Invalid parent category'
+    parent = Category.query.filter_by(id=parent_id, branch_id=branch_id).first()
+    if not parent or (category and parent.id == category.id):
+        return None, 'Parent category not found in this branch'
+    if parent.parent_id is not None:
+        return None, 'Subcategories cannot have subcategories'
+    if category and Category.query.filter_by(parent_id=category.id).first():
+        return None, 'A category with subcategories cannot itself be a subcategory'
+    return parent, None
+
+
 @app.route('/api/categories', methods=['GET', 'POST'])
 def api_categories():
     if 'user_id' not in session:
@@ -4128,7 +4158,8 @@ def api_categories():
         query = Category.query.filter_by(branch_id=branch_id)
         if active_only:
             query = query.filter_by(is_active=True)
-        categories = query.order_by(Category.sort_order, Category.name).all()
+        categories = (query.options(joinedload(Category.parent))
+                      .order_by(Category.sort_order, Category.name).all())
         rows = [c.to_dict(include_counts=False) for c in categories]
         if request.args.get('counts', 'true').lower() != 'false':
             category_ids = [c.id for c in categories]
@@ -4156,6 +4187,10 @@ def api_categories():
         existing = Category.query.filter(db.func.lower(Category.name) == name.lower(), Category.branch_id == branch_id).first()
         if existing:
             return jsonify({'success': False, 'message': f'Category "{name}" already exists'}), 400
+
+        parent, error = validate_category_parent(data.get('parent_id'), branch_id)
+        if error:
+            return jsonify({'success': False, 'message': error}), 400
         
         category = Category(
             name=name,
@@ -4163,6 +4198,7 @@ def api_categories():
             color=data.get('color', '#6c757d'),
             is_active=data.get('is_active', True),
             sort_order=data.get('sort_order', 0),
+            parent_id=parent.id if parent else None,
             branch_id=branch_id
         )
         db.session.add(category)
@@ -4204,9 +4240,14 @@ def api_single_category(category_id):
         ).first()
         if existing:
             return jsonify({'success': False, 'message': f'Category "{name}" already exists'}), 400
+
+        parent, error = validate_category_parent(data.get('parent_id', category.parent_id), branch_id, category)
+        if error:
+            return jsonify({'success': False, 'message': error}), 400
         
         old_name = category.name
         category.name = name
+        category.parent_id = parent.id if parent else None
         category.description = (data.get('description') or '').strip()
         category.color = data.get('color', category.color)
         category.is_active = data.get('is_active', category.is_active)
@@ -4226,6 +4267,8 @@ def api_single_category(category_id):
 
     elif request.method == 'DELETE':
         # Check if category is in use
+        if Category.query.filter_by(parent_id=category_id).first():
+            return jsonify({'success': False, 'message': 'Cannot delete a category with subcategories. Delete or move them first.'}), 400
         product_count = Product.query.filter_by(category_id=category_id).count()
         supplier_count = Supplier.query.filter_by(category_id=category_id).count()
         
@@ -4519,7 +4562,8 @@ def api_products():
                 Product.unit_id,
             ).filter(Product.branch_id == branch_id)
             if category_id:
-                pos_query = pos_query.filter(Product.category_id == category_id)
+                children = select(Category.id).where(Category.parent_id == category_id, Category.branch_id == branch_id)
+                pos_query = pos_query.filter(or_(Product.category_id == category_id, Product.category_id.in_(children)))
             if cursor:
                 pos_query = pos_query.filter(Product.id < cursor)
             rows = pos_query.order_by(Product.id.desc()).limit(safe_per_page + 1).all()

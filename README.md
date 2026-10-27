@@ -575,7 +575,9 @@ An admin account is auto-created if missing:
 - Categories are managed per active branch; separate branches may use the same category name
 - Product categories remain branch-specific; shared supplier category choices include categories from every branch
 - Color-coded categories for visual organization
-- Hierarchical category support
+- Subcategories one level deep (for example Shoes → Adidas, Nike, Tiger); products can be assigned to either a parent or a subcategory
+- POS category buttons for a parent include the products filed under its subcategories
+- A category with subcategories cannot be deleted until they are removed or moved
 - Automatic synchronization across the system
 
 ### Supplier Management

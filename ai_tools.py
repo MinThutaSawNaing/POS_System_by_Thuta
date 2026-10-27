@@ -551,14 +551,15 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "create_category": {
         "name": "create_category",
-        "description": "Create a new product/supplier category in the active branch. Refuses duplicate category names.",
+        "description": "Create a new product/supplier category in the active branch. Refuses duplicate category names. Pass parent to create a subcategory under an existing top-level category.",
         "parameters": {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Category name (required, unique per branch)."},
                 "description": {"type": "string", "description": "Optional description."},
                 "color": {"type": "string", "description": "Optional hex color for UI display (e.g. '#6c757d')."},
-                "sort_order": {"type": "integer", "description": "Optional sort order for UI listing."}
+                "sort_order": {"type": "integer", "description": "Optional sort order for UI listing."},
+                "parent": {"type": "string", "description": "Optional name of an existing top-level category; creates this category as its subcategory."}
             },
             "required": ["name"]
         }
@@ -692,7 +693,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "update_category": {
         "name": "update_category",
-        "description": "Rename or edit a category in the active branch; propagates a renamed legacy category name to products and suppliers.",
+        "description": "Rename or edit a category in the active branch; propagates a renamed legacy category name to products and suppliers. Pass parent to move the category under a top-level category as a subcategory.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -700,7 +701,8 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "name": {"type": "string", "description": "New unique category name."},
                 "description": {"type": "string", "description": "Optional description."},
                 "color": {"type": "string", "description": "Optional display color."},
-                "sort_order": {"type": "integer", "description": "Optional display sort order."}
+                "sort_order": {"type": "integer", "description": "Optional display sort order."},
+                "parent": {"type": "string", "description": "Optional name of an existing top-level category that becomes this category's parent."}
             },
             "required": ["category_id", "name"]
         }
@@ -1756,7 +1758,10 @@ class AITools:
         categories = query.order_by(Category.sort_order.asc(), Category.name.asc()).all()
         rows = []
         for category in categories:
-            rows.append({"id": category.id, "name": category.name, "description": category.description,
+            rows.append({"id": category.id, "name": category.name,
+                         "parent_id": category.parent_id,
+                         "parent_name": category.parent.name if category.parent else None,
+                         "description": category.description,
                          "is_active": bool(category.is_active), "product_count": self._branch_filter(Product.query.filter_by(category_id=category.id), Product).count(),
                           "supplier_count": Supplier.query.filter_by(category_id=category.id).count()})
         return self._scope({"total_categories": len(rows), "categories": rows})
@@ -2308,11 +2313,14 @@ class AITools:
         }
 
     def create_category(self, name: str, description: str = None, color: str = None,
-                        sort_order: int = 0) -> Dict[str, Any]:
+                        sort_order: int = 0, parent: str = None) -> Dict[str, Any]:
         """Create a new category in the active branch (manager only).
 
         Note: app.py's Category model has no type/kind column, so optional
-        description/color/sort_order are supported instead."""
+        description/color/sort_order are supported instead. Passing the name of
+        a top-level category in ``parent`` creates a subcategory; nesting stops
+        at one level so the category tree stays predictable.
+        """
         Category = self._get_model('Category')
         if not isinstance(name, str) or not name.strip():
             return {"error": "Category name is required"}
@@ -2326,11 +2334,24 @@ class AITools:
             sort_order_val = int(sort_order)
         except (TypeError, ValueError):
             return {"error": "sort_order must be an integer"}
+
+        parent_category = None
+        if parent not in (None, ''):
+            parent_name = str(parent).strip()
+            parent_category = self._branch_filter(
+                Category.query.filter(self.db.func.lower(Category.name) == parent_name.lower()), Category
+            ).first()
+            if not parent_category:
+                return {"error": f"Parent category '{parent_name}' not found in the active branch"}
+            if parent_category.parent_id is not None:
+                return {"error": "Subcategories cannot have subcategories"}
+
         category = Category(
             name=name,
             description=str(description).strip() if description else None,
             color=color,
             sort_order=sort_order_val,
+            parent_id=parent_category.id if parent_category else None,
             branch_id=self._branch_id()
         )
         self.db.session.add(category)
@@ -2339,7 +2360,9 @@ class AITools:
             "success": True,
             "category_id": category.id,
             "category_name": category.name,
-            "changed_fields": ["name", "description", "color", "sort_order"],
+            "parent_id": category.parent_id,
+            "parent_name": parent_category.name if parent_category else None,
+            "changed_fields": ["name", "description", "color", "sort_order", "parent"],
             "branch_id": self._branch_id()
         }
 
@@ -2826,8 +2849,13 @@ class AITools:
             return {"error": f"Failed to process return/exchange: {exc}"}
 
     def update_category(self, category_id: int, name: str, description: str = None,
-                        color: str = None, sort_order: int = None) -> Dict[str, Any]:
-        """Rename or edit a category; propagates renames to products/suppliers."""
+                        color: str = None, sort_order: int = None,
+                        parent: str = None) -> Dict[str, Any]:
+        """Rename or edit a category; propagates renames to products/suppliers.
+
+        ``parent`` names an existing top-level category in the active branch;
+        the category then becomes that category's subcategory.
+        """
         Category = self._get_model('Category')
         Product = self._get_model('Product')
         Supplier = self._get_model('Supplier')
@@ -2849,8 +2877,26 @@ class AITools:
         if existing:
             return {"error": f"Category \"{name}\" already exists"}
 
+        parent_category = None
+        if parent not in (None, ''):
+            parent_name = str(parent).strip()
+            parent_category = self._branch_filter(
+                Category.query.filter(self.db.func.lower(Category.name) == parent_name.lower()), Category
+            ).first()
+            if not parent_category:
+                return {"error": f"Parent category '{parent_name}' not found in the active branch"}
+            if parent_category.id == category.id:
+                return {"error": "A category cannot be its own parent"}
+            if parent_category.parent_id is not None:
+                return {"error": "Subcategories cannot have subcategories"}
+            if Category.query.filter_by(parent_id=category.id).first():
+                return {"error": "A category with subcategories cannot itself be a subcategory"}
+
         changed = ["name"]
         category.name = name
+        if parent_category is not None:
+            category.parent_id = parent_category.id
+            changed.append("parent")
         if description is not None:
             category.description = str(description).strip()
             changed.append("description")
@@ -2882,6 +2928,9 @@ class AITools:
             Category.query.filter_by(id=category_id), Category).first()
         if not category:
             return {"error": f"Category with ID {category_id} not found in the active branch"}
+
+        if Category.query.filter_by(parent_id=category_id).first():
+            return {"error": "Cannot delete a category with subcategories. Delete or move them first."}
 
         product_count = Product.query.filter_by(category_id=category_id).count()
         supplier_count = Supplier.query.filter_by(category_id=category_id).count()

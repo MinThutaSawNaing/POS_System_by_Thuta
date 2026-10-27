@@ -157,8 +157,9 @@ console.log(JSON.stringify({ requested, html: grid.innerHTML }));
 def run_quick_access_js(body):
     """Run the cashier quick-access helpers against a tiny DOM stub."""
     helpers = "\n".join(_function(SOURCE, name) for name in (
-        "posCategoryAccent", "posCategoriesFromCache", "renderPOSCategoryChips",
-        "setPOSCategoryFilter", "clearPOSSearchAndFilter", "focusPOSSearchInput",
+        "posCategoryAccent", "groupPOSCategories", "posCategoriesFromCache",
+        "renderPOSCategoryChips", "setPOSCategoryFilter", "clearPOSSearchAndFilter",
+        "focusPOSSearchInput",
     ))
     script = """
 function makeElement(tagName) {
@@ -190,6 +191,8 @@ globalThis.document = {
 let posCategories = [];
 let posCategoryFilterId = null;
 let cachedCatalog = [];
+function categoryCacheKey() { return 'categories'; }
+function offlineCacheGet() { return null; }
 function getCachedProducts() { return cachedCatalog; }
 function loadProductsForPOS() { loads += 1; }
 """ + helpers + "\n(async () => {\n" + body + "\n})().catch(e => { console.error(e); process.exit(1); });"
@@ -281,6 +284,20 @@ console.log(JSON.stringify(posCategoriesFromCache()));
         {"id": 4, "name": "Bakery", "color": ""},
         {"id": 3, "name": "Drinks", "color": ""},
     ]
+
+
+def test_subcategory_chips_sit_behind_their_parent_shelf():
+    out = run_quick_access_js("""
+const grouped = groupPOSCategories([
+  {id: 5, name: 'Shoes', parent_id: null},
+  {id: 9, name: 'Tiger', parent_id: 5},
+  {id: 7, name: 'Bags', parent_id: null},
+  {id: 8, name: 'Nike', parent_id: 5},
+  {id: 11, name: 'Orphan', parent_id: 404},
+]);
+console.log(JSON.stringify(grouped.map(category => category.id)));
+""")
+    assert out == [5, 9, 8, 7, 11]
 
 
 def test_pos_quick_actions_offer_receipts_history_but_no_catalog_shortcut():

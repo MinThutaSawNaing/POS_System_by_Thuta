@@ -186,6 +186,34 @@ class CategoryToolTests(FullCoverageToolsTestBase):
         deleted = self.tools.delete_category(cat_id)
         self.assertTrue(deleted["success"])
 
+    def test_subcategory_parent_rules_are_enforced(self):
+        suffix = uuid.uuid4().hex[:6]
+        parent_name = f"Shoes-{suffix}"
+        child_name = f"Nike-{suffix}"
+        grandchild_name = f"AirMax-{suffix}"
+
+        parent = self.tools.create_category(parent_name)
+        self.assertTrue(parent["success"])
+        child = self.tools.create_category(child_name, parent=parent_name)
+        self.assertTrue(child["success"])
+        self.assertEqual(child["parent_name"], parent_name)
+
+        # One level only, and the parent name must exist in the active branch.
+        self.assertIn("error", self.tools.create_category(grandchild_name, parent=child_name))
+        self.assertIn("error", self.tools.create_category(grandchild_name, parent="NoSuchParent"))
+        self.assertIn("error", self.tools.delete_category(parent["category_id"]))
+
+        summary = self.tools.get_category_summary()
+        rows = {row["name"]: row for row in summary["categories"]}
+        self.assertEqual(rows[child_name]["parent_name"], parent_name)
+
+        renamed = self.tools.update_category(child["category_id"], child_name, parent=parent_name)
+        self.assertTrue(renamed["success"])
+        self.assertIn("error", self.tools.update_category(parent["category_id"], parent_name, parent=child_name))
+
+        self.assertTrue(self.tools.delete_category(child["category_id"])["success"])
+        self.assertTrue(self.tools.delete_category(parent["category_id"])["success"])
+
 
 # === PART 2: PO receiving, returns, promotions ===
 
