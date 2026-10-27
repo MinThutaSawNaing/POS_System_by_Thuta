@@ -271,3 +271,167 @@ def test_auto_scanner_toggle_is_a_large_touch_target():
     assert min_height >= 44
     assert re.search(r"\.auto-barcode-scanner-control\s+\.form-check-input\s*\{[^}]*width:\s*2\.7em", SOURCE, re.S)
 
+
+
+def test_sales_history_offers_a_way_back_to_the_pos_tab():
+    start = SOURCE.index('<div id="sales-section"')
+    end = SOURCE.index('id="sales-start-date-filter"', start)
+    markup = SOURCE[start:end]
+
+    assert "Back to POS" in markup
+    assert "showSection('pos')" in markup
+
+
+def test_pos_panels_expose_a_keyboard_resizable_divider():
+    """The catalogue and cart panels grow/shrink like the sidebar does."""
+    assert 'id="pos-workspace"' in SOURCE
+    assert 'id="pos-cart-resize-handle"' in SOURCE
+    assert 'role="separator"' in SOURCE
+    assert 'aria-valuemin="320"' in SOURCE
+    assert 'aria-valuemax="620"' in SOURCE
+    assert "initPOSSplitResizer();" in SOURCE
+    split_rule = SOURCE[SOURCE.index(".pos-workspace > .pos-cart-column {"):]
+    split_rule = split_rule[:split_rule.index("}")]
+    assert "var(--pos-cart-width)" in split_rule
+
+
+
+def run_split_resizer_js(body):
+    """Execute initPOSSplitResizer against a stubbed workspace/handle/cart."""
+    helper = _function(SOURCE, "initPOSSplitResizer")
+    script = """
+const stored = {};
+globalThis.localStorage = {
+  getItem: (key) => (key in stored ? stored[key] : null),
+  setItem: (key, value) => { stored[key] = String(value); },
+};
+globalThis.window = { innerWidth: 1400 };
+const POS_CART_WIDTH_KEY = "pos_cart_width";
+const POS_CART_MIN_WIDTH = 320;
+const POS_CART_MAX_WIDTH = 620;
+const POS_CART_DEFAULT_WIDTH = 400;
+const handleListeners = {};
+const documentListeners = {};
+const classes = new Set();
+const handle = {
+  attrs: {},
+  addEventListener: (name, fn) => { handleListeners[name] = fn; },
+  setAttribute(name, value) { this.attrs[name] = String(value); },
+  getAttribute(name) { return name in this.attrs ? this.attrs[name] : null; },
+  classList: {
+    add: (name) => classes.add(name),
+    remove: (name) => classes.delete(name),
+    contains: (name) => classes.has(name),
+  },
+};
+const workspace = {
+  style: {
+    props: {},
+    setProperty(name, value) { this.props[name] = value; },
+  },
+};
+const cartColumn = { getBoundingClientRect: () => ({ right: 1000 }) };
+globalThis.document = {
+  getElementById: (id) => id === "pos-workspace" ? workspace
+    : id === "pos-cart-resize-handle" ? handle
+    : id === "pos-cart-column" ? cartColumn : null,
+  addEventListener: (name, fn) => { documentListeners[name] = fn; },
+  body: { style: {} },
+};
+function event(extra) {
+  return Object.assign({ cancelable: true, defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; } }, extra);
+}
+""" + helper + "\n(async () => {\n" + body + "\n})().catch(e => { console.error(e); process.exit(1); });"
+    result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
+
+
+
+def test_cart_split_restores_a_saved_width_and_clamps_it():
+    out = run_split_resizer_js("""
+stored["pos_cart_width"] = "900";
+initPOSSplitResizer();
+console.log(JSON.stringify({
+  width: workspace.style.props["--pos-cart-width"],
+  aria: handle.attrs["aria-valuenow"],
+  saved: stored["pos_cart_width"],
+}));
+""")
+    assert out["width"] == "620px"
+    assert out["aria"] == "620"
+    # Restoring the saved layout is not a user change, so nothing is rewritten.
+    assert out["saved"] == "900"
+
+
+def test_cart_split_defaults_to_400px_without_a_saved_width():
+    out = run_split_resizer_js("""
+stored["pos_cart_width"] = "not-a-number";
+initPOSSplitResizer();
+console.log(JSON.stringify({ width: workspace.style.props["--pos-cart-width"], aria: handle.attrs["aria-valuenow"] }));
+""")
+    assert out == {"width": "400px", "aria": "400"}
+
+
+def test_dragging_the_divider_resizes_and_persists_the_cart():
+    out = run_split_resizer_js("""
+initPOSSplitResizer();
+handleListeners["mousedown"](event({}));
+const dragging = classes.has("is-dragging");
+documentListeners["mousemove"](event({ clientX: 640 }));
+documentListeners["mouseup"](event({}));
+console.log(JSON.stringify({
+  dragging,
+  width: workspace.style.props["--pos-cart-width"],
+  aria: handle.attrs["aria-valuenow"],
+  saved: stored["pos_cart_width"],
+  released: classes.has("is-dragging"),
+  cursor: document.body.style.cursor,
+}));
+""")
+    # The cart's right edge sits at 1000px, so a pointer at 640 asks for 360px.
+    assert out["dragging"] is True
+    assert out["width"] == "360px"
+    assert out["aria"] == "360"
+    assert out["saved"] == "360"
+    assert out["released"] is False
+    assert out["cursor"] == ""
+
+
+def test_dragging_is_ignored_while_the_panels_are_stacked():
+    out = run_split_resizer_js("""
+globalThis.window.innerWidth = 700;
+initPOSSplitResizer();
+handleListeners["mousedown"](event({}));
+documentListeners["mousemove"](event({ clientX: 640 }));
+documentListeners["mouseup"](event({}));
+console.log(JSON.stringify({ width: workspace.style.props["--pos-cart-width"], saved: stored["pos_cart_width"] || null }));
+""")
+    assert out == {"width": "400px", "saved": None}
+
+
+def test_cart_split_supports_keyboard_steps_and_reset():
+    out = run_split_resizer_js("""
+initPOSSplitResizer();
+handleListeners["keydown"](event({ key: "ArrowLeft" }));
+const afterLeft = workspace.style.props["--pos-cart-width"];
+handleListeners["keydown"](event({ key: "Home" }));
+const afterHome = workspace.style.props["--pos-cart-width"];
+handleListeners["keydown"](event({ key: "ArrowRight", shiftKey: true }));
+const afterShiftRight = workspace.style.props["--pos-cart-width"];
+handleListeners["keydown"](event({ key: "End" }));
+const afterEnd = workspace.style.props["--pos-cart-width"];
+handleListeners["dblclick"](event({}));
+console.log(JSON.stringify({
+  afterLeft, afterHome, afterShiftRight, afterEnd,
+  afterReset: workspace.style.props["--pos-cart-width"],
+  saved: stored["pos_cart_width"],
+}));
+""")
+    assert out["afterLeft"] == "416px"
+    assert out["afterHome"] == "620px"
+    assert out["afterShiftRight"] == "580px"
+    assert out["afterEnd"] == "320px"
+    assert out["afterReset"] == "400px"
+    assert out["saved"] == "400"
+

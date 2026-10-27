@@ -381,14 +381,14 @@ def test_pwa_manifest_and_install_prompt_are_wired():
     assert manifest["start_url"] == "/"
     assert manifest["scope"] == "/"
     assert manifest["display"] == "standalone"
-    assert manifest["theme_color"] == "#0f172a"
+    assert manifest["theme_color"] == "#161616"
     assert {icon["sizes"] for icon in manifest["icons"]} >= {"192x192", "512x512"}
     assert all("maskable" in icon["purpose"] for icon in manifest["icons"])
 
     for html in (source, login_source):
         assert 'rel="manifest" href="/public/manifest.webmanifest"' in html
         assert 'rel="apple-touch-icon" href="/public/pwa/icon-192.png"' in html
-        assert 'name="theme-color" content="#0f172a"' in html
+        assert 'name="theme-color" content="#161616"' in html
 
     assert "/public/vendor/fontawesome/css/all.min.css" in login_source
     assert "cdnjs.cloudflare.com" not in login_source

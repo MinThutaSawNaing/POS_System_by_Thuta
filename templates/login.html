@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#0f172a">
+    <meta name="theme-color" content="#161616">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <title>POS Login</title>
@@ -14,13 +14,13 @@
     <link rel="stylesheet" href="/public/vendor/fontawesome/css/all.min.css">
     <style>
         :root {
-            --primary: #2563eb;
-            --primary-dark: #1d4ed8;
-            --text-main: #0f172a;
-            --text-muted: #64748b;
+            --primary: #0f62fe;
+            --primary-dark: #0043ce;
+            --text-main: #161616;
+            --text-muted: #525252;
             --surface: #ffffff;
-            --border: #dbe2ef;
-            --success: #16a34a;
+            --border: #e0e0e0;
+            --success: #24a148;
         }
 
         * {
@@ -31,10 +31,7 @@
             margin: 0;
             min-height: 100vh;
             font-family: "Inter", "Segoe UI", Roboto, Arial, sans-serif;
-            background:
-                radial-gradient(circle at 15% 20%, rgba(37, 99, 235, 0.22), transparent 35%),
-                radial-gradient(circle at 85% 85%, rgba(56, 189, 248, 0.18), transparent 40%),
-                linear-gradient(135deg, #0b1220 0%, #111827 100%);
+            background: #161616;
             color: var(--text-main);
             display: flex;
             align-items: center;
@@ -44,12 +41,10 @@
 
         .auth-shell {
             width: min(960px, 100%);
-            background: rgba(255, 255, 255, 0.92);
-            border: 1px solid rgba(255, 255, 255, 0.35);
-            backdrop-filter: blur(10px);
-            border-radius: 24px;
+            background: var(--surface);
+            border: 1px solid #393939;
+            border-radius: 8px;
             overflow: hidden;
-            box-shadow: 0 24px 70px rgba(15, 23, 42, 0.35);
             display: grid;
             grid-template-columns: 1.1fr 1fr;
         }
@@ -57,34 +52,11 @@
         .brand-pane {
             position: relative;
             padding: 2.25rem;
-            background:
-                linear-gradient(160deg, rgba(37, 99, 235, 0.95), rgba(30, 64, 175, 0.92));
-            color: #f8fafc;
+            background: #262626;
+            color: #f4f4f4;
             display: flex;
             flex-direction: column;
             justify-content: space-between;
-        }
-
-        .brand-pane::before {
-            content: "";
-            position: absolute;
-            width: 240px;
-            height: 240px;
-            right: -60px;
-            top: -70px;
-            border-radius: 50%;
-            background: rgba(255, 255, 255, 0.08);
-        }
-
-        .brand-pane::after {
-            content: "";
-            position: absolute;
-            width: 200px;
-            height: 200px;
-            left: -90px;
-            bottom: -90px;
-            border-radius: 50%;
-            background: rgba(255, 255, 255, 0.08);
         }
 
         .brand-content,
@@ -106,8 +78,8 @@
         .brand-logo img {
             width: 42px;
             height: 42px;
-            border-radius: 12px;
-            background: rgba(255, 255, 255, 0.18);
+            border-radius: 4px;
+            background: #393939;
         }
 
         .brand-logo i {
@@ -142,11 +114,11 @@
         }
 
         .security-badge {
-            border: 1px solid rgba(255, 255, 255, 0.28);
-            border-radius: 999px;
+            border: 1px solid #525252;
+            border-radius: 4px;
             padding: .4rem .75rem;
             font-size: .82rem;
-            background: rgba(255, 255, 255, 0.1);
+            background: #333333;
         }
 
         .form-pane {
@@ -170,7 +142,7 @@
         }
 
         .alert {
-            border-radius: 12px;
+            border-radius: 4px;
             margin-bottom: 1rem;
             border: none;
             font-size: .95rem;
@@ -185,48 +157,48 @@
 
         .input-group {
             border: 1px solid var(--border);
-            border-radius: 12px;
+            border-radius: 4px;
             overflow: hidden;
             transition: border-color .2s ease, box-shadow .2s ease;
             background: #fff;
         }
 
         .input-group:focus-within {
-            border-color: rgba(37, 99, 235, .55);
-            box-shadow: 0 0 0 .25rem rgba(37, 99, 235, .14);
+            border-color: rgba(15, 98, 254, .55);
+            box-shadow: 0 0 0 .25rem rgba(15, 98, 254, .18);
         }
 
         .input-group-text {
             background: #f8fafc;
             border: none;
-            color: #64748b;
+            color: var(--text-muted);
             min-width: 44px;
             justify-content: center;
         }
 
         .form-control {
             border: 1px solid var(--border);
-            border-radius: 12px;
+            border-radius: 4px;
             padding: .74rem .9rem;
             font-size: .95rem;
             min-height: 44px;
         }
 
         .form-control:focus {
-            border-color: rgba(37, 99, 235, .55);
-            box-shadow: 0 0 0 .25rem rgba(37, 99, 235, .14);
+            border-color: rgba(15, 98, 254, .55);
+            box-shadow: 0 0 0 .25rem rgba(15, 98, 254, .18);
         }
 
         /* CAPTCHA input specific styling */
         #captchaInput {
             border: 1px solid var(--border);
-            border-radius: 12px;
+            border-radius: 4px;
             background: #fff;
         }
 
         #captchaInput:focus {
-            border-color: rgba(37, 99, 235, .55);
-            box-shadow: 0 0 0 .25rem rgba(37, 99, 235, .14);
+            border-color: rgba(15, 98, 254, .55);
+            box-shadow: 0 0 0 .25rem rgba(15, 98, 254, .18);
         }
 
         .captcha-container {
@@ -239,9 +211,9 @@
         .captcha-display {
             flex: 1;
             min-height: 52px;
-            background: linear-gradient(160deg, #eff6ff, #f8fafc);
-            border: 1px dashed #bfdbfe;
-            border-radius: 12px;
+            background: #f4f4f4;
+            border: 1px solid #c6c6c6;
+            border-radius: 4px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -262,8 +234,8 @@
                 135deg,
                 transparent,
                 transparent 12px,
-                rgba(37, 99, 235, .05) 12px,
-                rgba(37, 99, 235, .05) 24px
+                rgba(15, 98, 254, .05) 12px,
+                rgba(15, 98, 254, .05) 24px
             );
         }
 
@@ -271,7 +243,7 @@
             border: 1px solid var(--border);
             background: #fff;
             color: var(--primary-dark);
-            border-radius: 10px;
+            border-radius: 4px;
             width: 45px;
             height: 45px;
             display: grid;
@@ -281,7 +253,7 @@
         }
 
         .captcha-refresh:hover {
-            background: #eff6ff;
+            background: #edf5ff;
             transform: rotate(180deg);
         }
 
@@ -293,22 +265,21 @@
 
         .form-check-label {
             font-size: .88rem;
-            color: #475569;
+            color: var(--text-muted);
         }
 
         .btn-login {
             border: none;
-            border-radius: 12px;
-            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            border-radius: 4px;
+            background: var(--primary);
             color: #fff;
             font-weight: 600;
             padding: .84rem 1rem;
-            transition: transform .2s ease, box-shadow .25s ease;
+            transition: background-color .2s ease;
         }
 
         .btn-login:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 10px 22px rgba(37, 99, 235, 0.34);
+            background: var(--primary-dark);
         }
 
         .meta-row {
@@ -552,7 +523,7 @@
 
             const characters = captchaDisplay.textContent.split('');
             captchaDisplay.innerHTML = characters.map(char => {
-                const color = Math.random() > 0.5 ? '#1d4ed8' : '#2563eb';
+                const color = Math.random() > 0.5 ? '#0043ce' : '#0f62fe';
                 return `<span style="color: ${color}; display: inline-block; transform: rotate(${Math.random() * 12 - 6}deg)">${char}</span>`;
             }).join('');
         }

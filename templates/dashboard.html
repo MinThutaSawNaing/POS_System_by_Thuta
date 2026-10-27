@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0f172a" />
+    <meta name="theme-color" content="#161616" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -33,35 +33,41 @@
         --sidebar-width: 250px;
         --sidebar-min-width: 220px;
         --sidebar-max-width: 420px;
-        /* Modern slate + indigo theme: deep navy chrome over a soft, cool canvas. */
-        --sidebar-bg: #0f172a;
-        --sidebar-bg-top: #152238;
-        --sidebar-bg-bottom: #0a1120;
-        --sidebar-text: rgba(226, 232, 240, 0.76);
+        /* Deliberate, low-chroma system: a 7-step neutral ramp plus one blue
+           accent. No gradients, no glows, no ad-hoc hues - text and borders use
+           the ramp so contrast stays predictable in every tab. */
+        --gray-10: #f4f4f4;
+        --gray-20: #e0e0e0;
+        --gray-30: #c6c6c6;
+        --gray-50: #8d8d8d;
+        --gray-70: #525252;
+        --gray-90: #262626;
+        --gray-100: #161616;
+        --accent: #0f62fe;
+        --accent-hover: #0043ce;
+        --accent-pressed: #002d9c;
+        --accent-soft: #edf5ff;
+        --sidebar-bg: var(--gray-100);
+        --sidebar-text: var(--gray-30);
         --sidebar-active: #ffffff;
-        --sidebar-hover: rgba(148, 163, 184, 0.16);
-        --primary-color: #4f46e5;
-        --app-bg: #f4f6fb;
-        --app-ink: #1f2937;
-        --surface-border: #e3e9f2;
-        --surface-shadow: 0 20px 40px -32px rgba(15, 23, 42, 0.55);
-        /* Align Bootstrap's primary utilities (links, focus rings, subtle fills)
-           with the indigo accent used by the chrome. */
-        --bs-primary: #4f46e5;
-        --bs-primary-rgb: 79, 70, 229;
-        --bs-link-color: #4f46e5;
-        --bs-link-color-rgb: 79, 70, 229;
-        --bs-link-hover-color: #4338ca;
-        --bs-link-hover-color-rgb: 67, 56, 202;
+        --sidebar-hover: var(--gray-90);
+        --primary-color: var(--accent);
+        --app-bg: var(--gray-10);
+        --app-ink: var(--gray-100);
+        --surface-border: var(--gray-20);
+        /* Bootstrap utilities (links, focus rings, subtle fills) use the same
+           accent so nothing on screen is a different shade of "primary". */
+        --bs-primary: #0f62fe;
+        --bs-primary-rgb: 15, 98, 254;
+        --bs-link-color: #0f62fe;
+        --bs-link-color-rgb: 15, 98, 254;
+        --bs-link-hover-color: #0043ce;
+        --bs-link-hover-color-rgb: 0, 67, 206;
       }
 
       body {
         overflow-x: hidden;
         background-color: var(--app-bg);
-        background-image:
-          radial-gradient(1100px 420px at 12% -12%, rgba(79, 70, 229, 0.12), transparent 70%),
-          radial-gradient(900px 380px at 100% 0%, rgba(14, 165, 233, 0.1), transparent 65%);
-        background-repeat: no-repeat;
         color: var(--app-ink);
       }
 
@@ -93,14 +99,13 @@
         max-width: var(--sidebar-max-width);
         height: 100vh;
         background-color: var(--sidebar-bg);
-        background-image: linear-gradient(180deg, var(--sidebar-bg-top) 0%, var(--sidebar-bg-bottom) 100%);
         color: var(--sidebar-text);
+        border-right: 1px solid #393939;
         position: fixed;
         transition: all 0.3s;
         z-index: 1000;
         overflow-y: auto;
         overflow-x: hidden;
-        box-shadow: inset -1px 0 0 rgba(148, 163, 184, 0.16), 18px 0 44px -34px rgba(15, 23, 42, 0.95);
       }
 
       .sidebar-drag-handle {
@@ -125,14 +130,13 @@
         gap: 0.5rem;
         margin: 0.5rem 0.75rem 0;
         padding: 0.55rem 0.7rem;
-        border-radius: 0.7rem;
+        border-radius: 4px;
         font-size: 0.75rem;
         font-weight: 600;
         line-height: 1.2;
         color: #fff;
-        background-color: rgba(10, 17, 32, 0.92);
-        border: 1px solid rgba(148, 163, 184, 0.22);
-        box-shadow: 0 16px 30px -26px rgba(0, 0, 0, 0.95);
+        background-color: var(--gray-90);
+        border: 1px solid #393939;
         position: sticky;
         bottom: 0.75rem;
         z-index: 3;
@@ -209,28 +213,32 @@
       .sidebar .nav-link {
         color: var(--sidebar-text);
         padding: 0.62rem 0.9rem;
-        border-radius: 0.7rem;
-        margin: 0.15rem 0.75rem;
+        border-left: 3px solid transparent;
+        border-radius: 0;
+        margin: 0;
         display: flex;
         align-items: center;
-        width: calc(100% - 1.5rem);
+        width: 100%;
         font-size: 0.92rem;
-        font-weight: 500;
-        letter-spacing: 0.01em;
-        transition: background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+        font-weight: 400;
+        letter-spacing: 0;
+        transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease;
       }
 
       .sidebar .nav-link:hover {
-        color: var(--sidebar-active);
+        color: var(--gray-10);
         background-color: var(--sidebar-hover);
       }
 
+      /* Active tab: neutral fill plus the single accent bar. Two cues, no gradient. */
       .sidebar .nav-link.active {
         color: var(--sidebar-active);
-        background-color: rgba(79, 70, 229, 0.9);
-        background-image: linear-gradient(90deg, rgba(79, 70, 229, 0.96) 0%, rgba(99, 102, 241, 0.55) 100%);
-        box-shadow: 0 14px 28px -20px rgba(79, 70, 229, 0.95);
+        background-color: var(--sidebar-hover);
+        border-left-color: var(--accent);
+        font-weight: 600;
       }
+
+      .sidebar .nav-link.active i { color: #78a9ff; }
 
       .sidebar .nav-link i {
         width: 22px;
@@ -240,17 +248,17 @@
         flex-shrink: 0;
       }
 
-      .sidebar .nav-link.text-danger { color: #fca5a5 !important; }
+      .sidebar .nav-link.text-danger { color: #ff8389 !important; }
       .sidebar .nav-link.text-danger:hover {
-        color: #fff !important;
-        background-color: rgba(239, 68, 68, 0.22);
+        color: #ffffff !important;
+        background-color: rgba(218, 30, 40, 0.22);
       }
 
       .sidebar .sidebar-title {
-        color: #f8fafc;
+        color: var(--gray-10);
         font-size: 1.06rem;
-        font-weight: 700;
-        letter-spacing: 0.02em;
+        font-weight: 600;
+        letter-spacing: 0.01em;
       }
 
       .sidebar .sidebar-user {
@@ -259,18 +267,17 @@
       }
 
       .sidebar hr {
-        border-color: rgba(148, 163, 184, 0.28);
+        border-color: #393939;
         opacity: 1;
       }
 
       .sidebar-brand-logo {
-        width: 52px;
-        height: 52px;
+        width: 48px;
+        height: 48px;
         object-fit: contain;
-        border-radius: 16px;
-        background: rgba(148, 163, 184, 0.16);
+        border-radius: 4px;
+        background: var(--gray-90);
         padding: 6px;
-        box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.24), 0 16px 30px -24px rgba(0, 0, 0, 0.95);
       }
 
       .main-content {
@@ -279,36 +286,37 @@
         transition: all 0.3s;
       }
 
-      /* Modern surfaces: soft borders and generous radii instead of hard grey. */
+      /* Flat surfaces: 1px neutral borders and an 8px radius. No drop shadows
+         on every card, so the eye is drawn to content rather than decoration. */
       .card {
         --bs-card-border-color: var(--surface-border);
-        --bs-card-border-radius: 0.9rem;
-        --bs-card-inner-border-radius: calc(0.9rem - 1px);
+        --bs-card-border-radius: 0.5rem;
+        --bs-card-inner-border-radius: calc(0.5rem - 1px);
       }
 
-      /* Primary actions follow the same indigo accent as the sidebar. */
+      /* Primary actions use the single accent, with distinct hover/pressed steps. */
       .btn-primary {
-        --bs-btn-bg: #4f46e5;
-        --bs-btn-border-color: #4f46e5;
-        --bs-btn-hover-bg: #4338ca;
-        --bs-btn-hover-border-color: #4338ca;
-        --bs-btn-active-bg: #3730a3;
-        --bs-btn-active-border-color: #3730a3;
-        --bs-btn-disabled-bg: #6366f1;
-        --bs-btn-disabled-border-color: #6366f1;
-        --bs-btn-focus-shadow-rgb: 79, 70, 229;
+        --bs-btn-bg: #0f62fe;
+        --bs-btn-border-color: #0f62fe;
+        --bs-btn-hover-bg: #0043ce;
+        --bs-btn-hover-border-color: #0043ce;
+        --bs-btn-active-bg: #002d9c;
+        --bs-btn-active-border-color: #002d9c;
+        --bs-btn-disabled-bg: #a6c8ff;
+        --bs-btn-disabled-border-color: #a6c8ff;
+        --bs-btn-focus-shadow-rgb: 15, 98, 254;
       }
 
       .btn-outline-primary {
-        --bs-btn-color: #4f46e5;
-        --bs-btn-border-color: #4f46e5;
-        --bs-btn-hover-bg: #4f46e5;
-        --bs-btn-hover-border-color: #4f46e5;
-        --bs-btn-active-bg: #4338ca;
-        --bs-btn-active-border-color: #4338ca;
-        --bs-btn-disabled-color: #6366f1;
-        --bs-btn-disabled-border-color: #6366f1;
-        --bs-btn-focus-shadow-rgb: 79, 70, 229;
+        --bs-btn-color: #0f62fe;
+        --bs-btn-border-color: #0f62fe;
+        --bs-btn-hover-bg: #0f62fe;
+        --bs-btn-hover-border-color: #0f62fe;
+        --bs-btn-active-bg: #0043ce;
+        --bs-btn-active-border-color: #0043ce;
+        --bs-btn-disabled-color: #a6c8ff;
+        --bs-btn-disabled-border-color: #a6c8ff;
+        --bs-btn-focus-shadow-rgb: 15, 98, 254;
       }
 
       .sidebar-resize-hint {
@@ -319,21 +327,20 @@
 
       .product-card {
         cursor: pointer;
-        transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
         height: 100%;
         padding: 9px;
         font-size: 15px;
         font-weight: 600;
         margin-bottom: 6px;
         border: 1px solid var(--surface-border);
-        border-radius: 0.8rem;
+        border-radius: 0.5rem;
         background: #fff;
       }
 
       .product-card:hover {
-        transform: translateY(-4px);
-        border-color: #c7d2fe;
-        box-shadow: 0 22px 34px -28px rgba(15, 23, 42, 0.6);
+        border-color: var(--gray-50);
+        box-shadow: 0 1px 3px rgba(22, 22, 22, 0.12);
       }
 
       .product-card-img {
@@ -379,7 +386,7 @@
 
       .receipt-paper-option:has(input:checked) {
         border-color: var(--primary-color);
-        background: #eef2ff;
+        background: var(--accent-soft);
       }
 
       .receipt-paper-option input {
@@ -467,9 +474,9 @@
          settings group visible at a time on the right, uniform white cards
          with a tinted icon chip instead of the old rainbow headers. */
       .settings-layout {
-        --set-accent: #4f46e5;
-        --set-accent-soft: rgba(79, 70, 229, 0.09);
-        --set-accent-ink: #4338ca;
+        --set-accent: #0f62fe;
+        --set-accent-soft: rgba(15, 98, 254, 0.1);
+        --set-accent-ink: #0043ce;
         --set-border: #e4e8ee;
         --set-muted: #6c757d;
       }
@@ -722,6 +729,69 @@
         top: 20px;
       }
 
+      /* Catalogue/cart split: drag the divider to give either panel more room,
+         the same interaction as the sidebar's resize handle. Below lg the panels
+         stack, so the handle is not rendered. */
+      .pos-split-handle { display: none; }
+
+      @media (min-width: 992px) {
+        .pos-workspace {
+          --pos-cart-width: 400px;
+          flex-wrap: nowrap;
+        }
+
+        .pos-workspace > .pos-catalog-column {
+          order: 1;
+          flex: 1 1 0;
+          width: auto;
+          max-width: none;
+          min-width: 0;
+        }
+
+        .pos-workspace > .pos-split-handle {
+          order: 2;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex: 0 0 16px;
+          align-self: stretch;
+          padding: 0;
+          border: 0;
+          background: transparent;
+          cursor: col-resize;
+          touch-action: none;
+        }
+
+        .pos-workspace > .pos-cart-column {
+          order: 3;
+          flex: 0 0 var(--pos-cart-width);
+          width: var(--pos-cart-width);
+          max-width: 62%;
+          min-width: 0;
+        }
+
+        .pos-split-grip {
+          width: 4px;
+          height: 56px;
+          border-radius: 999px;
+          background: var(--gray-30);
+          transition: background-color 0.15s ease, height 0.15s ease;
+        }
+
+        .pos-split-handle:hover .pos-split-grip,
+        .pos-split-handle:focus-visible .pos-split-grip,
+        .pos-split-handle.is-dragging .pos-split-grip {
+          height: 88px;
+          background: var(--accent);
+        }
+
+        .pos-split-handle:focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: -2px;
+          border-radius: 4px;
+        }
+      }
+
       .pos-products-scroll {
         /* The quick-access rows (actions and category chips) sit above the grid,
            so the scroll area gives back their height. */
@@ -730,9 +800,8 @@
         overflow-x: hidden;
         padding: 0.5rem;
         border: 1px solid var(--surface-border);
-        border-radius: 0.9rem;
+        border-radius: 0.5rem;
         background: #fff;
-        box-shadow: var(--surface-shadow);
       }
 
       /* === Barcode Search Bar - Clean Professional === */
@@ -751,8 +820,8 @@
       }
 
       .barcode-input-group .form-control:focus {
-        border-color: #a5b4fc;
-        box-shadow: 0 0 0 0.25rem rgba(79, 70, 229, 0.22);
+        border-color: #a6c8ff;
+        box-shadow: 0 0 0 0.25rem rgba(15, 98, 254, 0.2);
       }
 
       .barcode-input-group .btn {
@@ -768,17 +837,17 @@
         font-weight: 600;
         white-space: nowrap;
         padding: 0.55rem 1rem;
-        border: 1px solid #c6d1df;
+        border: 1px solid var(--gray-30);
         border-radius: 999px;
         background: #fff;
-        color: var(--pos-ink, #243447);
+        color: var(--pos-ink, #161616);
         min-height: 48px;
         cursor: pointer;
       }
 
       .auto-barcode-scanner-control:hover {
-        border-color: #9fb3c8;
-        background: #f4f7fb;
+        border-color: var(--gray-50);
+        background: var(--gray-10);
       }
 
       .auto-barcode-scanner-control .form-check-input {
@@ -899,7 +968,7 @@
       }
 
       .products-table-scroll:focus-visible {
-        outline: 2px solid #86b7fe;
+        outline: 2px solid var(--accent);
         outline-offset: 2px;
       }
 
@@ -924,7 +993,7 @@
       }
 
       .barcode-products-scroll:focus-visible {
-        outline: 2px solid #86b7fe;
+        outline: 2px solid var(--accent);
         outline-offset: 2px;
       }
 
@@ -1378,7 +1447,7 @@
         }
       }
 
-      /* Custom scrollbar */
+      /* Custom scrollbar: thin neutral thumb, tinted only inside the sidebar. */
       ::-webkit-scrollbar {
         width: 10px;
         height: 10px;
@@ -1389,24 +1458,24 @@
       }
 
       ::-webkit-scrollbar-thumb {
-        background: #cbd5e1;
+        background: var(--gray-30);
         border: 2px solid transparent;
         border-radius: 999px;
         background-clip: content-box;
       }
 
       ::-webkit-scrollbar-thumb:hover {
-        background: #94a3b8;
+        background: var(--gray-50);
         background-clip: content-box;
       }
 
       .sidebar::-webkit-scrollbar-thumb {
-        background: rgba(148, 163, 184, 0.45);
+        background: #525252;
         background-clip: content-box;
       }
 
       .sidebar::-webkit-scrollbar-thumb:hover {
-        background: rgba(226, 232, 240, 0.6);
+        background: #6f6f6f;
         background-clip: content-box;
       }
 
@@ -1528,8 +1597,8 @@
       .pos-toast--error .pos-toast__progress { color: #dc3545; }
       .pos-toast--warning .pos-toast__icon { background: rgba(232, 89, 12, 0.13); color: #e8590c; }
       .pos-toast--warning .pos-toast__progress { color: #e8590c; }
-      .pos-toast--info .pos-toast__icon { background: rgba(79, 70, 229, 0.12); color: #4f46e5; }
-      .pos-toast--info .pos-toast__progress { color: #4f46e5; }
+      .pos-toast--info .pos-toast__icon { background: rgba(15, 98, 254, 0.1); color: #0f62fe; }
+      .pos-toast--info .pos-toast__progress { color: #0f62fe; }
 
       .searchable-select-wrapper {
         position: relative;
@@ -1563,22 +1632,22 @@
         border-bottom: 0;
       }
       /* Persistent cashier notices and high-contrast checkout information. */
-      #pos-section { --pos-ink: #243447; --pos-muted: #526172; --pos-surface: #f4f7fb; --pos-warning: #875900; --pos-danger: #b42318; }
+      #pos-section { --pos-ink: #161616; --pos-muted: #525252; --pos-surface: #f4f4f4; --pos-warning: #8e6a00; --pos-danger: #a2191f; }
       .pos-notice { display: flex; align-items: flex-start; gap: .85rem; padding: 1rem; border: 1px solid #e3c77a; border-left: 4px solid var(--pos-warning); border-radius: .5rem; background: #fff8e6; color: var(--pos-ink); margin-bottom: 1rem; }
       .pos-notice > .bi { font-size: 1.35rem; color: var(--pos-warning); }
       .pos-notice[hidden] { display: none; }
       .pos-notice p { margin: .25rem 0 0; line-height: 1.5; }
       .pos-notice .btn { margin-left: auto; flex-shrink: 0; min-height: 44px; }
-      .pos-notice-danger { border-color: #f1b5b0; border-left-color: var(--pos-danger); background: #fff1f0; }
+      .pos-notice-danger { border-color: #ffb3b8; border-left-color: var(--pos-danger); background: #fff1f1; }
       .pos-notice-danger > .bi { color: var(--pos-danger); }
-      .pos-grid-state { grid-column: 1 / -1; padding: 2.5rem 1rem; text-align: center; background: var(--pos-surface); border: 1px dashed #c6d1df; border-radius: .75rem; color: var(--pos-ink); }
+      .pos-grid-state { grid-column: 1 / -1; padding: 2.5rem 1rem; text-align: center; background: var(--pos-surface); border: 1px dashed var(--gray-30); border-radius: .5rem; color: var(--pos-ink); }
       .pos-grid-state > .bi { display: block; font-size: 2rem; margin-bottom: .75rem; color: var(--pos-muted); }
       .pos-grid-state p { max-width: 36rem; margin: .5rem auto 1rem; color: var(--pos-muted); }
       .pos-grid-state .btn { min-height: 44px; }
       #pos-section .product-card .card-title { color: var(--pos-ink) !important; overflow-wrap: anywhere; }
       #pos-section .product-card .card-text { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; }
-      .pos-stock { display: inline-block; padding: .25rem .5rem; border-radius: .25rem; background: #edf3f9; color: var(--pos-muted); font-weight: 600; }
-      .pos-stock-unavailable { background: #fff1f0; color: var(--pos-danger); }
+      .pos-stock { display: inline-block; padding: .25rem .5rem; border-radius: .25rem; background: #e8e8e8; color: var(--pos-muted); font-weight: 600; }
+      .pos-stock-unavailable { background: #fff1f1; color: var(--pos-danger); }
       /* Cashier quick access: one-tap actions and category shelves.
          44px minimum targets so a touch screen at the counter stays usable. */
       .pos-quick-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .5rem; }
@@ -1586,14 +1655,14 @@
       .pos-quick-action kbd { font-size: .7rem; padding: .1rem .35rem; }
       .pos-category-bar { display: flex; align-items: center; gap: .5rem; overflow-x: auto; padding: .15rem .15rem .5rem; margin-bottom: .25rem; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
       .pos-category-bar[hidden] { display: none; }
-      .pos-category-chip { display: inline-flex; align-items: center; gap: .45rem; flex: 0 0 auto; min-height: 44px; padding: .45rem .9rem; border: 1px solid #c6d1df; border-radius: 999px; background: #fff; color: var(--pos-ink); font-weight: 600; white-space: nowrap; }
-      .pos-category-chip:hover { background: var(--pos-surface); border-color: #9fb3c8; }
+      .pos-category-chip { display: inline-flex; align-items: center; gap: .45rem; flex: 0 0 auto; min-height: 44px; padding: .45rem .9rem; border: 1px solid var(--gray-30); border-radius: 999px; background: #fff; color: var(--pos-ink); font-weight: 600; white-space: nowrap; }
+      .pos-category-chip:hover { background: var(--pos-surface); border-color: var(--gray-50); }
       .pos-category-chip.is-active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
       .pos-category-chip.is-active .pos-category-dot { outline: 2px solid #fff; outline-offset: 1px; }
-      .pos-category-dot { flex-shrink: 0; width: .6rem; height: .6rem; border-radius: 50%; background: #9fb3c8; }
+      .pos-category-dot { flex-shrink: 0; width: .6rem; height: .6rem; border-radius: 50%; background: var(--gray-50); }
       .pos-category-hint { color: var(--pos-muted); font-size: .875rem; white-space: nowrap; }
       .pos-category-chip:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
-      .pos-total-row { background: var(--pos-surface); border-top: 2px solid #c6d1df; padding: .85rem .65rem; font-size: 1.2rem; font-variant-numeric: tabular-nums; }
+      .pos-total-row { background: var(--pos-surface); border-top: 2px solid var(--gray-30); padding: .85rem .65rem; font-size: 1.2rem; font-variant-numeric: tabular-nums; }
       #pos-section .btn:focus-visible, #pos-section .form-control:focus-visible, #pos-section .form-select:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
       #pos-connection-summary { color: var(--pos-muted); font-size: .875rem; }
       #pos-customer-warning { color: var(--pos-warning); }
@@ -1861,8 +1930,8 @@
 
         <div id="pos-connection-summary" class="mb-2" role="status" aria-live="polite">Connection status is shown in the sidebar.</div>
         <div id="pos-catalog-notice" role="alert" hidden></div>
-        <div class="row">
-          <div class="col-12 col-lg-8 order-2 order-lg-1">
+        <div class="row pos-workspace" id="pos-workspace">
+          <div class="col-12 col-lg-8 order-2 order-lg-1 pos-catalog-column">
             <div class="pos-quick-actions" role="toolbar" aria-label="Quick POS actions">
               <button
                 type="button"
@@ -1918,7 +1987,21 @@
               </div>
             </div>
           </div>
-          <div class="col-12 col-lg-4 order-1 order-lg-2 mb-3 mb-lg-0">
+          <div
+            id="pos-cart-resize-handle"
+            class="pos-split-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize the catalogue and cart panels"
+            aria-valuemin="320"
+            aria-valuemax="620"
+            aria-valuenow="400"
+            tabindex="0"
+            title="Drag to resize · double-click to reset"
+          >
+            <span class="pos-split-grip" aria-hidden="true"></span>
+          </div>
+          <div class="col-12 col-lg-4 order-1 order-lg-2 mb-3 mb-lg-0 pos-cart-column" id="pos-cart-column">
             <div class="card shadow-sm pos-cart-sticky">
               <div class="card-header d-flex justify-content-between align-items-center">
                 <h6 class="mb-0">Current Sale</h6>
@@ -2263,6 +2346,15 @@
             </span>
           </div>
           <div class="d-flex gap-2 flex-wrap sales-history-header-actions">
+            <button
+              class="btn btn-outline-primary"
+              type="button"
+              onclick="showSection('pos')"
+              title="Return to the Point of Sale tab"
+            >
+              <i class="bi bi-arrow-left" aria-hidden="true"></i>
+              <span class="d-none d-sm-inline">Back to POS</span><span class="d-sm-none">POS</span>
+            </button>
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
             </button>
@@ -2409,23 +2501,22 @@
       <!-- Reports Section -->
       <div id="reports-section" style="display: none">
         <style>
-          #reports-section { color: #183247; background: #f3f7fa; padding: 1.25rem; border-radius: 14px; }
-          #reports-section h2, #reports-section h3, #reports-section h5, #reports-section .report-kpi-value { font-family: system-ui, sans-serif; color: #183247; }
-          #reports-section .card, #reports-section .report-filter-panel { border: 1px solid #dce5ec; border-radius: 12px; background: #ffffff; box-shadow: none; }
+          #reports-section { color: var(--gray-100); background: var(--gray-10); padding: 1.25rem; border-radius: 8px; }
+          #reports-section h2, #reports-section h3, #reports-section h5, #reports-section .report-kpi-value { font-family: system-ui, sans-serif; color: var(--gray-100); }
+          #reports-section .card, #reports-section .report-filter-panel { border: 1px solid var(--surface-border); border-radius: 8px; background: #ffffff; box-shadow: none; }
           #reports-section .report-filter-panel { padding: 1rem; }
           #reports-section .report-scope-highlight { background: transparent; border: 0; padding: 0; box-shadow: none; }
-          #reports-section .form-label { font-weight: 600; color: #183247; }
-          #reports-section .form-control, #reports-section .form-select { border-color: #dce5ec; }
-          #reports-section .btn-primary { background: #087e83; border-color: #087e83; }
-          #reports-section .btn-outline-secondary { color: #183247; border-color: #dce5ec; background: #ffffff; }
-          #reports-section .btn:focus-visible, #reports-section input:focus, #reports-section select:focus { outline: 2px solid #087e83; outline-offset: 2px; }
-          #reports-section .report-context, #reports-section .form-text, #reports-section .report-note { color: #526172; }
-          #reports-section .report-kpi { background: #f3f7fa; border: 1px solid #dce5ec; border-radius: 10px; padding: 1rem; height: 100%; }
+          #reports-section .form-label { font-weight: 600; color: var(--gray-100); }
+          #reports-section .form-control, #reports-section .form-select { border-color: var(--surface-border); }
+          #reports-section .btn-outline-secondary { color: var(--gray-100); border-color: var(--surface-border); background: #ffffff; }
+          #reports-section .btn:focus-visible, #reports-section input:focus, #reports-section select:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+          #reports-section .report-context, #reports-section .form-text, #reports-section .report-note { color: var(--gray-70); }
+          #reports-section .report-kpi { background: var(--gray-10); border: 1px solid var(--surface-border); border-radius: 8px; padding: 1rem; height: 100%; }
           #reports-section .report-kpi-value { display: block; font-size: 1.4rem; font-weight: 700; overflow-wrap: anywhere; }
           #reports-section .report-number, #reports-section .report-kpi-value { font-variant-numeric: tabular-nums; }
-          #reports-section .table th { background: #f3f7fa; color: #526172; font-size: .85rem; }
-          #reports-section .table > :not(caption) > * > * { border-color: #dce5ec; }
-          #reports-section .report-state { padding: 2rem 1rem; text-align: center; color: #526172; }
+          #reports-section .table th { background: var(--gray-10); color: var(--gray-70); font-size: .85rem; }
+          #reports-section .table > :not(caption) > * > * { border-color: var(--surface-border); }
+          #reports-section .report-state { padding: 2rem 1rem; text-align: center; color: var(--gray-70); }
         </style>
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
@@ -9872,6 +9963,7 @@
         }
         initPwaInstallPrompt();
         initResizableSidebar();
+        initPOSSplitResizer();
         applyWorkspacePermissions();
         applySettingsUI();
         loadSettings();
@@ -10252,7 +10344,7 @@
           transform: translateY(-50%);
           width: 4px;
           height: 60px;
-          background: rgba(79, 70, 229, 0.55);
+          background: rgba(15, 98, 254, 0.55);
           border-radius: 0 4px 4px 0;
           z-index: 998;
           transition: opacity 0.3s;
@@ -11347,6 +11439,101 @@
         });
       }
 
+      // The catalogue and the cart share one workspace: dragging the divider
+      // widens one panel and narrows the other, exactly like the sidebar handle.
+      // The width is remembered per device; double-click (or Home/End) resets it.
+      const POS_CART_WIDTH_KEY = "pos_cart_width";
+      const POS_CART_MIN_WIDTH = 320;
+      const POS_CART_MAX_WIDTH = 620;
+      const POS_CART_DEFAULT_WIDTH = 400;
+
+      function initPOSSplitResizer() {
+        const workspace = document.getElementById("pos-workspace");
+        const handle = document.getElementById("pos-cart-resize-handle");
+        const cartColumn = document.getElementById("pos-cart-column");
+        if (!workspace || !handle || !cartColumn) return;
+
+        const clampWidth = (width) =>
+          Math.min(POS_CART_MAX_WIDTH, Math.max(POS_CART_MIN_WIDTH, Math.round(width)));
+
+        const applyWidth = (width, persist) => {
+          const numeric = Number(width);
+          const safeWidth = clampWidth(Number.isFinite(numeric) ? numeric : POS_CART_DEFAULT_WIDTH);
+          workspace.style.setProperty("--pos-cart-width", safeWidth + "px");
+          handle.setAttribute("aria-valuenow", String(safeWidth));
+          if (persist) {
+            try {
+              localStorage.setItem(POS_CART_WIDTH_KEY, String(safeWidth));
+            } catch (error) { /* private mode: keep the width for this visit only */ }
+          }
+          return safeWidth;
+        };
+
+        let savedWidth = NaN;
+        try {
+          savedWidth = parseInt(localStorage.getItem(POS_CART_WIDTH_KEY), 10);
+        } catch (error) { savedWidth = NaN; }
+        applyWidth(Number.isFinite(savedWidth) ? savedWidth : POS_CART_DEFAULT_WIDTH, false);
+
+        let dragging = false;
+        const startDrag = (event) => {
+          if (window.innerWidth < 992) return;
+          dragging = true;
+          handle.classList.add("is-dragging");
+          document.body.style.cursor = "col-resize";
+          document.body.style.userSelect = "none";
+          if (event.cancelable) event.preventDefault();
+        };
+        const dragTo = (clientX) => {
+          // The cart's right edge stays put, so the pointer distance from it is
+          // exactly the width the cashier is asking for.
+          const rect = cartColumn.getBoundingClientRect();
+          applyWidth(rect.right - clientX, true);
+        };
+        const stopDrag = () => {
+          if (!dragging) return;
+          dragging = false;
+          handle.classList.remove("is-dragging");
+          document.body.style.cursor = "";
+          document.body.style.userSelect = "";
+        };
+
+        handle.addEventListener("mousedown", startDrag);
+        handle.addEventListener("touchstart", (event) => {
+          if (!event.touches || !event.touches.length) return;
+          startDrag(event);
+        }, { passive: false });
+        document.addEventListener("mousemove", (event) => { if (dragging) dragTo(event.clientX); });
+        document.addEventListener("touchmove", (event) => {
+          if (!dragging || !event.touches || !event.touches.length) return;
+          dragTo(event.touches[0].clientX);
+          if (event.cancelable) event.preventDefault();
+        }, { passive: false });
+        document.addEventListener("mouseup", stopDrag);
+        document.addEventListener("touchend", stopDrag);
+        handle.addEventListener("dblclick", () => applyWidth(POS_CART_DEFAULT_WIDTH, true));
+
+        // The handle is a focusable separator, so the split also works from the
+        // keyboard: arrows step (Shift = larger), Home/End go to the extremes.
+        handle.addEventListener("keydown", (event) => {
+          const step = event.shiftKey ? 40 : 16;
+          const current = parseInt(handle.getAttribute("aria-valuenow"), 10) || POS_CART_DEFAULT_WIDTH;
+          if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            applyWidth(current + step, true);
+          } else if (event.key === "ArrowRight") {
+            event.preventDefault();
+            applyWidth(current - step, true);
+          } else if (event.key === "Home") {
+            event.preventDefault();
+            applyWidth(POS_CART_MAX_WIDTH, true);
+          } else if (event.key === "End") {
+            event.preventDefault();
+            applyWidth(POS_CART_MIN_WIDTH, true);
+          }
+        });
+      }
+
       // The tab to open on boot: the last one the operator used, provided it still
       // exists and they are still allowed to see it - otherwise the dashboard.
       function resolveStartSection() {
@@ -11572,8 +11759,8 @@
                   {
                     label: "Daily Sales ($)",
                     data: salesData,
-                    backgroundColor: "rgba(79, 70, 229, 0.16)",
-                    borderColor: "rgba(79, 70, 229, 1)",
+                    backgroundColor: "rgba(15, 98, 254, 0.16)",
+                    borderColor: "rgba(15, 98, 254, 1)",
                     borderWidth: 2,
                     tension: 0.4,
                     fill: true,
@@ -15533,7 +15720,7 @@
           salesChart = new Chart(document.getElementById("salesChart").getContext("2d"), {
             type: "bar",
             data: { labels, datasets: [{ label: "Daily sales", data: labels.map((day) => centsToNumber(daily[day])),
-              backgroundColor: "#087e83", borderColor: "#087e83", borderWidth: 1 }] },
+              backgroundColor: "#0f62fe", borderColor: "#0f62fe", borderWidth: 1 }] },
             options: { responsive: true, plugins: { legend: { display: false },
               tooltip: { callbacks: { label: (item) => formatCurrency(item.parsed.y) } } },
               scales: { y: { beginAtZero: true, title: { display: true, text: "Sales" },
@@ -15559,7 +15746,7 @@
           paymentChart = new Chart(document.getElementById("paymentChart").getContext("2d"), {
             type: "doughnut",
             data: { labels, datasets: [{ data: labels.map((method) => centsToNumber(totals[method].cents)),
-              backgroundColor: ["#087e83", "#183247", "#526172", "#a8c9cc"], borderWidth: 1 }] },
+              backgroundColor: ["#0f62fe", "#525252", "#8d8d8d", "#a6c8ff"], borderWidth: 1 }] },
             options: { responsive: true, plugins: { legend: { position: "bottom" },
               tooltip: { callbacks: { label: (item) => `${item.label}: ${formatCurrency(item.parsed)}` } } } }
           });

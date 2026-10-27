@@ -11,6 +11,8 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
 - **Modern POS Interface**
   - Fast product search and cart workflow
   - Category buttons for quick browsing and one-tap Receipts/Reset shortcuts
+  - Product and cart panels resize by dragging the divider between them (remembered per device)
+  - Sale History has a Back to POS button for returning to checkout
   - Keyboard shortcuts: `F2` focuses the scan box, `Esc` clears the search and category filter
   - Multiple payment methods
   - Cash received and refund/change support
