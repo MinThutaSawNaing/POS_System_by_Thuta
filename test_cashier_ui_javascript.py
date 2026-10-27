@@ -1,5 +1,6 @@
 """Execute cashier warning and recovery flows with the existing Node test pattern."""
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -124,7 +125,6 @@ def run_quick_access_js(body):
     helpers = "\n".join(_function(SOURCE, name) for name in (
         "posCategoryAccent", "posCategoriesFromCache", "renderPOSCategoryChips",
         "setPOSCategoryFilter", "clearPOSSearchAndFilter", "focusPOSSearchInput",
-        "renderPOSQuickPicks",
     ))
     script = """
 function makeElement(tagName) {
@@ -146,12 +146,10 @@ function makeElement(tagName) {
 }
 let focused = 0, selected = 0, loads = 0;
 const bar = makeElement("div");
-const strip = makeElement("div");
 const searchInput = makeElement("input");
 searchInput.value = "";
 globalThis.document = {
   getElementById: (id) => id === "pos-category-chips" ? bar
-    : id === "pos-quick-picks" ? strip
     : id === "product-search" ? searchInput : null,
   createElement: (tag) => makeElement(tag),
 };
@@ -160,13 +158,9 @@ let posCategoryFilterId = null;
 let cachedCatalog = [];
 function getCachedProducts() { return cachedCatalog; }
 function loadProductsForPOS() { loads += 1; }
-function formatCurrency(value) { return Number(value).toFixed(2) + " $"; }
-function addToCart() {}
 """ + helpers + "\n(async () => {\n" + body + "\n})().catch(e => { console.error(e); process.exit(1); });"
     result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=True)
     return json.loads(result.stdout)
-
-
 
 
 def test_category_chips_offer_all_products_plus_each_branch_category():
@@ -230,36 +224,12 @@ console.log(JSON.stringify({ filter: posCategoryFilterId, loads: loads, focused:
     assert "is-active" in out["cls"]
 
 
-def test_quick_picks_add_best_sellers_as_text_and_skip_out_of_stock():
-    out = run_quick_access_js("""
-renderPOSQuickPicks([
-  {id: 1, name: '<img src=x onerror=alert(1)>', price: 2.5, stock: 4},
-  {id: 2, name: 'Sold out', price: 9, stock: 0},
-]);
-const picks = strip.children.slice(1).map(p => ({
-  name: p.children[0].textContent,
-  price: p.children[1].textContent,
-  title: p.title,
-}));
-console.log(JSON.stringify({ hidden: strip.hidden, picks: picks, stripHtml: strip.innerHTML }));
-""")
-    assert out["hidden"] is False
-    assert len(out["picks"]) == 1
-    assert out["picks"][0]["name"] == "<img src=x onerror=alert(1)>"
-    assert out["picks"][0]["price"] == "2.50 $"
-    assert "Sold out" not in out["picks"][0]["title"]
-    # Product names are written as text, never as markup.
-    assert out["stripHtml"] == ""
-
-
-def test_chips_and_quick_picks_stay_hidden_with_nothing_to_offer():
+def test_category_chips_stay_hidden_when_the_branch_has_no_categories():
     out = run_quick_access_js("""
 renderPOSCategoryChips();
-renderPOSQuickPicks([]);
-console.log(JSON.stringify({ chipsHidden: bar.hidden, picksHidden: strip.hidden, chips: bar.children.length }));
+console.log(JSON.stringify({ chipsHidden: bar.hidden, chips: bar.children.length }));
 """)
     assert out["chipsHidden"] is True
-    assert out["picksHidden"] is True
     assert out["chips"] == 0
 
 
@@ -277,3 +247,27 @@ console.log(JSON.stringify(posCategoriesFromCache()));
         {"id": 4, "name": "Bakery", "color": ""},
         {"id": 3, "name": "Drinks", "color": ""},
     ]
+
+
+def test_pos_quick_actions_offer_receipts_history_but_no_catalog_shortcut():
+    """Cashiers asked for a Receipts shortcut; the catalog reload and the
+    best-seller strip were removed, so they must not come back unnoticed."""
+    start = SOURCE.index('<div class="pos-quick-actions"')
+    end = SOURCE.index('id="pos-category-chips"', start)
+    markup = SOURCE[start:end]
+
+    assert "Receipts" in markup
+    assert "showSection('sales')" in markup
+    assert "Catalog" not in markup
+    assert "pos-quick-picks" not in markup
+    assert "pos-quick-pick" not in SOURCE, "the best-seller strip was removed"
+    assert "renderPOSQuickPicks" not in SOURCE
+    assert "loadPOSQuickPicks" not in SOURCE
+
+
+def test_auto_scanner_toggle_is_a_large_touch_target():
+    rule = re.search(r"\.auto-barcode-scanner-control\s*\{(.*?)\}", SOURCE, re.S).group(1)
+    min_height = int(re.search(r"min-height:\s*(\d+)px", rule).group(1))
+    assert min_height >= 44
+    assert re.search(r"\.auto-barcode-scanner-control\s+\.form-check-input\s*\{[^}]*width:\s*2\.7em", SOURCE, re.S)
+

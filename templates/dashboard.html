@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#343a40" />
+    <meta name="theme-color" content="#0f172a" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -27,21 +27,42 @@
       .operational-workspace [data-capability="labels"],
       .operational-workspace [data-capability="branches.switch"],
       .operational-workspace [data-capability="debts"] { display: none !important; }
-      .workspace-scope-note { border-left: 3px solid var(--bs-primary); }
+      .workspace-scope-note { border-left: 3px solid var(--primary-color); }
 
       :root {
         --sidebar-width: 250px;
         --sidebar-min-width: 220px;
         --sidebar-max-width: 420px;
-        --sidebar-bg: #343a40;
-        --sidebar-text: rgba(255, 255, 255, 0.75);
-        --sidebar-active: white;
-        --sidebar-hover: rgba(255, 255, 255, 0.1);
-        --primary-color: #0d6efd;
+        /* Modern slate + indigo theme: deep navy chrome over a soft, cool canvas. */
+        --sidebar-bg: #0f172a;
+        --sidebar-bg-top: #152238;
+        --sidebar-bg-bottom: #0a1120;
+        --sidebar-text: rgba(226, 232, 240, 0.76);
+        --sidebar-active: #ffffff;
+        --sidebar-hover: rgba(148, 163, 184, 0.16);
+        --primary-color: #4f46e5;
+        --app-bg: #f4f6fb;
+        --app-ink: #1f2937;
+        --surface-border: #e3e9f2;
+        --surface-shadow: 0 20px 40px -32px rgba(15, 23, 42, 0.55);
+        /* Align Bootstrap's primary utilities (links, focus rings, subtle fills)
+           with the indigo accent used by the chrome. */
+        --bs-primary: #4f46e5;
+        --bs-primary-rgb: 79, 70, 229;
+        --bs-link-color: #4f46e5;
+        --bs-link-color-rgb: 79, 70, 229;
+        --bs-link-hover-color: #4338ca;
+        --bs-link-hover-color-rgb: 67, 56, 202;
       }
 
       body {
         overflow-x: hidden;
+        background-color: var(--app-bg);
+        background-image:
+          radial-gradient(1100px 420px at 12% -12%, rgba(79, 70, 229, 0.12), transparent 70%),
+          radial-gradient(900px 380px at 100% 0%, rgba(14, 165, 233, 0.1), transparent 65%);
+        background-repeat: no-repeat;
+        color: var(--app-ink);
       }
 
       /* Myanmar Font Styling */
@@ -72,12 +93,14 @@
         max-width: var(--sidebar-max-width);
         height: 100vh;
         background-color: var(--sidebar-bg);
+        background-image: linear-gradient(180deg, var(--sidebar-bg-top) 0%, var(--sidebar-bg-bottom) 100%);
         color: var(--sidebar-text);
         position: fixed;
         transition: all 0.3s;
         z-index: 1000;
         overflow-y: auto;
         overflow-x: hidden;
+        box-shadow: inset -1px 0 0 rgba(148, 163, 184, 0.16), 18px 0 44px -34px rgba(15, 23, 42, 0.95);
       }
 
       .sidebar-drag-handle {
@@ -101,14 +124,15 @@
         align-items: center;
         gap: 0.5rem;
         margin: 0.5rem 0.75rem 0;
-        padding: 0.5rem 0.65rem;
-        border-radius: 0.5rem;
+        padding: 0.55rem 0.7rem;
+        border-radius: 0.7rem;
         font-size: 0.75rem;
         font-weight: 600;
         line-height: 1.2;
         color: #fff;
-        background-color: var(--sidebar-bg);
-        border: 1px solid rgba(255, 255, 255, 0.12);
+        background-color: rgba(10, 17, 32, 0.92);
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        box-shadow: 0 16px 30px -26px rgba(0, 0, 0, 0.95);
         position: sticky;
         bottom: 0.75rem;
         z-index: 3;
@@ -184,40 +208,107 @@
 
       .sidebar .nav-link {
         color: var(--sidebar-text);
-        padding: 0.75rem 1rem;
-        border-radius: 0.25rem;
-        margin: 0.25rem 1rem;
+        padding: 0.62rem 0.9rem;
+        border-radius: 0.7rem;
+        margin: 0.15rem 0.75rem;
         display: flex;
         align-items: center;
-        width: calc(100% - 2rem);
+        width: calc(100% - 1.5rem);
+        font-size: 0.92rem;
+        font-weight: 500;
+        letter-spacing: 0.01em;
+        transition: background-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
       }
 
-      .sidebar .nav-link:hover,
-      .sidebar .nav-link.active {
+      .sidebar .nav-link:hover {
         color: var(--sidebar-active);
         background-color: var(--sidebar-hover);
       }
 
+      .sidebar .nav-link.active {
+        color: var(--sidebar-active);
+        background-color: rgba(79, 70, 229, 0.9);
+        background-image: linear-gradient(90deg, rgba(79, 70, 229, 0.96) 0%, rgba(99, 102, 241, 0.55) 100%);
+        box-shadow: 0 14px 28px -20px rgba(79, 70, 229, 0.95);
+      }
+
       .sidebar .nav-link i {
-        width: 20px;
-        margin-right: 10px;
+        width: 22px;
+        margin-right: 0.65rem;
+        font-size: 1.05rem;
         text-align: center;
         flex-shrink: 0;
       }
 
+      .sidebar .nav-link.text-danger { color: #fca5a5 !important; }
+      .sidebar .nav-link.text-danger:hover {
+        color: #fff !important;
+        background-color: rgba(239, 68, 68, 0.22);
+      }
+
+      .sidebar .sidebar-title {
+        color: #f8fafc;
+        font-size: 1.06rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .sidebar .sidebar-user {
+        color: var(--sidebar-text);
+        font-size: 0.85rem;
+      }
+
+      .sidebar hr {
+        border-color: rgba(148, 163, 184, 0.28);
+        opacity: 1;
+      }
+
       .sidebar-brand-logo {
-        width: 48px;
-        height: 48px;
+        width: 52px;
+        height: 52px;
         object-fit: contain;
-        border-radius: 12px;
-        background: rgba(255, 255, 255, 0.12);
-        padding: 4px;
+        border-radius: 16px;
+        background: rgba(148, 163, 184, 0.16);
+        padding: 6px;
+        box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.24), 0 16px 30px -24px rgba(0, 0, 0, 0.95);
       }
 
       .main-content {
         margin-left: var(--sidebar-width);
         padding: 20px;
         transition: all 0.3s;
+      }
+
+      /* Modern surfaces: soft borders and generous radii instead of hard grey. */
+      .card {
+        --bs-card-border-color: var(--surface-border);
+        --bs-card-border-radius: 0.9rem;
+        --bs-card-inner-border-radius: calc(0.9rem - 1px);
+      }
+
+      /* Primary actions follow the same indigo accent as the sidebar. */
+      .btn-primary {
+        --bs-btn-bg: #4f46e5;
+        --bs-btn-border-color: #4f46e5;
+        --bs-btn-hover-bg: #4338ca;
+        --bs-btn-hover-border-color: #4338ca;
+        --bs-btn-active-bg: #3730a3;
+        --bs-btn-active-border-color: #3730a3;
+        --bs-btn-disabled-bg: #6366f1;
+        --bs-btn-disabled-border-color: #6366f1;
+        --bs-btn-focus-shadow-rgb: 79, 70, 229;
+      }
+
+      .btn-outline-primary {
+        --bs-btn-color: #4f46e5;
+        --bs-btn-border-color: #4f46e5;
+        --bs-btn-hover-bg: #4f46e5;
+        --bs-btn-hover-border-color: #4f46e5;
+        --bs-btn-active-bg: #4338ca;
+        --bs-btn-active-border-color: #4338ca;
+        --bs-btn-disabled-color: #6366f1;
+        --bs-btn-disabled-border-color: #6366f1;
+        --bs-btn-focus-shadow-rgb: 79, 70, 229;
       }
 
       .sidebar-resize-hint {
@@ -228,19 +319,21 @@
 
       .product-card {
         cursor: pointer;
-        transition: all 0.2s;
+        transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
         height: 100%;
         padding: 9px;
         font-size: 15px;
         font-weight: 600;
         margin-bottom: 6px;
-        border: 1px solid #333;
-        border-radius: 0.375rem;
+        border: 1px solid var(--surface-border);
+        border-radius: 0.8rem;
+        background: #fff;
       }
 
       .product-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        transform: translateY(-4px);
+        border-color: #c7d2fe;
+        box-shadow: 0 22px 34px -28px rgba(15, 23, 42, 0.6);
       }
 
       .product-card-img {
@@ -286,7 +379,7 @@
 
       .receipt-paper-option:has(input:checked) {
         border-color: var(--primary-color);
-        background: #f0f6ff;
+        background: #eef2ff;
       }
 
       .receipt-paper-option input {
@@ -374,9 +467,9 @@
          settings group visible at a time on the right, uniform white cards
          with a tinted icon chip instead of the old rainbow headers. */
       .settings-layout {
-        --set-accent: #0d6efd;
-        --set-accent-soft: rgba(13, 110, 253, 0.09);
-        --set-accent-ink: #0b5ed7;
+        --set-accent: #4f46e5;
+        --set-accent-soft: rgba(79, 70, 229, 0.09);
+        --set-accent-ink: #4338ca;
         --set-border: #e4e8ee;
         --set-muted: #6c757d;
       }
@@ -630,15 +723,16 @@
       }
 
       .pos-products-scroll {
-        /* The quick-access rows (actions, best sellers, category chips) sit above
-           the grid, so the scroll area gives back their height. */
-        max-height: calc(100vh - 320px);
+        /* The quick-access rows (actions and category chips) sit above the grid,
+           so the scroll area gives back their height. */
+        max-height: calc(100vh - 300px);
         overflow-y: auto;
         overflow-x: hidden;
         padding: 0.5rem;
-        border: 1px solid #333;
-        border-radius: 0.375rem;
+        border: 1px solid var(--surface-border);
+        border-radius: 0.9rem;
         background: #fff;
+        box-shadow: var(--surface-shadow);
       }
 
       /* === Barcode Search Bar - Clean Professional === */
@@ -657,8 +751,8 @@
       }
 
       .barcode-input-group .form-control:focus {
-        border-color: #86b7fe;
-        box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+        border-color: #a5b4fc;
+        box-shadow: 0 0 0 0.25rem rgba(79, 70, 229, 0.22);
       }
 
       .barcode-input-group .btn {
@@ -667,12 +761,47 @@
       }
 
       .auto-barcode-scanner-control {
-        font-size: 0.75rem;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        font-size: 1rem;
+        font-weight: 600;
         white-space: nowrap;
+        padding: 0.55rem 1rem;
+        border: 1px solid #c6d1df;
+        border-radius: 999px;
+        background: #fff;
+        color: var(--pos-ink, #243447);
+        min-height: 48px;
+        cursor: pointer;
+      }
+
+      .auto-barcode-scanner-control:hover {
+        border-color: #9fb3c8;
+        background: #f4f7fb;
       }
 
       .auto-barcode-scanner-control .form-check-input {
         cursor: pointer;
+        width: 2.7em;
+        height: 1.45em;
+        margin: 0;
+        flex-shrink: 0;
+      }
+
+      .auto-barcode-scanner-control .form-check-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 1rem;
+        font-weight: 600;
+        color: inherit;
+        cursor: pointer;
+        margin: 0;
+      }
+
+      .auto-barcode-scanner-control .form-check-label .bi {
+        font-size: 1.15rem;
       }
 
       /* === POS Product Grid: CSS Grid for perfect cross-platform fit === */
@@ -970,7 +1099,7 @@
         }
 
         .pos-products-scroll {
-          max-height: calc(100vh - 380px);
+          max-height: calc(100vh - 360px);
         }
 
         /* Barcode search bar on mobile */
@@ -1232,7 +1361,7 @@
         }
 
         .pos-products-scroll {
-          max-height: calc(100vh - 430px);
+          max-height: calc(100vh - 410px);
         }
       }
 
@@ -1251,20 +1380,34 @@
 
       /* Custom scrollbar */
       ::-webkit-scrollbar {
-        width: 8px;
+        width: 10px;
+        height: 10px;
       }
 
       ::-webkit-scrollbar-track {
-        background: #f1f1f1;
+        background: transparent;
       }
 
       ::-webkit-scrollbar-thumb {
-        background: #888;
-        border-radius: 4px;
+        background: #cbd5e1;
+        border: 2px solid transparent;
+        border-radius: 999px;
+        background-clip: content-box;
       }
 
       ::-webkit-scrollbar-thumb:hover {
-        background: #555;
+        background: #94a3b8;
+        background-clip: content-box;
+      }
+
+      .sidebar::-webkit-scrollbar-thumb {
+        background: rgba(148, 163, 184, 0.45);
+        background-clip: content-box;
+      }
+
+      .sidebar::-webkit-scrollbar-thumb:hover {
+        background: rgba(226, 232, 240, 0.6);
+        background-clip: content-box;
       }
 
       /* ============ POS Toast Notification System ============ */
@@ -1385,8 +1528,8 @@
       .pos-toast--error .pos-toast__progress { color: #dc3545; }
       .pos-toast--warning .pos-toast__icon { background: rgba(232, 89, 12, 0.13); color: #e8590c; }
       .pos-toast--warning .pos-toast__progress { color: #e8590c; }
-      .pos-toast--info .pos-toast__icon { background: rgba(13, 110, 253, 0.12); color: #0d6efd; }
-      .pos-toast--info .pos-toast__progress { color: #0d6efd; }
+      .pos-toast--info .pos-toast__icon { background: rgba(79, 70, 229, 0.12); color: #4f46e5; }
+      .pos-toast--info .pos-toast__progress { color: #4f46e5; }
 
       .searchable-select-wrapper {
         position: relative;
@@ -1436,25 +1579,20 @@
       #pos-section .product-card .card-text { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; }
       .pos-stock { display: inline-block; padding: .25rem .5rem; border-radius: .25rem; background: #edf3f9; color: var(--pos-muted); font-weight: 600; }
       .pos-stock-unavailable { background: #fff1f0; color: var(--pos-danger); }
-      /* Cashier quick access: one-tap actions, category shelves and best sellers.
+      /* Cashier quick access: one-tap actions and category shelves.
          44px minimum targets so a touch screen at the counter stays usable. */
       .pos-quick-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .5rem; }
       .pos-quick-action { display: inline-flex; align-items: center; gap: .4rem; min-height: 44px; font-weight: 600; }
       .pos-quick-action kbd { font-size: .7rem; padding: .1rem .35rem; }
-      .pos-category-bar, .pos-quick-picks { display: flex; align-items: center; gap: .5rem; overflow-x: auto; padding: .15rem .15rem .5rem; margin-bottom: .25rem; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
-      .pos-category-bar[hidden], .pos-quick-picks[hidden] { display: none; }
+      .pos-category-bar { display: flex; align-items: center; gap: .5rem; overflow-x: auto; padding: .15rem .15rem .5rem; margin-bottom: .25rem; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+      .pos-category-bar[hidden] { display: none; }
       .pos-category-chip { display: inline-flex; align-items: center; gap: .45rem; flex: 0 0 auto; min-height: 44px; padding: .45rem .9rem; border: 1px solid #c6d1df; border-radius: 999px; background: #fff; color: var(--pos-ink); font-weight: 600; white-space: nowrap; }
       .pos-category-chip:hover { background: var(--pos-surface); border-color: #9fb3c8; }
       .pos-category-chip.is-active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
       .pos-category-chip.is-active .pos-category-dot { outline: 2px solid #fff; outline-offset: 1px; }
       .pos-category-dot { flex-shrink: 0; width: .6rem; height: .6rem; border-radius: 50%; background: #9fb3c8; }
       .pos-category-hint { color: var(--pos-muted); font-size: .875rem; white-space: nowrap; }
-      .pos-quick-picks-label { display: inline-flex; align-items: center; gap: .3rem; flex: 0 0 auto; font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--pos-muted); }
-      .pos-quick-pick { display: inline-flex; flex-direction: column; align-items: flex-start; flex: 0 0 auto; min-height: 48px; padding: .4rem .8rem; border: 1px solid #c6d1df; border-radius: .5rem; background: #fff; color: var(--pos-ink); text-align: left; }
-      .pos-quick-pick:hover { background: var(--pos-surface); border-color: var(--primary-color); }
-      .pos-quick-pick-name { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-      .pos-quick-pick-price { font-size: .85rem; color: var(--pos-muted); font-variant-numeric: tabular-nums; }
-      .pos-category-chip:focus-visible, .pos-quick-pick:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
+      .pos-category-chip:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
       .pos-total-row { background: var(--pos-surface); border-top: 2px solid #c6d1df; padding: .85rem .65rem; font-size: 1.2rem; font-variant-numeric: tabular-nums; }
       #pos-section .btn:focus-visible, #pos-section .form-control:focus-visible, #pos-section .form-select:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
       #pos-connection-summary { color: var(--pos-muted); font-size: .875rem; }
@@ -1473,9 +1611,9 @@
         <div class="text-center mb-2">
           <img src="/public/photos/logo.png" alt="POS Logo" class="sidebar-brand-logo" />
         </div>
-        <h4 class="text-center">{{ pos_name }}</h4>
+        <h4 class="text-center sidebar-title">{{ pos_name }}</h4>
         <hr />
-        <div class="text-center mb-3">
+        <div class="text-center mb-3 sidebar-user">
           <span
             >Welcome,
             <strong id="username-display">{{ session.username }}</strong></span
@@ -1696,7 +1834,7 @@
               <span class="branch-name">-</span>
             </span>
           </div>
-          <div class="d-flex gap-2">
+          <div class="d-flex gap-2 flex-wrap justify-content-end">
             <button class="btn btn-outline-secondary customer-screen-btn" type="button"
                     id="customer-screen-btn"
                     onclick="CustomerDisplay.open()"
@@ -1704,10 +1842,14 @@
               <span class="customer-screen-dot is-closed" id="customer-screen-dot" aria-hidden="true"></span>
               Customer Screen
             </button>
-            <div class="form-check form-switch auto-barcode-scanner-control mb-0 d-flex align-items-center gap-1" title="Auto Barcode Scanner Detection">
+            <label
+              class="form-check form-switch auto-barcode-scanner-control mb-0"
+              for="auto-barcode-scanner-toggle"
+              title="Auto Barcode Scanner Detection"
+            >
               <input class="form-check-input mt-0" type="checkbox" role="switch" id="auto-barcode-scanner-toggle" />
-              <label class="form-check-label text-muted" for="auto-barcode-scanner-toggle"><i class="bi bi-upc-scan"></i> Scanner</label>
-            </div>
+              <span class="form-check-label"><i class="bi bi-upc-scan" aria-hidden="true"></i> Scanner</span>
+            </label>
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> Refresh
             </button>
@@ -1724,12 +1866,11 @@
             <div class="pos-quick-actions" role="toolbar" aria-label="Quick POS actions">
               <button
                 type="button"
-                class="btn btn-primary pos-quick-action"
-                onclick="focusPOSSearchInput()"
-                title="Focus the scan / search box (F2)"
+                class="btn btn-outline-secondary pos-quick-action"
+                onclick="showSection('sales')"
+                title="Open Sale History to find and reprint a receipt"
               >
-                <i class="bi bi-upc-scan" aria-hidden="true"></i> Scan
-                <kbd class="d-none d-sm-inline">F2</kbd>
+                <i class="bi bi-receipt" aria-hidden="true"></i> Receipts
               </button>
               <button
                 type="button"
@@ -1739,14 +1880,6 @@
               >
                 <i class="bi bi-x-circle" aria-hidden="true"></i> Reset
                 <kbd class="d-none d-sm-inline">Esc</kbd>
-              </button>
-              <button
-                type="button"
-                class="btn btn-outline-secondary pos-quick-action"
-                onclick="loadProductsForPOS()"
-                title="Reload prices and stock for this branch"
-              >
-                <i class="bi bi-arrow-repeat" aria-hidden="true"></i> Catalog
               </button>
             </div>
             <div class="input-group mb-3">
@@ -1767,13 +1900,6 @@
                 <i class="bi bi-search"></i> Search
               </button>
             </div>
-            <div
-              id="pos-quick-picks"
-              class="pos-quick-picks"
-              role="group"
-              aria-label="Quick add best selling products"
-              hidden
-            ></div>
             <div
               id="pos-category-chips"
               class="pos-category-bar"
@@ -9015,7 +9141,7 @@
       // duplicated if/else chains in showSection() and refreshCurrentSection().
       const SECTION_LOADERS = {
         dashboard: () => loadDashboardStats(),
-        pos: () => { loadPOSCategories(); loadPOSQuickPicks(); loadProductsForPOS(); loadCustomersForPOS(); },
+        pos: () => { loadPOSCategories(); loadProductsForPOS(); loadCustomersForPOS(); },
         products: () => loadProducts(),
         categories: () => loadCategories(),
         sales: () => loadSales(),
@@ -9039,8 +9165,8 @@
       const SECTION_RESOURCES = {
         dashboard: ["dashboard", "reports"],
         // The POS tab paints the grid and customer picker, and its quick access
-        // strip reads the branch categories (chips) and best sellers (quick add).
-        pos: ["pos", "customers", "categories", "dashboard"],
+        // strip reads the branch categories behind the filter chips.
+        pos: ["pos", "customers", "categories"],
         products: ["products"],
         categories: ["categories"],
         // loadSales() reads /api/reports/sales, so the Sales tab is gated on the
@@ -10126,7 +10252,7 @@
           transform: translateY(-50%);
           width: 4px;
           height: 60px;
-          background: rgba(13, 110, 253, 0.5);
+          background: rgba(79, 70, 229, 0.55);
           border-radius: 0 4px 4px 0;
           z-index: 998;
           transition: opacity 0.3s;
@@ -11446,8 +11572,8 @@
                   {
                     label: "Daily Sales ($)",
                     data: salesData,
-                    backgroundColor: "rgba(13, 110, 253, 0.2)",
-                    borderColor: "rgba(13, 110, 253, 1)",
+                    backgroundColor: "rgba(79, 70, 229, 0.16)",
+                    borderColor: "rgba(79, 70, 229, 1)",
                     borderWidth: 2,
                     tension: 0.4,
                     fill: true,
@@ -11645,12 +11771,11 @@
         return `<small class="pos-stock${unavailable ? " pos-stock-unavailable" : ""}">${unavailable ? "Out of stock" : "Available: " + escapeHtml(String(product.stock))}${product.unit_symbol && !unavailable ? " " + escapeHtml(product.unit_symbol) : ""}</small>`;
       }
 
-      // ===== POS QUICK ACCESS (category shelves, best sellers, shortcuts) =====
+      // ===== POS QUICK ACCESS (category shelves and shortcuts) =====
       // A cashier should not have to scroll a whole branch catalogue to find a
       // drink. The chips are the branch's active categories and the selection is
       // sent to /api/products?view=pos, so cursor pagination still materializes
-      // only one page of the filtered catalogue. Best sellers are a one-tap
-      // shortcut above the grid.
+      // only one page of the filtered catalogue.
       let posCategories = [];
       let posCategoryFilterId = null;
 
@@ -11774,54 +11899,6 @@
         if (!searchInput) return;
         searchInput.focus({ preventScroll: true });
         searchInput.select();
-      }
-
-      function loadPOSQuickPicks() {
-        const strip = document.getElementById("pos-quick-picks");
-        if (!strip) return;
-        fetch("/api/dashboard/top_products")
-          .then(posResponseJSON)
-          .then((rows) => renderPOSQuickPicks(rows))
-          .catch((error) => {
-            // The strip is a shortcut, never a requirement: hide it and keep selling.
-            console.error("Error loading POS quick picks:", error);
-            strip.hidden = true;
-            strip.innerHTML = "";
-          });
-      }
-
-      function renderPOSQuickPicks(rows) {
-        const strip = document.getElementById("pos-quick-picks");
-        if (!strip) return;
-        const picks = (Array.isArray(rows) ? rows : [])
-          .filter((row) => row && row.id && Number(row.stock) > 0)
-          .slice(0, 6);
-        strip.innerHTML = "";
-        if (!picks.length) {
-          strip.hidden = true;
-          return;
-        }
-        const label = document.createElement("span");
-        label.className = "pos-quick-picks-label";
-        label.innerHTML = '<i class="bi bi-lightning-charge-fill" aria-hidden="true"></i> Quick add';
-        strip.appendChild(label);
-        picks.forEach((product) => {
-          const pick = document.createElement("button");
-          pick.type = "button";
-          pick.className = "pos-quick-pick";
-          pick.title = "Add " + product.name + " to this sale";
-          const name = document.createElement("span");
-          name.className = "pos-quick-pick-name";
-          name.textContent = product.name;
-          const price = document.createElement("span");
-          price.className = "pos-quick-pick-price";
-          price.textContent = formatCurrency(Number(product.price) || 0);
-          pick.appendChild(name);
-          pick.appendChild(price);
-          pick.addEventListener("click", () => addToCart(product.id, product.name, product.price, 1, 0));
-          strip.appendChild(pick);
-        });
-        strip.hidden = false;
       }
 
       // F2 puts the cursor back in the scan box; Esc clears the search text and
