@@ -295,6 +295,26 @@ def test_pos_panels_expose_a_keyboard_resizable_divider():
     assert "var(--pos-cart-width)" in split_rule
 
 
+def test_pos_split_has_a_visible_pointer_and_a_grip():
+    """A cashier must be able to discover the resize before trying it."""
+    hint = SOURCE[SOURCE.index('<div id="pos-split-hint"'):]
+    hint = hint[:hint.index("</div>")]
+    assert "Drag the divider" in hint
+    assert "d-lg-flex" in hint and "d-none" in hint, "the hint only makes sense while the split is active"
+    assert "pos-split-hint" in SOURCE, "the hint needs styling"
+
+    handle = SOURCE[SOURCE.index('id="pos-cart-resize-handle"'):]
+    handle = handle[:handle.index("</div>")]
+    assert 'aria-describedby="pos-split-hint"' in handle
+    assert "bi-grip-vertical" in handle
+    assert "double-click" in handle.lower()
+
+    grip_rule = SOURCE[SOURCE.index(".pos-split-grip {"):]
+    grip_rule = grip_rule[:grip_rule.index("}")]
+    assert "border: 1px solid" in grip_rule
+    assert "background: #fff" in grip_rule
+
+
 
 def run_split_resizer_js(body):
     """Execute initPOSSplitResizer against a stubbed workspace/handle/cart."""
