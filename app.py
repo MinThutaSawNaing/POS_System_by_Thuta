@@ -4492,11 +4492,21 @@ def api_products():
             if request.args.get('cursor') and (cursor is None or cursor < 1):
                 return jsonify({'success': False, 'message': 'Invalid cursor'}), 400
 
+            # Cashiers narrow the grid with the category buttons. The filter is
+            # validated up front: a stale chip (the category was deleted in
+            # another tab) must fail loudly instead of silently showing every
+            # product in the branch.
+            category_id = request.args.get('category_id', type=int)
+            if request.args.get('category_id') and (category_id is None or category_id < 1):
+                return jsonify({'success': False, 'message': 'Invalid category'}), 400
+
             pos_query = db.session.query(
                 Product.id, Product.barcode, Product.name, Product.price,
                 Product.stock, Product.tax_rate, Product.photo_filename,
                 Product.unit_id,
             ).filter(Product.branch_id == branch_id)
+            if category_id:
+                pos_query = pos_query.filter(Product.category_id == category_id)
             if cursor:
                 pos_query = pos_query.filter(Product.id < cursor)
             rows = pos_query.order_by(Product.id.desc()).limit(safe_per_page + 1).all()

@@ -630,7 +630,9 @@
       }
 
       .pos-products-scroll {
-        max-height: calc(100vh - 200px);
+        /* The quick-access rows (actions, best sellers, category chips) sit above
+           the grid, so the scroll area gives back their height. */
+        max-height: calc(100vh - 320px);
         overflow-y: auto;
         overflow-x: hidden;
         padding: 0.5rem;
@@ -968,7 +970,7 @@
         }
 
         .pos-products-scroll {
-          max-height: calc(100vh - 280px);
+          max-height: calc(100vh - 380px);
         }
 
         /* Barcode search bar on mobile */
@@ -1182,7 +1184,7 @@
         }
 
         .pos-products-scroll {
-          max-height: calc(100vh - 180px);
+          max-height: calc(100vh - 280px);
         }
 
         .barcode-input-group .form-control {
@@ -1230,7 +1232,7 @@
         }
 
         .pos-products-scroll {
-          max-height: calc(100vh - 330px);
+          max-height: calc(100vh - 430px);
         }
       }
 
@@ -1434,6 +1436,25 @@
       #pos-section .product-card .card-text { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; }
       .pos-stock { display: inline-block; padding: .25rem .5rem; border-radius: .25rem; background: #edf3f9; color: var(--pos-muted); font-weight: 600; }
       .pos-stock-unavailable { background: #fff1f0; color: var(--pos-danger); }
+      /* Cashier quick access: one-tap actions, category shelves and best sellers.
+         44px minimum targets so a touch screen at the counter stays usable. */
+      .pos-quick-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .5rem; }
+      .pos-quick-action { display: inline-flex; align-items: center; gap: .4rem; min-height: 44px; font-weight: 600; }
+      .pos-quick-action kbd { font-size: .7rem; padding: .1rem .35rem; }
+      .pos-category-bar, .pos-quick-picks { display: flex; align-items: center; gap: .5rem; overflow-x: auto; padding: .15rem .15rem .5rem; margin-bottom: .25rem; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+      .pos-category-bar[hidden], .pos-quick-picks[hidden] { display: none; }
+      .pos-category-chip { display: inline-flex; align-items: center; gap: .45rem; flex: 0 0 auto; min-height: 44px; padding: .45rem .9rem; border: 1px solid #c6d1df; border-radius: 999px; background: #fff; color: var(--pos-ink); font-weight: 600; white-space: nowrap; }
+      .pos-category-chip:hover { background: var(--pos-surface); border-color: #9fb3c8; }
+      .pos-category-chip.is-active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+      .pos-category-chip.is-active .pos-category-dot { outline: 2px solid #fff; outline-offset: 1px; }
+      .pos-category-dot { flex-shrink: 0; width: .6rem; height: .6rem; border-radius: 50%; background: #9fb3c8; }
+      .pos-category-hint { color: var(--pos-muted); font-size: .875rem; white-space: nowrap; }
+      .pos-quick-picks-label { display: inline-flex; align-items: center; gap: .3rem; flex: 0 0 auto; font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--pos-muted); }
+      .pos-quick-pick { display: inline-flex; flex-direction: column; align-items: flex-start; flex: 0 0 auto; min-height: 48px; padding: .4rem .8rem; border: 1px solid #c6d1df; border-radius: .5rem; background: #fff; color: var(--pos-ink); text-align: left; }
+      .pos-quick-pick:hover { background: var(--pos-surface); border-color: var(--primary-color); }
+      .pos-quick-pick-name { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+      .pos-quick-pick-price { font-size: .85rem; color: var(--pos-muted); font-variant-numeric: tabular-nums; }
+      .pos-category-chip:focus-visible, .pos-quick-pick:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
       .pos-total-row { background: var(--pos-surface); border-top: 2px solid #c6d1df; padding: .85rem .65rem; font-size: 1.2rem; font-variant-numeric: tabular-nums; }
       #pos-section .btn:focus-visible, #pos-section .form-control:focus-visible, #pos-section .form-select:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
       #pos-connection-summary { color: var(--pos-muted); font-size: .875rem; }
@@ -1700,6 +1721,34 @@
         <div id="pos-catalog-notice" role="alert" hidden></div>
         <div class="row">
           <div class="col-12 col-lg-8 order-2 order-lg-1">
+            <div class="pos-quick-actions" role="toolbar" aria-label="Quick POS actions">
+              <button
+                type="button"
+                class="btn btn-primary pos-quick-action"
+                onclick="focusPOSSearchInput()"
+                title="Focus the scan / search box (F2)"
+              >
+                <i class="bi bi-upc-scan" aria-hidden="true"></i> Scan
+                <kbd class="d-none d-sm-inline">F2</kbd>
+              </button>
+              <button
+                type="button"
+                class="btn btn-outline-secondary pos-quick-action"
+                onclick="clearPOSSearchAndFilter()"
+                title="Clear the search text and the category filter (Esc)"
+              >
+                <i class="bi bi-x-circle" aria-hidden="true"></i> Reset
+                <kbd class="d-none d-sm-inline">Esc</kbd>
+              </button>
+              <button
+                type="button"
+                class="btn btn-outline-secondary pos-quick-action"
+                onclick="loadProductsForPOS()"
+                title="Reload prices and stock for this branch"
+              >
+                <i class="bi bi-arrow-repeat" aria-hidden="true"></i> Catalog
+              </button>
+            </div>
             <div class="input-group mb-3">
               <span class="input-group-text"><i class="bi bi-upc-scan"></i></span>
               <input
@@ -1718,6 +1767,20 @@
                 <i class="bi bi-search"></i> Search
               </button>
             </div>
+            <div
+              id="pos-quick-picks"
+              class="pos-quick-picks"
+              role="group"
+              aria-label="Quick add best selling products"
+              hidden
+            ></div>
+            <div
+              id="pos-category-chips"
+              class="pos-category-bar"
+              role="group"
+              aria-label="Filter products by category"
+              hidden
+            ></div>
             <div class="pos-products-scroll">
               <div id="product-grid">
                 <!-- Products will be loaded here -->
@@ -8952,7 +9015,7 @@
       // duplicated if/else chains in showSection() and refreshCurrentSection().
       const SECTION_LOADERS = {
         dashboard: () => loadDashboardStats(),
-        pos: () => { loadProductsForPOS(); loadCustomersForPOS(); },
+        pos: () => { loadPOSCategories(); loadPOSQuickPicks(); loadProductsForPOS(); loadCustomersForPOS(); },
         products: () => loadProducts(),
         categories: () => loadCategories(),
         sales: () => loadSales(),
@@ -8975,7 +9038,9 @@
       // while none of these groups has been invalidated and they are all in date.
       const SECTION_RESOURCES = {
         dashboard: ["dashboard", "reports"],
-        pos: ["pos", "customers"],
+        // The POS tab paints the grid and customer picker, and its quick access
+        // strip reads the branch categories (chips) and best sellers (quick add).
+        pos: ["pos", "customers", "categories", "dashboard"],
         products: ["products"],
         categories: ["categories"],
         // loadSales() reads /api/reports/sales, so the Sales tab is gated on the
@@ -9734,6 +9799,7 @@
         setConnectionStatus(isBrowserOffline() ? "offline" : "online");
         syncPendingSales();
         initAutoBarcodeScannerToggle();
+        initPOSQuickAccessKeys();
 
         const startSection = resolveStartSection();
         showSection(startSection);
@@ -11537,6 +11603,8 @@
       function posGridState(title, message, action = "catalog", loading = false) {
         const button = action === "search"
           ? '<button type="button" class="btn btn-primary" onclick="searchProducts()">Retry search</button>'
+          : action === "category"
+          ? '<button type="button" class="btn btn-outline-primary" onclick="setPOSCategoryFilter(null)">Show all products</button>'
           : '<button type="button" class="btn btn-outline-primary" onclick="loadProductsForPOS()">Reload products</button>';
         return `<div class="pos-grid-state" role="status">${loading ? '<div class="spinner-border text-primary" aria-hidden="true"></div>' : '<i class="bi bi-box-seam" aria-hidden="true"></i>'}<h5>${escapeHtml(title)}</h5><p>${escapeHtml(message)}</p>${loading ? "" : button}</div>`;
       }
@@ -11577,6 +11645,212 @@
         return `<small class="pos-stock${unavailable ? " pos-stock-unavailable" : ""}">${unavailable ? "Out of stock" : "Available: " + escapeHtml(String(product.stock))}${product.unit_symbol && !unavailable ? " " + escapeHtml(product.unit_symbol) : ""}</small>`;
       }
 
+      // ===== POS QUICK ACCESS (category shelves, best sellers, shortcuts) =====
+      // A cashier should not have to scroll a whole branch catalogue to find a
+      // drink. The chips are the branch's active categories and the selection is
+      // sent to /api/products?view=pos, so cursor pagination still materializes
+      // only one page of the filtered catalogue. Best sellers are a one-tap
+      // shortcut above the grid.
+      let posCategories = [];
+      let posCategoryFilterId = null;
+
+      // Category colours are manager-authored: only a plain hex value may reach
+      // the style attribute.
+      function posCategoryAccent(color) {
+        const value = String(color || "").trim();
+        return /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value) ? value : "";
+      }
+
+      // Offline fallback: the saved catalogue already knows its categories.
+      function posCategoriesFromCache() {
+        const categories = new Map();
+        getCachedProducts().forEach((product) => {
+          const id = Number(product.category_id);
+          const name = String(product.category || "").trim();
+          if (!id || !name || categories.has(id)) return;
+          categories.set(id, { id: id, name: name, color: "" });
+        });
+        return Array.from(categories.values()).sort((a, b) => a.name.localeCompare(b.name));
+      }
+
+      function renderPOSCategoryChips() {
+        const bar = document.getElementById("pos-category-chips");
+        if (!bar) return;
+        bar.innerHTML = "";
+        if (!posCategories.length) {
+          bar.hidden = true;
+          return;
+        }
+        bar.hidden = false;
+        const chips = [{ id: null, name: "All products", color: "" }].concat(posCategories);
+        chips.forEach((category) => {
+          const active = (category.id === null ? null : Number(category.id)) === posCategoryFilterId;
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "pos-category-chip" + (active ? " is-active" : "");
+          chip.setAttribute("aria-pressed", active ? "true" : "false");
+          chip.title = active ? "Showing " + category.name : "Show " + category.name + " only";
+          chip.addEventListener("click", () => setPOSCategoryFilter(category.id));
+          const accent = posCategoryAccent(category.color);
+          if (accent) {
+            const dot = document.createElement("span");
+            dot.className = "pos-category-dot";
+            dot.style.backgroundColor = accent;
+            dot.setAttribute("aria-hidden", "true");
+            chip.appendChild(dot);
+          } else if (category.id === null) {
+            const icon = document.createElement("i");
+            icon.className = "bi bi-grid";
+            icon.setAttribute("aria-hidden", "true");
+            chip.appendChild(icon);
+          }
+          // Category names are typed by managers, so they are only ever written
+          // as text, never interpolated into markup.
+          const label = document.createElement("span");
+          label.textContent = category.name;
+          chip.appendChild(label);
+          bar.appendChild(chip);
+        });
+      }
+
+      function loadPOSCategories() {
+        const bar = document.getElementById("pos-category-chips");
+        if (bar && !posCategories.length && bar.hidden) {
+          bar.hidden = false;
+          bar.innerHTML = '<span class="pos-category-hint">Loading categories…</span>';
+        }
+        fetch("/api/categories?active_only=true&counts=false")
+          .then(posResponseJSON)
+          .then((rows) => {
+            if (!Array.isArray(rows)) throw new Error("Invalid category list");
+            posCategories = rows
+              .filter((row) => row && Number(row.id) > 0 && String(row.name || "").trim())
+              .map((row) => ({
+                id: Number(row.id),
+                name: String(row.name).trim(),
+                color: String(row.color || ""),
+              }));
+            // A deleted or deactivated category must not keep filtering the grid.
+            if (posCategoryFilterId !== null &&
+                !posCategories.some((category) => category.id === posCategoryFilterId)) {
+              posCategoryFilterId = null;
+            }
+            renderPOSCategoryChips();
+          })
+          .catch((error) => {
+            console.error("Error loading POS categories:", error);
+            posCategories = posCategoriesFromCache();
+            if (posCategoryFilterId !== null &&
+                !posCategories.some((category) => category.id === posCategoryFilterId)) {
+              posCategoryFilterId = null;
+            }
+            renderPOSCategoryChips();
+          });
+      }
+
+      function setPOSCategoryFilter(categoryId) {
+        const next = Number(categoryId);
+        posCategoryFilterId = Number.isFinite(next) && next > 0 ? next : null;
+        // A category tap means "show me this shelf": a leftover search text would
+        // hide the products the cashier just asked for.
+        const searchInput = document.getElementById("product-search");
+        if (searchInput) searchInput.value = "";
+        renderPOSCategoryChips();
+        loadProductsForPOS();
+      }
+
+      function clearPOSSearchAndFilter() {
+        const searchInput = document.getElementById("product-search");
+        const changed = posCategoryFilterId !== null || Boolean(searchInput && searchInput.value);
+        if (searchInput) searchInput.value = "";
+        posCategoryFilterId = null;
+        renderPOSCategoryChips();
+        if (changed) loadProductsForPOS();
+        focusPOSSearchInput();
+      }
+
+      function focusPOSSearchInput() {
+        const searchInput = document.getElementById("product-search");
+        if (!searchInput) return;
+        searchInput.focus({ preventScroll: true });
+        searchInput.select();
+      }
+
+      function loadPOSQuickPicks() {
+        const strip = document.getElementById("pos-quick-picks");
+        if (!strip) return;
+        fetch("/api/dashboard/top_products")
+          .then(posResponseJSON)
+          .then((rows) => renderPOSQuickPicks(rows))
+          .catch((error) => {
+            // The strip is a shortcut, never a requirement: hide it and keep selling.
+            console.error("Error loading POS quick picks:", error);
+            strip.hidden = true;
+            strip.innerHTML = "";
+          });
+      }
+
+      function renderPOSQuickPicks(rows) {
+        const strip = document.getElementById("pos-quick-picks");
+        if (!strip) return;
+        const picks = (Array.isArray(rows) ? rows : [])
+          .filter((row) => row && row.id && Number(row.stock) > 0)
+          .slice(0, 6);
+        strip.innerHTML = "";
+        if (!picks.length) {
+          strip.hidden = true;
+          return;
+        }
+        const label = document.createElement("span");
+        label.className = "pos-quick-picks-label";
+        label.innerHTML = '<i class="bi bi-lightning-charge-fill" aria-hidden="true"></i> Quick add';
+        strip.appendChild(label);
+        picks.forEach((product) => {
+          const pick = document.createElement("button");
+          pick.type = "button";
+          pick.className = "pos-quick-pick";
+          pick.title = "Add " + product.name + " to this sale";
+          const name = document.createElement("span");
+          name.className = "pos-quick-pick-name";
+          name.textContent = product.name;
+          const price = document.createElement("span");
+          price.className = "pos-quick-pick-price";
+          price.textContent = formatCurrency(Number(product.price) || 0);
+          pick.appendChild(name);
+          pick.appendChild(price);
+          pick.addEventListener("click", () => addToCart(product.id, product.name, product.price, 1, 0));
+          strip.appendChild(pick);
+        });
+        strip.hidden = false;
+      }
+
+      // F2 puts the cursor back in the scan box; Esc clears the search text and
+      // the category shelf. Both keys stay out of the way of open dialogs and of
+      // the cart fields the cashier is typing into.
+      function initPOSQuickAccessKeys() {
+        document.addEventListener("keydown", function (event) {
+          if (currentSection !== "pos") return;
+          if (document.querySelector(".modal.show")) return;
+          if (event.key === "F2") {
+            event.preventDefault();
+            focusPOSSearchInput();
+            return;
+          }
+          if (event.key !== "Escape") return;
+          const searchInput = document.getElementById("product-search");
+          const active = document.activeElement;
+          const editingOtherField = active && active !== searchInput && (
+            active.tagName === "INPUT" || active.tagName === "TEXTAREA" ||
+            active.tagName === "SELECT" || active.isContentEditable
+          );
+          if (editingOtherField) return;
+          if (posCategoryFilterId === null && !(searchInput && searchInput.value)) return;
+          event.preventDefault();
+          clearPOSSearchAndFilter();
+        });
+      }
+      // ===== END POS QUICK ACCESS =====
+
       const POS_PER_PAGE = 50;
       let posProductCursor = null;
       let posProductsHaveMore = false;
@@ -11589,6 +11863,9 @@
       function loadProductsForPOS(resetPage = true) {
         if (posProductsLoading) return;
         posProductsLoading = true;
+        // Remembered so a chip tapped mid-flight cannot leave the previous
+        // category's products under the newly selected chip.
+        const requestedCategoryId = posCategoryFilterId;
         const productGrid = document.getElementById("product-grid");
         if (resetPage) {
           productGrid.innerHTML = posGridState("Loading products", "Retrieving prices and stock for this branch…", "catalog", true);
@@ -11603,6 +11880,9 @@
         const params = new URLSearchParams({ view: "pos", per_page: String(POS_PER_PAGE) });
         if (activeBranchId) params.set("branch_id", String(activeBranchId));
         if (posProductCursor) params.set("cursor", String(posProductCursor));
+        // The selected category chip narrows the browse grid only; scans and
+        // typed searches always look at the whole branch catalogue.
+        if (posCategoryFilterId) params.set("category_id", String(posCategoryFilterId));
         const url = `/api/products?${params.toString()}`;
 
         fetch(url)
@@ -11623,8 +11903,9 @@
             }
 
             if (products.length === 0 && resetPage) {
-              productGrid.innerHTML =
-                posGridState("No products in this branch", "Ask a manager to add products or check the selected branch, then reload the catalog.");
+              productGrid.innerHTML = posCategoryFilterId
+                ? posGridState("No products in this category", "This category has no products in the selected branch. Choose All products to browse the whole catalogue.", "category")
+                : posGridState("No products in this branch", "Ask a manager to add products or check the selected branch, then reload the catalog.");
               return;
             }
 
@@ -11692,6 +11973,7 @@
           })
           .finally(() => {
             posProductsLoading = false;
+            if (posCategoryFilterId !== requestedCategoryId) loadProductsForPOS();
           });
       }
 
@@ -11699,6 +11981,12 @@
       // client-side exactly like the online grid (including "Load More").
       function renderProductsFromCacheForPOS(products, resetPage) {
         const productGrid = document.getElementById("product-grid");
+
+        // The offline snapshot uses the management payload, so it still knows
+        // which category each product belongs to.
+        if (posCategoryFilterId !== null) {
+          products = products.filter((product) => Number(product.category_id) === posCategoryFilterId);
+        }
         setPOSCatalogNotice("Using saved product data", "Live product data is unavailable. These saved prices and stock levels may have changed. Confirm availability before completing the sale.");
 
         if (resetPage) posProductPage = 1;
@@ -11713,8 +12001,9 @@
         }
 
         if (products.length === 0) {
-          productGrid.innerHTML =
-            posGridState("No saved products match", "Try a different name or barcode, or reload products when the connection is available.");
+          productGrid.innerHTML = posCategoryFilterId !== null
+            ? posGridState("No saved products in this category", "The saved catalogue has no products in this category. Choose All products, or reload when the connection is available.", "category")
+            : posGridState("No saved products match", "Try a different name or barcode, or reload products when the connection is available.");
           return;
         }
 
@@ -11759,6 +12048,14 @@
         if (!query) {
           loadProductsForPOS();
           return;
+        }
+
+        // A scan or a typed search must always look at the whole branch
+        // catalogue: leaving a category chip active would hide a product that
+        // exists on another shelf and look like a failed scan.
+        if (posCategoryFilterId !== null) {
+          posCategoryFilterId = null;
+          renderPOSCategoryChips();
         }
 
         const activeBranchId = currentBranch?.id;

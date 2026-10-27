@@ -3,7 +3,7 @@
 import unittest
 import uuid
 
-from app import app, db, Branch, Product, User
+from app import app, db, Branch, Category, Product, User
 
 
 class PosProductPaginationTests(unittest.TestCase):
@@ -18,9 +18,13 @@ class PosProductPaginationTests(unittest.TestCase):
         db.session.commit()
         self.user = User.query.filter_by(username='admin').first()
         self.product_ids = []
+        self.category_ids = []
 
     def tearDown(self):
         Product.query.filter(Product.id.in_(self.product_ids or [0])).delete(
+            synchronize_session=False
+        )
+        Category.query.filter(Category.id.in_(self.category_ids or [0])).delete(
             synchronize_session=False
         )
         db.session.delete(self.branch)
@@ -72,6 +76,37 @@ class PosProductPaginationTests(unittest.TestCase):
         self.assertIsNone(second_data['next_cursor'])
         self.assertFalse({item['id'] for item in first_data['items']} &
                          {item['id'] for item in second_data['items']})
+
+    def test_pos_catalog_filters_by_category_for_the_quick_buttons(self):
+        drinks = Category(name=f'Drinks {uuid.uuid4().hex[:6]}', color='#0d6efd',
+                          is_active=True, branch_id=self.branch.id)
+        bakery = Category(name=f'Bakery {uuid.uuid4().hex[:6]}', color='#fd7e14',
+                          is_active=True, branch_id=self.branch.id)
+        db.session.add_all([drinks, bakery])
+        db.session.commit()
+        self.category_ids = [drinks.id, bakery.id]
+
+        cola = Product(name=f'Cola {uuid.uuid4().hex}', price=1.5, stock=12,
+                       tax_rate=0, branch_id=self.branch.id, category_id=drinks.id)
+        bun = Product(name=f'Bun {uuid.uuid4().hex}', price=2.0, stock=8,
+                      tax_rate=0, branch_id=self.branch.id, category_id=bakery.id)
+        db.session.add_all([cola, bun])
+        db.session.commit()
+        self.product_ids = [cola.id, bun.id]
+        client = self._client()
+
+        filtered = client.get(f'/api/products?view=pos&category_id={drinks.id}')
+
+        self.assertEqual(filtered.status_code, 200)
+        data = filtered.get_json()
+        self.assertEqual([item['id'] for item in data['items']], [cola.id])
+        self.assertFalse(data['has_more'])
+        self.assertIsNone(data['next_cursor'])
+
+        # A stale chip (deleted category) or a hand-edited query must be rejected
+        # instead of quietly listing the entire branch.
+        invalid = client.get('/api/products?view=pos&category_id=not-a-number')
+        self.assertEqual(invalid.status_code, 400)
 
     def test_management_catalog_serves_thirty_products_then_remainder(self):
         products = [
