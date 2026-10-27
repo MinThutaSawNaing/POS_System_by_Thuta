@@ -1726,8 +1726,10 @@
       .pos-category-chip { display: inline-flex; align-items: center; gap: .45rem; flex: 0 0 auto; min-height: 44px; padding: .45rem .9rem; border: 1px solid var(--gray-30); border-radius: 999px; background: #fff; color: var(--pos-ink); font-weight: 600; white-space: nowrap; }
       .pos-category-chip:hover { background: var(--pos-surface); border-color: var(--gray-50); }
       .pos-category-chip.is-active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+      .pos-category-chip.is-trail { border-style: dashed; }
       .pos-category-chip.is-active .pos-category-dot { outline: 2px solid #fff; outline-offset: 1px; }
       .pos-category-dot { flex-shrink: 0; width: .6rem; height: .6rem; border-radius: 50%; background: var(--gray-50); }
+      .pos-category-caret { font-size: .7em; opacity: .65; }
       .pos-category-hint { color: var(--pos-muted); font-size: .875rem; white-space: nowrap; }
       .pos-category-chip:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
       .pos-total-row { background: var(--pos-surface); border-top: 2px solid var(--gray-30); padding: .85rem .65rem; font-size: 1.2rem; font-variant-numeric: tabular-nums; }
@@ -2045,7 +2047,7 @@
               id="pos-category-chips"
               class="pos-category-bar"
               role="group"
-              aria-label="Filter products by category"
+              aria-label="Browse product categories"
               hidden
             ></div>
             <div class="pos-products-scroll">
@@ -12091,9 +12093,12 @@
 
       // ===== POS QUICK ACCESS (category shelves and shortcuts) =====
       // A cashier should not have to scroll a whole branch catalogue to find a
-      // drink. The chips are the branch's active categories and the selection is
-      // sent to /api/products?view=pos, so cursor pagination still materializes
-      // only one page of the filtered catalogue.
+      // drink. The bar drills down instead of dumping every category at once:
+      // it starts with the branch's top-level shelves, and tapping one reveals
+      // its subcategories (and theirs, and so on). Tapping a shelf filters the
+      // grid to that shelf plus everything beneath it. Because the visible level
+      // is derived from the active filter, tapping anywhere else on screen
+      // leaves both the filter and the drilled level untouched.
       let posCategories = [];
       let posCategoryFilterId = null;
 
@@ -12104,21 +12109,38 @@
         return /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value) ? value : "";
       }
 
-      // Offline fallback: the saved catalogue already knows its categories.
-      function groupPOSCategories(categories) {
-        // Categories nest to any depth, so reuse the shared tree walker: each
-        // subcategory chip sits directly behind its parent shelf.
-        return categoryTreeOrder(categories);
+      function posCategoryById(categoryId) {
+        const target = Number(categoryId);
+        return posCategories.find((category) => category.id === target) || null;
+      }
+
+      function posCategoryChildren(categoryId) {
+        const parentId = categoryId === null ? null : Number(categoryId);
+        return posCategories.filter((category) => (category.parent_id ?? null) === parentId);
+      }
+
+      function posCategoryChain(categoryId) {
+        // Root → … → category, so the bar can show how deep the cashier is and
+        // every breadcrumb stays tappable.
+        const chain = [];
+        const seen = new Set();
+        let node = posCategoryById(categoryId);
+        while (node && !seen.has(node.id) && chain.length < 64) {
+          seen.add(node.id);
+          chain.unshift(node);
+          node = node.parent_id ? posCategoryById(node.parent_id) : null;
+        }
+        return chain;
       }
 
       function posCategoriesFromCache() {
         const saved = offlineCacheGet(categoryCacheKey(true));
         if (saved && Array.isArray(saved.data)) {
-          return groupPOSCategories(saved.data.filter(row => row.is_active !== false).map(row => ({
+          return saved.data.filter(row => row.is_active !== false).map(row => ({
             id: Number(row.id), name: String(row.name || "").trim(),
             path: row.path || row.name, parent_id: row.parent_id ? Number(row.parent_id) : null,
             color: row.color || "",
-          })));
+          }));
         }
         const categories = new Map();
         getCachedProducts().forEach((product) => {
@@ -12130,6 +12152,44 @@
         return Array.from(categories.values()).sort((a, b) => a.name.localeCompare(b.name));
       }
 
+      function buildPOSCategoryChip(category, isActive) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "pos-category-chip" + (isActive ? " is-active" : "");
+        chip.setAttribute("aria-pressed", isActive ? "true" : "false");
+        // Chips carry the short name; hovering explains the full shelf path
+        // (Electronics / iOS / iPhones / iPhone 17 Pro Max).
+        const fullPath = category.path || category.name;
+        chip.title = isActive ? "Showing " + fullPath : "Filter " + fullPath;
+        chip.addEventListener("click", () => setPOSCategoryFilter(category.id));
+        const accent = posCategoryAccent(category.color);
+        if (accent) {
+          const dot = document.createElement("span");
+          dot.className = "pos-category-dot";
+          dot.style.backgroundColor = accent;
+          dot.setAttribute("aria-hidden", "true");
+          chip.appendChild(dot);
+        } else if (category.id === null) {
+          const icon = document.createElement("i");
+          icon.className = "bi bi-grid";
+          icon.setAttribute("aria-hidden", "true");
+          chip.appendChild(icon);
+        }
+        // Category names are typed by managers, so they are only ever written
+        // as text, never interpolated into markup.
+        const label = document.createElement("span");
+        label.textContent = category.name;
+        chip.appendChild(label);
+        // A chevron promises more shelves inside this one.
+        if (category.id !== null && posCategoryChildren(category.id).length) {
+          const caret = document.createElement("i");
+          caret.className = "bi bi-chevron-right pos-category-caret";
+          caret.setAttribute("aria-hidden", "true");
+          chip.appendChild(caret);
+        }
+        return chip;
+      }
+
       function renderPOSCategoryChips() {
         const bar = document.getElementById("pos-category-chips");
         if (!bar) return;
@@ -12139,38 +12199,38 @@
           return;
         }
         bar.hidden = false;
-        const chips = [{ id: null, name: "All products", color: "", path: "All products" }].concat(posCategories);
-        chips.forEach((category) => {
-          const active = (category.id === null ? null : Number(category.id)) === posCategoryFilterId;
-          const chip = document.createElement("button");
-          chip.type = "button";
-          chip.className = "pos-category-chip" + (active ? " is-active" : "");
-          chip.setAttribute("aria-pressed", active ? "true" : "false");
-          // Deep categories keep their short name on the button and explain the
-          // full shelf path (Electronics / iOS / iPhones / iPhone 17) on hover.
-          const fullPath = category.path || category.name;
-          chip.title = active ? "Showing " + fullPath : "Show " + fullPath + " only";
-          chip.addEventListener("click", () => setPOSCategoryFilter(category.id));
-          const accent = posCategoryAccent(category.color);
-          if (accent) {
-            const dot = document.createElement("span");
-            dot.className = "pos-category-dot";
-            dot.style.backgroundColor = accent;
-            dot.setAttribute("aria-hidden", "true");
-            chip.appendChild(dot);
-          } else if (category.id === null) {
-            const icon = document.createElement("i");
-            icon.className = "bi bi-grid";
-            icon.setAttribute("aria-hidden", "true");
-            chip.appendChild(icon);
-          }
-          // Category names are typed by managers, so they are only ever written
-          // as text, never interpolated into markup.
-          const label = document.createElement("span");
-          label.textContent = category.name;
-          chip.appendChild(label);
+
+        const trail = posCategoryFilterId === null ? [] : posCategoryChain(posCategoryFilterId);
+        bar.appendChild(buildPOSCategoryChip(
+          { id: null, name: "All products", color: "", path: "All products" },
+          trail.length === 0
+        ));
+        if (!trail.length) {
+          // Nothing selected yet: offer only the top-level shelves.
+          posCategoryChildren(null).forEach((category) => {
+            bar.appendChild(buildPOSCategoryChip(category, false));
+          });
+          return;
+        }
+        // Breadcrumbs show the level the cashier is standing on; the active one
+        // is the shelf currently filtering the grid. Ancestors are dashed so they
+        // read as "go back up" rather than as another shelf at this level.
+        trail.forEach((category) => {
+          const isActive = category.id === posCategoryFilterId;
+          const chip = buildPOSCategoryChip(category, isActive);
+          if (!isActive) chip.className += " is-trail";
           bar.appendChild(chip);
         });
+        const children = posCategoryChildren(posCategoryFilterId);
+        children.forEach((category) => {
+          bar.appendChild(buildPOSCategoryChip(category, false));
+        });
+        if (!children.length) {
+          const hint = document.createElement("span");
+          hint.className = "pos-category-hint";
+          hint.textContent = "No deeper subcategories";
+          bar.appendChild(hint);
+        }
       }
 
       function loadPOSCategories() {
@@ -12184,7 +12244,9 @@
           .then((rows) => {
             if (!Array.isArray(rows)) throw new Error("Invalid category list");
             offlineCacheSet(categoryCacheKey(true), rows);
-            posCategories = groupPOSCategories(rows
+            // Keep the server's tree order: siblings stay in sort_order/name
+            // order, which is exactly what each drill-down level displays.
+            posCategories = rows
               .filter((row) => row && Number(row.id) > 0 && String(row.name || "").trim())
               .map((row) => ({
                 id: Number(row.id),
@@ -12192,7 +12254,7 @@
                 path: String(row.path || row.name).trim(),
                 color: String(row.color || ""),
                 parent_id: row.parent_id ? Number(row.parent_id) : null,
-              })));
+              }));
             // A deleted or deactivated category must not keep filtering the grid.
             if (posCategoryFilterId !== null &&
                 !posCategories.some((category) => category.id === posCategoryFilterId)) {

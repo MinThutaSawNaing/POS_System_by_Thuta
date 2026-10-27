@@ -236,8 +236,8 @@ console.log(JSON.stringify({ rows: table.children.length, html: table.children.m
 def run_quick_access_js(body):
     """Run the cashier quick-access helpers against a tiny DOM stub."""
     helpers = "\n".join(_function(SOURCE, name) for name in (
-        "posCategoryAccent", "categoryTreeOrder", "categoryDescendantIds",
-        "groupPOSCategories", "posCategoriesFromCache",
+        "posCategoryAccent", "posCategoryById", "posCategoryChildren",
+        "posCategoryChain", "buildPOSCategoryChip", "posCategoriesFromCache",
         "renderPOSCategoryChips", "setPOSCategoryFilter", "clearPOSSearchAndFilter",
         "focusPOSSearchInput",
     ))
@@ -315,8 +315,8 @@ console.log(JSON.stringify({
   filter: posCategoryFilterId,
   search: searchInput.value,
   loads: loads,
-  pressed: bar.children.map(c => c.attrs['aria-pressed']),
-  active: bar.children.map(c => c.className.includes('is-active')),
+  pressed: bar.children.filter(c => c.tagName === 'BUTTON').map(c => c.attrs['aria-pressed']),
+  active: bar.children.filter(c => c.tagName === 'BUTTON').map(c => c.className.includes('is-active')),
 }));
 """)
     assert out["filter"] == 3
@@ -366,40 +366,107 @@ console.log(JSON.stringify(posCategoriesFromCache()));
     ]
 
 
-def test_subcategory_chips_sit_behind_their_parent_shelf():
-    out = run_quick_access_js("""
-const grouped = groupPOSCategories([
-  {id: 5, name: 'Shoes', parent_id: null},
-  {id: 9, name: 'Tiger', parent_id: 5},
-  {id: 7, name: 'Bags', parent_id: null},
-  {id: 8, name: 'Nike', parent_id: 5},
-  {id: 11, name: 'Orphan', parent_id: 404},
-]);
-console.log(JSON.stringify(grouped.map(category => category.id)));
-""")
-    assert out == [5, 9, 8, 7, 11]
-
-def test_deep_nesting_keeps_every_level_under_its_parent():
-    """Electronics → iOS → iPhones → iPhone 17 must read as one branch."""
-    out = run_quick_access_js("""
-const rows = [
-  {id: 1, name: 'Electronics', parent_id: null},
-  {id: 2, name: 'iOS', parent_id: 1},
-  {id: 3, name: 'iPhones', parent_id: 2},
-  {id: 4, name: 'iPhone 17 Pro Max', parent_id: 3},
-  {id: 5, name: 'Android', parent_id: 1},
-  {id: 6, name: 'Clothing', parent_id: null},
+SHELF_ROWS = """
+posCategories = [
+  {id: 1, name: 'Electronics', parent_id: null, path: 'Electronics', color: ''},
+  {id: 2, name: 'iOS', parent_id: 1, path: 'Electronics / iOS', color: ''},
+  {id: 3, name: 'iPhones', parent_id: 2, path: 'Electronics / iOS / iPhones', color: ''},
+  {id: 4, name: 'iPhone 17 Pro Max', parent_id: 3, path: 'Electronics / iOS / iPhones / iPhone 17 Pro Max', color: ''},
+  {id: 5, name: 'Android', parent_id: 1, path: 'Electronics / Android', color: ''},
+  {id: 6, name: 'Clothing', parent_id: null, path: 'Clothing', color: ''},
 ];
-const grouped = groupPOSCategories(rows);
+"""
+
+
+def chip_labels():
+    """JS snippet: the text of every chip button in the bar (hints excluded)."""
+    return ("bar.children.filter(chip => chip.tagName === 'BUTTON')"
+            ".map(chip => chip.children.map(child => child.textContent).join(''))")
+
+
+def test_category_bar_starts_with_top_level_shelves_only():
+    out = run_quick_access_js(SHELF_ROWS + """
+renderPOSCategoryChips();
 console.log(JSON.stringify({
-  order: grouped.map(row => row.id),
-  descendantsOfElectronics: categoryDescendantIds(rows, 1).sort((a, b) => a - b),
-  descendantsOfIPhones: categoryDescendantIds(rows, 3),
+  labels: """ + chip_labels() + """,
+  carets: bar.children.map(chip => chip.children.some(child => String(child.className).includes('pos-category-caret'))),
 }));
 """)
-    assert out["order"] == [1, 2, 3, 4, 5, 6]
-    assert out["descendantsOfElectronics"] == [2, 3, 4, 5]
-    assert out["descendantsOfIPhones"] == [4]
+    # Subcategories stay hidden until their parent shelf is tapped.
+    assert out["labels"] == ["All products", "Electronics", "Clothing"]
+    # Only shelves that actually contain something get the chevron hint.
+    assert out["carets"] == [False, True, False]
+
+
+def test_tapping_a_shelf_filters_and_reveals_its_subcategories():
+    out = run_quick_access_js(SHELF_ROWS + """
+renderPOSCategoryChips();
+bar.children[1].listener.handler();   // Electronics
+console.log(JSON.stringify({
+  filter: posCategoryFilterId,
+  loads: loads,
+  labels: """ + chip_labels() + """,
+  active: bar.children.filter(chip => chip.tagName === 'BUTTON').map(chip => chip.className.includes('is-active')),
+}));
+""")
+    assert out["filter"] == 1
+    assert out["loads"] == 1
+    # All products | Electronics (active) | its children only.
+    assert out["labels"] == ["All products", "Electronics", "iOS", "Android"]
+    assert out["active"] == [False, True, False, False]
+
+
+def test_drilling_deeper_keeps_breadcrumbs_for_every_level():
+    out = run_quick_access_js(SHELF_ROWS + """
+renderPOSCategoryChips();
+bar.children[1].listener.handler();   // Electronics
+bar.children[2].listener.handler();   // iOS
+const afterIos = { filter: posCategoryFilterId, labels: """ + chip_labels() + """ };
+bar.children[3].listener.handler();   // iPhones
+const afterIPhones = { filter: posCategoryFilterId, labels: """ + chip_labels() + """ };
+bar.children[1].listener.handler();   // breadcrumb back to Electronics
+const backToElectronics = { filter: posCategoryFilterId, labels: """ + chip_labels() + """ };
+console.log(JSON.stringify({ afterIos, afterIPhones, backToElectronics }));
+""")
+    assert out["afterIos"]["filter"] == 2
+    assert out["afterIos"]["labels"] == ["All products", "Electronics", "iOS", "iPhones"]
+    assert out["afterIPhones"]["filter"] == 3
+    assert out["afterIPhones"]["labels"] == [
+        "All products", "Electronics", "iOS", "iPhones", "iPhone 17 Pro Max",
+    ]
+    # Tapping a breadcrumb goes back up one level and filters that shelf again.
+    assert out["backToElectronics"]["filter"] == 1
+    assert out["backToElectronics"]["labels"] == ["All products", "Electronics", "iOS", "Android"]
+
+
+def test_deepest_shelf_keeps_the_filter_until_all_products_is_tapped():
+    out = run_quick_access_js(SHELF_ROWS + """
+renderPOSCategoryChips();
+bar.children[1].listener.handler();   // Electronics
+bar.children[2].listener.handler();   // iOS
+bar.children[3].listener.handler();   // iPhones
+bar.children[4].listener.handler();   // iPhone 17 Pro Max (a leaf)
+const afterLeaf = {
+  filter: posCategoryFilterId,
+  labels: """ + chip_labels() + """,
+  hint: bar.children.filter(chip => String(chip.className).includes('pos-category-hint')).map(chip => chip.textContent),
+};
+// Any later re-render (clicking a product, switching panels...) must not move
+// the cashier off the level they chose.
+renderPOSCategoryChips();
+const afterRerender = { filter: posCategoryFilterId, labels: """ + chip_labels() + """ };
+bar.children[0].listener.handler();   // All products
+console.log(JSON.stringify({ afterLeaf, afterRerender, resetFilter: posCategoryFilterId }));
+""")
+    assert out["afterLeaf"]["filter"] == 4
+    assert out["afterLeaf"]["labels"] == [
+        "All products", "Electronics", "iOS", "iPhones", "iPhone 17 Pro Max",
+    ]
+    # A leaf explains why the list stops there instead of looking broken.
+    assert out["afterLeaf"]["hint"] == ["No deeper subcategories"]
+    assert out["afterRerender"]["filter"] == 4
+    assert out["afterRerender"]["labels"] == out["afterLeaf"]["labels"]
+    assert out["resetFilter"] is None
 
 
 

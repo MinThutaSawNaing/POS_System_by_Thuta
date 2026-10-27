@@ -576,7 +576,8 @@ An admin account is auto-created if missing:
 - Product categories remain branch-specific; shared supplier category choices include categories from every branch
 - Color-coded categories for visual organization
 - Nested categories at any depth (for example Electronics → iOS → iPhones → iPhone 17 Pro Max); products can be assigned to any level
-- POS category buttons for a parent include every product filed beneath it, and each subcategory button shows its full shelf path on hover
+- Category buttons in the POS drill down: top-level shelves first, tap one to see its subcategories, and keep tapping to go deeper
+- Tapping a shelf filters the grid to that shelf and everything beneath it; tapping anywhere else keeps the filter and level in place, and breadcrumbs go back up
 - A category cannot be deleted while anything still sits beneath it, and it can never be moved under itself or one of its own subcategories
 - Automatic synchronization across the system
 
