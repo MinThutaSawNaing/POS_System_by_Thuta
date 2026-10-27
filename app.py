@@ -1882,6 +1882,10 @@ class Sale(db.Model):
     payment_method = db.Column(db.String(20))
     payment_breakdown = db.Column(db.Text)
     receipt_snapshot = db.Column(db.Text)
+    # The customer the cashier selected at checkout. Credit and delivery sales
+    # are also linked through debt/delivery rows, but this keeps every sale the
+    # customer made (cash included) in their purchase history.
+    customer_id = db.Column(db.Integer, db.ForeignKey('customer.id'))
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     user = db.relationship('User', backref='sales')
@@ -2730,6 +2734,15 @@ with app.app_context():
         if 'receipt_snapshot' not in sale_columns:
             db.session.execute(text('ALTER TABLE sale ADD COLUMN receipt_snapshot TEXT'))
             db.session.commit()
+        # Customer purchase history reads this column; older databases get it
+        # added in place, and the index keeps a customer's timeline cheap.
+        if 'customer_id' not in sale_columns:
+            db.session.execute(text('ALTER TABLE sale ADD COLUMN customer_id INTEGER REFERENCES customer (id)'))
+            db.session.commit()
+        db.session.execute(text(
+            'CREATE INDEX IF NOT EXISTS idx_sale_customer_date ON sale (customer_id, date)'
+        ))
+        db.session.commit()
     
     # Branch table migration for multi-branch support
     if not inspector.has_table('branch'):
@@ -5697,6 +5710,7 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             refund_amount=refund_amount,
             payment_method=payment_method,
             payment_breakdown=json.dumps(payment_breakdown, ensure_ascii=False) if payment_breakdown else None,
+            customer_id=customer.id if customer_id else None,
             user_id=session['user_id'],
             branch_id=get_current_branch_id()
         )
@@ -9110,7 +9124,11 @@ def api_single_customer(customer_id):
         total_debt = sum(d.balance for d in customer.debts if d.balance > 0)
         if total_debt > 0:
             return jsonify({'success': False, 'message': 'Cannot delete customer with outstanding debts'}), 400
-        
+
+        # Receipts stay valid after the customer record goes: unlink the sales
+        # instead of cascading a delete into financial history.
+        Sale.query.filter_by(customer_id=customer_id).update(
+            {'customer_id': None}, synchronize_session=False)
         db.session.delete(customer)
         db.session.commit()
         return jsonify({'success': True, 'message': 'Customer deleted'})
@@ -9500,6 +9518,116 @@ def api_customer_debts(customer_id):
         },
         'debts': [serialize_debt(d) for d in debts]
     })
+
+@app.route('/api/customers/<int:customer_id>/history', methods=['GET'])
+@manager_required
+def api_customer_purchase_history(customer_id):
+    """What one customer bought from this branch, newest first.
+
+    A sale belongs to the customer when the cashier selected them at checkout
+    (Sale.customer_id). Sales recorded before that link existed still count when
+    they were charged to the customer's account or delivered to their address.
+    """
+    branch_id = get_current_branch_id()
+    customer = Customer.query.filter_by(id=customer_id, branch_id=branch_id).first()
+    if not customer:
+        return jsonify({'success': False, 'message': 'Customer not found'}), 404
+
+    purchase_limit = bounded_integer('limit', 25, 100)
+
+    # Legacy links are only a fallback for sales without an explicit customer.
+    # Both the link and sale must belong to this branch, even for old data.
+    legacy_debts = select(Debt.sale_id).where(
+        Debt.customer_id == customer_id, Debt.branch_id == branch_id)
+    legacy_deliveries = select(Delivery.sale_id).where(
+        Delivery.customer_id == customer_id, Delivery.branch_id == branch_id)
+    matching = and_(Sale.branch_id == branch_id, or_(
+        Sale.customer_id == customer_id,
+        and_(Sale.customer_id.is_(None), or_(
+            Sale.id.in_(legacy_debts), Sale.id.in_(legacy_deliveries)))))
+    visits, total_spent, first_purchase, last_purchase = db.session.query(
+        func.count(Sale.id), func.coalesce(func.sum(Sale.total), 0),
+        func.min(Sale.date), func.max(Sale.date)).filter(matching).one()
+    sales = (Sale.query.options(joinedload(Sale.user)).filter(matching)
+             .order_by(Sale.date.desc(), Sale.id.desc())
+             .limit(purchase_limit).all())
+
+    # Aggregate across the entire history in SQL, but only load item details for
+    # the visible page. This avoids unbounded Python lists and IN parameters.
+    product_name = func.coalesce(Product.name, 'Deleted product')
+    quantity = func.coalesce(SaleItem.quantity, 0)
+    line_value = func.coalesce(SaleItem.price, 0) * quantity
+    product_totals = (db.session.query(
+        product_name.label('name'), func.sum(quantity).label('quantity'),
+        func.sum(line_value).label('spent'))
+        .join(Sale, Sale.id == SaleItem.sale_id)
+        .outerjoin(Product, Product.id == SaleItem.product_id)
+        .filter(matching).group_by(product_name)
+        .order_by(func.sum(quantity).desc(), func.sum(line_value).desc(), product_name)
+        .limit(5).all())
+    total_items = (db.session.query(func.coalesce(func.sum(quantity), 0))
+                   .select_from(SaleItem).join(Sale, Sale.id == SaleItem.sale_id)
+                   .filter(matching).scalar())
+    outstanding_debt = (db.session.query(func.coalesce(func.sum(Debt.balance), 0))
+                        .filter(Debt.customer_id == customer_id,
+                                Debt.branch_id == branch_id, Debt.balance > 0).scalar())
+    page_ids = [sale.id for sale in sales]
+    item_rows = []
+    if page_ids:
+        item_rows = (db.session.query(
+            SaleItem.sale_id, SaleItem.quantity, SaleItem.price, Product.name, Unit.symbol)
+            .outerjoin(Product, Product.id == SaleItem.product_id)
+            .outerjoin(Unit, Unit.id == Product.unit_id)
+            .filter(SaleItem.sale_id.in_(page_ids)).order_by(SaleItem.id).all())
+    items_by_sale = {}
+    for row in item_rows:
+        quantity_value = int(row.quantity or 0)
+        unit_price = float(row.price or 0)
+        items_by_sale.setdefault(row.sale_id, []).append({
+            'name': row.name or 'Deleted product',
+            'quantity': quantity_value,
+            'unit_price': money_float(unit_price),
+            'line_total': money_float(unit_price * quantity_value),
+            'unit_symbol': row.symbol,
+        })
+    purchases = [{
+        'id': sale.id,
+        'transaction_id': sale.transaction_id,
+        'date': sale.date.isoformat() if sale.date else None,
+        'total': money_float(sale.total),
+        'tax': money_float(sale.tax),
+        'payment_method': sale.payment_method,
+        'cashier': sale.user.username if sale.user else None,
+        'items': items_by_sale.get(sale.id, []),
+    } for sale in sales]
+
+    return jsonify({
+        'success': True,
+        'customer': {
+            'id': customer.id,
+            'name': customer.name,
+            'phone': customer.phone,
+            'email': customer.email,
+            'address': customer.address,
+        },
+        'summary': {
+            'visits': visits,
+            'total_spent': money_float(total_spent),
+            'average_sale': money_float(total_spent / visits) if visits else 0.0,
+            'total_items': total_items,
+            'first_purchase': first_purchase.isoformat() if first_purchase else None,
+            'last_purchase': last_purchase.isoformat() if last_purchase else None,
+            'outstanding_debt': money_float(outstanding_debt),
+        },
+        'top_products': [
+            {'name': row.name, 'quantity': row.quantity, 'spent': money_float(row.spent)}
+            for row in product_totals
+        ],
+        'purchases': purchases,
+        'has_more': visits > purchase_limit,
+        'limit': purchase_limit,
+    })
+
 
 @app.route('/api/debts/<int:debt_id>/payment', methods=['POST'])
 @manager_required

@@ -1005,6 +1005,10 @@
 
       .table-responsive > .table { margin-bottom: 0; }
 
+      /* Inside the scrollable history modal the rows get a smaller window so the
+         summary above and the footer stay reachable. */
+      .customer-history-table { max-height: min(45vh, 420px); }
+
       .table-responsive:focus-visible {
         outline: 2px solid var(--accent);
         outline-offset: 2px;
@@ -1706,7 +1710,12 @@
       #pos-section .product-card .card-title { color: var(--pos-ink) !important; overflow-wrap: anywhere; }
       #pos-section .product-card .card-text { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; }
       .pos-stock { display: inline-block; padding: .25rem .5rem; border-radius: .25rem; background: #e8e8e8; color: var(--pos-muted); font-weight: 600; }
-      .pos-stock-unavailable { background: #fff1f1; color: var(--pos-danger); }
+      /* Stock bands: >10 comfortable (green), 5-10 reorder hint (yellow), 1-4
+         nearly gone (orange) and 0 a bright red stop. */
+      .pos-stock--good { background: #defbe6; color: #0e6027; }
+      .pos-stock--warn { background: #fcf4d6; color: #684e00; }
+      .pos-stock--low { background: #fff2e8; color: #8a3800; }
+      .pos-stock-unavailable { background: #fff1f1; color: #da1e28; }
       /* Cashier quick access: one-tap actions and category shelves.
          44px minimum targets so a touch screen at the counter stays usable. */
       .pos-quick-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .5rem; }
@@ -6366,6 +6375,41 @@
               class="btn btn-secondary"
               data-bs-dismiss="modal"
             >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Customer Purchase History Modal -->
+    <div
+      class="modal fade"
+      id="customerHistoryModal"
+      tabindex="-1"
+      aria-labelledby="customer-history-title"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="customer-history-title">Purchase History</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body" id="customer-history-content">
+            <div class="text-center py-4">
+              <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
               Close
             </button>
           </div>
@@ -12017,9 +12061,23 @@
         }
       }
 
+      // Stock bands: more than 10 units is comfortable, 5-10 is a reorder hint,
+      // 1-4 is nearly gone and 0 stops the sale.
+      function posStockLevel(stock) {
+        const quantity = Number(stock);
+        if (!Number.isFinite(quantity) || quantity <= 0) return "out";
+        if (quantity <= 4) return "low";
+        if (quantity <= 10) return "warn";
+        return "good";
+      }
+
       function posStockHtml(product) {
-        const unavailable = Number(product.stock) <= 0;
-        return `<small class="pos-stock${unavailable ? " pos-stock-unavailable" : ""}">${unavailable ? "Out of stock" : "Available: " + escapeHtml(String(product.stock))}${product.unit_symbol && !unavailable ? " " + escapeHtml(product.unit_symbol) : ""}</small>`;
+        const level = posStockLevel(product.stock);
+        const unavailable = level === "out";
+        const modifier = unavailable ? " pos-stock-unavailable" : " pos-stock--" + level;
+        const label = unavailable ? "Out of stock" : "Available: " + escapeHtml(String(product.stock));
+        const unit = product.unit_symbol && !unavailable ? " " + escapeHtml(product.unit_symbol) : "";
+        return `<small class="pos-stock${modifier}">${label}${unit}</small>`;
       }
 
       // ===== POS QUICK ACCESS (category shelves and shortcuts) =====
@@ -16689,13 +16747,16 @@
                 <td>${customer.email || "N/A"}</td>
                 <td>$${customer.total_debt.toFixed(2)}</td>
                 <td>
-                  <button class="btn btn-sm btn-info me-1" onclick="viewCustomerDetails(${customer.id})">
+                  <button class="btn btn-sm btn-info me-1" onclick="viewCustomerDetails(${customer.id})" title="Customer details">
                     <i class="bi bi-eye"></i>
                   </button>
-                  <button class="btn btn-sm btn-primary me-1" onclick="editCustomer(${customer.id})">
+                  <button class="btn btn-sm btn-outline-primary me-1" onclick="openCustomerHistory(${customer.id})" title="Purchase history" aria-label="Purchase history">
+                    <i class="bi bi-clock-history"></i>
+                  </button>
+                  <button class="btn btn-sm btn-primary me-1" onclick="editCustomer(${customer.id})" title="Edit customer">
                     <i class="bi bi-pencil"></i>
                   </button>
-                  <button class="btn btn-sm btn-danger" onclick="deleteCustomer(${customer.id}, '${escapeHtml(customer.name)}')">
+                  <button class="btn btn-sm btn-danger" onclick="deleteCustomer(${customer.id}, '${escapeHtml(customer.name)}')" title="Delete customer">
                     <i class="bi bi-trash"></i>
                   </button>
                 </td>
@@ -16714,6 +16775,164 @@
             renderPagination("customers", "customers-pagination", 1, loadCustomers);
           });
       }
+
+      // ===== CUSTOMER PURCHASE HISTORY =====
+      // Answers "what has this customer bought from us?" from the sale link the
+      // checkout now stores (credit/delivery sales are linked too, so older
+      // receipts still show up).
+      const CUSTOMER_HISTORY_PAYMENT_LABELS = {
+        cash: "Cash",
+        credit_card: "Credit card",
+        debit_card: "Debit card",
+        mobile_payment: "Mobile payment",
+        split_payment: "Split payment",
+        debt: "Charge to customer",
+      };
+
+      function customerHistoryPaymentLabel(method) {
+        return CUSTOMER_HISTORY_PAYMENT_LABELS[method] || (method ? String(method) : "—");
+      }
+
+      function customerHistoryDay(isoDate) {
+        if (!isoDate) return "—";
+        const parsed = new Date(isoDate);
+        return Number.isNaN(parsed.getTime()) ? "—" : parsed.toLocaleDateString();
+      }
+
+      function customerHistoryItemsCell(items) {
+        if (!Array.isArray(items) || items.length === 0) {
+          return '<span class="text-muted">No line items</span>';
+        }
+        const lines = items.map((item) => {
+          const unit = item.unit_symbol ? " " + escapeHtml(String(item.unit_symbol)) : "";
+          return `<div>${escapeHtml(String(item.quantity))} × ${escapeHtml(item.name || "Deleted product")}${unit}`
+            + ` <span class="text-muted">(${formatCurrency(item.line_total || 0)})</span></div>`;
+        });
+        return lines.join("");
+      }
+
+      function renderCustomerHistory(data) {
+        const content = document.getElementById("customer-history-content");
+        if (!content) return;
+        const customer = data.customer || {};
+        const summary = data.summary || {};
+        const purchases = Array.isArray(data.purchases) ? data.purchases : [];
+        const topProducts = Array.isArray(data.top_products) ? data.top_products : [];
+
+        const title = document.getElementById("customer-history-title");
+        if (title) title.textContent = `Purchase History · ${customer.name || "Customer"}`;
+
+        const stat = (label, value) => `
+          <div class="col-6 col-md-3">
+            <div class="border rounded p-2 h-100">
+              <div class="small text-muted">${label}</div>
+              <div class="fs-6 fw-semibold">${value}</div>
+            </div>
+          </div>`;
+
+        const topHtml = topProducts.length
+          ? topProducts.map((product) => `
+              <span class="badge text-bg-light border me-1 mb-1">
+                ${escapeHtml(product.name)} · ${escapeHtml(String(product.quantity))}
+              </span>`).join("")
+          : '<span class="text-muted small">No products recorded yet.</span>';
+
+        const rows = purchases.map((purchase) => `
+          <tr>
+            <td class="text-nowrap">${customerHistoryDay(purchase.date)}</td>
+            <td><code class="small">${escapeHtml(purchase.transaction_id || "")}</code></td>
+            <td class="small">${customerHistoryItemsCell(purchase.items)}</td>
+            <td class="text-nowrap small">${escapeHtml(customerHistoryPaymentLabel(purchase.payment_method))}</td>
+            <td class="text-end text-nowrap">${formatCurrency(purchase.total || 0)}</td>
+          </tr>`).join("");
+
+        const purchasesHtml = purchases.length
+          ? `
+            <div class="table-responsive customer-history-table">
+              <table class="table table-sm table-striped align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Receipt</th>
+                    <th>Items</th>
+                    <th>Payment</th>
+                    <th class="text-end">Total</th>
+                  </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>`
+          : '<div class="text-center text-muted py-4">No purchases recorded for this customer yet.</div>';
+
+        content.innerHTML = `
+          <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+            <div>
+              <h6 class="mb-1">${escapeHtml(customer.name || "Customer")}</h6>
+              <div class="small text-muted">
+                ${escapeHtml(customer.phone || "No phone")} · ${escapeHtml(customer.email || "No email")}
+              </div>
+            </div>
+            <div class="small text-muted text-end">
+              Last purchase<br><strong>${customerHistoryDay(summary.last_purchase)}</strong>
+            </div>
+          </div>
+
+          <div class="row g-2 mb-3">
+            ${stat("Visits", escapeHtml(String(summary.visits || 0)))}
+            ${stat("Total spent", formatCurrency(summary.total_spent || 0))}
+            ${stat("Average sale", formatCurrency(summary.average_sale || 0))}
+            ${stat("Outstanding debt", formatCurrency(summary.outstanding_debt || 0))}
+          </div>
+
+          <div class="mb-3">
+            <div class="small fw-semibold mb-1">Most bought</div>
+            <div>${topHtml}</div>
+          </div>
+
+          ${purchasesHtml}
+
+          ${data.has_more ? `<p class="small text-muted mt-2 mb-0">Showing the latest ${purchases.length} of ${summary.visits} purchases.</p>` : ""}
+          <p class="small text-muted mt-2 mb-0">Sales recorded before customer linking are included when the sale was charged to this customer or delivered to them.</p>
+        `;
+        normalizeCurrencyDisplay(content);
+      }
+
+      let customerHistoryRequest = 0;
+      function openCustomerHistory(customerId) {
+        const modalElement = document.getElementById("customerHistoryModal");
+        const content = document.getElementById("customer-history-content");
+        if (!modalElement || !content) return;
+        const requestId = ++customerHistoryRequest;
+        document.getElementById("customer-history-title").textContent = "Purchase History";
+
+        content.innerHTML = `
+          <div class="text-center py-4">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+          </div>`;
+        bootstrap.Modal.getOrCreateInstance(modalElement).show();
+
+        fetch(`/api/customers/${customerId}/history?limit=25`)
+          .then((response) => {
+            if (!response.ok) throw new Error("Request failed: " + response.status);
+            return response.json();
+          })
+          .then((data) => {
+            if (requestId !== customerHistoryRequest) return;
+            if (!data || !data.success) throw new Error((data && data.message) || "Failed to load history");
+            renderCustomerHistory(data);
+          })
+          .catch((error) => {
+            if (requestId !== customerHistoryRequest) return;
+            console.error("Error loading customer history:", error);
+            content.innerHTML = `
+              <div class="alert alert-danger mb-0">
+                Could not load this customer's purchase history. Check the connection and try again.
+              </div>`;
+          });
+      }
+      // ===== END CUSTOMER PURCHASE HISTORY =====
 
       function saveCustomer() {
         const name = document.getElementById("add-customer-name").value.trim();

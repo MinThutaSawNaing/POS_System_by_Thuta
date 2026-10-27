@@ -17,7 +17,7 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="Node.js re
 def run_js(body):
     helpers = "\n".join(_function(SOURCE, name) for name in (
         "posGridState", "setPOSCatalogNotice", "posResponseJSON",
-        "showPOSCatalogError", "posStockHtml", "loadProductsForPOS",
+        "showPOSCatalogError", "posStockLevel", "posStockHtml", "loadProductsForPOS",
     ))
     script = """
 const notice = { hidden: true, innerHTML: '', className: '' };
@@ -90,6 +90,40 @@ def test_stock_badge_is_explicit_and_escaped():
     assert "Out of stock" in out[0]
     assert "Available: 5" in out[1]
     assert "&lt;kg&gt;" in out[1]
+
+
+def test_stock_badge_colours_follow_the_stock_bands():
+    """>10 green, 5-10 yellow, 1-4 orange, 0 bright red."""
+    out = run_js("""
+const html = (stock) => posStockHtml({stock});
+console.log(JSON.stringify({
+  11: html(11), 10: html(10), 5: html(5), 4: html(4), 3: html(3), 1: html(1), 0: html(0), minus: html(-2),
+}));
+""")
+    assert "pos-stock--good" in out["11"]
+    assert "pos-stock--warn" in out["10"]
+    assert "pos-stock--warn" in out["5"]
+    assert "pos-stock--low" in out["4"]
+    assert "pos-stock--low" in out["3"]
+    assert "pos-stock--low" in out["1"]
+    assert "pos-stock-unavailable" in out["0"]
+    assert "pos-stock-unavailable" in out["minus"]
+    for key in ("11", "10", "5"):
+        assert "pos-stock--low" not in out[key]
+
+    css = SOURCE[SOURCE.index(".pos-stock--good {"):]
+    assert "background: #defbe6" in css[:200]
+    assert ".pos-stock--warn { background: #fcf4d6" in SOURCE
+    assert ".pos-stock--low { background: #fff2e8" in SOURCE
+    assert ".pos-stock-unavailable { background: #fff1f1" in SOURCE
+
+
+def test_customers_tab_offers_purchase_history():
+    assert 'onclick="openCustomerHistory(${customer.id})"' in SOURCE
+    assert 'id="customerHistoryModal"' in SOURCE
+    assert 'id="customer-history-content"' in SOURCE
+    assert '/api/customers/${customerId}/history' in SOURCE
+    assert "function renderCustomerHistory(" in SOURCE
 
 
 def test_selected_category_narrows_the_catalog_request():
@@ -454,4 +488,79 @@ console.log(JSON.stringify({
     assert out["afterEnd"] == "320px"
     assert out["afterReset"] == "400px"
     assert out["saved"] == "400"
+
+
+
+def run_customer_history_js(body):
+    """Render the customer history modal against a stubbed DOM."""
+    labels = re.search(r"const CUSTOMER_HISTORY_PAYMENT_LABELS = \{.*?\};", SOURCE, re.S).group(0)
+    helpers = "\n".join(_function(SOURCE, name) for name in (
+        "customerHistoryPaymentLabel", "customerHistoryDay",
+        "customerHistoryItemsCell", "renderCustomerHistory",
+    ))
+    script = """
+function escapeHtml(value) {
+  return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+}
+function formatCurrency(value) { return Number(value).toFixed(2) + " $"; }
+function normalizeCurrencyDisplay() {}
+const content = { innerHTML: "" };
+const title = { textContent: "" };
+globalThis.document = {
+  getElementById: (id) => id === "customer-history-content" ? content
+    : id === "customer-history-title" ? title : null,
+};
+""" + labels + "\n" + helpers + "\n(async () => {\n" + body + "\n})().catch(e => { console.error(e); process.exit(1); });"
+    result = subprocess.run([shutil.which("node"), "-e", script], capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
+
+
+def test_customer_history_renders_items_totals_and_escapes_names():
+    out = run_customer_history_js("""
+renderCustomerHistory({
+  customer: {name: '<img src=x onerror=alert(1)>', phone: null, email: 'a@b.c'},
+  summary: {visits: 2, total_spent: 30, average_sale: 15, outstanding_debt: 5,
+            last_purchase: '2026-10-01T10:00:00+06:30'},
+  top_products: [{name: '<b>Cola</b>', quantity: 3, spent: 30}],
+  purchases: [{
+    transaction_id: '<tx>', date: '2026-10-01T10:00:00+06:30', total: 20,
+    payment_method: 'debt',
+    items: Array.from({length: 6}, (_, index) => ({
+      name: 'Item ' + index, quantity: 1, line_total: 2, unit_symbol: null,
+    })),
+  }],
+  has_more: false,
+});
+console.log(JSON.stringify({ html: content.innerHTML, title: title.textContent }));
+""")
+    html = out["html"]
+    assert "<img" not in html, "customer name must never become markup"
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html
+    assert "<b>Cola</b>" not in html
+    assert "&lt;b&gt;Cola&lt;/b&gt;" in html
+    assert "&lt;tx&gt;" in html
+    assert "Charge to customer" in html
+    assert "Item 4" in html
+    assert "Item 5" in html
+    assert "30.00 $" in html
+    assert "Visits" in html
+    assert "Most bought" in html
+    assert out["title"].startswith("Purchase History")
+
+
+def test_customer_history_shows_an_empty_state_without_purchases():
+    out = run_customer_history_js("""
+renderCustomerHistory({
+  customer: {name: 'Walk in regular', phone: '0912', email: ''},
+  summary: {visits: 0, total_spent: 0, average_sale: 0, outstanding_debt: 0, last_purchase: null},
+  top_products: [],
+  purchases: [],
+  has_more: false,
+});
+console.log(JSON.stringify({ html: content.innerHTML }));
+""")
+    assert "No purchases recorded for this customer yet." in out["html"]
+    assert "No products recorded yet." in out["html"]
+    assert "No phone" not in out["html"]
 
