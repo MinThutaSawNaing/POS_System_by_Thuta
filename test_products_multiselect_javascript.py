@@ -66,7 +66,7 @@ function makeNode(tag = "div") {
   const node = {
     tagName: String(tag).toUpperCase(), children: [], className: "", textContent: "",
     _value: "", _html: "", disabled: false, indeterminate: false, checked: false,
-    dataset: {}, listeners: {},
+    dataset: {}, listeners: {}, style: {},
     classList: {
       set: new Set(),
       add(name) { this.set.add(name); },
@@ -407,16 +407,25 @@ def test_import_confirmation_is_a_styled_window_not_a_browser_prompt():
     variants = re.search(r"const CONFIRM_VARIANTS = \{.*?\};", source, re.S).group(0)
     helpers = "\n".join(_function(source, name) for name in (
         "setConfirmDialogIcon", "resetConfirmDialog", "confirmDialogDetails",
-        "renderConfirmStats", "renderConfirmNote", "showConfirmDialogAsync",
-        "productImportConfirmDialog",
+        "renderConfirmStats", "renderConfirmNote", "stackDialogAboveOpenModals",
+        "showConfirmDialogAsync", "productImportConfirmDialog",
     ))
     script = DOM_STUB + "let confirmModalCallback = null;\n" + variants + "\n" + helpers + r"""
 const pendingHides = [];
 let shown = null;
+// The Excel import window stays open behind the confirmation dialog.
+const importModal = node("importProductsModal");
+importModal.classList.add("show");
+importModal.style.zIndex = "1055";
 const document = {
   getElementById(id) { return node(id); },
   createElement(tag) { return makeNode(tag); },
+  querySelectorAll(selector) {
+    return selector === ".modal.show" ? [importModal, node("confirmModal")]
+      .filter((element) => element.classList.contains("show")) : [];
+  },
 };
+globalThis.getComputedStyle = (element) => ({ zIndex: element.style.zIndex || "1055" });
 globalThis.bootstrap = { Modal: { getOrCreateInstance(element) {
   return { show() { shown = element; }, hide() { pendingHides.push(element); } };
 } } };
@@ -438,6 +447,10 @@ function details() {
     { create: 30, update: 0, skip: 2, error: 0 });
   const opened = {
     shown: shown === node("confirmModal"),
+    // Bootstrap paints both windows at 1055; the dialog must be raised or it
+    // stays hidden behind the import window and the screen looks frozen.
+    zIndex: node("confirmModal").style.zIndex,
+    importZIndex: importModal.style.zIndex,
     title: node("confirmModalTitle").textContent,
     message: node("confirmModalMessage").textContent,
     confirmLabel: node("confirmModalBtnText").textContent,
@@ -459,13 +472,17 @@ function details() {
   node("confirmModal").emit("hidden.bs.modal");
   const declined = await cancelled;
 
-  console.log(JSON.stringify({ opened, approved, declined, toasts }));
+  console.log(JSON.stringify({ opened, approved, declined,
+    zIndexAfterClose: node("confirmModal").style.zIndex, toasts }));
 })().catch((error) => { console.error(error); process.exit(1); });
 """
     out = _run_node_script(script)
 
     opened = out["opened"]
     assert opened["shown"] is True
+    assert opened["importZIndex"] == "1055"
+    assert opened["zIndex"] == "1065"
+    assert out["zIndexAfterClose"] == ""
     assert opened["title"] == "Confirm product import"
     assert opened["message"] == "Import 30 products into the active branch?"
     assert opened["confirmLabel"] == "Import 30 products"

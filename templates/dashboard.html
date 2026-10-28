@@ -11204,6 +11204,19 @@
         details.appendChild(paragraph);
       }
 
+      // Bootstrap paints every modal at the same z-index, so a dialog opened from
+      // an already open window (the Excel import) lands behind it: the button
+      // fades, nothing appears and the screen looks frozen. Raise this dialog
+      // above the newest open window instead of stacking blindly.
+      function stackDialogAboveOpenModals(modalElement) {
+        const open = Array.from(document.querySelectorAll(".modal.show"))
+          .filter((element) => element !== modalElement);
+        if (!open.length) { modalElement.style.zIndex = ""; return; }
+        const below = Math.max(...open.map((element) =>
+          parseInt(getComputedStyle(element).zIndex, 10) || 1055));
+        modalElement.style.zIndex = String(below + 10);
+      }
+
       // Resolves true only when the manager pressed the confirm button; closing
       // the window any other way (Cancel, Esc, backdrop) resolves false.
       function showConfirmDialogAsync(options = {}) {
@@ -11242,6 +11255,7 @@
             settled = true;
             if (confirmBtn) confirmBtn.removeEventListener("click", onConfirm);
             modalElement.removeEventListener("hidden.bs.modal", onHidden);
+            modalElement.style.zIndex = "";
             resolve(value);
           };
           const onConfirm = () => {
@@ -11251,6 +11265,7 @@
           const onHidden = () => finish(approved);
           if (confirmBtn) confirmBtn.addEventListener("click", onConfirm);
           modalElement.addEventListener("hidden.bs.modal", onHidden);
+          stackDialogAboveOpenModals(modalElement);
           modal.show();
         });
       }
