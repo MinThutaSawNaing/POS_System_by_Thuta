@@ -52,6 +52,8 @@ let currentBranch = {id: 3}, dashboardSessionStale = false, dashboardBranchStale
 const inventoryCursorState = Object.create(null);
 const pageState = {products: 1, purchases: 1, warehouse: 1};
 const pageSize = {products: 30, purchases: 30, warehouse: 30};
+// The Products table keeps a multi-select map keyed by product id.
+const productSelection = new Map();
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const pending = [];
 function fetch(url, init) { return new Promise((resolve, reject) => pending.push({url, init, resolve, reject})); }
@@ -131,7 +133,8 @@ assert.equal(request.current(), false);
 
 
 def test_real_products_loader_bounds_rows_and_ignores_out_of_order_results():
-    run_js(CURSORS + ("parsePagedResponse", "renderProductsResponse", "loadProducts"), r"""
+    run_js(CURSORS + ("parsePagedResponse", "renderProductsResponse", "syncProductSelectionUi",
+                      "getProductPageCheckboxes", "loadProducts"), r"""
 elements['products-search'] = new Element(); elements['products-search'].value = ' Widget ';
 const first = loadProducts();
 assert.deepEqual(Object.fromEntries(new URL(pending[0].url, 'https://test').searchParams),

@@ -103,3 +103,59 @@ test('successful completion is no longer busy when the modal dismisses', async (
   await importer.preview(); await importer.commit();
   assert.equal(completionBusy, false);
 });
+
+function styledHarness() {
+  const state = {requests: [], saved: 0, answer: null, busyWhileAsking: null};
+  // A stable file object mirrors the real <input> file, which is the same value
+  // every time it is read (the importer compares it by identity).
+  const file = {name: 'products.xlsx'};
+  const importer = createImporter({
+    file: () => file, scope: () => 'manager:branch-1',
+    mapping: () => ({}), duplicateMode: () => 'skip', createCategories: () => false,
+    // The dashboard's confirmation is a Bootstrap window, so it answers later.
+    confirm: () => new Promise(resolve => {
+      state.answer = resolve;
+      state.busyWhileAsking = importer.state().busy;
+    }),
+    render() {}, committed() { state.saved++; },
+    request: async (path, payload) => {
+      state.requests.push({path, payload});
+      return path.endsWith('/preview')
+        ? {success: true, preview_token: 'token', preview: {
+            rows: [], summary: {create: 2, update: 1, skip: 0, error: 0}}}
+        : {success: true, summary: {create: 2, update: 1, skip: 0, error: 0}};
+    },
+  });
+  return {state, importer};
+}
+
+test('a styled confirmation window is awaited and cannot be double committed', async () => {
+  const {state, importer} = styledHarness();
+  await importer.preview();
+  const committing = importer.commit();
+  assert.equal(state.busyWhileAsking, false);
+  assert.equal(importer.state().confirming, true);
+  assert.equal(importer.state().canCommit, false);
+  // A second click while the window is open must not queue another import.
+  await importer.commit();
+  assert.equal(state.requests.length, 1);
+  state.answer(true);
+  await committing;
+  assert.equal(state.requests[1].path, '/api/products/import/commit');
+  assert.equal(state.requests[1].payload.preview_token, 'token');
+  assert.equal(state.saved, 1);
+  assert.equal(importer.state().confirming, false);
+  assert.equal(importer.state().canCommit, false);
+});
+
+test('declining the confirmation window keeps the preview ready to commit', async () => {
+  const {state, importer} = styledHarness();
+  await importer.preview();
+  const committing = importer.commit();
+  state.answer(false);
+  await committing;
+  assert.equal(state.requests.length, 1);
+  assert.equal(state.saved, 0);
+  assert.equal(importer.state().confirming, false);
+  assert.equal(importer.state().canCommit, true);
+});

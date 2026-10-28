@@ -3,6 +3,7 @@
   "use strict";
   function createImporter(env) {
     let busy = false, preview = null, token = null, error = "", snapshot = null;
+    let confirming = false;
     let revision = 0;
     const settings = () => ({file: env.file(), scope: env.scope(),
       mapping: JSON.stringify(env.mapping()), duplicate_mode: env.duplicateMode(),
@@ -13,9 +14,9 @@
         current.mapping === saved.mapping && current.duplicate_mode === saved.duplicate_mode &&
         current.create_categories === saved.create_categories;
     };
-    const canCommit = () => !busy && !!token && unchanged(snapshot) &&
+    const canCommit = () => !busy && !confirming && !!token && unchanged(snapshot) &&
       !preview?.summary?.error && (preview?.summary?.create + preview?.summary?.update > 0);
-    const state = () => ({busy, preview, error, canCommit: canCommit()});
+    const state = () => ({busy, confirming, preview, error, canCommit: canCommit()});
     const render = () => env.render(state());
     function invalidate() {
       revision++; token = null; preview = null; snapshot = null; error = "";
@@ -49,7 +50,14 @@
       const summary = preview.summary;
       const message = `Import ${summary.create} new product(s), update ${summary.update} existing ` +
         `product(s), and skip ${summary.skip}? Stock quantities will not change.`;
-      if (!env.confirm(message) || !canCommit()) return;
+      // The confirmation is the dashboard's own window, so it may resolve
+      // asynchronously. `confirming` keeps a second click from opening a second
+      // window or starting two imports.
+      confirming = true; render();
+      let confirmed = false;
+      try { confirmed = await env.confirm(message, {...summary}); }
+      finally { confirming = false; }
+      if (!confirmed || !canCommit()) { render(); return; }
       const saved = snapshot, signedToken = token, ownRevision = revision;
       busy = true; error = ""; render();
       try {
@@ -116,7 +124,10 @@
     mapping: () => mappingReady ? mapping() : {},
     duplicateMode: () => el("product-import-mode").value,
     createCategories: () => el("product-import-create-categories").checked,
-    confirm: message => root.confirm(message), columns: renderColumns,
+    confirm: (message, summary) => typeof root.productImportConfirmDialog === "function"
+      ? root.productImportConfirmDialog(message, summary)
+      : root.confirm(message),
+    columns: renderColumns,
     async request(path, values) {
       const body = new FormData();
       Object.entries(values).forEach(([key, value]) => {
@@ -185,7 +196,8 @@
     importer.invalidate();
   });
   modal.addEventListener("hide.bs.modal", event => {
-    if (importer.state().busy) event.preventDefault();
+    const state = importer.state();
+    if (state.busy || state.confirming) event.preventDefault();
   });
   modal.addEventListener("hidden.bs.modal", importer.invalidate);
   importer.invalidate();

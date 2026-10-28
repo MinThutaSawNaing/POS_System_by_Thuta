@@ -1043,6 +1043,73 @@
         box-shadow: inset 0 -1px 0 var(--surface-border);
       }
 
+      /* Products multi-select: one narrow checkbox column plus a bulk action
+         bar that only appears while at least one product is selected. */
+      .products-select-cell {
+        width: 2.75rem;
+        text-align: center;
+      }
+
+      .products-select-cell .form-check-input {
+        float: none;
+        margin: 0;
+        vertical-align: middle;
+      }
+
+      .products-bulk-bar {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem 0.75rem;
+        flex-wrap: wrap;
+        padding: 0.6rem 0.85rem;
+        margin-bottom: 0.75rem;
+        border: 1px solid var(--accent);
+        border-radius: 0.375rem;
+        background: var(--accent-soft);
+      }
+
+      .products-bulk-bar .products-bulk-count {
+        font-weight: 600;
+        color: var(--gray-100);
+      }
+
+      #products-table tr.product-row-selected > td {
+        background-color: var(--accent-soft);
+      }
+
+      /* Confirmation windows: optional summary chips keep import and delete
+         confirmations readable at a glance. */
+      .confirm-stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+
+      .confirm-stat {
+        flex: 1 1 6rem;
+        min-width: 6rem;
+        padding: 0.5rem 0.65rem;
+        border: 1px solid var(--surface-border);
+        border-radius: 0.375rem;
+        background: var(--gray-10);
+      }
+
+      .confirm-stat-value {
+        display: block;
+        font-size: 1.15rem;
+        font-weight: 600;
+        line-height: 1.2;
+        color: var(--gray-100);
+      }
+
+      .confirm-stat-label {
+        display: block;
+        font-size: 0.75rem;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: var(--gray-70);
+      }
+
       /* Barcode label picker: the product list owns its own scrollbar so the
          modal header, search controls, and footer stay pinned in view while
          the rows scroll. */
@@ -2291,6 +2358,34 @@
               </div>
             </div>
             <div
+              id="products-bulk-bar"
+              class="products-bulk-bar d-none"
+              role="region"
+              aria-label="Bulk actions for selected products"
+            >
+              <span class="products-bulk-count" id="products-selection-count" role="status" aria-live="polite">No products selected</span>
+              <div class="d-flex flex-wrap gap-2 ms-auto">
+                <button type="button" class="btn btn-sm btn-success" data-capability="labels" onclick="printSelectedProductLabels()">
+                  <i class="bi bi-upc-scan"></i> <span class="d-none d-sm-inline">Print labels</span><span class="d-sm-none">Labels</span>
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-success" onclick="exportSelectedProducts('xlsx')" title="Export the selected products to Excel">
+                  <i class="bi bi-file-earmark-spreadsheet"></i> <span class="d-none d-sm-inline">Export Excel</span><span class="d-sm-none">Excel</span>
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-danger" onclick="exportSelectedProducts('pdf')" title="Export the selected products to PDF">
+                  <i class="bi bi-file-earmark-pdf"></i> <span class="d-none d-sm-inline">Export PDF</span><span class="d-sm-none">PDF</span>
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-primary" data-capability="catalog.write" onclick="openProductsBulkCategoryDialog()" title="Move the selected products into one category">
+                  <i class="bi bi-tags"></i> <span class="d-none d-sm-inline">Set category</span><span class="d-sm-none">Category</span>
+                </button>
+                <button type="button" class="btn btn-sm btn-danger" data-capability="catalog.write" onclick="confirmDeleteSelectedProducts()" title="Delete the selected products">
+                  <i class="bi bi-trash3"></i> <span class="d-none d-sm-inline">Delete</span><span class="d-sm-none">Del</span>
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearProductSelection()" title="Clear the selection">
+                  <i class="bi bi-x-lg"></i> <span>Clear</span>
+                </button>
+              </div>
+            </div>
+            <div
               class="table-responsive products-table-scroll"
               id="products-table-scroll"
               role="region"
@@ -2300,6 +2395,15 @@
               <table class="table table-striped table-hover mb-0">
                 <thead>
                   <tr>
+                    <th class="products-select-cell" scope="col">
+                      <input
+                        type="checkbox"
+                        class="form-check-input"
+                        id="products-select-all"
+                        aria-label="Select all products on this page"
+                        onchange="toggleAllProductRows(this.checked)"
+                      />
+                    </th>
                     <th>Photo</th>
                     <th>Barcode</th>
                     <th>Name</th>
@@ -2314,7 +2418,7 @@
                 <tbody id="products-table">
                   <!-- Products will be loaded here -->
                   <tr>
-                    <td colspan="9" class="text-center py-4">
+                    <td colspan="10" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                       </div>
@@ -6881,19 +6985,23 @@
     </div>
 
     <!-- Confirmation Modal -->
-    <div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal fade" id="confirmModal" tabindex="-1" aria-labelledby="confirmModalTitle" aria-hidden="true">
       <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
-          <div class="modal-header bg-primary text-white">
-            <h5 class="modal-title" id="confirmModalTitle"><i class="bi bi-question-circle me-2"></i>Confirm</h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          <div class="modal-header bg-primary text-white" id="confirmModalHeader">
+            <h5 class="modal-title d-flex align-items-center gap-2">
+              <i class="bi bi-question-circle" id="confirmModalIcon" aria-hidden="true"></i>
+              <span id="confirmModalTitle">Confirm</span>
+            </h5>
+            <button type="button" class="btn-close btn-close-white" id="confirmModalClose" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
             <p id="confirmModalMessage" class="mb-0 fs-6"></p>
+            <div id="confirmModalDetails" class="mt-3 d-none"></div>
           </div>
           <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="button" class="btn btn-primary" id="confirmModalBtn"><i class="bi bi-check-lg me-1"></i>Confirm</button>
+            <button type="button" class="btn btn-outline-secondary" id="confirmModalCancelBtn" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" id="confirmModalBtn"><i class="bi bi-check-lg me-1"></i><span id="confirmModalBtnText">Confirm</span></button>
           </div>
         </div>
       </div>
@@ -6904,7 +7012,10 @@
       <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
           <div class="modal-header bg-danger text-white">
-            <h5 class="modal-title" id="productCleanupTitle"><i class="bi bi-trash3 me-2"></i>Delete Product Everywhere</h5>
+            <h5 class="modal-title d-flex align-items-center gap-2">
+              <i class="bi bi-trash3" aria-hidden="true"></i>
+              <span id="productCleanupTitle">Delete Product Everywhere</span>
+            </h5>
             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
@@ -6915,6 +7026,39 @@
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
             <button type="button" class="btn btn-danger" id="productCleanupConfirmBtn"><i class="bi bi-trash3 me-1"></i>Delete everywhere</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Products bulk category window: one category for every selected product -->
+    <div class="modal fade" id="productsBulkCategoryModal" tabindex="-1" aria-labelledby="productsBulkCategoryTitle" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header bg-primary text-white">
+            <h5 class="modal-title d-flex align-items-center gap-2">
+              <i class="bi bi-tags" aria-hidden="true"></i>
+              <span id="productsBulkCategoryTitle">Set category for selected products</span>
+            </h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p class="mb-3 fs-6">
+              Choose one category for <strong id="products-bulk-category-count">0</strong> selected product(s).
+              Prices, stock and sales history stay untouched.
+            </p>
+            <label class="form-label" for="products-bulk-category-select">Category</label>
+            <select class="form-select" id="products-bulk-category-select">
+              <option value="">Remove category</option>
+            </select>
+            <div class="form-text">Subcategories are listed with their full path so the right shelf is easy to pick.</div>
+            <div class="alert alert-danger d-none mt-3 mb-0" id="products-bulk-category-error" role="alert"></div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" id="products-bulk-category-apply" onclick="applyProductsBulkCategory()">
+              <i class="bi bi-check-lg me-1"></i>Apply category
+            </button>
           </div>
         </div>
       </div>
@@ -8108,15 +8252,26 @@
             invalidateAllCache();
             invalidateProductsCache();
 
-            // Prompt user to refresh
+            // Prompt user to refresh. A styled window replaces the browser's own
+            // confirm(), which cannot be themed and blocks the whole tab.
             setTimeout(() => {
-              if (confirm("Database restored successfully! Would you like to refresh the page to see the changes?")) {
-                window.location.reload();
-              } else {
+              showConfirmDialogAsync({
+                title: "Database restored",
+                message:
+                  "Database restored successfully! Reload the page to see the restored data?",
+                confirmLabel: "Reload now",
+                cancelLabel: "Later",
+                variant: "success",
+                icon: "bi-database-check",
+              }).then((reload) => {
+                if (reload) {
+                  window.location.reload();
+                  return;
+                }
                 progressDiv.style.display = "none";
                 progressDiv.querySelector(".alert").classList.remove("alert-success");
                 progressDiv.querySelector(".alert").classList.add("alert-warning");
-              }
+              });
             }, 1000);
           })
           .catch((error) => {
@@ -8824,25 +8979,34 @@
       }
 
       function deleteBranch(branchId) {
-        if (!confirm("Are you sure you want to delete this branch? If the branch has associated data, it will be deactivated instead.")) {
-          return;
-        }
-        
-        fetch(`/api/branches/${branchId}`, { method: "DELETE" })
-          .then((response) => response.json())
-          .then((data) => {
-            if (!data.success) {
-              showToast(data.message || "Failed to delete branch", "error");
-              return;
-            }
-            showToast(data.message || "Branch deleted", "success");
-            loadBranches();
-            loadBranchSelector();
-          })
-          .catch((error) => {
-            console.error("Error deleting branch:", error);
-            showToast("Failed to delete branch", "error");
-          });
+        // Deleting a branch is destructive, so it asks in the same styled window
+        // as every other confirmation instead of a browser prompt.
+        return showConfirmDialogAsync({
+          title: "Delete branch",
+          message:
+            "Are you sure you want to delete this branch? If the branch has associated data, it will be deactivated instead.",
+          confirmLabel: "Delete branch",
+          variant: "danger",
+          icon: "bi-trash3",
+        }).then((confirmed) => {
+          if (!confirmed) return undefined;
+
+          return fetch(`/api/branches/${branchId}`, { method: "DELETE" })
+            .then((response) => response.json())
+            .then((data) => {
+              if (!data.success) {
+                showToast(data.message || "Failed to delete branch", "error");
+                return;
+              }
+              showToast(data.message || "Branch deleted", "success");
+              loadBranches();
+              loadBranchSelector();
+            })
+            .catch((error) => {
+              console.error("Error deleting branch:", error);
+              showToast("Failed to delete branch", "error");
+            });
+        });
       }
 
       let cart = [];
@@ -9327,6 +9491,9 @@
         if (!isBrowserOffline()) {
           offlineCacheRemove(cachedProductsKey());
         }
+        // A mutation (or a branch switch) can delete or replace the rows the
+        // Products tab has ticked, so no stale selection survives it.
+        if (typeof clearProductSelection === "function") clearProductSelection();
       }
       // One network round trip per key, shared by every caller waiting on it, and
       // resolved as a buffered entry so several Responses can be built from it (a
@@ -9748,20 +9915,28 @@
 
       function forgetMemoryTabEntry(memoryId) {
         if (!memoryId) return;
-        if (!window.confirm("Forget this memory? Loli will stop recalling it.")) return;
-        setMemoryTabStatus("Forgetting...");
-        fetch(`/api/agent/memories/${encodeURIComponent(memoryId)}`, { method: "DELETE" })
-          .then((response) => response.json()
-            .catch(() => ({}))
-            .then((data) => ({ response, data })))
-          .then(({ response, data }) => {
-            if (!response.ok || !data.success) {
-              throw new Error(data.error || "Could not forget that memory.");
-            }
-            setMemoryTabStatus("Forgotten.");
-            loadMemoryTab();
-          })
-          .catch((error) => setMemoryTabStatus(error.message || "Could not forget that memory.", true));
+        return showConfirmDialogAsync({
+          title: "Forget this memory",
+          message: "Forget this memory? Loli will stop recalling it.",
+          confirmLabel: "Forget it",
+          variant: "warning",
+          icon: "bi-trash3",
+        }).then((confirmed) => {
+          if (!confirmed) return undefined;
+          setMemoryTabStatus("Forgetting...");
+          return fetch(`/api/agent/memories/${encodeURIComponent(memoryId)}`, { method: "DELETE" })
+            .then((response) => response.json()
+              .catch(() => ({}))
+              .then((data) => ({ response, data })))
+            .then(({ response, data }) => {
+              if (!response.ok || !data.success) {
+                throw new Error(data.error || "Could not forget that memory.");
+              }
+              setMemoryTabStatus("Forgotten.");
+              loadMemoryTab();
+            })
+            .catch((error) => setMemoryTabStatus(error.message || "Could not forget that memory.", true));
+        });
       }
       // ===== END AI MEMORY TAB =====
 
@@ -10942,6 +11117,7 @@
       }
 
       function showConfirmDialog(title, message, onConfirm, handoff = false) {
+        resetConfirmDialog();
         document.getElementById("confirmModalTitle").textContent = title;
         document.getElementById("confirmModalMessage").textContent = message;
         confirmModalCallback = onConfirm;
@@ -10951,6 +11127,169 @@
         );
         if (handoff) showModalAfterHiding("confirmModal");
         else modal.show();
+      }
+
+      // ============================================
+      // Styled confirmation windows (promise based)
+      // ============================================
+      // Native browser windows (confirm/alert) cannot be styled, ignore the
+      // dashboard theme and block the whole tab. Deliberate and destructive
+      // questions use the same Bootstrap window as the rest of the app.
+      const CONFIRM_VARIANTS = {
+        primary: { header: "bg-primary text-white", button: "btn-primary", close: "btn-close btn-close-white", icon: "bi-question-circle" },
+        success: { header: "bg-success text-white", button: "btn-success", close: "btn-close btn-close-white", icon: "bi-check-circle" },
+        warning: { header: "bg-warning text-dark", button: "btn-warning", close: "btn-close", icon: "bi-exclamation-triangle" },
+        danger: { header: "bg-danger text-white", button: "btn-danger", close: "btn-close btn-close-white", icon: "bi-exclamation-triangle" },
+      };
+
+      function setConfirmDialogIcon(icon) {
+        const iconElement = document.getElementById("confirmModalIcon");
+        if (iconElement) iconElement.className = `bi ${icon || "bi-question-circle"}`;
+      }
+
+      function resetConfirmDialog() {
+        const header = document.getElementById("confirmModalHeader");
+        if (header) header.className = "modal-header bg-primary text-white";
+        const confirmBtn = document.getElementById("confirmModalBtn");
+        if (confirmBtn) confirmBtn.className = "btn btn-primary";
+        const closeBtn = document.getElementById("confirmModalClose");
+        if (closeBtn) closeBtn.className = "btn-close btn-close-white";
+        setConfirmDialogIcon("bi-question-circle");
+        const confirmText = document.getElementById("confirmModalBtnText");
+        if (confirmText) confirmText.textContent = "Confirm";
+        const cancelBtn = document.getElementById("confirmModalCancelBtn");
+        if (cancelBtn) cancelBtn.textContent = "Cancel";
+        const details = document.getElementById("confirmModalDetails");
+        if (details) {
+          details.replaceChildren();
+          details.classList.add("d-none");
+        }
+      }
+
+      function confirmDialogDetails() {
+        const details = document.getElementById("confirmModalDetails");
+        if (!details) return null;
+        details.classList.remove("d-none");
+        return details;
+      }
+
+      function renderConfirmStats(stats) {
+        if (!Array.isArray(stats) || !stats.length) return;
+        const details = confirmDialogDetails();
+        if (!details) return;
+        const wrapper = document.createElement("div");
+        wrapper.className = "confirm-stats";
+        stats.forEach((stat) => {
+          const card = document.createElement("div");
+          card.className = "confirm-stat";
+          const value = document.createElement("span");
+          value.className = `confirm-stat-value text-${stat.tone || "body"}`;
+          value.textContent = String(stat.value === null || stat.value === undefined ? 0 : stat.value);
+          const label = document.createElement("span");
+          label.className = "confirm-stat-label";
+          label.textContent = stat.label || "";
+          card.append(value, label);
+          wrapper.appendChild(card);
+        });
+        details.appendChild(wrapper);
+      }
+
+      function renderConfirmNote(note) {
+        if (!note) return;
+        const details = confirmDialogDetails();
+        if (!details) return;
+        const paragraph = document.createElement("p");
+        paragraph.className = "small text-muted mb-0 mt-2";
+        paragraph.textContent = note;
+        details.appendChild(paragraph);
+      }
+
+      // Resolves true only when the manager pressed the confirm button; closing
+      // the window any other way (Cancel, Esc, backdrop) resolves false.
+      function showConfirmDialogAsync(options = {}) {
+        const modalElement = document.getElementById("confirmModal");
+        if (!modalElement) return Promise.resolve(false);
+        const variant = CONFIRM_VARIANTS[options.variant] || CONFIRM_VARIANTS.primary;
+
+        resetConfirmDialog();
+        // This dialog owns the window: a callback left behind by an earlier
+        // cancelled dialog must never run on this confirmation.
+        confirmModalCallback = null;
+
+        const header = document.getElementById("confirmModalHeader");
+        if (header) header.className = `modal-header ${variant.header}`;
+        const closeBtn = document.getElementById("confirmModalClose");
+        if (closeBtn) closeBtn.className = variant.close || "btn-close btn-close-white";
+        setConfirmDialogIcon(options.icon || variant.icon);
+        document.getElementById("confirmModalTitle").textContent = options.title || "Confirm";
+        document.getElementById("confirmModalMessage").textContent = options.message || "";
+
+        const confirmBtn = document.getElementById("confirmModalBtn");
+        if (confirmBtn) confirmBtn.className = `btn ${variant.button}`;
+        const confirmText = document.getElementById("confirmModalBtnText");
+        if (confirmText) confirmText.textContent = options.confirmLabel || "Confirm";
+        const cancelBtn = document.getElementById("confirmModalCancelBtn");
+        if (cancelBtn) cancelBtn.textContent = options.cancelLabel || "Cancel";
+        renderConfirmStats(options.stats);
+        renderConfirmNote(options.note);
+
+        return new Promise((resolve) => {
+          let approved = false;
+          let settled = false;
+          const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+          const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            if (confirmBtn) confirmBtn.removeEventListener("click", onConfirm);
+            modalElement.removeEventListener("hidden.bs.modal", onHidden);
+            resolve(value);
+          };
+          const onConfirm = () => {
+            approved = true;
+            modal.hide();
+          };
+          const onHidden = () => finish(approved);
+          if (confirmBtn) confirmBtn.addEventListener("click", onConfirm);
+          modalElement.addEventListener("hidden.bs.modal", onHidden);
+          modal.show();
+        });
+      }
+
+      // Product imports ask for one explicit confirmation. The window shows the
+      // same create/update/skip/error counts as the preview instead of a browser
+      // sentence, and nothing is written until it resolves true.
+      function productImportConfirmDialog(message, summary) {
+        if (!summary || typeof summary !== "object") {
+          return showConfirmDialogAsync({
+            title: "Confirm product import",
+            message,
+            confirmLabel: "Import products",
+            cancelLabel: "Keep reviewing",
+            variant: "success",
+            icon: "bi-upload",
+          });
+        }
+        const create = Number(summary.create) || 0;
+        const update = Number(summary.update) || 0;
+        const skip = Number(summary.skip) || 0;
+        const errors = Number(summary.error) || 0;
+        const affected = create + update;
+        const productWord = affected === 1 ? "product" : "products";
+        return showConfirmDialogAsync({
+          title: "Confirm product import",
+          message: `Import ${affected} ${productWord} into the active branch?`,
+          confirmLabel: `Import ${affected} ${productWord}`,
+          cancelLabel: "Keep reviewing",
+          variant: "success",
+          icon: "bi-upload",
+          stats: [
+            { label: "New", value: create, tone: "success" },
+            { label: "Updates", value: update, tone: "primary" },
+            { label: "Skipped", value: skip, tone: "secondary" },
+            { label: "Errors", value: errors, tone: "danger" },
+          ],
+          note: "Stock quantities will not change. New products start at zero stock.",
+        });
       }
 
       // Handle confirm button click
@@ -10987,10 +11326,17 @@
         block: { badge: "text-bg-dark", label: "handle first" },
       };
 
-      function showProductCleanupDialog(productName, groups, canDelete, onConfirm) {
+      // `options` lets a bulk selection reuse this window: it overrides the
+      // window title and the intro sentence while keeping the same group badges,
+      // warnings and confirm gate.
+      function showProductCleanupDialog(productName, groups, canDelete, onConfirm, options = {}) {
+        const title = document.getElementById("productCleanupTitle");
+        if (title) title.textContent = options.title || "Delete Product Everywhere";
         document.getElementById(
           "productCleanupIntro"
-        ).textContent = `Delete "${productName}" and remove it from every tab listed below? This action cannot be undone.`;
+        ).textContent =
+          options.intro ||
+          `Delete "${productName}" and remove it from every tab listed below? This action cannot be undone.`;
 
         const list = document.getElementById("productCleanupList");
         list.innerHTML = "";
@@ -13304,10 +13650,17 @@
         if (cart.length === 0) return;
         clearLegacyMMQRDeadline();
 
-        if (confirm("Are you sure you want to clear the cart?")) {
+        return showConfirmDialogAsync({
+          title: "Clear the cart",
+          message: "Remove every product from this sale? Nothing has been charged yet.",
+          confirmLabel: "Clear cart",
+          variant: "warning",
+          icon: "bi-cart-x",
+        }).then((confirmed) => {
+          if (!confirmed) return;
           cart = [];
           updateCartDisplay();
-        }
+        });
       }
 
       // ============================================
@@ -13939,13 +14292,27 @@
       // Barcode Label functions
       const barcodeSelectedRows = new Map();
       let barcodeSearchTimer = null;
-      function showBarcodeLabelDialog() {
+      // One label sheet run covers at most this many products; the Products tab
+      // hands over at most the same number when it pre-selects rows.
+      const BARCODE_SELECTION_LIMIT = 100;
+      // The Products tab can hand over a multi-selection: those rows arrive
+      // already ticked, so printing labels for 30 products stays one action.
+      let barcodeLabelPrefill = null;
+      function showBarcodeLabelDialog(prefillIds = null) {
         if (!requireCapability("labels")) return;
+        barcodeLabelPrefill = Array.isArray(prefillIds) && prefillIds.length
+          ? new Set(prefillIds.map((id) => String(id)))
+          : null;
         barcodeSelectedRows.clear();
         clearBarcodeLabelSearch();
-        const modal = new bootstrap.Modal(
-          document.getElementById("barcodeLabelModal")
+        const modalElement = document.getElementById("barcodeLabelModal");
+        // The hand-over only applies to this visit to the label picker.
+        modalElement?.addEventListener(
+          "hidden.bs.modal",
+          () => { barcodeLabelPrefill = null; },
+          { once: true }
         );
+        const modal = new bootstrap.Modal(modalElement);
         loadProductsForBarcodeLabels();
         modal.show();
       }
@@ -14000,6 +14367,7 @@
             data.forEach((product) => {
               const retained = barcodeSelectedRows.get(String(product.id));
               if (retained) { retained.hidden = false; return; }
+              const prefill = Boolean(barcodeLabelPrefill && barcodeLabelPrefill.has(String(product.id)));
               const row = document.createElement("tr");
               row.className = "barcode-product-row";
               row.dataset.searchText = [
@@ -14010,7 +14378,7 @@
               row.innerHTML = `
                           <td><input type="checkbox" class="product-checkbox" data-id="${
                             product.id
-                          }"></td>
+                          }"${prefill ? " checked" : ""}></td>
                           <td>${escapeHtml(product.barcode || "N/A")}</td>
                           <td>${escapeHtml(product.name)}</td>
                           <td>${formatCurrency(product.price)}</td>
@@ -14020,6 +14388,9 @@
                           <td>${product.stock}</td>
                       `;
               table.appendChild(row);
+              // Keep a handed-over selection in the "print these" set so it
+              // survives paging and the search filter.
+              if (prefill) rememberBarcodeSelection(row.querySelector(".product-checkbox"));
             });
             table.onchange = (event) => {
               if (event.target.classList.contains("product-checkbox")) {
@@ -14046,9 +14417,9 @@
       function rememberBarcodeSelection(checkbox) {
         const id = checkbox.dataset.id;
         if (checkbox.checked) {
-          if (!barcodeSelectedRows.has(id) && barcodeSelectedRows.size >= 100) {
+          if (!barcodeSelectedRows.has(id) && barcodeSelectedRows.size >= BARCODE_SELECTION_LIMIT) {
             checkbox.checked = false;
-            showToast("Print at most 100 selected products at a time.", "warning");
+            showToast(`Print at most ${BARCODE_SELECTION_LIMIT} selected products at a time.`, "warning");
           } else barcodeSelectedRows.set(id, checkbox.closest("tr"));
         } else barcodeSelectedRows.delete(id);
       }
@@ -14999,6 +15370,327 @@
         return offlineCacheGet("pos_products_cache_" + currentBranch.id);
       }
 
+      // ============================================
+      // Products multi-select and bulk actions
+      // ============================================
+      // The selection is keyed by product id (never by row) so a manager can tick
+      // rows on one page, page forward, and still act on everything together.
+      const productSelection = new Map();
+      const PRODUCT_SELECTION_LIMIT = 200;
+
+      function selectedProductIds() {
+        return Array.from(productSelection.keys()).map((id) => Number(id));
+      }
+
+      function getProductPageCheckboxes() {
+        const table = document.getElementById("products-table");
+        if (!table || typeof table.querySelectorAll !== "function") return [];
+        return Array.from(table.querySelectorAll(".product-select-checkbox"));
+      }
+
+      function selectProductRow(checkbox, selected) {
+        if (!checkbox) return;
+        const id = String(checkbox.dataset?.id || "");
+        if (!id) return;
+        checkbox.checked = selected;
+        if (selected) {
+          if (!productSelection.has(id) && productSelection.size >= PRODUCT_SELECTION_LIMIT) {
+            checkbox.checked = false;
+            showToast(`Select at most ${PRODUCT_SELECTION_LIMIT} products at a time.`, "warning");
+            return;
+          }
+          productSelection.set(id, {
+            id: Number(id),
+            name: checkbox.dataset.name || "",
+            barcode: checkbox.dataset.barcode || "",
+          });
+        } else {
+          productSelection.delete(id);
+        }
+        checkbox.closest?.("tr")?.classList?.toggle("product-row-selected", checkbox.checked);
+      }
+
+      function toggleProductSelection(checkbox) {
+        selectProductRow(checkbox, Boolean(checkbox && checkbox.checked));
+        syncProductSelectionUi();
+      }
+
+      function toggleAllProductRows(checked) {
+        getProductPageCheckboxes().forEach((checkbox) => selectProductRow(checkbox, Boolean(checked)));
+        syncProductSelectionUi();
+      }
+
+      function clearProductSelection() {
+        productSelection.clear();
+        getProductPageCheckboxes().forEach((checkbox) => {
+          checkbox.checked = false;
+          checkbox.closest?.("tr")?.classList?.remove("product-row-selected");
+        });
+        syncProductSelectionUi();
+      }
+
+      function syncProductSelectionUi() {
+        const count = productSelection.size;
+        const bar = document.getElementById("products-bulk-bar");
+        if (bar && bar.classList) bar.classList.toggle("d-none", count === 0);
+        const label = document.getElementById("products-selection-count");
+        if (label) {
+          label.textContent = count === 0
+            ? "No products selected"
+            : `${count} product${count === 1 ? "" : "s"} selected`;
+        }
+        const checkboxes = getProductPageCheckboxes();
+        const checkedOnPage = checkboxes.filter((checkbox) => checkbox.checked).length;
+        const selectAll = document.getElementById("products-select-all");
+        if (selectAll) {
+          selectAll.disabled = checkboxes.length === 0;
+          selectAll.checked = checkboxes.length > 0 && checkedOnPage === checkboxes.length;
+          selectAll.indeterminate = checkedOnPage > 0 && checkedOnPage < checkboxes.length;
+        }
+        checkboxes.forEach((checkbox) => {
+          checkbox.closest?.("tr")?.classList?.toggle("product-row-selected", checkbox.checked);
+        });
+      }
+
+      function ensureProductSelection() {
+        if (productSelection.size) return true;
+        showToast("Select at least one product first.", "warning");
+        return false;
+      }
+
+      // One click from the bulk bar to the label picker: the selection arrives
+      // already ticked, quantities stay editable, and the sheet is unchanged.
+      function printSelectedProductLabels() {
+        if (!requireCapability("labels")) return;
+        if (!ensureProductSelection()) return;
+        const ids = Array.from(productSelection.keys());
+        const printable = ids.slice(0, BARCODE_SELECTION_LIMIT);
+        if (printable.length < ids.length) {
+          showToast(
+            `A label sheet prints ${BARCODE_SELECTION_LIMIT} products at a time — the first ` +
+              `${printable.length} selected products are loaded.`,
+            "warning"
+          );
+        }
+        showBarcodeLabelDialog(printable);
+      }
+
+      // Exports only the ticked products by reusing the catalog report; the
+      // backend applies the same branch scoping as the full export.
+      function exportSelectedProducts(format) {
+        if (!ensureProductSelection()) return;
+        const params = new URLSearchParams();
+        params.set("format", format === "xlsx" ? "xlsx" : "pdf");
+        params.set("ids", Array.from(productSelection.keys()).join(","));
+        return openReportDownload(`/api/products/export?${params.toString()}`);
+      }
+
+      function openProductsBulkCategoryDialog() {
+        if (!requireCapability("catalog.write")) return;
+        if (!ensureProductSelection()) return;
+        const count = document.getElementById("products-bulk-category-count");
+        if (count) count.textContent = String(productSelection.size);
+        const error = document.getElementById("products-bulk-category-error");
+        if (error) {
+          error.classList.add("d-none");
+          error.textContent = "";
+        }
+        return populateProductsBulkCategoryOptions().then(() => {
+          bootstrap.Modal.getOrCreateInstance(
+            document.getElementById("productsBulkCategoryModal")
+          ).show();
+        });
+      }
+
+      // Subcategories keep the same indented shelf path as the product forms, so
+      // "iOS › iPhones" is never confused with a same-named shelf elsewhere.
+      function populateProductsBulkCategoryOptions() {
+        const select = document.getElementById("products-bulk-category-select");
+        if (!select) return Promise.resolve();
+        const fill = (categories) => {
+          const rows = (categories || []).filter((category) => category.is_active !== false);
+          const byId = new Map(rows.map((category) => [Number(category.id), category]));
+          const current = select.value;
+          select.innerHTML = '<option value="">Remove category</option>';
+          categoryTreeOrder(rows).forEach((category) => {
+            const option = document.createElement("option");
+            option.value = category.id;
+            option.textContent = `${
+              "\u00a0\u00a0".repeat(categoryDepthOf(category, byId))
+            }${category.path || category.name}`;
+            select.appendChild(option);
+          });
+          select.value = current;
+        };
+        if (Array.isArray(cachedCategories)) {
+          fill(cachedCategories);
+          return Promise.resolve();
+        }
+        return fetch("/api/categories?active_only=true&counts=false")
+          .then((response) => response.json())
+          .then((categories) => {
+            cachedCategories = categories;
+            fill(categories);
+          })
+          .catch((error) => {
+            console.error("Error loading categories:", error);
+            fill([]);
+          });
+      }
+
+      function applyProductsBulkCategory() {
+        if (!requireCapability("catalog.write")) return;
+        if (!ensureProductSelection()) return;
+        const ids = selectedProductIds();
+        const select = document.getElementById("products-bulk-category-select");
+        const categoryId = select?.value || "";
+        const applyButton = document.getElementById("products-bulk-category-apply");
+        const errorBox = document.getElementById("products-bulk-category-error");
+        if (applyButton) applyButton.disabled = true;
+        if (errorBox) {
+          errorBox.classList.add("d-none");
+          errorBox.textContent = "";
+        }
+        return fetch("/api/categories/bulk-update", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "assign",
+            item_type: "product",
+            item_ids: ids,
+            category_id: categoryId || null,
+          }),
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (!data.success) throw new Error(data.message || "The category could not be applied.");
+            bootstrap.Modal.getInstance(
+              document.getElementById("productsBulkCategoryModal")
+            )?.hide();
+            showToast(
+              categoryId
+                ? `Category updated for ${ids.length} product(s).`
+                : `Category removed from ${ids.length} product(s).`,
+              "success"
+            );
+            clearProductSelection();
+            invalidateProductsCache();
+            loadProducts();
+          })
+          .catch((error) => {
+            console.error("Error updating the product category:", error);
+            if (errorBox) {
+              errorBox.textContent = error.message;
+              errorBox.classList.remove("d-none");
+            } else {
+              showToast(error.message, "error");
+            }
+          })
+          .finally(() => {
+            if (applyButton) applyButton.disabled = false;
+          });
+      }
+
+      // Bulk delete keeps the single-product safety net: every selected product
+      // is checked for dependencies first, one window lists the merged result,
+      // and only then are the products removed one after another.
+      function confirmDeleteSelectedProducts() {
+        if (!hasManagerOrBossAccess()) {
+          showToast("Only a manager can delete products.", "error");
+          return;
+        }
+        if (!ensureProductSelection()) return;
+        const ids = selectedProductIds();
+        const activeBranchId = currentBranch?.id || null;
+        const branchQuery = activeBranchId
+          ? `?branch_id=${encodeURIComponent(activeBranchId)}`
+          : "";
+        return Promise.all(
+          ids.map((productId) =>
+            fetch(`/api/products/${productId}/dependencies${branchQuery}`)
+              .then((response) => response.json())
+              .catch(() => null)
+          )
+        )
+          .then((results) => {
+            if (results.some((data) => !data || !data.success)) {
+              showToast("Could not check every selected product. Nothing was deleted.", "error");
+              return;
+            }
+            const merged = new Map();
+            let canDelete = true;
+            results.forEach((data) => {
+              if (data.can_delete === false) canDelete = false;
+              (data.groups || []).forEach((group) => {
+                const existing = merged.get(group.key);
+                if (!existing) {
+                  merged.set(group.key, { ...group });
+                  return;
+                }
+                existing.count = (Number(existing.count) || 0) + (Number(group.count) || 0);
+                if (group.action === "block") existing.action = "block";
+              });
+            });
+            const count = ids.length;
+            const products = count === 1 ? "product" : "products";
+            showProductCleanupDialog(
+              `${count} ${products}`,
+              Array.from(merged.values()),
+              canDelete,
+              () => deleteSelectedProducts(ids),
+              {
+                title: "Delete Selected Products",
+                intro:
+                  `Delete ${count} selected ${products} and remove ` +
+                  `${count === 1 ? "it" : "them"} from every tab listed below? ` +
+                  "This action cannot be undone.",
+              }
+            );
+          })
+          .catch((error) => {
+            console.error("Error checking product usage:", error);
+            showToast("Could not check the selected products. Nothing was deleted.", "error");
+          });
+      }
+
+      function deleteSelectedProducts(ids) {
+        const activeBranchId = currentBranch?.id || null;
+        const params = new URLSearchParams({ force: "1", cascade: "1" });
+        if (activeBranchId) params.set("branch_id", activeBranchId);
+        const failures = [];
+        let deleted = 0;
+
+        const removeNext = (index) => {
+          if (index >= ids.length) {
+            clearProductSelection();
+            invalidateProductsCache();
+            loadProducts();
+            loadDashboardStats();
+            if (failures.length) {
+              showToast(
+                `${deleted} product(s) deleted, ${failures.length} could not be deleted: ${failures[0]}`,
+                "error"
+              );
+            } else {
+              showToast(`${deleted} product(s) deleted.`, "success");
+            }
+            return Promise.resolve();
+          }
+          return fetch(`/api/products/${ids[index]}?${params.toString()}`, {
+            method: "DELETE",
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              if (data.success) deleted += 1;
+              else failures.push(data.message || data.error || `Product #${ids[index]}`);
+            })
+            .catch((error) => failures.push(error.message))
+            .then(() => removeNext(index + 1));
+        };
+
+        return removeNext(0);
+      }
+
       function renderProductsResponse(payload) {
         const productsTable = document.getElementById("products-table");
         const productsScroll = document.getElementById("products-table-scroll");
@@ -15009,9 +15701,10 @@
         if (!data.items || data.items.length === 0) {
           productsTable.innerHTML = `
                                   <tr>
-                                      <td colspan="9" class="text-center py-4 text-muted">No products found.</td>
+                                      <td colspan="10" class="text-center py-4 text-muted">No products found.</td>
                                   </tr>
                               `;
+          syncProductSelectionUi();
           if (typeof renderInventoryPagination === "function" && "has_more" in payload) {
             renderInventoryPagination("products", "products-pagination", loadProducts);
           } else renderPagination("products", "products-pagination", 1, loadProducts);
@@ -15020,6 +15713,10 @@
 
         data.items.forEach((product) => {
           const row = document.createElement("tr");
+          const rowId = String(product.id);
+          const selected = productSelection.has(rowId);
+          if (row.dataset) row.dataset.productId = rowId;
+          row.className = selected ? "product-row-selected" : "";
           // Deleting a product is a manager (or owner) action only.
           const deleteButton = hasManagerOrBossAccess()
             ? `<button class="btn btn-sm btn-danger" onclick="deleteProduct(${
@@ -15029,6 +15726,15 @@
                                       </button>`
             : "";
           row.innerHTML = `
+                                  <td class="products-select-cell">
+                                      <input type="checkbox" class="form-check-input product-select-checkbox"
+                                        data-id="${product.id}"
+                                        data-name="${escapeHtml(product.name)}"
+                                        data-barcode="${escapeHtml(product.barcode || "")}"
+                                        aria-label="Select ${escapeHtml(product.name)}"
+                                        ${selected ? "checked" : ""}
+                                        onchange="toggleProductSelection(this)" />
+                                  </td>
                                   <td>${getProductPhotoHtml(product.photo_url, product.name, "product-thumb")}</td>
                                   <td>${escapeHtml(product.barcode || "N/A")}</td>
                                   <td>${escapeHtml(product.name)}</td>
@@ -15048,6 +15754,9 @@
                               `;
           productsTable.appendChild(row);
         });
+        // Row state can change between renders (paging, search, branch switch),
+        // so the bulk bar and the page checkbox always mirror the selection.
+        syncProductSelectionUi();
 
         if (typeof renderInventoryPagination === "function" && "has_more" in payload) {
           renderInventoryPagination("products", "products-pagination", loadProducts);

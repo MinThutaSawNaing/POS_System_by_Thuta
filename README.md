@@ -40,6 +40,7 @@ See [setup, security controls, and recovery notes](docs/email-two-factor.md) bef
   - Centralized category management with color coding
   - Reorder points and automated low-stock alerts
   - [Previewed Excel product imports](docs/product-excel-import.md) with column matching and explicit duplicate handling
+  - Multi-select in the Products tab: tick rows (the selection survives paging) and print labels, export just the selected products, move them to one category, or delete them together
 
 - **Sales, Analytics & Reporting**
   - Transaction history and sale details

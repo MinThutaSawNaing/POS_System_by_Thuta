@@ -67,7 +67,8 @@ def test_products_requests_thirty_rows_and_renders_each_server_page():
     state = re.search(r'const pageState = \{.*?\};', SOURCE, re.S).group()
     sizes = re.search(r'const pageSize = \{.*?\};', SOURCE, re.S).group()
     functions = '\n'.join(_function(SOURCE, name) for name in (
-        'parsePagedResponse', 'renderProductsResponse', 'loadProducts',
+        'parsePagedResponse', 'renderProductsResponse', 'syncProductSelectionUi',
+        'getProductPageCheckboxes', 'loadProducts',
     ))
     result = run_products_script(r"""
 const assert = require('node:assert/strict');
@@ -81,6 +82,8 @@ const document = {
     'products-table-scroll': scroll}[id]; },
   createElement() { return {innerHTML: ''}; },
 };
+// Selection state the Products tab keeps between pages.
+const productSelection = new Map();
 function hasManagerOrBossAccess() { return true; }
 function hasCapability() { return true; }
 function escapeHtml(value) { return String(value); }

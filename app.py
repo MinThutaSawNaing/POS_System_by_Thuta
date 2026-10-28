@@ -5101,6 +5101,23 @@ def export_product_catalog():
 
     search = (request.args.get('q') or '').strip()
     query = Product.query.filter(Product.branch_id == branch_id)
+    # The Products tab can export a multi-selection: only those ids are included.
+    selected_ids = []
+    raw_ids = (request.args.get('ids') or '').strip()
+    if raw_ids:
+        try:
+            requested_ids = {int(part) for part in raw_ids.split(',') if part.strip()}
+        except ValueError:
+            return jsonify({'success': False, 'message': 'Invalid product selection'}), 400
+        selected_ids = sorted(product_id for product_id in requested_ids if product_id > 0)
+        if not selected_ids:
+            return jsonify({'success': False, 'message': 'Invalid product selection'}), 400
+        if len(selected_ids) > 500:
+            return jsonify({
+                'success': False,
+                'message': 'Export at most 500 selected products at a time',
+            }), 400
+        query = query.filter(Product.id.in_(selected_ids))
     if search and request.args.get('search_mode') == 'prefix':
         query = query.filter(Product.id.in_(product_prefix_ids(search, branch_id, include_category=True)))
     elif search:
@@ -5132,7 +5149,10 @@ def export_product_catalog():
         brand=get_receipt_identity(branch),
         branch_name=branch.name,
         generated_by=session.get('username') or '',
-        filters_text=describe_filters({'Search': search}),
+        filters_text=describe_filters({
+            'Search': search,
+            'Selected': f'{len(selected_ids)} product(s)' if selected_ids else '',
+        }),
         currency_suffix=get_currency_suffix(),
     )
     payload = build_report_pdf(report) if report_format == 'pdf' else build_report_xlsx(report)

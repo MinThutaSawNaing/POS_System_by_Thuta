@@ -19,7 +19,10 @@ branch and never replace the entire catalog.
 4. Review the new/update/skip/error counts and every row's proposed action.
    Correct error rows in the original file and upload it again. No rows are
    saved while previewing, and a file containing errors cannot be committed.
-5. Choose **Confirm import** and approve the final confirmation.
+5. Choose **Confirm import**. A summary window lists the new, updated, skipped
+   and error counts; press **Import products** to write the rows, or
+   **Keep reviewing** to go back. Stock quantities never change and new products
+   start at zero stock.
 
 Up to 2,000 products and a 15 MB upload are accepted per file. Split larger
 catalogs into smaller files.
@@ -82,6 +85,24 @@ categories** if needed; new categories are shown in the preview and created only
 on confirmation. Otherwise unknown categories are errors. Units must already exist and be
 active in **Settings → Units of Measurement**. Importing does not create new
 units or change conversion factors.
+
+## Working with many products at once
+
+The **Products** tab has a checkbox on every row and one in the header:
+
+- The header checkbox selects every product on the current page; ticking rows
+  one by one is fine too. The selection is kept while you page or search, and
+  the bar above the table shows how many products are selected.
+- **Print labels** opens the label picker with the selection already ticked
+  (quantities stay editable, and one sheet covers up to 100 products).
+- **Export Excel / Export PDF** downloads only the selected products
+  (`GET /api/products/export?format=xlsx|pdf&ids=1,2,3`).
+- **Set category** moves all selected products into one category, or removes
+  their category.
+- **Delete** checks every selected product for related records first and lists
+  what will be deleted or kept in one window before anything is removed.
+- **Clear** drops the selection. Adding, deleting or changing products, and
+  switching branch, also clear it.
 
 ## MMQR loading feedback
 

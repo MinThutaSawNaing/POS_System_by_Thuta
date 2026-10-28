@@ -230,6 +230,34 @@ class ProductImportTests(unittest.TestCase):
         self.assertEqual(preview['mapping']['name'], 'Product Name')
         self.assertEqual(preview['preview']['summary'], {'create': 0, 'update': 0, 'skip': 1, 'error': 0}, preview)
 
+    def test_export_can_be_limited_to_the_products_selected_in_the_tab(self):
+        """The Products tab multi-select exports only the ticked rows."""
+        first = self.product(name='Selected', barcode='SEL', catalog_id='cat-sel')
+        self.product(name='Not selected', barcode='SKIP', catalog_id='cat-skip')
+        self.product(name='Other branch', barcode='OTHERB', catalog_id='cat-other',
+                     branch_id=self.other.id)
+
+        response = self.client.get(f'/api/products/export?format=xlsx&ids={first.id}')
+        self.assertEqual(response.status_code, 200)
+        preview = self.post('preview', response.data).get_json()
+        # Only the selected product is in the workbook, so importing it back
+        # reports a single skip and nothing else.
+        self.assertEqual(preview['preview']['summary'],
+                         {'create': 0, 'update': 0, 'skip': 1, 'error': 0}, preview)
+        self.assertEqual(preview['preview']['rows'][0]['barcode'], 'SEL')
+
+    def test_export_rejects_a_malformed_selection(self):
+        for ids in ('abc', '0', '-3', '1,,x'):
+            with self.subTest(ids=ids):
+                response = self.client.get(f'/api/products/export?format=xlsx&ids={ids}')
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.get_json()['message'], 'Invalid product selection')
+        too_many = ','.join(str(number) for number in range(1, 502))
+        response = self.client.get(f'/api/products/export?format=xlsx&ids={too_many}')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()['message'],
+                         'Export at most 500 selected products at a time')
+
     def test_commit_rejects_token_tamper_expiration_and_request_changes(self):
         content, preview = self.preview([['Name', 'Barcode', 'Price'], ['Tea', 'T', 12]])
         token = preview['preview_token']
