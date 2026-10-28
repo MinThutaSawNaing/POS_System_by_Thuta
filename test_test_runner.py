@@ -37,6 +37,8 @@ def test_runner_clears_live_credentials_and_runs_in_copy(tmp_path):
     with patch.dict(os.environ, {'APIFREE_API_KEY': 'never-pass-real-key',
                                  'AI_API_KEY': 'also-secret', 'RESEND_API_KEY': 'never-email-from-tests',
                                  'RESEND_FROM_EMAIL': 'live@example.com', 'SESSION_COOKIE_SECURE': 'true',
+                                 'RESEND_SMTP_HOST': 'live-mail.example.com',
+                                 'RESEND_SMTP_PORT': '587', 'RESEND_SMTP_USERNAME': 'live-user',
                                  'PYTEST_ADDOPTS': '-c ../pytest.ini'}), \
          patch.object(runner.sys, 'argv', ['run_tests.py', '-q', 'test_backup_database.py']), \
          patch.object(runner.subprocess, 'run', side_effect=command):
@@ -45,6 +47,9 @@ def test_runner_clears_live_credentials_and_runs_in_copy(tmp_path):
     assert 'AI_API_KEY' not in observed['env']
     assert 'RESEND_API_KEY' not in observed['env']
     assert 'RESEND_FROM_EMAIL' not in observed['env']
+    assert 'RESEND_SMTP_HOST' not in observed['env']
+    assert 'RESEND_SMTP_PORT' not in observed['env']
+    assert 'RESEND_SMTP_USERNAME' not in observed['env']
     assert 'PYTEST_ADDOPTS' not in observed['env']
     assert observed['env']['PYTHONPATH'] == str(observed['cwd'])
     assert observed['env']['SESSION_COOKIE_SECURE'] == 'false'

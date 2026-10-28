@@ -2,7 +2,7 @@
 
 Run with ``python run_tests.py test_email_auth.py -q --tb=short``.  No workspace
 ``app`` import occurs: even startup migrations and uploads use temporary paths.
-Only the provider HTTP boundary and clock are replaced; OTPs come from mail.
+Only the provider SMTP boundary and clock are replaced; OTPs come from mail.
 """
 
 import importlib.util
@@ -11,7 +11,9 @@ import json
 from pathlib import Path
 import re
 import shutil
+import smtplib
 import sqlite3
+import ssl
 import sys
 import time
 from types import SimpleNamespace
@@ -19,7 +21,6 @@ from unittest.mock import patch
 
 from flask import Flask
 import pytest
-import requests
 
 
 SETTINGS = '/api/settings/email'
@@ -84,19 +85,61 @@ def world(email_app, monkeypatch):
     monkeypatch.setattr(email_auth, 'time', SimpleNamespace(time=lambda: now[0]))
     monkeypatch.delenv('RESEND_API_KEY', raising=False)
     monkeypatch.delenv('RESEND_FROM_EMAIL', raising=False)
-    # Also block accidental non-email provider calls: no test can send real mail.
+    for name in ('RESEND_SMTP_HOST', 'RESEND_SMTP_PORT', 'RESEND_SMTP_USERNAME'):
+        monkeypatch.delenv(name, raising=False)
+    # Mock the actual SMTP boundary: no test can send real mail.
     deliveries = []
-    delivery = SimpleNamespace(fail=False)
+    delivery = SimpleNamespace(fail=False, failure_stage=None, exception=None, refused={}, hook=None, observe=None)
+    connections = []
 
-    def send(url, **kwargs):
-        deliveries.append({'url': url, **kwargs})
-        if delivery.fail:
-            raise requests.ConnectionError('provider unavailable')
-        return SimpleNamespace(status_code=200, ok=True,
-                               json=lambda: {'id': 'mail-test-id'},
-                               raise_for_status=lambda: None)
+    class SMTP:
+        def __init__(self, host, port, **kwargs):
+            self.record = dict(host=host, port=port, **kwargs, implicit_tls=isinstance(self, SMTP_SSL), calls=[])
+            connections.append(self.record)
+            self.step('connect')
 
-    monkeypatch.setattr(requests, 'post', send)
+        def step(self, name):
+            self.record['calls'].append(name)
+            if delivery.observe:
+                delivery.observe(name)
+            if delivery.failure_stage == name:
+                raise delivery.exception or smtplib.SMTPException('provider unavailable')
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.step('quit')
+
+        def ehlo(self):
+            self.step('ehlo')
+            return 250, b'OK'
+
+        def starttls(self, *, context):
+            self.record['starttls_context'] = context
+            self.step('starttls')
+            return 220, b'OK'
+
+        def login(self, username, password):
+            self.record.update(username=username, password=password)
+            self.step('login')
+            return 235, b'OK'
+
+        def send_message(self, message):
+            self.record['message'] = message
+            deliveries.append(self.record)
+            self.step('send_message')
+            if delivery.fail:
+                raise smtplib.SMTPException('provider unavailable')
+            if delivery.hook:
+                return delivery.hook(message)
+            return delivery.refused
+
+    class SMTP_SSL(SMTP):
+        pass
+
+    monkeypatch.setattr(email_auth.smtplib, 'SMTP', SMTP)
+    monkeypatch.setattr(email_auth.smtplib, 'SMTP_SSL', SMTP_SSL)
     with m.app.app_context():
         m.db.session.remove()
         m.db.drop_all()
@@ -129,7 +172,7 @@ def world(email_app, monkeypatch):
         return c
 
     w = SimpleNamespace(m=m, app=m.app, users=users, branches=branches,
-                        client=client, deliveries=deliveries, delivery=delivery,
+                        client=client, deliveries=deliveries, delivery=delivery, connections=connections,
                         advance=lambda seconds: now.__setitem__(0, now[0] + seconds))
     yield w
     with m.app.app_context():
@@ -151,7 +194,8 @@ def csrf(client, endpoint=SECURITY):
 
 def configure(w, client=None):
     c = client or w.client()
-    response = c.put(SETTINGS, json={'api_key': API_KEY, 'from_email': FROM_EMAIL,
+    response = c.put(SETTINGS, json={'smtp_host': 'smtp.resend.com', 'smtp_port': 465,
+                                   'smtp_username': 'resend', 'smtp_password': API_KEY, 'from_email': FROM_EMAIL,
                                    'password': MANAGER_PASSWORD},
                      headers=csrf(c, SETTINGS))
     payload(response)
@@ -177,8 +221,8 @@ def resend(w, client, challenge_id, target='cashier'):
 
 def mail_code(w):
     assert w.deliveries, 'A challenge must actually be delivered before it is usable'
-    message = w.deliveries[-1]['json']
-    body = ' '.join(str(message.get(key, '')) for key in ('text', 'html'))
+    message = w.deliveries[-1]['message']
+    body = message.get_content()
     codes = set(re.findall(r'(?<!\d)\d{6}(?!\d)', body))
     assert len(codes) == 1, f'Expected one six-digit OTP in provider body: {body}'
     return codes.pop()
@@ -293,12 +337,13 @@ def test_settings_are_global_encrypted_and_key_is_never_echoed(world, caplog):
     challenge = payload(start(world, cashier))
     code = mail_code(world)
     sent = world.deliveries[-1]
-    assert sent['url'] == 'https://api.resend.com/emails'
-    assert sent['headers']['Authorization'] == 'Bearer ' + API_KEY
-    assert sent['json']['from'] == FROM_EMAIL
-    assert sent['json']['to'] == [EMAIL]
-    assert sent['timeout'] == (3.05, 10)
-    assert sent['allow_redirects'] is False
+    assert sent['host'] == 'smtp.resend.com'
+    assert sent['username'] == 'resend'
+    assert sent['password'] == API_KEY
+    assert str(sent['message']['From']) == FROM_EMAIL
+    assert str(sent['message']['To']) == EMAIL
+    assert sent['timeout'] == 10
+    assert sent['implicit_tls'] is True
     with world.m.app.app_context():
         stored = world.m.db.session.get(world.m.EmailChallenge, challenge['challenge_id'])
         assert stored.code_hash != code
@@ -682,14 +727,10 @@ def test_starting_second_factor_login_clears_prior_authenticated_identity(world)
     assert c.get(SETTINGS).status_code in (401, 403)
 
 
-@pytest.mark.parametrize('status', [302, 400, 401, 429, 500])
-def test_non_success_provider_responses_fail_closed(world, monkeypatch, status, caplog):
+@pytest.mark.parametrize('status', [421, 450, 451, 550, 554])
+def test_non_success_provider_responses_fail_closed(world, status, caplog):
     configure(world)
-
-    def rejected(*args, **kwargs):
-        return SimpleNamespace(status_code=status, text=API_KEY)
-
-    monkeypatch.setattr(requests, 'post', rejected)
+    world.delivery.refused = {EMAIL: (status, API_KEY.encode())}
     c = world.client('cashier')
     response = start(world, c)
     assert response.status_code == 503
@@ -698,13 +739,10 @@ def test_non_success_provider_responses_fail_closed(world, monkeypatch, status, 
     assert payload(c.get(SECURITY))['two_factor_enabled'] is False
 
 
-def test_provider_exception_does_not_disclose_credentials(world, monkeypatch, caplog):
+def test_provider_exception_does_not_disclose_credentials(world, caplog):
     configure(world)
-
-    def rejected(*args, **kwargs):
-        raise requests.Timeout('Authorization: Bearer ' + API_KEY)
-
-    monkeypatch.setattr(requests, 'post', rejected)
+    world.delivery.failure_stage = 'login'
+    world.delivery.exception = smtplib.SMTPAuthenticationError(535, API_KEY.encode())
     response = start(world, world.client('cashier'))
     assert response.status_code == 503
     assert API_KEY not in response.get_data(as_text=True)
@@ -721,8 +759,8 @@ def test_invalid_sender_cannot_overwrite_working_configuration(world, sender):
     assert response.status_code == 400
     assert payload(c.get(SETTINGS))['configured'] is True
     payload(start(world, world.client('cashier')))
-    assert world.deliveries[-1]['headers']['Authorization'] == 'Bearer ' + API_KEY
-    assert world.deliveries[-1]['json']['from'] == FROM_EMAIL
+    assert world.deliveries[-1]['password'] == API_KEY
+    assert str(world.deliveries[-1]['message']['From']) == FROM_EMAIL
 
 
 def test_existing_user_security_details_only_describe_that_account(world):
@@ -805,8 +843,8 @@ def test_email_settings_require_current_actor_password_without_partial_writes(wo
     assert 'replacement-provider-secret' not in response.get_data(as_text=True)
     payload(start(world, world.client('cashier')))
     sent = world.deliveries[-1]
-    assert sent['headers']['Authorization'] == 'Bearer ' + API_KEY
-    assert sent['json']['from'] == FROM_EMAIL
+    assert sent['password'] == API_KEY
+    assert str(sent['message']['From']) == FROM_EMAIL
     with world.m.app.app_context():
         assert world.m.AuditLog.query.filter_by(entity_type='EmailSettings').count() == 1
 
@@ -876,7 +914,7 @@ def test_settings_and_link_unlink_audits_contain_no_sensitive_values(world):
         records = json.dumps([{'summary': row.summary, 'changes': world.m.decode_audit_changes(row)}
                               for row in [*settings, *changes]])
     secrets = [API_KEY, FROM_EMAIL, EMAIL, PASSWORD, MANAGER_PASSWORD]
-    secrets.extend(re.findall(r'(?<!\d)\d{6}(?!\d)', mail['json']['text'])[0]
+    secrets.extend(re.findall(r'(?<!\d)\d{6}(?!\d)', mail['message'].get_content())[0]
                    for mail in world.deliveries)
     for value in secrets:
         assert value not in records
@@ -961,16 +999,16 @@ def test_otp_cannot_verify_while_provider_delivery_is_still_pending(world, monke
     attempted = []
     codes = []
 
-    def provider_in_flight(_url, **kwargs):
-        code = re.search(r'code is (\d{6})\.', kwargs['json']['text']).group(1)
+    def provider_in_flight(message):
+        code = re.search(r'code is (\d{6})\.', message.get_content()).group(1)
         codes.append(code)
         # A second request arrives before the first provider request returns.
         # Reuse the real browser cookie and OTP, not a verification bypass.
         attempted.append(verify(world, c, challenge['challenge_id'], code).status_code)
         assert payload(c.get(SECURITY))['two_factor_enabled'] is False
-        return SimpleNamespace(status_code=provider_status)
+        return {} if provider_status == 200 else {EMAIL: (550, b'Rejected')}
 
-    monkeypatch.setattr(requests, 'post', provider_in_flight)
+    world.delivery.hook = provider_in_flight
     response = resend(world, c, challenge['challenge_id'])
     assert attempted == [400]
     assert response.status_code == (200 if provider_status == 200 else 503)
@@ -981,3 +1019,344 @@ def test_otp_cannot_verify_while_provider_delivery_is_still_pending(world, monke
     else:
         assert after_delivery.status_code == 400
         assert payload(c.get(SECURITY))['two_factor_enabled'] is False
+
+
+def smtp_payload():
+    return dict(smtp_host='smtp.resend.com', smtp_port=465, smtp_username='resend',
+                smtp_password=API_KEY, from_email=FROM_EMAIL, password=MANAGER_PASSWORD)
+
+
+@pytest.mark.parametrize('port', [465, 2465, 25, 587, 2587])
+def test_all_resend_ports_require_verified_tls_before_authentication(world, port):
+    c = world.client()
+    data = smtp_payload()
+    data.update(smtp_host='SMTP.RESEND.COM', smtp_port=port)
+    result = payload(c.put(SETTINGS, json=data, headers=csrf(c, SETTINGS)))
+    assert result['smtp_host'] == 'smtp.resend.com'
+    assert result['smtp_port'] == port and type(result['smtp_port']) is int
+    assert result['smtp_username'] == 'resend'
+    assert result['smtp_password_configured'] is True
+    assert result['configured'] is True
+    assert 'smtp_password' not in result and API_KEY not in json.dumps(result)
+    payload(start(world, world.client('cashier')))
+    sent = world.deliveries[-1]
+    assert sent['host'] == 'smtp.resend.com'
+    assert sent['port'] == port and sent['timeout'] == 10
+    assert sent['username'] == 'resend' and sent['password'] == API_KEY
+    implicit = port in (465, 2465)
+    assert sent['implicit_tls'] is implicit
+    assert sent['calls'] == (['connect', 'ehlo', 'login', 'send_message', 'quit'] if implicit else
+                             ['connect', 'ehlo', 'starttls', 'ehlo', 'login', 'send_message', 'quit'])
+    context = sent['context'] if implicit else sent['starttls_context']
+    assert isinstance(context, ssl.SSLContext)
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.minimum_version >= ssl.TLSVersion.TLSv1_2
+    assert str(sent['message']['Subject']) == 'Your POS verification code'
+    assert str(sent['message']['To']) == EMAIL
+    assert str(sent['message']['From']) == FROM_EMAIL
+    assert 'expires in 10 minutes' in sent['message'].get_content()
+    with world.m.app.app_context():
+        for key, expected in [('email_smtp_host', 'smtp.resend.com'), ('email_smtp_port', str(port)),
+                              ('email_smtp_username', 'resend')]:
+            assert world.m.get_setting(key) == expected
+
+
+@pytest.mark.parametrize('field,value', [
+    ('smtp_host', 'evil.example.com'), ('smtp_host', 'smtp.resend.com.evil.example'),
+    ('smtp_host', '127.0.0.1'), ('smtp_host', 'smtp.resend.com:465'),
+    ('smtp_host', 'smtp.resend.com\r\nBcc: evil@example.com'),
+    ('smtp_host', ''), ('smtp_host', None), ('smtp_host', []),
+    ('smtp_username', 'attacker'), ('smtp_username', 'RESEND'),
+    ('smtp_username', ''), ('smtp_username', None), ('smtp_username', {}),
+    ('smtp_port', 0), ('smtp_port', 443), ('smtp_port', 65536), ('smtp_port', -1),
+    ('smtp_port', True), ('smtp_port', 465.0), ('smtp_port', '465.0'),
+    ('smtp_port', '465\r\n'), ('smtp_port', None), ('smtp_port', []),
+    ('smtp_password', None), ('smtp_password', []), ('smtp_password', 'x' * 513),
+    ('smtp_password', 'secret\r\nBcc: victim@example.com'), ('smtp_password', 'secret\x00'),
+])
+def test_strict_smtp_settings_validation_has_no_partial_writes(world, field, value):
+    c = configure(world)
+    with world.m.app.app_context():
+        before = {row.key: row.value for row in world.m.AppSetting.query.all()}
+    data = smtp_payload()
+    data.update(smtp_password='replacement-secret', from_email='replacement@example.com', smtp_port=587)
+    data[field] = value
+    response = c.put(SETTINGS, json=data, headers=csrf(c, SETTINGS))
+    assert response.status_code == 400
+    with world.m.app.app_context():
+        assert {row.key: row.value for row in world.m.AppSetting.query.all()} == before
+        assert world.m.AuditLog.query.filter_by(entity_type='EmailSettings').count() == 1
+    payload(start(world, world.client('cashier')))
+    assert world.deliveries[-1]['password'] == API_KEY
+    assert world.deliveries[-1]['port'] == 465
+
+
+def test_smtp_blank_password_preserves_exact_ciphertext_and_legacy_alias_cannot_override(world):
+    c = configure(world)
+    with world.m.app.app_context():
+        encrypted = world.m.AppSetting.query.filter_by(key='resend_api_key').one().value
+    data = smtp_payload()
+    data.update(smtp_password='', api_key='ignored-legacy-password', smtp_port=587)
+    payload(c.put(SETTINGS, json=data, headers=csrf(c, SETTINGS)))
+    with world.m.app.app_context():
+        assert world.m.AppSetting.query.filter_by(key='resend_api_key').one().value == encrypted
+    payload(start(world, world.client('cashier')))
+    assert world.deliveries[-1]['password'] == API_KEY
+
+
+def test_legacy_settings_client_and_saved_key_work_with_smtp_defaults_without_migration(world):
+    with world.m.app.app_context():
+        world.m.set_setting('resend_api_key', API_KEY)
+        world.m.set_setting('email_from', FROM_EMAIL)
+    c = world.client()
+    status = payload(c.get(SETTINGS))
+    assert status['configured'] is True
+    assert (status['smtp_host'], status['smtp_port'], status['smtp_username']) == ('smtp.resend.com', 465, 'resend')
+    with world.m.app.app_context():
+        assert not world.m.AppSetting.query.filter(world.m.AppSetting.key.like('email_smtp_%')).all()
+    # Old clients can still change the API key and omit all new SMTP fields.
+    payload(c.put(SETTINGS, json={'api_key': 'legacy-replacement', 'from_email': FROM_EMAIL,
+                                 'password': MANAGER_PASSWORD}, headers=csrf(c, SETTINGS)))
+    payload(start(world, world.client('cashier')))
+    assert world.deliveries[-1]['password'] == 'legacy-replacement'
+    world.advance(61)
+    # Omitted fields preserve a non-default, current port as well.
+    data = smtp_payload()
+    data['smtp_port'] = 2587
+    payload(c.put(SETTINGS, json=data, headers=csrf(c, SETTINGS)))
+    result = payload(c.put(SETTINGS, json={'from_email': FROM_EMAIL, 'password': MANAGER_PASSWORD},
+                           headers=csrf(c, SETTINGS)))
+    assert result['smtp_port'] == 2587
+    payload(start(world, world.client('cashier')))
+    assert world.deliveries[-1]['port'] == 2587
+
+
+@pytest.mark.parametrize('port', [None, '465', '2465', '25', '587', '2587'])
+def test_environment_smtp_configuration_and_default_values(world, monkeypatch, port):
+    monkeypatch.setenv('RESEND_API_KEY', API_KEY)
+    monkeypatch.setenv('RESEND_FROM_EMAIL', FROM_EMAIL)
+    if port:
+        monkeypatch.setenv('RESEND_SMTP_HOST', 'SMTP.RESEND.COM')
+        monkeypatch.setenv('RESEND_SMTP_USERNAME', 'resend')
+        monkeypatch.setenv('RESEND_SMTP_PORT', port)
+    status = payload(world.client().get(SETTINGS))
+    assert status['configured'] is True
+    assert status['smtp_port'] == int(port or 465)
+    payload(start(world, world.client('cashier')))
+    assert world.deliveries[-1]['port'] == int(port or 465)
+    assert world.deliveries[-1]['password'] == API_KEY
+
+
+@pytest.mark.parametrize('source', ['env', 'saved'])
+@pytest.mark.parametrize('field,value', [('host', 'evil.example.com'), ('host', ''),
+                                         ('port', '443'), ('port', 'invalid'), ('port', ''),
+                                         ('username', 'attacker'), ('username', '')])
+def test_invalid_saved_or_environment_smtp_config_fails_closed_without_network(world, monkeypatch, source, field, value):
+    monkeypatch.setenv('RESEND_API_KEY', API_KEY)
+    monkeypatch.setenv('RESEND_FROM_EMAIL', FROM_EMAIL)
+    if source == 'env':
+        monkeypatch.setenv('RESEND_SMTP_' + field.upper(), value)
+    else:
+        with world.m.app.app_context():
+            world.m.set_setting('email_smtp_' + field, value)
+    assert payload(world.client().get(SETTINGS))['configured'] is False
+    c = world.client('cashier')
+    assert payload(c.get(SECURITY))['configured'] is False
+    assert start(world, c).status_code == 503
+    assert not world.connections and not world.deliveries
+
+
+def test_saved_smtp_settings_override_environment(world, monkeypatch):
+    configure(world)
+    monkeypatch.setenv('RESEND_SMTP_HOST', 'evil.example.com')
+    monkeypatch.setenv('RESEND_SMTP_USERNAME', 'evil')
+    monkeypatch.setenv('RESEND_SMTP_PORT', '443')
+    monkeypatch.setenv('RESEND_API_KEY', 'wrong-environment-secret')
+    monkeypatch.setenv('RESEND_FROM_EMAIL', 'wrong@example.com')
+    payload(start(world, world.client('cashier')))
+    sent = world.deliveries[-1]
+    assert sent['host'] == 'smtp.resend.com' and sent['port'] == 465
+    assert sent['password'] == API_KEY and str(sent['message']['From']) == FROM_EMAIL
+
+
+@pytest.mark.parametrize('port,stage,error', [
+    (465, 'connect', ssl.SSLCertVerificationError('certificate ' + API_KEY)),
+    (465, 'connect', TimeoutError('timeout ' + API_KEY)),
+    (465, 'ehlo', smtplib.SMTPHeloError(500, API_KEY.encode())),
+    (587, 'starttls', smtplib.SMTPNotSupportedError('no TLS ' + API_KEY)),
+    (587, 'starttls', ssl.SSLCertVerificationError('certificate ' + API_KEY)),
+    (587, 'starttls', TimeoutError('timeout ' + API_KEY)),
+    (587, 'login', smtplib.SMTPAuthenticationError(535, API_KEY.encode())),
+    (465, 'send_message', smtplib.SMTPRecipientsRefused({EMAIL: (550, API_KEY.encode())})),
+    (587, 'send_message', smtplib.SMTPDataError(554, API_KEY.encode())),
+    (465, 'quit', smtplib.SMTPServerDisconnected(API_KEY)),
+])
+def test_smtp_transport_tls_timeout_auth_and_refusal_fail_closed_redacted(world, port, stage, error, caplog):
+    c = configure(world)
+    data = smtp_payload()
+    data['smtp_port'] = port
+    payload(c.put(SETTINGS, json=data, headers=csrf(c, SETTINGS)))
+    world.delivery.failure_stage = stage
+    world.delivery.exception = error
+    target = world.client('cashier')
+    response = start(world, target)
+    assert payload(response, 503) == {'success': False, 'message': 'Unable to send verification email. Please try again later.'}
+    assert API_KEY not in response.get_data(as_text=True) and API_KEY not in caplog.text
+    assert payload(target.get(SECURITY))['two_factor_enabled'] is False
+    if stage in ('connect', 'ehlo', 'starttls'):
+        assert 'login' not in world.connections[-1]['calls']
+        assert not world.deliveries
+    with world.m.app.app_context():
+        challenge = world.m.EmailChallenge.query.one()
+        assert challenge.consumed is True and challenge.delivered is False
+    # Transport failures still reserve cooldown/rate budget.
+    assert start(world, target).status_code == 429
+
+
+def test_every_smtp_operation_runs_outside_sqlite_write_lock(world):
+    configure(world)
+    observed = []
+
+    def inspect(stage):
+        with world.m.app.app_context():
+            with world.m.db.engine.connect() as connection:
+                connection.exec_driver_sql('PRAGMA busy_timeout=50')
+                connection.exec_driver_sql('BEGIN IMMEDIATE')
+                connection.rollback()
+        observed.append(stage)
+
+    world.delivery.observe = inspect
+    payload(start(world, world.client('cashier')))
+    assert observed == ['connect', 'ehlo', 'login', 'send_message', 'quit']
+
+
+def test_smtp_settings_transaction_rolls_back_all_fields_if_set_setting_fails(world, monkeypatch):
+    c = configure(world)
+    with world.m.app.app_context():
+        before = {row.key: row.value for row in world.m.AppSetting.query.all()}
+    original = world.m.set_setting
+    calls = []
+
+    def failing(key, value, **kwargs):
+        assert kwargs.get('connection') is not None
+        calls.append(key)
+        if key == 'email_smtp_username':
+            raise RuntimeError('simulated settings write failure')
+        return original(key, value, **kwargs)
+
+    # register_email_auth captures the pos callback mapping at registration.
+    view = world.app.view_functions['api_settings_email']
+    while hasattr(view, '__wrapped__'):
+        view = view.__wrapped__
+    import inspect
+    pos = inspect.getclosurevars(view).nonlocals['pos']
+    monkeypatch.setitem(pos, 'set_setting', failing)
+    data = smtp_payload()
+    data.update(smtp_port=587, smtp_password='replacement-secret', from_email='replacement@example.com')
+    with pytest.raises(RuntimeError, match='simulated settings write failure'):
+        c.put(SETTINGS, json=data, headers=csrf(c, SETTINGS))
+    assert calls == ['resend_api_key', 'email_smtp_host', 'email_smtp_port', 'email_smtp_username']
+    with world.m.app.app_context():
+        assert {row.key: row.value for row in world.m.AppSetting.query.all()} == before
+        assert world.m.AuditLog.query.filter_by(entity_type='EmailSettings').count() == 1
+
+
+class _OwnEmailButtonParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.divs = []
+        self.buttons = []
+        self.sidebar_text = []
+        self.modal_user = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == 'div':
+            self.divs.append(attrs)
+        if attrs.get('id') == 'users-own-email-btn':
+            self.buttons.append((tag, attrs, list(self.divs)))
+        if attrs.get('id') == 'emailSecurityModal':
+            self.modal_user = attrs.get('data-current-user')
+
+    def handle_endtag(self, tag):
+        if tag == 'div' and self.divs:
+            self.divs.pop()
+
+    def handle_data(self, data):
+        if any(div.get('id') == 'sidebar' for div in self.divs):
+            self.sidebar_text.append(data)
+
+
+@pytest.mark.parametrize('role', ['manager', 'boss'])
+@pytest.mark.parametrize('branch_index', [0, 1], ids=['home-branch', 'other-active-branch'])
+def test_users_own_email_access_does_not_depend_on_roster_and_requires_password_and_otp(world, role, branch_index):
+    configure(world)
+    # Change only the disposable fixture account; the client helper predates
+    # boss fixtures, so give its signed session the matching persisted role.
+    with world.m.app.app_context():
+        world.m.db.session.get(world.m.User, world.users['manager']).role = role
+        world.m.db.session.commit()
+    c = world.client('manager', branch=world.branches[branch_index])
+    with c.session_transaction() as session:
+        session['role'] = role
+
+    roster = c.get('/api/users')
+    if role == 'boss':
+        # Self-service must not broaden the legacy manager-only roster policy.
+        assert roster.status_code == 403
+    else:
+        assert roster.status_code == 200
+        assert any(user['id'] == world.users['manager'] for user in roster.get_json()) is (branch_index == 0)
+
+    response = c.get('/')
+    assert response.status_code == 200
+    dashboard = _OwnEmailButtonParser()
+    dashboard.feed(response.get_data(as_text=True))
+    assert len(dashboard.buttons) == 1
+    tag, button, ancestors = dashboard.buttons[0]
+    assert tag == 'button' and button['onclick'] == 'EmailSecurity.open()'
+    users_section = next(div for div in ancestors if div.get('id') == 'users-section')
+    assert users_section['data-capability'] == 'admin'
+    assert any('section-header' in div.get('class', '').split() for div in ancestors)
+    assert not any(div.get('id') == 'sidebar' for div in ancestors)
+    assert 'my login security' not in ' '.join(dashboard.sidebar_text).lower()
+    assert dashboard.modal_user == str(world.users['manager'])
+
+    # Exactly the own-user path used by EmailSecurity.open(): no detail/roster
+    # GET is needed to obtain the target identity or the CSRF token.
+    status = payload(c.get(SECURITY))
+    assert status['id'] == world.users['manager']
+    assert status['username'] == 'manager'
+    assert status['configured'] is True and status['two_factor_enabled'] is False
+    own_url = f'/api/users/{status["id"]}/email'
+    for action in ('link', 'unlink'):
+        before = action == 'unlink'
+        deliveries = len(world.deliveries)
+        for invalid_password in (None, '', 'wrong', PASSWORD):
+            rejected = c.post(own_url + '/start',
+                              json={'action': action, 'email': EMAIL, 'password': invalid_password},
+                              headers=csrf(c))
+            assert rejected.status_code == 403
+            assert payload(c.get(SECURITY))['two_factor_enabled'] is before
+            assert len(world.deliveries) == deliveries
+        challenge = payload(c.post(own_url + '/start',
+                                   json={'action': action, 'email': EMAIL, 'password': MANAGER_PASSWORD},
+                                   headers=csrf(c)))
+        assert len(world.deliveries) == deliveries + 1
+        assert payload(c.get(SECURITY))['two_factor_enabled'] is before
+        code = mail_code(world)
+        wrong_code = '000000' if code != '000000' else '111111'
+        rejected = c.post(own_url + '/verify', json={'challenge_id': challenge['challenge_id'], 'code': wrong_code},
+                          headers=csrf(c))
+        assert rejected.status_code == 400
+        assert payload(c.get(SECURITY))['two_factor_enabled'] is before
+        payload(c.post(own_url + '/verify', json={'challenge_id': challenge['challenge_id'], 'code': code},
+                       headers=csrf(c)))
+        after = payload(c.get(SECURITY))
+        assert after['two_factor_enabled'] is not before
+        assert after['email'] == (EMAIL if action == 'link' else None)
+        with c.session_transaction() as session:
+            assert session['branch_id'] == world.branches[branch_index]
+            assert session['role'] == role
+        world.advance(61)

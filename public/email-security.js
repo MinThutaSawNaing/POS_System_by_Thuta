@@ -9,6 +9,14 @@
   let settingsBusy = false;
   let settingsDirty = false;
   let settingsToken = "";
+  const smtpFields = ["email-smtp-host", "email-smtp-port", "email-smtp-username", "email-smtp-password", "email-from", "email-settings-password"];
+
+  function updateSmtpSecurity() {
+    const port = Number(el("email-smtp-port").value);
+    el("email-smtp-security").textContent = [465, 2465].includes(port)
+      ? "SSL/TLS encrypts the connection from the start. Certificate verification is required."
+      : "STARTTLS is required before authentication. Sending without encryption is not allowed.";
+  }
 
   function message(id, text, error = false) {
     const box = el(id);
@@ -194,15 +202,17 @@
       const result = await api("/api/settings/email");
       settingsToken = result.csrf_token;
       el("email-from").value = result.from_email || "";
-      el("email-api-key").value = "";
+      el("email-smtp-host").value = result.smtp_host || "smtp.resend.com";
+      el("email-smtp-port").value = String(result.smtp_port || 465);
+      el("email-smtp-username").value = result.smtp_username || "resend";
+      el("email-smtp-password").value = "";
       el("email-settings-password").value = "";
-      el("email-api-key").placeholder = result.api_key_configured ? "Key configured — leave blank to keep" : "re_…";
-      message("email-settings-status", result.configured ? "Email settings are configured for every branch. Verify delivery by linking an email on a test account." : "Not configured. Add your Resend key and verified sender to allow users to opt in.");
+      el("email-smtp-password").placeholder = result.smtp_password_configured ? "Password configured — leave blank to keep" : "YOUR_API_KEY";
+      updateSmtpSecurity();
+      message("email-settings-status", result.configured ? "Email settings are configured for every branch using Resend SMTP. Verify delivery by linking an email on a test account in Users." : "Not configured. Check the SMTP details, add your Resend API key as the SMTP password, and enter a verified sender.");
       settingsLoaded = true;
       settingsDirty = false;
-      el("email-from").disabled = false;
-      el("email-api-key").disabled = false;
-      el("email-settings-password").disabled = false;
+      for (const id of smtpFields) el(id).disabled = false;
     } catch (error) { message("email-settings-status", error.message, true); }
     finally { settingsBusy = false; el("save-email-settings-btn").disabled = !settingsLoaded; }
   }
@@ -213,26 +223,31 @@
     settingsBusy = true;
     el("save-email-settings-btn").disabled = true;
     el("save-email-settings-btn").textContent = "Saving…";
-    const payload = {from_email: el("email-from").value.trim(), api_key: el("email-api-key").value.trim(), password: el("email-settings-password").value};
+    const payload = {
+      smtp_host: el("email-smtp-host").value.trim(),
+      smtp_port: Number(el("email-smtp-port").value),
+      smtp_username: el("email-smtp-username").value.trim(),
+      smtp_password: el("email-smtp-password").value.trim(),
+      from_email: el("email-from").value.trim(),
+      password: el("email-settings-password").value,
+    };
     // Prevent edits during a save from being silently discarded by its response.
-    el("email-from").disabled = true;
-    el("email-api-key").disabled = true;
-    el("email-settings-password").disabled = true;
+    for (const id of smtpFields) el(id).disabled = true;
     try {
       const result = await api("/api/settings/email", payload, settingsToken);
       settingsToken = result.csrf_token || settingsToken;
-      el("email-api-key").value = "";
+      el("email-smtp-password").value = "";
       el("email-settings-password").value = "";
+      el("email-smtp-password").placeholder = result.smtp_password_configured ? "Password configured — leave blank to keep" : "YOUR_API_KEY";
       settingsDirty = false;
-      message("email-settings-status", result.message || "Email settings saved for every branch.");
+      const savedMessage = result.message || "Email settings saved for every branch.";
+      message("email-settings-status", result.configured ? savedMessage : `${savedMessage} Delivery is not configured. Check the SMTP details, password and verified sender.`, !result.configured);
     } catch (error) { message("email-settings-status", error.message, true); }
     finally {
       settingsBusy = false;
       el("save-email-settings-btn").disabled = false;
       el("save-email-settings-btn").textContent = "Save email settings";
-      el("email-from").disabled = false;
-      el("email-api-key").disabled = false;
-      el("email-settings-password").disabled = false;
+      for (const id of smtpFields) el(id).disabled = false;
     }
   }
 
@@ -242,6 +257,7 @@
   el("emailSecurityModal").addEventListener("hidden.bs.modal", reset);
   el("email-settings-form").addEventListener("submit", saveSettings);
   el("email-settings-form").addEventListener("input", () => { settingsDirty = true; });
-  root.addEventListener("pagehide", () => { reset(); el("email-api-key").value = ""; el("email-settings-password").value = ""; });
+  el("email-smtp-port").addEventListener("change", () => { settingsDirty = true; updateSmtpSecurity(); });
+  root.addEventListener("pagehide", () => { reset(); el("email-smtp-password").value = ""; el("email-settings-password").value = ""; });
   root.EmailSecurity = {open, loadSettings, reset};
 })(window);

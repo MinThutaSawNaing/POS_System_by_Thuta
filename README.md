@@ -6,7 +6,7 @@ Parrot POS helps teams run day-to-day store workflows from one dashboard: produc
 
 ## Optional email two-step login
 
-Configure Resend in **Settings → Email**, then use **User Management → Add email** to opt individual users in. Users can also manage their own email through **My login security**. Password-only login stays unchanged until an email is verified; unlinking requires the account password and an inbox code.
+Configure Resend SMTP in **Settings → Email** (host, port, user, SMTP password/API key, and sender), then use **Users → Add email** to opt individual users in. Email linking and unlinking are managed in Users only. Password-only login stays unchanged until an email is verified; unlinking requires the account password and an inbox code.
 
 See [setup, security controls, and recovery notes](docs/email-two-factor.md) before enabling this on production accounts.
 

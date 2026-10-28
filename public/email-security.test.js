@@ -18,12 +18,18 @@ function tagFor(html, id) {
 
 function element(id) {
   const tag = tagFor(dashboard, id);
+  const select = dashboard.match(new RegExp(`<select\\b[^>]*\\bid="${id}"[^>]*>([\\s\\S]*?)<\\/select>`));
+  const options = select ? [...select[1].matchAll(/<option\b([^>]*)>/g)] : [];
+  const selected = options.find(option => /\bselected\b/.test(option[1])) || options[0];
   const listeners = new Map();
   return {
-    id, value: '', textContent: '', className: '', style: {}, dataset: {},
+    id, value: (selected ? selected[1] : tag).match(/\bvalue="([^"]*)"/)?.[1] || '',
+    placeholder: tag.match(/\bplaceholder="([^"]*)"/)?.[1] || '',
+    textContent: '', className: '', style: {}, dataset: {},
     hidden: /\shidden(?:\s|>)/.test(tag),
     disabled: /\sdisabled(?:\s|\/?>)/.test(tag),
     required: /\srequired(?:\s|\/?>)/.test(tag),
+    readOnly: /\sreadonly(?:\s|\/?>)/.test(tag),
     valid: true, validityChecks: 0, focused: false,
     // Fail loudly if untrusted provider/user messages ever become HTML.
     set innerHTML(_) { throw new Error(`Unsafe HTML assignment to #${id}`); },
@@ -57,7 +63,9 @@ function harness() {
     'email-security-address-group', 'email-security-address', 'email-security-password',
     'email-security-code', 'email-security-start-form', 'email-security-verify-form',
     'email-security-send', 'email-security-confirm', 'email-security-resend',
-    'email-settings-form', 'email-settings-status', 'email-from', 'email-api-key', 'email-settings-password',
+    'email-settings-form', 'email-settings-status', 'email-from',
+    'email-smtp-host', 'email-smtp-port', 'email-smtp-username', 'email-smtp-password',
+    'email-smtp-security', 'email-settings-password',
     'save-email-settings-btn', 'users-section'];
   const nodes = Object.fromEntries(ids.map(id => [id, element(id)]));
   nodes.emailSecurityModal.dataset.currentUser = '7';
@@ -237,7 +245,7 @@ test('closing the dialog or leaving the page clears secrets and cancels the rese
     await h.start();
     h.node('email-security-password').value = 'another secret';
     h.node('email-security-code').value = '123456';
-    h.node('email-api-key').value = 're_draft_secret';
+    h.node('email-smtp-password').value = 're_draft_secret';
     await leave(h);
     for (const id of ['email-security-address', 'email-security-password', 'email-security-code']) {
       assert.equal(h.node(id).value, '', `${id} is cleared`);
@@ -250,10 +258,10 @@ test('closing the dialog or leaving the page clears secrets and cancels the rese
     assert.equal(h.requests.length, 2, 'closed challenges cannot be reused');
   }
   const h = harness();
-  h.node('email-api-key').value = 're_draft_secret';
+  h.node('email-smtp-password').value = 're_draft_secret';
   h.node('email-settings-password').value = 'manager secret';
   h.pagehide();
-  assert.equal(h.node('email-api-key').value, '');
+  assert.equal(h.node('email-smtp-password').value, '');
   assert.equal(h.node('email-settings-password').value, '');
 });
 
@@ -408,35 +416,46 @@ test('provider send errors and non-JSON responses show readable text and restore
 });
 
 const savedSettings = {success: true, csrf_token: 'settings-csrf', configured: true,
-  api_key_configured: true, from_email: 'security@example.com'};
+  smtp_host: 'smtp.resend.com', smtp_port: 465, smtp_username: 'resend',
+  smtp_password_configured: true, from_email: 'security@example.com'};
 
-test('email settings load lazily once, deduplicate pending loads, and never populate the saved key', async () => {
+const settingsControls = ['email-smtp-host', 'email-smtp-port', 'email-smtp-username',
+  'email-smtp-password', 'email-from', 'email-settings-password', 'save-email-settings-btn'];
+
+function assertSettingsDisabled(h, disabled) {
+  for (const id of settingsControls) {
+    assert.equal(h.node(id).disabled, disabled, `${id} is ${disabled ? 'disabled' : 'enabled'}`);
+  }
+  assert.equal(h.node('email-smtp-host').readOnly, true);
+  assert.equal(h.node('email-smtp-username').readOnly, true);
+}
+
+test('email settings load lazily once, deduplicate pending loads, and never populate the saved SMTP password', async () => {
   const h = harness(), pendingReply = deferred();
   assert.equal(h.requests.length, 0);
-  assert.equal(h.node('email-from').disabled, true);
-  assert.equal(h.node('email-api-key').disabled, true);
-  assert.equal(h.node('email-settings-password').disabled, true);
+  assertSettingsDisabled(h, true);
   h.node('email-settings-password').value = 'stale manager password';
   assert.equal(h.node('save-email-settings-btn').disabled, true);
   h.replies.push(() => pendingReply.promise);
   const loading = h.ui.loadSettings();
+  assertSettingsDisabled(h, true);
   await h.ui.loadSettings();
   await h.ui.loadSettings(true);
   assert.equal(h.requests.length, 1);
   assert.equal(h.requests[0].url, '/api/settings/email');
   assert.equal(h.requests[0].options.body, undefined);
   assert.equal(h.requests[0].options.cache, 'no-store');
-  pendingReply.resolve(response({...savedSettings, api_key: 'must-not-be-displayed'}));
+  pendingReply.resolve(response({...savedSettings, smtp_password: 'must-not-be-displayed'}));
   await loading;
+  assert.equal(h.node('email-smtp-host').value, 'smtp.resend.com');
+  assert.equal(String(h.node('email-smtp-port').value), '465');
+  assert.equal(h.node('email-smtp-username').value, 'resend');
   assert.equal(h.node('email-from').value, 'security@example.com');
-  assert.equal(h.node('email-api-key').value, '');
+  assert.equal(h.node('email-smtp-password').value, '');
   assert.equal(h.node('email-settings-password').value, '');
   assert.match(h.node('email-settings-status').textContent, /configured for every branch/);
-  assert.match(h.node('email-api-key').placeholder, /leave blank to keep/);
-  assert.equal(h.node('email-from').disabled, false);
-  assert.equal(h.node('email-api-key').disabled, false);
-  assert.equal(h.node('email-settings-password').disabled, false);
-  assert.equal(h.node('save-email-settings-btn').disabled, false);
+  assert.equal(h.node('email-smtp-password').placeholder, 'Password configured — leave blank to keep');
+  assertSettingsDisabled(h, false);
   await h.ui.loadSettings();
   assert.equal(h.requests.length, 1, 'revisiting settings does not reload');
 });
@@ -446,7 +465,8 @@ test('settings navigation preserves drafts and an explicit reload requires disca
   h.reply(savedSettings);
   await h.ui.loadSettings();
   h.node('email-from').value = 'draft@example.com';
-  h.node('email-api-key').value = 're_draft';
+  h.node('email-smtp-port').value = '2587';
+  h.node('email-smtp-password').value = 're_draft';
   h.node('email-settings-password').value = 'draft password';
   await h.emit('email-settings-form', 'input');
   await h.ui.loadSettings();
@@ -455,24 +475,27 @@ test('settings navigation preserves drafts and an explicit reload requires disca
   assert.equal(h.confirmations.length, 1);
   assert.match(h.confirmations[0], /Discard unsaved email settings/);
   assert.equal(h.node('email-from').value, 'draft@example.com');
-  assert.equal(h.node('email-api-key').value, 're_draft');
+  assert.equal(h.node('email-smtp-port').value, '2587');
+  assert.equal(h.node('email-smtp-password').value, 're_draft');
   assert.equal(h.node('email-settings-password').value, 'draft password');
   h.allowDiscard = true;
   h.reply({...savedSettings, from_email: 'new-saved@example.com'});
   await h.ui.loadSettings(true);
   assert.equal(h.requests.length, 2);
   assert.equal(h.node('email-from').value, 'new-saved@example.com');
-  assert.equal(h.node('email-api-key').value, '');
+  assert.equal(String(h.node('email-smtp-port').value), '465');
+  assert.equal(h.node('email-smtp-password').value, '');
   assert.equal(h.node('email-settings-password').value, '');
 });
 
-test('saving settings sends blank key to preserve credentials, validates first, and rotates CSRF', async () => {
+test('saving settings sends blank SMTP password to preserve credentials, validates first, and rotates CSRF', async () => {
   const h = harness();
   await h.emit('email-settings-form');
   assert.equal(h.requests.length, 0, 'cannot save before settings load');
   h.reply(savedSettings);
   await h.ui.loadSettings();
   h.node('email-from').value = ' changed@example.com ';
+  h.node('email-smtp-port').value = '587';
   h.node('email-settings-form').valid = false;
   await h.emit('email-settings-form');
   assert.equal(h.requests.length, 1);
@@ -485,27 +508,24 @@ test('saving settings sends blank key to preserve credentials, validates first, 
   await h.ui.loadSettings(true);
   assert.equal(h.requests.length, 2, 'saving deduplicates submits and settings loads');
   assertJsonRequest(h.requests[1], '/api/settings/email',
-    {from_email: 'changed@example.com', api_key: '', password: ' manager password with spaces '}, 'settings-csrf');
-  assert.equal(h.node('email-from').disabled, true);
-  assert.equal(h.node('email-api-key').disabled, true);
-  assert.equal(h.node('email-settings-password').disabled, true);
-  assert.equal(h.node('save-email-settings-btn').disabled, true);
-  pendingReply.resolve(response({success: true, csrf_token: 'new-settings-csrf'}));
+    {smtp_host: 'smtp.resend.com', smtp_port: 587, smtp_username: 'resend',
+      smtp_password: '', from_email: 'changed@example.com', password: ' manager password with spaces '}, 'settings-csrf');
+  assertSettingsDisabled(h, true);
+  pendingReply.resolve(response({...savedSettings, csrf_token: 'new-settings-csrf'}));
   await saving;
-  assert.equal(h.node('email-from').disabled, false);
-  assert.equal(h.node('email-api-key').disabled, false);
-  assert.equal(h.node('email-settings-password').disabled, false);
+  assertSettingsDisabled(h, false);
   assert.equal(h.node('email-settings-password').value, '', 'successful save clears the actor password');
   assert.equal(h.node('save-email-settings-btn').disabled, false);
   assert.match(h.node('email-settings-status').textContent, /saved for every branch/);
-  h.node('email-api-key').value = ' re_new_secret ';
+  h.node('email-smtp-password').value = ' re_new_secret ';
   h.node('email-settings-password').value = 'fresh manager password';
   await h.emit('email-settings-form', 'input');
-  h.reply({success: true});
+  h.reply({...savedSettings, csrf_token: 'new-settings-csrf'});
   await h.emit('email-settings-form');
   assertJsonRequest(h.requests[2], '/api/settings/email',
-    {from_email: 'changed@example.com', api_key: 're_new_secret', password: 'fresh manager password'}, 'new-settings-csrf');
-  assert.equal(h.node('email-api-key').value, '', 'successful save clears the typed key');
+    {smtp_host: 'smtp.resend.com', smtp_port: 587, smtp_username: 'resend',
+      smtp_password: 're_new_secret', from_email: 'changed@example.com', password: 'fresh manager password'}, 'new-settings-csrf');
+  assert.equal(h.node('email-smtp-password').value, '', 'successful save clears the typed SMTP password');
   assert.equal(h.node('email-settings-password').value, '');
   await h.ui.loadSettings();
   assert.equal(h.requests.length, 3);
@@ -517,13 +537,13 @@ test('settings failures display text only, retain unsaved drafts and allow retry
   h.reply({success: false, message: malicious}, 503);
   await h.ui.loadSettings();
   assert.equal(h.node('email-settings-status').textContent, malicious);
-  assert.equal(h.node('save-email-settings-btn').disabled, true);
-  h.reply({...savedSettings, configured: false, api_key_configured: false, from_email: ''});
+  assertSettingsDisabled(h, true);
+  h.reply({...savedSettings, configured: false, smtp_password_configured: false, from_email: ''});
   await h.ui.loadSettings();
-  assert.equal(h.node('email-api-key').placeholder, 're_…');
+  assert.equal(h.node('email-smtp-password').placeholder, 'YOUR_API_KEY');
   assert.match(h.node('email-settings-status').textContent, /Not configured/);
   h.node('email-from').value = 'draft@example.com';
-  h.node('email-api-key').value = 're_new_secret';
+  h.node('email-smtp-password').value = 're_new_secret';
   h.node('email-settings-password').value = 'manager password';
   await h.emit('email-settings-form', 'input');
   h.reply({success: false, message: malicious}, 400);
@@ -531,17 +551,96 @@ test('settings failures display text only, retain unsaved drafts and allow retry
   assert.equal(h.node('email-settings-status').textContent, malicious);
   assert.match(h.node('email-settings-status').className, /alert-danger/);
   assert.equal(h.node('email-from').value, 'draft@example.com');
-  assert.equal(h.node('email-api-key').value, 're_new_secret');
-  assert.equal(h.node('email-from').disabled, false);
-  assert.equal(h.node('email-api-key').disabled, false);
-  assert.equal(h.node('email-settings-password').disabled, false);
-  assert.equal(h.node('save-email-settings-btn').disabled, false);
+  assert.equal(h.node('email-smtp-password').value, 're_new_secret');
+  assertSettingsDisabled(h, false);
   await h.ui.loadSettings();
   assert.equal(h.requests.length, 3, 'failed save must not auto-reload and erase the draft');
 });
 
-test('dashboard templates wire own/target actions, lazy settings and browser input validation', () => {
-  assert.match(dashboard, /onclick="EmailSecurity\.open\(\)"/);
+test('saving an incomplete SMTP setup never claims that a missing password is configured', async () => {
+  const h = harness();
+  h.reply({...savedSettings, configured: false, smtp_password_configured: false});
+  await h.ui.loadSettings();
+  h.node('email-settings-password').value = 'manager password';
+  h.reply({...savedSettings, configured: false, smtp_password_configured: false, message: 'Email settings saved.'});
+  await h.emit('email-settings-form');
+  assert.equal(h.node('email-smtp-password').value, '');
+  assert.equal(h.node('email-settings-password').value, '');
+  assert.equal(h.node('email-smtp-password').placeholder, 'YOUR_API_KEY');
+  assert.match(h.node('email-settings-status').textContent, /Delivery is not configured/);
+  assert.match(h.node('email-settings-status').className, /alert-danger/);
+  assertSettingsDisabled(h, false);
+});
+
+test('SMTP security follows the loaded port and every allowed port change without a request', async () => {
+  const h = harness();
+  assert.equal(String(h.node('email-smtp-port').value), '465');
+  h.reply({...savedSettings, smtp_port: 2587});
+  await h.ui.loadSettings();
+  assert.equal(String(h.node('email-smtp-port').value), '2587');
+  assert.match(h.node('email-smtp-security').textContent, /STARTTLS/);
+  for (const [port, security] of [['465', 'SSL/TLS'], ['25', 'STARTTLS'],
+    ['2465', 'SSL/TLS'], ['587', 'STARTTLS'], ['2587', 'STARTTLS']]) {
+    h.node('email-smtp-port').value = port;
+    await h.emit('email-smtp-port', 'change');
+    assert.ok(h.node('email-smtp-security').textContent.includes(security), `${port} explains ${security}`);
+    assert.ok(!h.node('email-smtp-security').textContent.includes(security === 'STARTTLS' ? 'SSL/TLS' : 'STARTTLS'),
+      `${port} does not describe the other connection mode`);
+    assert.equal(h.requests.length, 1, 'security text changes locally, without saving or reloading');
+  }
+  await h.ui.loadSettings(true);
+  assert.equal(h.confirmations.length, 1, 'changing only a port counts as an unsaved draft');
+  assert.equal(h.requests.length, 1, 'declining reload preserves the changed port');
+  assert.equal(h.node('email-smtp-port').value, '2587');
+});
+
+test('SMTP fields expose only the fixed provider, allowed ports and a blank bounded secret', () => {
+  for (const [id, value] of [['email-smtp-host', 'smtp.resend.com'], ['email-smtp-username', 'resend']]) {
+    const tag = tagFor(dashboard, id);
+    assert.match(tag, /^<input\b/);
+    assert.match(tag, /type="text"/);
+    assert.ok(tag.includes(`value="${value}"`));
+    assert.match(tag, /\sreadonly(?:\s|\/?>)/);
+    assert.match(tag, /\srequired(?:\s|\/?>)/);
+  }
+  const port = dashboard.match(/<select\b[^>]*\bid="email-smtp-port"[^>]*>([\s\S]*?)<\/select>/);
+  assert.ok(port, 'SMTP port is a constrained select');
+  const options = [...port[1].matchAll(/<option\b([^>]*)>/g)];
+  assert.deepEqual(options.map(option => option[1].match(/\bvalue="([^"]+)"/)[1]).sort(),
+    ['25', '2587', '2465', '465', '587'].sort());
+  assert.equal(element('email-smtp-port').value, '465');
+  const password = tagFor(dashboard, 'email-smtp-password');
+  assert.match(password, /type="password"/);
+  assert.match(password, /maxlength="512"/);
+  assert.doesNotMatch(password, /\s(?:value=|required(?:\s|\/?>))/);
+  assert.equal(element('email-smtp-password').value, '', 'stored SMTP password is never rendered');
+  assert.match(tagFor(dashboard, 'email-smtp-security'), /(?:role="status"|aria-live="polite")/);
+  assert.doesNotMatch(dashboard, /\bid="email-api-key"/);
+  assert.doesNotMatch(source, /email-api-key|api_key_configured/);
+});
+
+test('sidebar has no My login security entry while Users retain targeted email actions', () => {
+  const sidebar = dashboard.match(/\bid="sidebar"[\s\S]*?\bid="sidebar-drag-handle"[^>]*>/);
+  assert.ok(sidebar, 'dashboard sidebar exists');
+  assert.doesNotMatch(sidebar[0], /My login security/i);
+  assert.doesNotMatch(sidebar[0], /EmailSecurity\.open\(\s*\)/);
+  assert.match(dashboard, /onclick="EmailSecurity\.open\(\$\{Number\(user\.id\)\}\)"/);
+});
+
+test('Users keeps own-account email access independent of the current branch roster', async () => {
+  const ownButton = tagFor(dashboard, 'users-own-email-btn');
+  const usersSection = dashboard.indexOf('id="users-section"');
+  assert.ok(dashboard.indexOf('id="users-own-email-btn"') > usersSection);
+  assert.ok(dashboard.indexOf('id="users-own-email-btn"') < dashboard.indexOf('id="logs-section"'));
+  assert.match(ownButton, /onclick="EmailSecurity\.open\(\)"/);
+  const h = harness();
+  await h.open({username: 'Owner'});
+  assert.deepEqual(h.requests.map(request => request.url), ['/api/auth/email']);
+  assert.equal(h.node('email-security-title').textContent, 'Add email — Owner');
+  assert.equal(h.node('email-security-start-form').hidden, false);
+});
+
+test('dashboard templates wire targeted Users actions, lazy settings and browser input validation', () => {
   assert.match(dashboard, /onclick="EmailSecurity\.open\(\$\{Number\(user\.id\)\}\)"/);
   assert.match(dashboard, /user\.email \? "Unlink email" : "Add email"/);
   assert.match(dashboard, /user\.two_factor_enabled \? "Two-step on" : "Password only"/);
@@ -556,8 +655,8 @@ test('dashboard templates wire own/target actions, lazy settings and browser inp
   }
   assert.match(tagFor(dashboard, 'email-security-code'), /pattern="\[0-9\]\{6\}"/);
   assert.match(tagFor(dashboard, 'email-security-code'), /autocomplete="one-time-code"/);
-  assert.match(tagFor(dashboard, 'email-api-key'), /type="password"/);
-  assert.doesNotMatch(tagFor(dashboard, 'email-api-key'), /\svalue=/);
+  assert.match(tagFor(dashboard, 'email-smtp-password'), /type="password"/);
+  assert.doesNotMatch(tagFor(dashboard, 'email-smtp-password'), /\svalue=/);
   assert.match(tagFor(dashboard, 'email-settings-password'), /type="password"/);
   assert.match(tagFor(dashboard, 'email-settings-password'), /autocomplete="current-password"/);
   assert.doesNotMatch(tagFor(dashboard, 'email-settings-password'), /\svalue=/);

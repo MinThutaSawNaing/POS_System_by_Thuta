@@ -10,12 +10,14 @@ import hmac
 import os
 import re
 import secrets
+import smtplib
+import ssl
 import time
 from contextlib import contextmanager
+from email.message import EmailMessage
 from email.utils import parseaddr, getaddresses
 from types import SimpleNamespace
 
-import requests
 from flask import jsonify, redirect, render_template, request, session, url_for
 from sqlalchemy import text
 from werkzeug.security import check_password_hash
@@ -24,6 +26,27 @@ from werkzeug.security import check_password_hash
 TTL = 600
 COOLDOWN = 60
 MAX_ATTEMPTS = 5
+SMTP_SSL_PORTS = (465, 2465)
+SMTP_STARTTLS_PORTS = (25, 587, 2587)
+
+
+def normalize_smtp(host, port, username):
+    # Resend only: configurable SMTP must not become an SSRF/credential relay.
+    if not isinstance(host, str) or host.strip().lower() != 'smtp.resend.com':
+        raise ValueError('SMTP host must be smtp.resend.com.')
+    if not isinstance(username, str) or username.strip() != 'resend':
+        raise ValueError('SMTP username must be resend.')
+    if isinstance(port, str) and re.fullmatch(r'[0-9]{1,5}', port):
+        port = int(port)
+    if type(port) is not int or port not in SMTP_SSL_PORTS + SMTP_STARTTLS_PORTS:
+        raise ValueError('SMTP port must be 465, 2465, 25, 587, or 2587.')
+    return 'smtp.resend.com', port, 'resend'
+
+
+def normalize_smtp_password(value):
+    if not isinstance(value, str) or len(value) > 512 or any(c in value for c in '\r\n\x00'):
+        raise ValueError('Invalid SMTP password.')
+    return value.strip()
 
 
 def normalize_email(value):
@@ -114,30 +137,65 @@ def register_email_auth(app, db, pos):
     def config():
         key = pos['get_setting']('resend_api_key', '') or os.environ.get('RESEND_API_KEY', '')
         sender = pos['get_setting']('email_from', '') or os.environ.get('RESEND_FROM_EMAIL', '')
+        host, port, username = smtp_settings()
+        valid = True
+        try:
+            host, port, username = normalize_smtp(host, port, username)
+        except ValueError:
+            host, port, username, valid = '', 0, '', False
+        try:
+            key = normalize_smtp_password(key)
+        except ValueError:
+            key, valid = '', False
         try:
             sender = normalize_sender(sender)
         except ValueError:
             sender = ''
-        return key.strip(), sender
+        return SimpleNamespace(key=key, sender=sender, host=host, port=port, username=username,
+                               valid=valid and bool(key) and bool(sender))
+
+    def smtp_settings():
+        values = []
+        for name, env, default in (
+                ('email_smtp_host', 'RESEND_SMTP_HOST', 'smtp.resend.com'),
+                ('email_smtp_port', 'RESEND_SMTP_PORT', '465'),
+                ('email_smtp_username', 'RESEND_SMTP_USERNAME', 'resend')):
+            saved = pos['get_setting'](name, None)
+            # An explicitly invalid saved/env value must fail closed, not silently
+            # fall back to a different endpoint or TLS mode.
+            values.append(os.environ.get(env, default) if saved is None else saved)
+        return values
 
     def configured():
-        return secure_session_key() and all(config())
+        return secure_session_key() and config().valid
 
     def secure_session_key():
         return bool(app.secret_key and app.secret_key != 'your_super_secret_key_here')
 
     def send_code(email, code, purpose):
-        key, sender = config()
-        if not key or not sender:
+        settings = config()
+        if not secure_session_key() or not settings.valid:
             raise EmailAuthError('Email authentication is not configured. Contact a manager.', 503)
         try:
-            response = requests.post(
-                'https://api.resend.com/emails',
-                headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'},
-                json={'from': sender, 'to': [email], 'subject': 'Your POS verification code',
-                      'text': f'Your POS {purpose} verification code is {code}. It expires in 10 minutes. If you did not request it, ignore this email.'},
-                timeout=(3.05, 10), allow_redirects=False)
-            success = 200 <= response.status_code < 300
+            message = EmailMessage()
+            message['From'] = settings.sender
+            message['To'] = email
+            message['Subject'] = 'Your POS verification code'
+            message.set_content(f'Your POS {purpose} verification code is {code}. It expires in 10 minutes. If you did not request it, ignore this email.')
+            context = ssl.create_default_context()
+            if settings.port in SMTP_SSL_PORTS:
+                transport = smtplib.SMTP_SSL(settings.host, settings.port, timeout=10, context=context)
+            else:
+                transport = smtplib.SMTP(settings.host, settings.port, timeout=10)
+            with transport as smtp:
+                smtp.ehlo()
+                if settings.port in SMTP_STARTTLS_PORTS:
+                    # STARTTLS is mandatory; missing support/certificate failures
+                    # abort before any credentials or OTP are sent.
+                    smtp.starttls(context=context)
+                    smtp.ehlo()
+                smtp.login(settings.username, settings.key)
+                success = not smtp.send_message(message)
         except Exception:
             # Even a transport exception may contain credentials/provider content.
             success = False
@@ -375,10 +433,12 @@ def register_email_auth(app, db, pos):
             if not secure_session_key():
                 raise EmailAuthError('Set a private application SECRET_KEY before configuring email authentication.', 503)
             data = payload()
-            key = data.get('api_key', '')
-            if not isinstance(key, str) or len(key) > 512 or any(c in key for c in '\r\n\x00'):
-                raise EmailAuthError('Invalid API key.')
+            current_host, current_port, current_username = smtp_settings()
             try:
+                host, port, username = normalize_smtp(
+                    data.get('smtp_host', current_host), data.get('smtp_port', current_port),
+                    data.get('smtp_username', current_username))
+                key = normalize_smtp_password(data.get('smtp_password', data.get('api_key', '')))
                 sender = normalize_sender(data.get('from_email', ''))
             except ValueError as error:
                 raise EmailAuthError(str(error)) from None
@@ -396,6 +456,9 @@ def register_email_auth(app, db, pos):
                     raise EmailAuthError('Account changed. Sign in again.', 403)
                 if key.strip():
                     pos['set_setting']('resend_api_key', key.strip(), connection=connection)
+                pos['set_setting']('email_smtp_host', host, connection=connection)
+                pos['set_setting']('email_smtp_port', str(port), connection=connection)
+                pos['set_setting']('email_smtp_username', username, connection=connection)
                 pos['set_setting']('email_from', sender, connection=connection)
                 connection.execute(pos['AuditLog'].__table__.insert().values(
                     actor_user_id=actor['id'], actor_username=actor['username'], actor_role=actor['role'],
@@ -404,9 +467,11 @@ def register_email_auth(app, db, pos):
                     changes_blob=pos['encode_audit_changes']({'configuration': 'updated'}),
                     request_method=request.method, request_path=request.path[:300]))
             message = 'Email settings saved.'
-        key, sender = config()
-        return jsonify(success=True, configured=configured(), api_key_configured=bool(key),
-                       from_email=sender, message=message, csrf_token=csrf_token())
+        settings = config()
+        return jsonify(success=True, configured=configured(), api_key_configured=bool(settings.key),
+                       smtp_password_configured=bool(settings.key), smtp_host=settings.host,
+                       smtp_port=settings.port, smtp_username=settings.username,
+                       from_email=settings.sender, message=message, csrf_token=csrf_token())
 
     @app.route('/api/users/<int:user_id>/email/start', methods=['POST'])
     def api_user_email_start(user_id):

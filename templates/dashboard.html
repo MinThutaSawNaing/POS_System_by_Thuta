@@ -1879,9 +1879,6 @@
           </a>
         </li>
         <li class="nav-item mt-3">
-          <button type="button" class="nav-link border-0 bg-transparent text-start w-100" onclick="EmailSecurity.open()">
-            <i class="bi bi-shield-lock"></i> <span>My login security</span>
-          </button>
           <a class="nav-link text-danger" href="/logout" onclick="if (window.CustomerDisplay) CustomerDisplay.reset()">
             <i class="bi bi-box-arrow-right"></i>Logout
           </a>
@@ -3695,6 +3692,9 @@
             </span>
           </div>
           <div class="d-flex gap-2">
+            <button id="users-own-email-btn" type="button" class="btn btn-outline-secondary" onclick="EmailSecurity.open()" title="Link or unlink your own login email, including when another branch is selected">
+              <i class="bi bi-envelope-check"></i> My email
+            </button>
             <button class="btn btn-outline-secondary" onclick="refreshCurrentSection()">
               <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Refresh</span><span class="d-sm-none">↻</span>
             </button>
@@ -4293,33 +4293,55 @@
             <div class="card-header">
               <span class="settings-icon-chip"><i class="bi bi-envelope-check"></i></span>
               <div class="settings-card-header-title">
-                <h5>Email delivery</h5>
-                <span class="settings-card-subtitle">Resend sends verification and sign-in codes for every branch</span>
+                <h5>Email delivery · SMTP</h5>
+                <span class="settings-card-subtitle">Send verification and sign-in codes through Resend SMTP for every branch</span>
               </div>
             </div>
             <div class="card-body">
               <div id="email-settings-status" class="alert alert-light border" role="status" aria-live="polite">Open this section to check email delivery.</div>
               <form id="email-settings-form">
+                <p class="text-muted">Enter your Resend SMTP connection details. Connections are always encrypted; no REST API setup is needed.</p>
+                <div class="mb-3">
+                  <label for="email-smtp-host" class="form-label">Host</label>
+                  <input id="email-smtp-host" type="text" class="form-control" value="smtp.resend.com" required readonly autocomplete="off" spellcheck="false" aria-describedby="email-smtp-host-help" disabled />
+                  <div id="email-smtp-host-help" class="form-text">Resend's SMTP server. This address is fixed to keep your credentials on Resend.</div>
+                </div>
+                <div class="mb-3">
+                  <label for="email-smtp-port" class="form-label">Port</label>
+                  <select id="email-smtp-port" class="form-select" required aria-describedby="email-smtp-security" disabled>
+                    <option value="465" selected>465 — SSL/TLS (recommended)</option>
+                    <option value="2465">2465 — SSL/TLS</option>
+                    <option value="587">587 — STARTTLS</option>
+                    <option value="2587">2587 — STARTTLS</option>
+                    <option value="25">25 — STARTTLS</option>
+                  </select>
+                  <div id="email-smtp-security" class="form-text" role="status" aria-live="polite">SSL/TLS encrypts the connection from the start. Certificate verification is required.</div>
+                </div>
+                <div class="mb-3">
+                  <label for="email-smtp-username" class="form-label">User</label>
+                  <input id="email-smtp-username" type="text" class="form-control" value="resend" required readonly autocomplete="off" spellcheck="false" disabled />
+                  <div class="form-text">Resend uses <code>resend</code> as the SMTP username for every account.</div>
+                </div>
+                <div class="mb-3">
+                  <label for="email-smtp-password" class="form-label">SMTP password / Resend API key</label>
+                  <input id="email-smtp-password" type="password" class="form-control" maxlength="512" placeholder="YOUR_API_KEY" autocomplete="new-password" spellcheck="false" aria-describedby="email-smtp-password-help" disabled />
+                  <div id="email-smtp-password-help" class="form-text">Use your Resend sending API key as the SMTP password. Stored encrypted; leave blank to keep the current password. The saved password is never displayed.</div>
+                </div>
                 <div class="mb-3">
                   <label for="email-from" class="form-label">Sender</label>
                   <input id="email-from" type="text" class="form-control" maxlength="254" placeholder="POS Security &lt;security@your-store.com&gt;" required autocomplete="off" spellcheck="false" aria-describedby="email-from-help" disabled />
                   <div id="email-from-help" class="form-text">Use an address on a verified Resend domain, optionally with a display name: POS Security &lt;security@your-store.com&gt;.</div>
                 </div>
                 <div class="mb-3">
-                  <label for="email-api-key" class="form-label">Resend API key</label>
-                  <input id="email-api-key" type="password" class="form-control" maxlength="256" placeholder="re_…" autocomplete="new-password" spellcheck="false" aria-describedby="email-key-help" disabled />
-                  <div id="email-key-help" class="form-text">Stored encrypted. Leave blank to keep the current key. The saved key is never displayed.</div>
-                </div>
-                <div class="mb-3">
-                  <label for="email-settings-password" class="form-label">Your current password</label>
+                  <label for="email-settings-password" class="form-label">Your POS account password</label>
                   <input id="email-settings-password" type="password" class="form-control" autocomplete="current-password" maxlength="1024" required disabled />
-                  <div class="form-text">Confirm your identity before changing where login codes are sent from.</div>
+                  <div class="form-text">This is not the SMTP password. Confirm your identity before changing email delivery settings.</div>
                 </div>
                 <button id="save-email-settings-btn" type="submit" class="btn btn-primary" disabled><i class="bi bi-save me-1"></i>Save email settings</button>
                 <button id="reload-email-settings-btn" type="button" class="btn btn-outline-secondary ms-2" onclick="EmailSecurity.loadSettings(true)">Reload saved settings</button>
               </form>
               <div class="border-top pt-3 mt-3 small text-muted">
-                <strong class="text-body">Optional for each user.</strong> In User Management, choose <strong>Add email</strong> and verify the address to enable two-step login. Users can also choose <strong>My login security</strong> in the sidebar. No email linked means password-only login.
+                <strong class="text-body">Optional for each user.</strong> In <strong>Users</strong>, choose <strong>Add email</strong> and verify the address to enable two-step login, or <strong>Unlink email</strong> to remove it. Choose <strong>My email</strong> for your own account. No email linked means password-only login.
               </div>
             </div>
           </div>

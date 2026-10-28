@@ -13,6 +13,9 @@ services:
     environment:
       SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY in .env before starting the service}"
       SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
+      RESEND_SMTP_HOST: "${RESEND_SMTP_HOST:-smtp.resend.com}"
+      RESEND_SMTP_PORT: "${RESEND_SMTP_PORT:-465}"
+      RESEND_SMTP_USERNAME: "${RESEND_SMTP_USERNAME:-resend}"
       RESEND_API_KEY: "${RESEND_API_KEY:-}"
       RESEND_FROM_EMAIL: "${RESEND_FROM_EMAIL:-}"
       AI_MAX_ACTIVE_SESSIONS: "${AI_MAX_ACTIVE_SESSIONS:-16}"
