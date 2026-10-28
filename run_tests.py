@@ -54,12 +54,14 @@ def main():
         shutil.copytree(source, checkout, ignore=excluded)
         env = dict(os.environ)
         for key in list(env):
-            if key.startswith(('AI_', 'POS_ACCOUNT_BARRIER_', 'POS_PERMISSION_', 'MMPAY_')):
+            if key.startswith(('AI_', 'POS_ACCOUNT_BARRIER_', 'POS_PERMISSION_', 'MMPAY_', 'RESEND_')):
                 env.pop(key)
         for key in ('APIFREE_API_KEY', 'PYTEST_ADDOPTS', 'PYTEST_PLUGINS'):
             env.pop(key, None)
         env.update(
             SECRET_KEY='disposable-pos-tests-only',
+            # Live-server tests use local HTTP, never deployment TLS cookies.
+            SESSION_COOKIE_SECURE='false',
             PYTHONPATH=str(checkout),
             PYTHONDONTWRITEBYTECODE='1',
             PYTHONIOENCODING='utf-8',

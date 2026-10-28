@@ -1879,6 +1879,9 @@
           </a>
         </li>
         <li class="nav-item mt-3">
+          <button type="button" class="nav-link border-0 bg-transparent text-start w-100" onclick="EmailSecurity.open()">
+            <i class="bi bi-shield-lock"></i> <span>My login security</span>
+          </button>
           <a class="nav-link text-danger" href="/logout" onclick="if (window.CustomerDisplay) CustomerDisplay.reset()">
             <i class="bi bi-box-arrow-right"></i>Logout
           </a>
@@ -3721,13 +3724,14 @@
                     <th class="d-none d-sm-table-cell">ID</th>
                     <th>Username</th>
                     <th>Role</th>
+                    <th>Email / two-step login</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody id="users-table">
                   <!-- Users will be loaded here -->
                   <tr>
-                    <td colspan="4" class="text-center py-4">
+                    <td colspan="5" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                       </div>
@@ -3814,6 +3818,10 @@
               <button type="button" class="settings-nav-item" data-group="payments" aria-controls="settings-group-payments" onclick="showSettingsGroup('payments')">
                 <i class="bi bi-phone"></i>
                 <span>Payments<small>MyanMyanPay keys</small></span>
+              </button>
+              <button type="button" class="settings-nav-item" data-group="email" aria-controls="settings-group-email" onclick="showSettingsGroup('email')">
+                <i class="bi bi-envelope-check"></i>
+                <span>Email<small>Resend &amp; login codes</small></span>
               </button>
               <button type="button" class="settings-nav-item" data-group="printing" aria-controls="settings-group-printing" onclick="showSettingsGroup('printing')">
                 <i class="bi bi-printer"></i>
@@ -4280,6 +4288,43 @@
         </div>
         </div><!-- /settings-group-printing -->
 
+        <div id="settings-group-email" class="settings-group" role="group" aria-label="Email" style="display: none">
+          <div class="card settings-card">
+            <div class="card-header">
+              <span class="settings-icon-chip"><i class="bi bi-envelope-check"></i></span>
+              <div class="settings-card-header-title">
+                <h5>Email delivery</h5>
+                <span class="settings-card-subtitle">Resend sends verification and sign-in codes for every branch</span>
+              </div>
+            </div>
+            <div class="card-body">
+              <div id="email-settings-status" class="alert alert-light border" role="status" aria-live="polite">Open this section to check email delivery.</div>
+              <form id="email-settings-form">
+                <div class="mb-3">
+                  <label for="email-from" class="form-label">Sender</label>
+                  <input id="email-from" type="text" class="form-control" maxlength="254" placeholder="POS Security &lt;security@your-store.com&gt;" required autocomplete="off" spellcheck="false" aria-describedby="email-from-help" disabled />
+                  <div id="email-from-help" class="form-text">Use an address on a verified Resend domain, optionally with a display name: POS Security &lt;security@your-store.com&gt;.</div>
+                </div>
+                <div class="mb-3">
+                  <label for="email-api-key" class="form-label">Resend API key</label>
+                  <input id="email-api-key" type="password" class="form-control" maxlength="256" placeholder="re_…" autocomplete="new-password" spellcheck="false" aria-describedby="email-key-help" disabled />
+                  <div id="email-key-help" class="form-text">Stored encrypted. Leave blank to keep the current key. The saved key is never displayed.</div>
+                </div>
+                <div class="mb-3">
+                  <label for="email-settings-password" class="form-label">Your current password</label>
+                  <input id="email-settings-password" type="password" class="form-control" autocomplete="current-password" maxlength="1024" required disabled />
+                  <div class="form-text">Confirm your identity before changing where login codes are sent from.</div>
+                </div>
+                <button id="save-email-settings-btn" type="submit" class="btn btn-primary" disabled><i class="bi bi-save me-1"></i>Save email settings</button>
+                <button id="reload-email-settings-btn" type="button" class="btn btn-outline-secondary ms-2" onclick="EmailSecurity.loadSettings(true)">Reload saved settings</button>
+              </form>
+              <div class="border-top pt-3 mt-3 small text-muted">
+                <strong class="text-body">Optional for each user.</strong> In User Management, choose <strong>Add email</strong> and verify the address to enable two-step login. Users can also choose <strong>My login security</strong> in the sidebar. No email linked means password-only login.
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- AI assistant group -->
         <div id="settings-group-ai" class="settings-group" role="group" aria-label="AI assistant" style="display: none">
         <!-- AI Agent Settings -->
@@ -4404,6 +4449,41 @@
         </div><!-- /settings-group-data -->
           </div><!-- /settings content column -->
         </div><!-- /settings-layout row -->
+      </div>
+    </div>
+
+    <!-- Email security: sensitive values are cleared whenever this dialog closes. -->
+    <div class="modal fade" id="emailSecurityModal" tabindex="-1" aria-labelledby="email-security-title" aria-hidden="true" data-current-user="{{ session.get('user_id') }}">
+      <div class="modal-dialog modal-dialog-centered modal-fullscreen-sm-down">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="email-security-title">Login security</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div id="email-security-status" class="alert alert-light border" role="status" aria-live="polite"></div>
+            <form id="email-security-start-form" hidden>
+              <div class="mb-3" id="email-security-address-group">
+                <label class="form-label" for="email-security-address">Email address</label>
+                <input class="form-control" type="email" id="email-security-address" maxlength="254" autocomplete="email" required />
+              </div>
+              <div class="mb-3">
+                <label class="form-label" for="email-security-password">This user's current password</label>
+                <input class="form-control" type="password" id="email-security-password" autocomplete="current-password" required maxlength="1024" />
+                <div class="form-text">The account owner must confirm this change. Unlinking also requires a code from the linked inbox.</div>
+              </div>
+              <button class="btn btn-primary" type="submit" id="email-security-send">Send verification code</button>
+            </form>
+            <form id="email-security-verify-form" hidden>
+              <p class="small text-muted">Check your inbox and spam folder. Codes expire after 10 minutes. A new code replaces the previous one. Never share a code.</p>
+              <label class="form-label" for="email-security-code">6-digit verification code</label>
+              <input class="form-control mb-3" id="email-security-code" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required />
+              <button class="btn btn-primary" type="submit" id="email-security-confirm">Verify and enable</button>
+              <button class="btn btn-outline-secondary ms-2" type="button" id="email-security-resend" disabled>Resend code</button>
+            </form>
+          </div>
+          <div class="modal-footer"><button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Close</button></div>
+        </div>
       </div>
     </div>
 
@@ -8159,6 +8239,7 @@
       function isBranchDraftField(field) {
         return field?.matches?.("input, select, textarea") && !field.disabled && !field.readOnly &&
           !["hidden", "button", "submit", "reset"].includes(field.type) &&
+          !String(field.id || "").startsWith("email-security-") &&
           Boolean(field.closest(".modal:not(#confirmModal):not(#barcodeLabelModal)"));
       }
 
@@ -14847,6 +14928,7 @@
         // Payment credentials live on the server; refresh them when opened so a
         // value saved on another device is visible without a reload.
         if (groupId === "payments" && typeof loadPaymentSettings === "function") loadPaymentSettings();
+        if (groupId === "email" && window.EmailSecurity) EmailSecurity.loadSettings();
         document.querySelectorAll("#settings-section .settings-nav-item").forEach((item) => {
           const isActive = item.dataset.group === groupId;
           item.classList.toggle("active", isActive);
@@ -16174,7 +16256,7 @@
         const usersTable = document.getElementById("users-table");
         usersTable.innerHTML = `
           <tr>
-            <td colspan="4" class="text-center py-4">
+            <td colspan="5" class="text-center py-4">
               <div class="spinner-border text-primary" role="status">
                 <span class="visually-hidden">Loading...</span>
               </div>
@@ -16204,7 +16286,7 @@
             if (!data.items || data.items.length === 0) {
               usersTable.innerHTML = `
                 <tr>
-                  <td colspan="4" class="text-center py-4 text-muted">No users found.</td>
+                  <td colspan="5" class="text-center py-4 text-muted">No users found.</td>
                 </tr>
               `;
               renderPagination("users", "users-pagination", 1, loadUsers);
@@ -16214,12 +16296,14 @@
             data.items.forEach((user) => {
               const row = document.createElement("tr");
               row.innerHTML = `
-                <td>${user.id}</td>
-                <td>${user.username}</td>
+                <td class="d-none d-sm-table-cell">${Number(user.id)}</td>
+                <td>${escapeHtml(user.username)}</td>
                 <td><span class="badge bg-${
                   user.role === "manager" ? "primary" : "secondary"
-                }">${user.role}</span></td>
+                }">${escapeHtml(user.role)}</span></td>
+                <td><small>${escapeHtml(user.email || "Not linked")}</small><br><span class="badge bg-${user.two_factor_enabled ? "success" : "secondary"}">${user.two_factor_enabled ? "Two-step on" : "Password only"}</span></td>
                 <td>
+                  <button type="button" class="btn btn-sm btn-outline-secondary me-1 mb-1" onclick="EmailSecurity.open(${Number(user.id)})">${user.email ? "Unlink email" : "Add email"}</button>
                   <button class="btn btn-sm btn-primary me-1" onclick="editUser(${
                     user.id
                   })">
@@ -16246,7 +16330,7 @@
             console.error("Error loading users:", error);
             usersTable.innerHTML = `
               <tr>
-                <td colspan="4" class="text-center py-4 text-danger">Failed to load users. ${error.message}</td>
+                <td colspan="5" class="text-center py-4 text-danger">Failed to load users. ${escapeHtml(error.message)}</td>
               </tr>
             `;
             renderPagination("users", "users-pagination", 1, loadUsers);
@@ -20163,6 +20247,7 @@
     <script src="/public/customer-display-publisher.js"></script>
     <script src="/public/myanmyanpay.js"></script>
     <script src="/public/product-import.js"></script>
+    <script src="/public/email-security.js"></script>
     <!-- AI Agent Widget -->
     {% include 'ai_agent_widget.html' %}
   </body>

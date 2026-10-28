@@ -555,15 +555,35 @@ class MyanMyanPayPaymentTests(unittest.TestCase):
             data['items'][0]['quantity'] = qty
             self.assertEqual(self.client.post(ROOT + '/intents', json=data, headers=HEADERS).status_code, 400)
 
-    def test_other_owner_or_branch_cannot_read_complete_or_render_qr(self):
+    def test_nonexistent_owner_session_is_rejected_before_payment_lookup(self):
         payment = self.begin()
         with self.client.session_transaction() as s:
             s['user_id'] = self.user.id + 10000
         for suffix, method in (('', 'get'), ('/qr', 'get'), ('/complete', 'post'), ('/cancel', 'post')):
-            self.assertEqual(getattr(self.client, method)(ROOT + '/intents/' + payment['id'] + suffix, headers=HEADERS).status_code, 404)
+            # A deleted/nonexistent session owner is now rejected before object
+            # lookup rather than retained as an authenticated unknown identity.
+            self.assertEqual(getattr(self.client, method)(ROOT + '/intents/' + payment['id'] + suffix, headers=HEADERS).status_code, 401)
+        with self.client.session_transaction() as s:
+            self.assertNotIn('user_id', s)
         with self.client.session_transaction() as s:
             s.clear()
         self.assertEqual(self.client.get(ROOT + '/intents').status_code, 401)
+
+    def test_other_owner_cannot_read_complete_or_render_qr(self):
+        payment = self.begin()
+        other = User(username='payment-owner-' + uuid.uuid4().hex,
+                     password=self.user.password, role='manager', branch_id=self.branch.id)
+        db.session.add(other)
+        db.session.commit()
+        try:
+            with self.client.session_transaction() as s:
+                s.clear()
+                s.update(user_id=other.id, role=other.role, branch_id=self.branch.id)
+            for suffix, method in (('', 'get'), ('/qr', 'get'), ('/complete', 'post'), ('/cancel', 'post')):
+                self.assertEqual(getattr(self.client, method)(ROOT + '/intents/' + payment['id'] + suffix, headers=HEADERS).status_code, 404)
+        finally:
+            db.session.delete(other)
+            db.session.commit()
 
     def test_timeout_keeps_same_durable_order_and_refresh_recovers(self):
         self.create.side_effect = TimeoutError('do not leak provider secrets')

@@ -21,7 +21,9 @@ def test_summary_rounds_each_batch_without_materializing_inventory(world):
     with capture(m) as (sql, loaded):
         data = c.get('/api/warehouse/summary').get_json()
     assert 'WarehouseInventory' not in loaded
-    assert len(sql) <= 4
+    # One bounded account lookup enforces session/factor revocation before the
+    # existing branch lookup and three aggregate queries; no inventory graph.
+    assert len(sql) <= 5
     # 131 original batches alternate10/3 units at2.25, plus new0.32+0.01.
     assert data['total_value'] == (66 * 10 + 65 * 3) * 2.25 + 0.33
     summary = c.get('/api/products/summary').get_json()

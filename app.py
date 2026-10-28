@@ -125,6 +125,9 @@ app.config['RECEIPT_LOGO_FOLDER'] = os.path.join(app.root_path, 'uploads', 'rece
 app.config['MMQR_FOLDER'] = os.path.join(app.root_path, 'uploads', 'mmqr')
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB per request
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365)
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', '').lower() in ('1', 'true', 'yes')
 db = SQLAlchemy(app)
 
 
@@ -289,7 +292,8 @@ def normalize_payment_breakdown(raw_breakdown, total):
 
 # Settings whose values are credentials are encrypted at rest with a key derived
 # from SECRET_KEY, so secrets are never stored in plaintext in the database.
-_SECRET_SETTING_KEYS = {'ai_api_key', 'mmpay_publishable_key', 'mmpay_secret_key'}
+_SECRET_SETTING_KEYS = {'ai_api_key', 'mmpay_publishable_key', 'mmpay_secret_key',
+                        'resend_api_key', 'email_from'}
 
 
 def _fernet():
@@ -340,16 +344,25 @@ def get_setting(key, default=None):
         value = decrypt_secret(value)
     return value
 
-def set_setting(key, value):
+def set_setting(key, value, *, commit=True, connection=None):
     if key in _SECRET_SETTING_KEYS:
         value = encrypt_secret(value)
+    if connection is not None:
+        # Security flows may already own an atomic SQLite transaction.
+        result = connection.execute(text('UPDATE app_setting SET value=:value WHERE key=:key'),
+                                    {'key': key, 'value': value})
+        if result.rowcount == 0:
+            connection.execute(text('INSERT INTO app_setting (key,value) VALUES (:key,:value)'),
+                               {'key': key, 'value': value})
+        return
     setting = AppSetting.query.filter_by(key=key).first()
     if setting:
         setting.value = value
     else:
         setting = AppSetting(key=key, value=value)
         db.session.add(setting)
-    db.session.commit()
+    if commit:
+        db.session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -1117,6 +1130,8 @@ def manager_or_boss_required(f):
 
 # Deny by default: a newly added API must not silently become cashier-accessible.
 CASHIER_API_METHODS = {
+    'api_auth_email': {'GET'}, 'api_user_email_start': {'POST'},
+    'api_user_email_verify': {'POST'}, 'api_user_email_resend': {'POST'},
     'api_settings': {'GET'}, 'api_current_branch': {'GET'},
     'api_categories': {'GET'}, 'api_single_category': {'GET'},
     'api_units': {'GET'}, 'api_units_convert': {'GET'},
@@ -1195,7 +1210,7 @@ def enforce_dashboard_branch_identity():
 
 @app.after_request
 def prevent_api_response_storage(response):
-    if request.path.startswith('/api/'):
+    if request.path.startswith('/api/') or request.path == '/login' or request.path.startswith('/login/'):
         # Keep stronger route-specific directives used by receipts/audit exports.
         if 'no-store' not in response.headers.get('Cache-Control', '').lower():
             response.headers['Cache-Control'] = 'no-store'
@@ -1502,6 +1517,8 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(120), nullable=False)
+    email = db.Column(db.String(254), nullable=True)
+    email_auth_version = db.Column(db.Integer, nullable=False, default=0, server_default='0')
     role = db.Column(db.String(20), default='cashier')
     branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'), nullable=False, index=True)
 
@@ -2878,6 +2895,12 @@ def _migrate_category_branch_unique():
 from payment_routes import register_payment_routes
 PaymentIntent, PaymentWebhookEvent = register_payment_routes(app, db, globals())
 
+# Register the small email-auth boundary (including its tables) before create_all.
+from email_auth import register_email_auth, EmailAuthError
+email_auth = register_email_auth(app, db, globals())
+EmailChallenge = email_auth.Challenge
+EmailSendEvent = email_auth.SendEvent
+
 # Create database tables and admin user
 with app.app_context():
     # Harden SQLite for concurrent POS writes: WAL journaling plus a busy timeout
@@ -2893,6 +2916,22 @@ with app.app_context():
     db.session.execute(text('PRAGMA busy_timeout=5000'))
     db.create_all()
     inspector = inspect(db.engine)
+    # Must precede *every* ORM User query: create_all does not alter old tables.
+    for column_name, column_sql in (
+        ('email', 'email VARCHAR(254)'),
+        ('email_auth_version', 'email_auth_version INTEGER NOT NULL DEFAULT 0'),
+    ):
+        if column_name in {column['name'] for column in inspect(db.engine).get_columns('user')}:
+            continue
+        try:
+            db.session.execute(text(f'ALTER TABLE "user" ADD COLUMN {column_sql}'))
+            db.session.commit()
+        except OperationalError:
+            db.session.rollback()
+            # Another worker may have completed the same startup migration.
+            # Any other failure must stop startup, not silently weaken auth.
+            if column_name not in {column['name'] for column in inspect(db.engine).get_columns('user')}:
+                raise
 
     def schema_migration_applied(version):
         """True when a completed startup migration has already been recorded."""
@@ -3587,11 +3626,39 @@ with app.app_context():
     db.session.commit()
 
 # Authentication routes
+def finalize_login(user_id, remember=False, expected_branch=None, expected_fingerprint=None):
+    """Establish identity only after all enabled authentication factors succeed."""
+    db.session.expire_all()
+    user = db.session.get(User, user_id)
+    if not user or (expected_fingerprint and not email_auth.matches_fingerprint(user, expected_fingerprint)):
+        session.clear()
+        return render_template('login.html', error='Account changed. Please sign in again.'), 403
+    assigned_branch = db.session.get(Branch, user.branch_id) if user.branch_id else None
+    if user.branch_id and (not assigned_branch or not assigned_branch.is_active):
+        session.clear()
+        return render_template('login.html', error='Your assigned branch is inactive. Contact a manager.'), 403
+    if not assigned_branch:
+        branch_id = get_default_branch_id()
+        assigned_branch = db.session.get(Branch, branch_id) if branch_id else None
+    if not assigned_branch or (expected_branch is not None and assigned_branch.id != expected_branch):
+        session.clear()
+        return render_template('login.html', error='No active branch is available. Contact a manager.'), 403
+    if not user.branch_id:
+        user.branch_id = assigned_branch.id
+        db.session.commit()
+    session.clear()
+    session.permanent = remember
+    session.update(user_id=user.id, username=user.username, role=user.role, branch_id=assigned_branch.id)
+    session['email_auth_fingerprint'] = email_auth.user_fingerprint(user)
+    return redirect(url_for('dashboard'))
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
+        email_auth.cancel_pending()
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password, password):
             assigned_branch = db.session.get(Branch, user.branch_id) if user.branch_id else None
@@ -3601,28 +3668,22 @@ def login():
             if not assigned_branch and get_default_branch_id() is None:
                 session.clear()
                 return render_template('login.html', error='No active branch is available. Contact a manager.')
-            session.clear()
-            session.permanent = request.form.get('remember') == 'on'
-            session['user_id'] = user.id
-            session['username'] = user.username
-            session['role'] = user.role
-            # Start each account in its assigned branch. Legacy accounts without
-            # an assignment are attached to the active store default once.
-            if assigned_branch:
-                session['branch_id'] = assigned_branch.id
-            else:
-                default_branch = Branch.query.filter_by(is_default=True, is_active=True).first()
-                fallback_branch = default_branch or Branch.query.filter_by(is_active=True).first()
-                if fallback_branch:
-                    user.branch_id = fallback_branch.id
-                    session['branch_id'] = fallback_branch.id
-                    db.session.commit()
-            return redirect(url_for('dashboard'))
+            if user.email:
+                try:
+                    return email_auth.begin_login(user, password, request.form.get('remember') == 'on')
+                except EmailAuthError as error:
+                    return render_template('login.html', error=error.message), error.status
+            return finalize_login(user.id, request.form.get('remember') == 'on',
+                                  expected_fingerprint=email_auth.user_fingerprint(user))
+        session.clear()
         return render_template('login.html', error='Invalid credentials')
+    if session.get('email_login'):
+        return email_auth.render_pending()
     return render_template('login.html')
 
 @app.route('/logout')
 def logout():
+    email_auth.cancel_pending()
     session.clear()
     return redirect(url_for('login'))
 
@@ -7595,7 +7656,9 @@ def api_users():
             'id': u.id,
             'username': u.username,
             'role': u.role,
-            'branch_id': u.branch_id
+            'branch_id': u.branch_id,
+            'email': u.email,
+            'two_factor_enabled': bool(u.email)
         }
 
     if page and per_page:
@@ -7663,13 +7726,18 @@ def api_single_user(user_id):
             'id': user.id,
             'username': user.username,
             'role': user.role,
-            'branch_id': user.branch_id
+            'branch_id': user.branch_id,
+            'email': user.email,
+            'two_factor_enabled': bool(user.email)
         })
         
     elif request.method == 'PUT':
         data = request.get_json()
         if not data:
             return jsonify({'success': False, 'message': 'No data provided'}), 400
+
+        if 'email' in data or 'two_factor_enabled' in data:
+            return jsonify(success=False, message='Use the verified email link/unlink flow.'), 400
 
         requested_role = data.get('role', user.role)
         if requested_role not in {'cashier', 'manager', 'boss'}:
@@ -7693,12 +7761,16 @@ def api_single_user(user_id):
             if existing_user and existing_user.id != user.id:
                 return jsonify({'success': False, 'message': 'Username already exists'}), 400
                 
+        security_changed = requested_role != user.role or bool(data.get('password'))
         user.username = data.get('username', user.username)
         user.role = requested_role
         
         # Update password if provided
         if 'password' in data and data['password']:
             user.password = generate_password_hash(data['password'])
+        if security_changed:
+            user.email_auth_version = User.email_auth_version + 1
+            email_auth.invalidate(user.id)
             
         db.session.commit()
         return jsonify({'success': True, 'message': 'User updated'})
@@ -7708,6 +7780,7 @@ def api_single_user(user_id):
         if user.id == session['user_id']:
             return jsonify({'success': False, 'message': 'Cannot delete your own account'}), 400
             
+        email_auth.invalidate(user.id)
         db.session.delete(user)
         db.session.commit()
         return jsonify({'success': True, 'message': 'User deleted'})

@@ -456,14 +456,31 @@
 
         <section class="form-pane">
             <div class="form-header">
-                <h1>Welcome back</h1>
-                <p>Sign in to continue to your POS dashboard.</p>
+                <h1>{{ 'Check your email' if two_factor else 'Welcome back' }}</h1>
+                <p>{{ 'One more step to open your POS dashboard.' if two_factor else 'Sign in to continue to your POS dashboard.' }}</p>
             </div>
 
             {% if error %}
-                <div class="alert alert-danger">{{ error }}</div>
+                <div class="alert alert-danger" role="alert">{{ error }}</div>
             {% endif %}
 
+            {% if two_factor %}
+            <p class="small text-muted">Sign-in code sent to <strong>{{ masked_email }}</strong>.</p>
+            <div class="alert alert-light border" role="status">{{ info or 'Enter the code sent to ' ~ masked_email ~ '.' }}</div>
+            <form method="POST" action="/login/verify" id="verifyLoginForm">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <label for="login-code" class="form-label">6-digit sign-in code</label>
+                <input id="login-code" name="code" type="text" class="form-control mb-2" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required autofocus aria-describedby="login-code-help">
+                <p id="login-code-help" class="form-text mb-3">Codes expire after 10 minutes. Check spam if the email is missing. Never share your code.</p>
+                <button type="submit" class="btn btn-primary btn-login w-100">Verify and sign in</button>
+            </form>
+            <form method="POST" action="/login/resend" class="mt-3" id="resendLoginForm">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button id="resend-login-code" type="submit" class="btn btn-outline-secondary w-100" data-wait="{{ resend_after|default(60) }}">Resend code</button>
+            </form>
+            <p class="form-text mt-2">A new code replaces the previous one. If you no longer have access to this inbox, contact your store administrator for identity-verified recovery.</p>
+            <a class="support-link d-inline-block mt-2" href="/login/cancel">Back to password sign-in</a>
+            {% else %}
             <form method="POST" id="loginForm" novalidate>
                 <div class="mb-3">
                     <label for="username" class="form-label">Username</label>
@@ -508,6 +525,7 @@
             <div class="footer-text">
                 &copy; 2026 POS System. Enterprise Edition.
             </div>
+            {% endif %}
         </section>
     </main>
 
@@ -529,6 +547,23 @@
         }
 
         document.addEventListener('DOMContentLoaded', function() {
+            const resend = document.getElementById('resend-login-code');
+            if (resend) {
+                const until = Date.now() + Math.max(0, Number(resend.dataset.wait) || 0) * 1000;
+                const update = () => {
+                    const seconds = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+                    resend.disabled = seconds > 0;
+                    resend.textContent = seconds ? `Resend in ${seconds}s` : 'Resend code';
+                };
+                update();
+                const timer = setInterval(() => { update(); if (Date.now() >= until) clearInterval(timer); }, 1000);
+                for (const id of ['verifyLoginForm', 'resendLoginForm']) {
+                    document.getElementById(id).addEventListener('submit', function() {
+                        this.querySelector('button[type="submit"]').disabled = true;
+                    });
+                }
+                return;
+            }
             generateCaptcha();
 
             document.getElementById('refreshCaptcha').addEventListener('click', generateCaptcha);
