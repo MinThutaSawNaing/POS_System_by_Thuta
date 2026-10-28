@@ -1671,7 +1671,11 @@
         position: absolute;
         top: 100%;
         left: 0;
-        right: 0;
+        /* Grow past the input so a full shelf path fits on one line, but never
+           wider than the screen. */
+        width: max-content;
+        min-width: 100%;
+        max-width: min(32rem, 90vw);
         z-index: 1050;
         max-height: 240px;
         overflow-y: auto;
@@ -1683,12 +1687,12 @@
         display: none;
       }
 
+      /* Long category paths must stay readable: wrap instead of ellipsizing. */
       .searchable-select-list .list-group-item {
         border: 0;
         border-bottom: 1px solid #f1f1f1;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        white-space: normal;
+        overflow-wrap: anywhere;
       }
 
       .searchable-select-list .list-group-item:last-child {
@@ -10072,9 +10076,12 @@
           const selected = select.selectedOptions[0];
           if (selected && selected.value === "") {
             input.value = "";
+            input.title = "";
             return;
           }
           input.value = selected ? selected.textContent : "";
+          // The input clips a long shelf path; the tooltip keeps it readable.
+          input.title = input.value;
         };
 
         const hideList = () => {

@@ -48,6 +48,27 @@ def test_category_search_supports_filtering_and_keyboard_picks():
     assert 'visibleOptions[activeIndex >= 0 ? activeIndex : 0]' in SOURCE
 
 
+def test_long_category_paths_are_not_clipped_in_the_dropdown():
+    # A deep shelf such as Electronics/IOS/Iphones/18Series/Purple/256GB used to
+    # be cut down to "Electronic/IOS/Iphones/18" by nowrap + ellipsis on every row.
+    option_rule = re.search(
+        r"\.searchable-select-list \.list-group-item\s*\{([^}]*)\}", SOURCE
+    )
+    assert option_rule is not None, "searchable select option CSS rule is missing"
+    body = option_rule.group(1)
+    assert "white-space: normal" in body
+    assert "overflow-wrap: anywhere" in body
+    assert "text-overflow" not in body
+    assert "white-space: nowrap" not in body
+    # The popup may grow past the input so a deep path still fits on one line.
+    list_rule = re.search(r"\.searchable-select-list\s*\{([^}]*)\}", SOURCE)
+    assert list_rule is not None, "searchable select list CSS rule is missing"
+    assert "width: max-content" in list_rule.group(1)
+    assert "min-width: 100%" in list_rule.group(1)
+    # The input itself clips too, so the picked path is also a hover tooltip.
+    assert "input.title = input.value;" in SOURCE
+
+
 @pytest.mark.skipif(shutil.which('node') is None, reason='Node.js is required')
 def test_duplicate_subcategory_is_confirmed_before_the_retry_saves_it():
     script = r"""
