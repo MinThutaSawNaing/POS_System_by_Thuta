@@ -1694,6 +1694,27 @@
       .searchable-select-list .list-group-item:last-child {
         border-bottom: 0;
       }
+
+      .searchable-select-list .list-group-item.active,
+      .searchable-select-list .list-group-item-action:focus {
+        background: #e7f1ff;
+        color: #0b3d91;
+        outline: 0;
+      }
+
+      /* A searchable select keeps the action button beside it inside an
+         input-group instead of stretching the group apart. */
+      .input-group > .searchable-select-wrapper {
+        flex: 1 1 auto;
+        width: 1%;
+        min-width: 0;
+      }
+
+      .input-group > .searchable-select-wrapper > .searchable-select-input {
+        width: 100%;
+        border-top-right-radius: 0;
+        border-bottom-right-radius: 0;
+      }
       /* Persistent cashier notices and high-contrast checkout information. */
       #pos-section { --pos-ink: #161616; --pos-muted: #525252; --pos-surface: #f4f4f4; --pos-warning: #8e6a00; --pos-danger: #a2191f; }
       .pos-notice { display: flex; align-items: flex-start; gap: .85rem; padding: 1rem; border: 1px solid #e3c77a; border-left: 4px solid var(--pos-warning); border-radius: .5rem; background: #fff8e6; color: var(--pos-ink); margin-bottom: 1rem; }
@@ -3036,7 +3057,7 @@
               </div>
               <div class="col-6 col-sm-3 col-md-2">
                 <label class="form-label small">Category</label>
-                <select class="form-select form-select-sm" id="supplier-category-filter">
+                <select class="form-select form-select-sm searchable-select" id="supplier-category-filter" data-search-placeholder="Search categories...">
                   <option value="">All Categories</option>
                 </select>
               </div>
@@ -3745,7 +3766,7 @@
 
         <div class="card mb-3"><div class="card-body"><div class="row g-2 align-items-end">
           <div class="col-12 col-lg-4"><label for="logs-search" class="form-label small">Search</label><input id="logs-search" class="form-control" placeholder="Transaction, record, path, or description" /></div>
-          <div class="col-6 col-md-3 col-lg-2"><label for="logs-category-filter" class="form-label small">Category</label><select id="logs-category-filter" class="form-select"><option value="">All categories</option></select></div>
+          <div class="col-6 col-md-3 col-lg-2"><label for="logs-category-filter" class="form-label small">Category</label><select id="logs-category-filter" class="form-select searchable-select" data-search-placeholder="Search categories..."><option value="">All categories</option></select></div>
           <div class="col-6 col-md-3 col-lg-2"><label for="logs-action-filter" class="form-label small">Action</label><select id="logs-action-filter" class="form-select"><option value="">All actions</option><option value="create">Created</option><option value="update">Updated</option><option value="delete">Deleted</option></select></div>
           <div class="col-6 col-md-3 col-lg-2"><label for="logs-start-filter" class="form-label small">From</label><input type="date" id="logs-start-filter" class="form-control" /></div>
           <div class="col-6 col-md-3 col-lg-2"><label for="logs-end-filter" class="form-label small">To</label><input type="date" id="logs-end-filter" class="form-control" /></div>
@@ -4606,7 +4627,7 @@
               <div class="mb-3">
                 <label class="form-label">Category</label>
                 <div class="input-group">
-                  <select class="form-select" id="add-category">
+                  <select class="form-select searchable-select" id="add-category" data-search-placeholder="Search categories...">
                     <option value="">Select category</option>
                   </select>
                   <button type="button" class="btn btn-outline-primary" onclick="showSection('categories'); bootstrap.Modal.getInstance(document.getElementById('addProductModal')).hide();" title="Manage Categories">
@@ -4750,7 +4771,7 @@
               <div class="mb-3">
                 <label class="form-label">Category</label>
                 <div class="input-group">
-                  <select class="form-select" id="edit-product-category">
+                  <select class="form-select searchable-select" id="edit-product-category" data-search-placeholder="Search categories...">
                     <option value="">Select category</option>
                   </select>
                   <button type="button" class="btn btn-outline-primary" onclick="showSection('categories'); bootstrap.Modal.getInstance(document.getElementById('editProductModal')).hide();" title="Manage Categories">
@@ -5268,8 +5289,8 @@
               </div>
               <div class="mb-3">
                 <label class="form-label" for="add-category-parent">Parent category</label>
-                <select class="form-select" id="add-category-parent"><option value="">None (top-level category)</option></select>
-                <div class="form-text">Choose a parent to create a subcategory.</div>
+                <select class="form-select searchable-select" id="add-category-parent" data-search-placeholder="Search parent category..."><option value="">None (top-level category)</option></select>
+                <div class="form-text">Choose a parent to create a subcategory. The same name can be reused under another parent after you confirm.</div>
               </div>
               <div class="mb-3">
                 <label class="form-label">Description</label>
@@ -5321,7 +5342,7 @@
               </div>
               <div class="mb-3">
                 <label class="form-label" for="edit-category-parent">Parent category</label>
-                <select class="form-select" id="edit-category-parent"><option value="">None (top-level category)</option></select>
+                <select class="form-select searchable-select" id="edit-category-parent" data-search-placeholder="Search parent category..."><option value="">None (top-level category)</option></select>
               </div>
               <div class="mb-3">
                 <label class="form-label">Description</label>
@@ -6074,7 +6095,7 @@
               <div class="row">
                 <div class="col-md-6 mb-3">
                   <label class="form-label">Category</label>
-                  <select class="form-select" id="add-supplier-category">
+                  <select class="form-select searchable-select" id="add-supplier-category" data-search-placeholder="Search categories...">
                     <option value="">Select Category</option>
                     <option value="Electronics">Electronics</option>
                     <option value="Food & Beverage">Food & Beverage</option>
@@ -6249,7 +6270,7 @@
               <div class="row">
                 <div class="col-md-6 mb-3">
                   <label class="form-label">Category</label>
-                  <select class="form-select" id="edit-supplier-category">
+                  <select class="form-select searchable-select" id="edit-supplier-category" data-search-placeholder="Search categories...">
                     <option value="">Select Category</option>
                     <option value="Electronics">Electronics</option>
                     <option value="Food & Beverage">Food & Beverage</option>
@@ -9961,6 +9982,31 @@
           list.style.display = "block";
         };
 
+        let visibleOptions = [];
+        let activeIndex = -1;
+
+        // Arrow keys and Enter work on the filtered list so a long category
+        // tree can be picked without leaving the keyboard.
+        const highlightChoice = (index) => {
+          if (!visibleOptions.length) return;
+          activeIndex = ((index % visibleOptions.length) + visibleOptions.length)
+            % visibleOptions.length;
+          list.querySelectorAll("button.searchable-select-option").forEach(
+            (button, position) => button.classList.toggle("active", position === activeIndex)
+          );
+          const active = list.querySelector("button.searchable-select-option.active");
+          if (active && typeof active.scrollIntoView === "function") {
+            active.scrollIntoView({ block: "nearest" });
+          }
+        };
+
+        const choose = (opt) => {
+          select.value = opt.value;
+          select.dispatchEvent(new Event("change"));
+          syncFromSelect();
+          hideList();
+        };
+
         const buildList = (filter) => {
           const query = (filter || "").toLowerCase().trim();
           const options = Array.from(select.options || []);
@@ -9970,6 +10016,8 @@
               )
             : options;
           list.innerHTML = "";
+          visibleOptions = [];
+          activeIndex = -1;
 
           if (!matches.length) {
             const empty = document.createElement("div");
@@ -9983,22 +10031,20 @@
           matches.slice(0, maxItems).forEach((opt) => {
             const button = document.createElement("button");
             button.type = "button";
-            button.className = "list-group-item list-group-item-action";
+            button.className = "list-group-item list-group-item-action searchable-select-option";
             button.textContent = opt.textContent;
             button.addEventListener("mousedown", (e) => {
               e.preventDefault();
-              select.value = opt.value;
-              select.dispatchEvent(new Event("change"));
-              syncFromSelect();
-              hideList();
+              choose(opt);
             });
             list.appendChild(button);
+            visibleOptions.push(opt);
           });
 
           if (matches.length > maxItems) {
             const more = document.createElement("div");
             more.className = "list-group-item text-muted";
-            more.textContent = `Showing first ${maxItems} results`;
+            more.textContent = `Showing first ${maxItems} results. Type to narrow the list.`;
             list.appendChild(more);
           }
         };
@@ -10021,6 +10067,22 @@
           if (e.key === "Escape") {
             hideList();
             input.blur();
+            return;
+          }
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            if (list.style.display !== "block") {
+              buildList(input.value);
+              showList();
+            }
+            highlightChoice(activeIndex === -1
+              ? (e.key === "ArrowDown" ? 0 : -1)
+              : activeIndex + (e.key === "ArrowDown" ? 1 : -1));
+            e.preventDefault();
+            return;
+          }
+          if (e.key === "Enter" && visibleOptions.length) {
+            e.preventDefault();
+            choose(visibleOptions[activeIndex >= 0 ? activeIndex : 0]);
           }
         });
 
@@ -14204,6 +14266,57 @@
         });
       }
 
+      // Send the create-category form. A duplicate subcategory name comes back
+      // as 409 with the shelf paths already using it, so the manager decides
+      // here whether to reuse the name; the retry carries confirm_duplicate.
+      function postCategoryForm(payload, confirmDuplicate) {
+        const saveBtn = document.querySelector("#addCategoryModal .btn-primary");
+        const originalContent = saveBtn ? saveBtn.innerHTML : "";
+        if (saveBtn) {
+          saveBtn.disabled = true;
+          saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+        }
+        const restoreSaveBtn = () => {
+          if (!saveBtn) return;
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = originalContent;
+        };
+
+        return fetch("/api/categories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, confirm_duplicate: confirmDuplicate })
+        })
+          .then((r) => r.json())
+          .then((data) => {
+            restoreSaveBtn();
+            if (data.success) {
+              showToast(`Category "${payload.name}" created successfully!`, "success");
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("addCategoryModal");
+              bootstrap.Modal.getInstance(document.getElementById("addCategoryModal")).hide();
+              document.getElementById("add-category-form").reset();
+              document.getElementById("add-category-color").value = "#6c757d";
+              document.getElementById("add-category-color-preview").textContent = "#6c757d";
+              cachedCategories = null; // Invalidate cache
+              loadCategories();
+              // Refresh category dropdowns in other forms
+              loadCategoryDropdowns();
+              return;
+            }
+            if (data.duplicate) {
+              showConfirmDialog("Duplicate subcategory", data.message,
+                () => postCategoryForm(payload, true));
+              return;
+            }
+            showToast(data.message || "Failed to create category", "error");
+          })
+          .catch((err) => {
+            restoreSaveBtn();
+            console.error("Error saving category:", err);
+            showToast("Network error. Please try again.", "error");
+          });
+      }
+
       function saveCategory() {
         if (!requireCapability("catalog.write")) return;
         const name = (document.getElementById("add-category-name").value || "").trim();
@@ -14217,54 +14330,14 @@
           return;
         }
 
-        const saveBtn = document.querySelector("#addCategoryModal .btn-primary");
-        const originalContent = saveBtn ? saveBtn.innerHTML : '';
-        if (saveBtn) {
-          saveBtn.disabled = true;
-          saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
-        }
-
-        fetch("/api/categories", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name,
-            parent_id: document.getElementById("add-category-parent").value || null,
-            description,
-            color,
-            sort_order: sortOrder,
-            is_active: isActive
-          })
-        })
-          .then((r) => r.json())
-          .then((data) => {
-            if (data.success) {
-              showToast(`Category "${name}" created successfully!`, "success");
-              if (typeof markBranchFormSaved === "function") markBranchFormSaved("addCategoryModal");
-              bootstrap.Modal.getInstance(document.getElementById("addCategoryModal")).hide();
-              document.getElementById("add-category-form").reset();
-              document.getElementById("add-category-color").value = "#6c757d";
-              document.getElementById("add-category-color-preview").textContent = "#6c757d";
-              cachedCategories = null; // Invalidate cache
-              loadCategories();
-              // Refresh category dropdowns in other forms
-              loadCategoryDropdowns();
-            } else {
-              showToast(data.message || "Failed to create category", "error");
-            }
-            if (saveBtn) {
-              saveBtn.disabled = false;
-              saveBtn.innerHTML = originalContent;
-            }
-          })
-          .catch((err) => {
-            console.error("Error saving category:", err);
-            showToast("Network error. Please try again.", "error");
-            if (saveBtn) {
-              saveBtn.disabled = false;
-              saveBtn.innerHTML = originalContent;
-            }
-          });
+        postCategoryForm({
+          name,
+          parent_id: document.getElementById("add-category-parent").value || null,
+          description,
+          color,
+          sort_order: sortOrder,
+          is_active: isActive
+        }, false);
       }
 
       function editCategory(categoryId) {
@@ -14294,6 +14367,53 @@
           });
       }
 
+      // Mirror of postCategoryForm for edits: renaming or moving a category
+      // onto a name another shelf already uses waits for the manager's answer.
+      function putCategoryForm(categoryId, payload, confirmDuplicate) {
+        const saveBtn = document.querySelector("#editCategoryModal .btn-primary");
+        const originalContent = saveBtn ? saveBtn.innerHTML : "";
+        if (saveBtn) {
+          saveBtn.disabled = true;
+          saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Updating...';
+        }
+        const restoreSaveBtn = () => {
+          if (!saveBtn) return;
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = originalContent;
+        };
+
+        return fetch(`/api/categories/${categoryId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, confirm_duplicate: confirmDuplicate })
+        })
+          .then((r) => r.json())
+          .then((data) => {
+            restoreSaveBtn();
+            if (data.success) {
+              showToast(`Category updated successfully!`, "success");
+              if (typeof markBranchFormSaved === "function") markBranchFormSaved("editCategoryModal");
+              bootstrap.Modal.getInstance(document.getElementById("editCategoryModal")).hide();
+              cachedCategories = null; // Invalidate cache
+              loadCategories();
+              // Refresh category dropdowns in other forms
+              loadCategoryDropdowns();
+              return;
+            }
+            if (data.duplicate) {
+              showConfirmDialog("Duplicate subcategory", data.message,
+                () => putCategoryForm(categoryId, payload, true));
+              return;
+            }
+            showToast(data.message || "Failed to update category", "error");
+          })
+          .catch((err) => {
+            restoreSaveBtn();
+            console.error("Error updating category:", err);
+            showToast("Network error. Please try again.", "error");
+          });
+      }
+
       function updateCategory() {
         if (!requireCapability("catalog.write")) return;
         const categoryId = document.getElementById("edit-category-id").value;
@@ -14308,51 +14428,14 @@
           return;
         }
 
-        const saveBtn = document.querySelector("#editCategoryModal .btn-primary");
-        const originalContent = saveBtn ? saveBtn.innerHTML : '';
-        if (saveBtn) {
-          saveBtn.disabled = true;
-          saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Updating...';
-        }
-
-        fetch(`/api/categories/${categoryId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name,
-            parent_id: document.getElementById("edit-category-parent").value || null,
-            description,
-            color,
-            sort_order: sortOrder,
-            is_active: isActive
-          })
-        })
-          .then((r) => r.json())
-          .then((data) => {
-            if (data.success) {
-              showToast(`Category updated successfully!`, "success");
-              if (typeof markBranchFormSaved === "function") markBranchFormSaved("editCategoryModal");
-              bootstrap.Modal.getInstance(document.getElementById("editCategoryModal")).hide();
-              cachedCategories = null; // Invalidate cache
-              loadCategories();
-              // Refresh category dropdowns in other forms
-              loadCategoryDropdowns();
-            } else {
-              showToast(data.message || "Failed to update category", "error");
-            }
-            if (saveBtn) {
-              saveBtn.disabled = false;
-              saveBtn.innerHTML = originalContent;
-            }
-          })
-          .catch((err) => {
-            console.error("Error updating category:", err);
-            showToast("Network error. Please try again.", "error");
-            if (saveBtn) {
-              saveBtn.disabled = false;
-              saveBtn.innerHTML = originalContent;
-            }
-          });
+        putCategoryForm(categoryId, {
+          name,
+          parent_id: document.getElementById("edit-category-parent").value || null,
+          description,
+          color,
+          sort_order: sortOrder,
+          is_active: isActive
+        }, false);
       }
 
       function deleteCategory(categoryId, categoryName) {

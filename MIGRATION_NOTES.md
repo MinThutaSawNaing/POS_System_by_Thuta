@@ -60,6 +60,14 @@ existing production deployment job.
 - Product images shared by transferred catalog copies are retained while any
   branch still references them; failed edits no longer delete the old image
   before the database commit succeeds.
+- Category uniqueness is now per shelf: the legacy `UNIQUE (branch_id, name)` is
+  replaced with `UNIQUE (branch_id, parent_id, name)`. A leaf may repeat under a
+  different parent (`Electronics > IOS > ... > 256GB` and
+  `Electronics > Huawei > ... > 256GB`), and the dashboard asks for confirmation
+  before saving the duplicate. Top-level category names stay unique per branch.
+  Startup drops the old named index in place and rebuilds the table only when
+  the constraint is SQLAlchemy's table-level form; the new index
+  (`uq_category_branch_parent_name`) is created in the same transaction.
 - Users and operational data remain branch-specific; suppliers, purchase orders,
   and warehouse stock are shared manager workflows. Existing unassigned users
   are attached to the active default/fallback branch; verify those assignments.

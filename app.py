@@ -1731,7 +1731,13 @@ class Category(db.Model):
     sort_order = db.Column(db.Integer, default=0)
     branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
     parent_id = db.Column(db.Integer, db.ForeignKey('category.id'))
-    __table_args__ = (db.UniqueConstraint('branch_id', 'name', name='uq_category_branch_name'),)
+    # Only one category per shelf (branch + parent). The same leaf name may
+    # repeat under different parents -- ``256GB`` exists for more than one
+    # phone model -- and the API asks for confirmation before allowing it.
+    # Top-level names stay unique per branch through that API check because
+    # SQLite treats NULL parent ids as distinct inside a composite UNIQUE.
+    __table_args__ = (db.UniqueConstraint('branch_id', 'parent_id', 'name',
+                                          name='uq_category_branch_parent_name'),)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -2771,6 +2777,102 @@ def _migrate_branch_unique(table, column):
             connection.commit()
 
 
+def _migrate_category_branch_unique():
+    """Let one subcategory name repeat under different parents.
+
+    ``256GB`` legitimately sits under both an iPhone series and a Huawei model,
+    so the legacy branch-wide ``UNIQUE (branch_id, name)`` must become
+    ``UNIQUE (branch_id, parent_id, name)``. The old rule is either a named
+    index (dropped in place) or SQLAlchemy's table-level constraint (rebuilt
+    transactionally like the other legacy uniqueness migrations). Top-level
+    names stay unique per branch through the category API, because SQLite
+    treats NULL parent ids as distinct inside a composite UNIQUE.
+    """
+    db.session.commit()
+    with db.engine.connect() as connection:
+        indexes = connection.exec_driver_sql('PRAGMA index_list("category")').fetchall()
+        columns = {
+            index[1]: [row[2] for row in
+                       connection.exec_driver_sql(f'PRAGMA index_info("{index[1]}")')]
+            for index in indexes
+        }
+        legacy = [index for index in indexes
+                  if index[2] and columns[index[1]] == ['branch_id', 'name']]
+        if not legacy:
+            # A fresh schema already carries the parent-aware UNIQUE. A legacy
+            # table with no branch-wide rule only needs the extra guard, and
+            # only while its rows do not already share a shelf name.
+            if ['branch_id', 'parent_id', 'name'] in columns.values():
+                return
+            clash = connection.exec_driver_sql(
+                'SELECT 1 FROM "category" GROUP BY branch_id, parent_id, name '
+                'HAVING COUNT(*) > 1 LIMIT 1').first()
+            if clash is None:
+                connection.exec_driver_sql(
+                    'CREATE UNIQUE INDEX IF NOT EXISTS uq_category_branch_parent_name '
+                    'ON "category" (branch_id, parent_id, name)')
+            connection.commit()
+            return
+        enabled = connection.exec_driver_sql('PRAGMA foreign_keys').scalar()
+        connection.commit()
+        connection.exec_driver_sql('PRAGMA foreign_keys=OFF')
+        connection.commit()
+        try:
+            connection.exec_driver_sql('BEGIN IMMEDIATE')
+            old_fk_errors = set(connection.exec_driver_sql('PRAGMA foreign_key_check').fetchall())
+            table_level = [index for index in legacy if index[3] == 'u']
+            if table_level:
+                schema = connection.exec_driver_sql(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='category'").scalar()
+                sequence = None
+                if re.search(r'\bAUTOINCREMENT\b', schema, flags=re.I):
+                    sequence = connection.exec_driver_sql(
+                        'SELECT seq FROM sqlite_sequence WHERE name=?', ('category',)).scalar()
+                schema, count = re.subn(
+                    r',\s*(?:CONSTRAINT\s+\S+\s+)?UNIQUE\s*\(\s*["`\[]?branch_id["`\]]?\s*,'
+                    r'\s*["`\[]?name["`\]]?\s*\)',
+                    '', schema, flags=re.I)
+                if not count:
+                    raise RuntimeError(
+                        'Unsupported legacy category uniqueness; restore backup and migrate manually')
+                saved = connection.exec_driver_sql(
+                    "SELECT type, name, sql FROM sqlite_master WHERE tbl_name='category' "
+                    "AND type IN ('index','trigger') AND sql IS NOT NULL").fetchall()
+                schema = re.sub(r'^CREATE TABLE\s+(?:"[^"]+"|\w+)',
+                                'CREATE TABLE "category_unique_new"', schema, count=1, flags=re.I)
+                connection.exec_driver_sql(schema)
+                connection.exec_driver_sql('INSERT INTO "category_unique_new" SELECT * FROM "category"')
+                connection.exec_driver_sql('DROP TABLE "category"')
+                connection.exec_driver_sql('ALTER TABLE "category_unique_new" RENAME TO "category"')
+                if sequence is not None:
+                    connection.exec_driver_sql(
+                        'UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name=?',
+                        (sequence, 'category'))
+                    if not connection.exec_driver_sql(
+                            'SELECT 1 FROM sqlite_sequence WHERE name=?', ('category',)).first():
+                        connection.exec_driver_sql(
+                            'INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)',
+                            ('category', sequence))
+                for kind, name, sql in saved:
+                    if name not in {index[1] for index in legacy}:
+                        connection.exec_driver_sql(sql)
+            else:
+                for index in legacy:
+                    connection.exec_driver_sql(f'DROP INDEX "{index[1]}"')
+            connection.exec_driver_sql(
+                'CREATE UNIQUE INDEX IF NOT EXISTS uq_category_branch_parent_name '
+                'ON "category" (branch_id, parent_id, name)')
+            if set(connection.exec_driver_sql('PRAGMA foreign_key_check').fetchall()) - old_fk_errors:
+                raise RuntimeError('category migration introduced broken foreign-key references')
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.exec_driver_sql(f'PRAGMA foreign_keys={int(enabled)}')
+            connection.commit()
+
+
 # Payment models are registered before create_all; existing databases gain only
 # new tables. Provider credentials remain in the server environment.
 from payment_routes import register_payment_routes
@@ -2931,7 +3033,6 @@ with app.app_context():
         db.session.commit()
 
     _migrate_branch_unique('category', 'name')
-    db.session.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_category_branch_name ON category (branch_id, name)'))
     db.session.commit()
 
     if default_branch and not branch_v2_applied:
@@ -2956,6 +3057,9 @@ with app.app_context():
             db.session.commit()
         db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_category_parent ON category (parent_id)'))
         db.session.commit()
+        # Subcategory names are only unique inside their parent, so ``256GB``
+        # can live under two different phone models.
+        _migrate_category_branch_unique()
 
     # Add category_id columns to product and supplier tables
     if inspector.has_table('product'):
@@ -4224,6 +4328,81 @@ def service_worker_js():
     return response
 
 # Category API Endpoints
+def category_name_conflicts(name, branch_id, exclude_id=None):
+    """Same-name categories in one branch, ignoring the edited shelf itself."""
+    query = Category.query.filter(
+        db.func.lower(Category.name) == name.lower(),
+        Category.branch_id == branch_id,
+    )
+    if exclude_id is not None:
+        query = query.filter(Category.id != exclude_id)
+    return query.options(joinedload(Category.parent)).order_by(Category.id).all()
+
+
+def category_conflict_row(category):
+    """Describe an already-saved category so the UI can name its shelf path."""
+    chain = category_chain(category)
+    return {
+        'id': category.id,
+        'name': category.name,
+        'parent_id': category.parent_id,
+        'parent_name': category.parent.name if category.parent else None,
+        'path': ' / '.join(node.name for node in chain) if chain else category.name,
+    }
+
+
+def confirm_duplicate_requested(data):
+    """Read the ``confirm_duplicate`` flag sent after the duplicate prompt."""
+    value = data.get('confirm_duplicate', False) if isinstance(data, dict) else False
+    return value is True or str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def duplicate_category_response(name, branch_id, parent_id, confirm_duplicate, exclude_id=None):
+    """Refuse exact duplicates and ask before reusing a name from another shelf.
+
+    Top-level categories stay unique per branch. A subcategory may share its
+    name with a subcategory that lives under a different parent -- ``256GB``
+    for two phone brands -- but only after the caller re-sends the request with
+    ``confirm_duplicate``. Returns ``None`` when the name is safe to save.
+    """
+    conflicts = category_name_conflicts(name, branch_id, exclude_id)
+    if not conflicts:
+        return None
+
+    same_parent = [row for row in conflicts if row.parent_id == parent_id]
+    if parent_id is None or same_parent:
+        clash = (same_parent or conflicts)[0]
+        parent_name = clash.parent.name if clash.parent else None
+        where = f' under "{parent_name}"' if parent_name else ''
+        return jsonify({
+            'success': False,
+            'duplicate': False,
+            'message': f'Category "{name}" already exists{where} in this branch',
+            'conflicts': [category_conflict_row(row) for row in (same_parent or conflicts)],
+        }), 400
+
+    rows = [category_conflict_row(row) for row in conflicts]
+    if confirm_duplicate:
+        return None
+
+    shelf_labels = []
+    for row in conflicts:
+        if row.parent is None:
+            shelf_labels.append('(top level)')
+            continue
+        parent_chain = category_chain(row.parent)
+        shelf_labels.append(f'({" / ".join(node.name for node in parent_chain)})')
+    paths = ', '.join(shelf_labels[:3])
+    more = f' and {len(shelf_labels) - 3} more' if len(shelf_labels) > 3 else ''
+    return jsonify({
+        'success': False,
+        'duplicate': True,
+        'message': (f'Subcategory "{name}" already exists under {paths}{more}. '
+                    'Are you willing to save it?'),
+        'conflicts': rows,
+    }), 409
+
+
 def validate_category_parent(parent_id, branch_id, category=None):
     """Resolve the requested parent, rejecting cross-branch links and cycles.
 
@@ -4299,16 +4478,19 @@ def api_categories():
         
         if not name:
             return jsonify({'success': False, 'message': 'Category name is required'}), 400
-        
-        # Check for duplicate within same branch
-        existing = Category.query.filter(db.func.lower(Category.name) == name.lower(), Category.branch_id == branch_id).first()
-        if existing:
-            return jsonify({'success': False, 'message': f'Category "{name}" already exists'}), 400
 
         parent, error = validate_category_parent(data.get('parent_id'), branch_id)
         if error:
             return jsonify({'success': False, 'message': error}), 400
-        
+
+        # Top-level names stay unique in the branch. A subcategory may reuse a
+        # leaf name from another brand's shelf after the manager confirms.
+        duplicate_response = duplicate_category_response(
+            name, branch_id, parent.id if parent else None,
+            confirm_duplicate=confirm_duplicate_requested(data))
+        if duplicate_response is not None:
+            return duplicate_response
+
         category = Category(
             name=name,
             description=(data.get('description') or '').strip(),
@@ -4323,7 +4505,7 @@ def api_categories():
             db.session.commit()
         except IntegrityError:
             db.session.rollback()
-            return jsonify({'success': False, 'message': f'Category "{name}" already exists in this branch'}), 400
+            return jsonify({'success': False, 'message': f'Category "{name}" already exists under this parent'}), 400
         return jsonify({'success': True, 'message': 'Category created', 'category': category.to_dict()}), 201
 
 @app.route('/api/categories/<int:category_id>', methods=['GET', 'PUT', 'DELETE'])
@@ -4349,19 +4531,19 @@ def api_single_category(category_id):
         if not name:
             return jsonify({'success': False, 'message': 'Category name is required'}), 400
         
-        # Check for duplicate within same branch (excluding current category)
-        existing = Category.query.filter(
-            db.func.lower(Category.name) == name.lower(),
-            Category.id != category_id,
-            Category.branch_id == category.branch_id
-        ).first()
-        if existing:
-            return jsonify({'success': False, 'message': f'Category "{name}" already exists'}), 400
-
+        # Check for duplicate names, asking first when another shelf already
+        # uses this leaf name (excluding the current category).
         parent, error = validate_category_parent(data.get('parent_id', category.parent_id), branch_id, category)
         if error:
             return jsonify({'success': False, 'message': error}), 400
-        
+
+        duplicate_response = duplicate_category_response(
+            name, branch_id, parent.id if parent else None,
+            confirm_duplicate=confirm_duplicate_requested(data),
+            exclude_id=category_id)
+        if duplicate_response is not None:
+            return duplicate_response
+
         old_name = category.name
         category.name = name
         category.parent_id = parent.id if parent else None
@@ -4379,7 +4561,7 @@ def api_single_category(category_id):
             db.session.commit()
         except IntegrityError:
             db.session.rollback()
-            return jsonify({'success': False, 'message': f'Category "{name}" already exists in this branch'}), 400
+            return jsonify({'success': False, 'message': f'Category "{name}" already exists under this parent'}), 400
         return jsonify({'success': True, 'message': 'Category updated', 'category': category.to_dict()})
 
     elif request.method == 'DELETE':
