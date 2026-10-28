@@ -6960,21 +6960,20 @@
           <div class="modal-body">
             <p>Import into <strong id="product-import-branch"></strong>. Preview first; nothing is saved until you confirm.</p>
             <div class="alert alert-info small">
-              <strong>Stock is protected.</strong> This imports catalog details only. Existing stock and photos are kept;
-              new products start at zero stock. Use Warehouse / Purchase &amp; Receiving to add stock.
-              Blank spreadsheet cells never erase existing values.
+              <strong>Stock is protected.</strong> This imports catalog details only. Existing stock is kept and new products start at zero.
+              Use Warehouse / Purchase &amp; Receiving to add stock. Blank spreadsheet cells never erase existing values.
             </div>
             <div class="row g-3 align-items-end">
               <div class="col-12 col-md-6">
                 <label class="form-label" for="product-import-file">1. Choose your spreadsheet</label>
                 <input type="file" class="form-control" id="product-import-file" accept=".xlsx,.csv" aria-describedby="product-import-file-help">
-                <div id="product-import-file-help" class="form-text">Excel .xlsx or UTF-8 CSV, up to 5 MB and 2,000 products. For .xls, save as .xlsx first. Use the first data sheet; keep barcodes as text to preserve leading zeros.</div>
+                <div id="product-import-file-help" class="form-text">Excel .xlsx or UTF-8 CSV, up to 15 MB and 2,000 products. For .xls, save as .xlsx first. Use the first data sheet; keep barcodes as text to preserve leading zeros. Insert each product picture into the Photo column of its row to import photos too.</div>
               </div>
               <div class="col-12 col-md-6">
                 <label class="form-label" for="product-import-mode">2. When a barcode already exists in this branch</label>
                 <select class="form-select" id="product-import-mode">
                   <option value="skip">Skip existing products (recommended)</option>
-                  <option value="update">Update supplied catalog fields; keep stock and photos</option>
+                  <option value="update">Update supplied catalog fields; keep stock and set photos where a picture is provided</option>
                 </select>
                 <div class="form-text">Updates require a matching barcode. Unclear name matches are flagged instead of overwritten.</div>
               </div>

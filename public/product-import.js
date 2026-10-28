@@ -75,7 +75,8 @@
   const modal = el("importProductsModal");
   if (!modal) return;
   const fields = {name: "Product name *", barcode: "Barcode / SKU", price: "Selling price *",
-    cost: "Cost", category: "Category", unit: "Unit", tax_rate: "Tax rate (%)"};
+    cost: "Cost", category: "Category", unit: "Unit", tax_rate: "Tax rate (%)",
+    photo: "Photo (picture in the cell)"};
   const scope = () => typeof currentBranch !== "undefined" && currentBranch?.id &&
     !dashboardSessionStale && !dashboardBranchStale && !branchSwitchInFlight &&
     hasCapability("catalog.write") ? String(currentBranch.id) : null;
@@ -124,7 +125,7 @@
       const response = await root.fetch(path, {method: "POST", body, credentials: "same-origin"});
       let data;
       try { data = await response.json(); }
-      catch (error) { throw new Error(response.status === 413 ? "File exceeds the 5 MB upload limit." : "The server could not read this import. Please retry."); }
+      catch (error) { throw new Error(response.status === 413 ? "File exceeds the 15 MB upload limit." : "The server could not read this import. Please retry."); }
       if (!response.ok) throw new Error(data.message || "The import request failed.");
       return data;
     },
@@ -149,7 +150,7 @@
         const tr = doc.createElement("tr");
         const changes = Object.entries(row.changes || {}).map(([key, value]) =>
           `${fields[key] || key}: ${value}`).join("; ");
-        const detail = [row.message, changes].filter(Boolean).join(" — ");
+        const detail = [row.message, changes, row.photo ? `photo: ${row.photo}` : ""].filter(Boolean).join(" — ");
         [row.row, row.name, row.barcode, row.action, detail].forEach(value => {
           const td = doc.createElement("td"); td.textContent = String(value ?? ""); tr.appendChild(td);
         });

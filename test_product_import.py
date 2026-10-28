@@ -1,6 +1,8 @@
 """Product import HTTP contracts; run only through the disposable run_tests.py."""
 import io
 import json
+import base64
+import os
 import unittest
 import importlib.util
 from pathlib import Path
@@ -21,6 +23,25 @@ def workbook(rows):
     sheet = book.add_worksheet()
     for index, row in enumerate(rows):
         sheet.write_row(index, 0, row)
+    book.close()
+    return output.getvalue()
+
+
+# A 1x1 PNG, the smallest picture a workbook can carry.
+PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
+
+
+def picture_workbook(rows, column=None):
+    """Same rows, with a picture pasted into each data row's picture column."""
+    output = io.BytesIO()
+    book = xlsxwriter.Workbook(output, {'in_memory': True})
+    sheet = book.add_worksheet()
+    for index, row in enumerate(rows):
+        sheet.write_row(index, 0, row)
+    photo_column = len(rows[0]) - 1 if column is None else column
+    for index in range(1, len(rows)):
+        sheet.insert_image(index, photo_column, 'photo.png',
+                           {'image_data': io.BytesIO(base64.b64decode(PNG_1PX))})
     book.close()
     return output.getvalue()
 
@@ -83,6 +104,11 @@ class ProductImportTests(unittest.TestCase):
         response = self.client.get('/api/products/import/template')
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data.startswith(b'PK'))
+        # The template offers a Photo column for pasted pictures.
+        from product_import import _xlsx
+        header = next(cells for number, cells in _xlsx(response.data)[0] if number == 1)
+        self.assertEqual([cell[0] for cell in header],
+                         ['Name', 'Barcode', 'Price', 'Cost', 'Category', 'Unit', 'Tax Rate', 'Photo'])
         content = workbook([['Name', 'Barcode', 'Price', 'Unit', 'Stock'], ['Tea', '0000123', 12.5, 'pc', 99]])
         response = self.post('preview', content)
         self.assertEqual(response.status_code, 200, response.get_json())
@@ -338,3 +364,41 @@ class ProductImportTests(unittest.TestCase):
         result = self.post('preview', output.getvalue()).get_json()
         self.assertEqual(result['preview']['summary']['error'], 3)
         self.assertEqual(result['preview']['rows'][3]['changes']['tax_rate'], 12)
+    def test_pictures_pasted_in_a_photo_column_become_product_photos(self):
+        content = picture_workbook([['Name', 'Price', 'Photo'], ['Tea', 12, '']])
+        before = set(os.listdir(app.config['UPLOAD_FOLDER']))
+        preview = self.post('preview', content).get_json()
+        self.assertEqual(preview['preview']['summary']['create'], 1, preview)
+        self.assertEqual(preview['preview']['rows'][0]['photo'], 'image1.png')
+        # Previewing is read-only: no image file may appear before confirmation.
+        self.assertEqual(set(os.listdir(app.config['UPLOAD_FOLDER'])), before)
+
+        result = self.post('commit', content, preview_token=preview['preview_token'])
+        self.assertEqual(result.status_code, 200, result.get_json())
+        product = Product.query.one()
+        self.assertTrue(product.photo_filename.endswith('.png'), product.photo_filename)
+        self.assertTrue((Path(app.config['UPLOAD_FOLDER']) / product.photo_filename).is_file())
+
+    def test_updating_a_row_replaces_its_photo_and_removes_the_previous_file(self):
+        previous = Path(app.config['UPLOAD_FOLDER']) / 'previous.png'
+        previous.write_bytes(b'old photo')
+        product = self.product(photo_filename='previous.png')
+        content = picture_workbook([['SKU', 'Selling Price', 'Photo'], ['T', 20, '']])
+        preview = self.post('preview', content, duplicate_mode='update').get_json()
+        self.assertEqual(preview['preview']['rows'][0]['action'], 'update', preview)
+        result = self.post('commit', content, duplicate_mode='update',
+                           preview_token=preview['preview_token'])
+        self.assertEqual(result.status_code, 200, result.get_json())
+        db.session.expire_all()
+        self.assertNotEqual(product.photo_filename, 'previous.png')
+        self.assertFalse(previous.exists())
+
+    def test_pictures_without_a_photo_column_are_reported_not_attached(self):
+        content = picture_workbook([['Name', 'Price', 'Notes'], ['Tea', 12, '']])
+        preview = self.post('preview', content).get_json()
+        self.assertNotIn('photo', preview['preview']['rows'][0])
+        self.assertTrue(any('Pictures found in the workbook' in warning
+                            for warning in preview['warnings']), preview['warnings'])
+        self.assertEqual(self.post('commit', content,
+                                   preview_token=preview['preview_token']).status_code, 200)
+        self.assertIsNone(Product.query.one().photo_filename)

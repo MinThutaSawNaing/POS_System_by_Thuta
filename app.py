@@ -123,7 +123,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = os.path.join(app.root_path, 'uploads', 'products')
 app.config['RECEIPT_LOGO_FOLDER'] = os.path.join(app.root_path, 'uploads', 'receipts')
 app.config['MMQR_FOLDER'] = os.path.join(app.root_path, 'uploads', 'mmqr')
-app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB per request
+app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20 MB per request; product imports carry product photos
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'

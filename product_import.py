@@ -2,6 +2,8 @@
 
 No spreadsheet code is executed, relationships are never fetched, and uploads
 are never extracted to disk. Stock belongs to the warehouse receiving workflow.
+Product pictures pasted into the workbook are imported from the workbook's own
+media parts; nothing outside the uploaded file is ever read.
 """
 import hashlib
 import csv
@@ -20,15 +22,23 @@ from flask import jsonify, request, session, send_file
 from itsdangerous import URLSafeTimedSerializer, BadData
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, OperationalError
+from werkzeug.datastructures import FileStorage
 import xlsxwriter
 
 
-MAX_UPLOAD = 5 * 1024 * 1024
-MAX_EXPANDED = 20 * 1024 * 1024
+MAX_UPLOAD = 15 * 1024 * 1024
+MAX_EXPANDED = 60 * 1024 * 1024
 MAX_MEMBER = 10 * 1024 * 1024
+MAX_MEMBERS = 2000
 MAX_ROWS = 2000
+# Mirrors save_product_image() in app.py: one product photo may not exceed 2 MB.
+MAX_PHOTO = 2 * 1024 * 1024
+PHOTO_EXTENSIONS = ('png', 'jpg', 'jpeg', 'gif', 'webp')
 NS = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 REL = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id'
+EMBED = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed'
+DRAWING = {'xdr': 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing',
+           'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
 ALIASES = {
     'name': ('name', 'product name', 'item name'),
     'barcode': ('barcode', 'sku'),
@@ -37,6 +47,7 @@ ALIASES = {
     'category': ('category',),
     'unit': ('unit',),
     'tax_rate': ('tax rate', 'tax rate (%)', 'tax %'),
+    'photo': ('photo', 'image', 'picture', 'product photo', 'photo file', 'image file'),
 }
 
 
@@ -45,12 +56,13 @@ def _norm(value):
 
 
 def _xlsx(data):
-    """Return bounded rows of (text, formula, numeric, format) cells."""
+    """Return bounded rows of (text, formula, numeric, format) cells, plus the
+    pictures anchored in those rows as {(row, column): (media path, byte size)}."""
     try:
         archive = ZipFile(io.BytesIO(data))
         with archive:
             members = archive.infolist()
-            if (len(members) > 200 or len({m.filename for m in members}) != len(members)
+            if (len(members) > MAX_MEMBERS or len({m.filename for m in members}) != len(members)
                     or sum(m.file_size for m in members) > MAX_EXPANDED
                     or any(m.file_size > MAX_MEMBER or m.flag_bits & 1
                            or m.compress_type not in (ZIP_STORED, ZIP_DEFLATED) for m in members)):
@@ -62,6 +74,40 @@ def _xlsx(data):
                     raise ValueError('DTD, entities and non-UTF8 XML are not supported')
                 return ET.fromstring(raw)
 
+            def related(path):
+                """Resolve the internal relationships of one workbook part."""
+                rels = posixpath.join(posixpath.dirname(path), '_rels',
+                                      posixpath.basename(path) + '.rels')
+                if rels not in names:
+                    return {}
+                base = posixpath.dirname(path)
+                return {e.get('Id'): posixpath.normpath(posixpath.join(base, e.get('Target', '')))
+                        for e in xml(rels) if e.get('TargetMode') != 'External'}
+
+            def pictures(sheet_path):
+                """Pictures are anchored to a cell, so the anchor gives the row."""
+                found = {}
+                for drawing in related(sheet_path).values():
+                    if not drawing.startswith('xl/drawings/') or not drawing.endswith('.xml'):
+                        continue
+                    if drawing not in names:
+                        raise ValueError('Unsupported drawing relationship')
+                    media = related(drawing)
+                    for anchor in xml(drawing):
+                        row, column = (anchor.find('xdr:from/xdr:row', DRAWING),
+                                       anchor.find('xdr:from/xdr:col', DRAWING))
+                        blip = anchor.find('.//a:blip', DRAWING)
+                        path = media.get(blip.get(EMBED)) if blip is not None else None
+                        if row is None or column is None or not path:
+                            continue
+                        if not path.startswith('xl/media/') or path not in names:
+                            raise ValueError('Unsupported picture relationship')
+                        # One picture per cell; a taller picture spans to-cells only.
+                        found.setdefault((int(row.text) + 1, int(column.text)),
+                                         (path, archive.getinfo(path).file_size))
+                return found
+
+            names = set(archive.namelist())
             strings = []
             if 'xl/sharedStrings.xml' in archive.namelist():
                 # Only text runs, not phonetic properties/formatting, form values.
@@ -122,15 +168,24 @@ def _xlsx(data):
                                               for i in range(1, max(cells) + 1)]))
                 if any(any(c[0] for c in cells) for _, cells in rows):
                     if fallback is None:
-                        fallback = rows
+                        fallback = (rows, pictures(path))
                     if any(sum(any(_norm(c[0]) in aliases for c in cells)
                                for aliases in ALIASES.values()) >= 2 for _, cells in rows[:25]):
-                        return rows
+                        return rows, pictures(path)
             if fallback is not None:
                 return fallback
     except (BadZipFile, ET.ParseError, KeyError, IndexError, TypeError, OverflowError, RuntimeError, zlib.error) as error:
         raise ValueError('Invalid or unsupported XLSX workbook') from error
     raise ValueError('Workbook has no visible data worksheet')
+
+
+def _in_cell_pictures(data):
+    """Excel "Place in Cell" photos are stored as rich data, not as anchors."""
+    try:
+        with ZipFile(io.BytesIO(data)) as archive:
+            return 'xl/richData/richValueRel.xml' in archive.namelist()
+    except (BadZipFile, OSError):
+        return False
 
 
 def _csv(data):
@@ -215,7 +270,8 @@ def _number(value, field):
         raise ValueError(field + ' must be a finite nonnegative number' + (' between 0 and 100' if field == 'tax_rate' else '')) from None
 
 
-def _plan(columns, mapping, rows, products, categories, units, mode, create_categories):
+def _plan(columns, mapping, rows, products, categories, units, mode, create_categories, pictures=None):
+    pictures = pictures or {}
     barcodes = {p.barcode: p for p in products if p.barcode}
     names, cats, measures = defaultdict(list), defaultdict(list), defaultdict(list)
     for product in products:
@@ -231,6 +287,8 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
     unknown = [c for c in columns if c and c not in mapping.values() and _norm(c) not in ('stock', 'quantity', 'qty')]
     if unknown:
         warnings.append('Unmapped columns ignored: ' + ', '.join(unknown))
+    if pictures and 'photo' not in mapping:
+        warnings.append('Pictures found in the workbook. Map an image column (for example Photo) to import them.')
     prepared = []
     identities = defaultdict(list)
     for number, cells in rows:
@@ -320,6 +378,19 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
                 errors.append('Unknown, inactive or ambiguous unit: ' + unit_name)
             else:
                 changes['unit_id'] = matches[0].id
+        # The picture in the mapped cell belongs to this row, not to the cell text.
+        picture, photo = '', None
+        if mapping.get('photo'):
+            anchored = pictures.get((row['row'], columns.index(mapping['photo'])))
+            if anchored:
+                path, size = anchored
+                picture = posixpath.basename(path)
+                if path.rsplit('.', 1)[-1].lower() not in PHOTO_EXTENSIONS:
+                    errors.append('Unsupported photo type ' + picture + '; use png, jpg, gif or webp')
+                elif size > MAX_PHOTO:
+                    errors.append('Photo must be 2 MB or smaller: ' + picture)
+                else:
+                    photo = path
         if errors:
             row['message'] = '; '.join(dict.fromkeys(errors))
         else:
@@ -332,7 +403,9 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
                 warnings.append('Will create active category: ' + category_name)
             if action != 'skip':
                 row['changes'] = changes.copy()
-                plans.append((action, existing, barcode, changes, category))
+                if photo:
+                    row['photo'] = picture
+                plans.append((action, existing, barcode, changes, category, photo))
         result.append(row)
     summary = {action: sum(r['action'] == action for r in result) for action in ('create', 'update', 'skip', 'error')}
     return {'rows': result, 'summary': summary}, list(dict.fromkeys(warnings)), plans
@@ -365,24 +438,42 @@ def register_product_import(app, db, models):
         output = io.BytesIO()
         book = xlsxwriter.Workbook(output, {'in_memory': True})
         sheet = book.add_worksheet('Products')
-        sheet.write_row(0, 0, ['Name', 'Barcode', 'Price', 'Cost', 'Category', 'Unit', 'Tax Rate'])
+        sheet.write_row(0, 0, ['Name', 'Barcode', 'Price', 'Cost', 'Category', 'Unit', 'Tax Rate', 'Photo'])
         sheet.freeze_panes(1, 0)
         sheet.set_column('A:A', 28)
         sheet.set_column('B:B', 22, book.add_format({'num_format': '@'}))
         sheet.set_column('C:G', 18)
+        # Paste or insert each product picture into its row's Photo column.
+        sheet.set_column('H:H', 24)
         book.close()
         output.seek(0)
         return send_file(output, as_attachment=True, download_name='product_import_template.xlsx',
                          mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
     def handle(branch_id, commit=False):
+        stored = {}
+        replaced = []
+
+        def drop_photo(name):
+            # Cleanup must never turn a finished import into a failure: an
+            # orphaned old file on disk is better than a broken catalog write.
+            try:
+                models['delete_product_image'](name)
+            except Exception:
+                pass
+
+        def discard_photos():
+            """A failed import must not leave orphaned image files behind."""
+            for name in dict.fromkeys(stored.values()):
+                drop_photo(name)
+
         try:
             upload = request.files.get('file')
             if not upload or not upload.filename or not upload.filename.lower().endswith(('.xlsx', '.csv')):
                 raise ValueError('Upload an .xlsx workbook or UTF-8 .csv file')
             data = upload.stream.read(MAX_UPLOAD + 1)
             if len(data) > MAX_UPLOAD:
-                raise ValueError('Workbook upload must be at most 5 MB')
+                raise ValueError('Workbook upload must be at most 15 MB')
             mode = request.form.get('duplicate_mode', 'skip')
             if mode not in ('skip', 'update'):
                 raise ValueError('duplicate_mode must be skip or update')
@@ -390,7 +481,11 @@ def register_product_import(app, db, models):
             if not isinstance(supplied, dict) or any(k not in ALIASES or not isinstance(v, str) for k, v in supplied.items()):
                 raise ValueError('mapping must be an object of canonical fields to column headers')
             create_categories = request.form.get('create_categories', 'false').lower() == 'true'
-            columns, mapping, rows = _table(_csv(data) if upload.filename.lower().endswith('.csv') else _xlsx(data), supplied)
+            if upload.filename.lower().endswith('.csv'):
+                rows, pictures = _csv(data), {}
+            else:
+                rows, pictures = _xlsx(data)
+            columns, mapping, rows = _table(rows, supplied)
             if commit:
                 try:
                     signed = signer.loads(request.form.get('preview_token', ''), max_age=900)
@@ -411,7 +506,11 @@ def register_product_import(app, db, models):
             if commit and signed != context:
                 db.session.rollback()
                 return jsonify(success=False, message='Preview is stale or does not match this request. Preview again.'), 409
-            preview, warnings, plans = _plan(columns, mapping, rows, products, categories, units, mode, create_categories)
+            preview, warnings, plans = _plan(columns, mapping, rows, products, categories, units,
+                                             mode, create_categories, pictures)
+            if not pictures and data[:2] == b'PK' and _in_cell_pictures(data):
+                warnings.append('Pictures placed inside cells are not supported. Paste each one as a '
+                                'floating picture in its row, inside the mapped photo column.')
             if not commit:
                 return jsonify(success=True, columns=columns, mapping=mapping, preview=preview,
                                warnings=warnings, preview_token=signer.dumps(context))
@@ -420,7 +519,7 @@ def register_product_import(app, db, models):
                 return jsonify(success=False, message='Resolve every preview error before importing.',
                                columns=columns, mapping=mapping, preview=preview, warnings=warnings), 400
             created_categories = {}
-            for action, existing, barcode, changes, category in plans:
+            for action, existing, barcode, changes, category, photo in plans:
                 if changes.get('category'):
                     if category is None:
                         key = _norm(changes['category'])
@@ -432,21 +531,35 @@ def register_product_import(app, db, models):
                             created_categories[key] = category
                     changes['category_id'] = category.id
                     changes['category'] = category.name
+                if photo:
+                    if photo not in stored:
+                        with ZipFile(io.BytesIO(data)) as archive:
+                            blob = archive.read(photo)
+                        stored[photo] = models['save_product_image'](
+                            FileStorage(io.BytesIO(blob), filename=posixpath.basename(photo)))
+                    if existing is not None and existing.photo_filename:
+                        replaced.append(existing.photo_filename)
+                    changes['photo_filename'] = stored[photo]
                 if action == 'create':
                     db.session.add(Product(branch_id=branch_id, barcode=barcode or None, stock=0, **changes))
                 else:
                     for key, value in changes.items():
                         setattr(existing, key, value)
             db.session.commit()
+            for name in dict.fromkeys(replaced):
+                drop_photo(name)
             return jsonify(success=True, summary=preview['summary'], warnings=warnings)
         except (ValueError, json.JSONDecodeError) as error:
             db.session.rollback()
+            discard_photos()
             return jsonify(success=False, message=str(error)), 400
         except (IntegrityError, OperationalError):
             db.session.rollback()
+            discard_photos()
             return jsonify(success=False, message='Catalog changed or is busy. Preview again.'), 409
         except Exception:
             db.session.rollback()
+            discard_photos()
             raise
 
     @app.post('/api/products/import/preview')

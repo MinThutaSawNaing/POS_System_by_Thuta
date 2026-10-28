@@ -9,7 +9,8 @@ branch and never replace the entire catalog.
 1. Download the optional template, or select an existing `.xlsx` / UTF-8 `.csv`
    file. Convert legacy `.xls` workbooks to `.xlsx` first. Put the product list
    on the first data worksheet and store barcodes as text, especially if they
-   contain leading zeros or more than 15 digits.
+   contain leading zeros or more than 15 digits. Pictures can only be imported
+   from `.xlsx` (see [Photos](#photos)).
 2. Leave **Skip existing products** selected unless you deliberately want to
    update existing catalog details.
 3. Select **Preview import**. Common headings are recognized automatically.
@@ -20,8 +21,38 @@ branch and never replace the entire catalog.
    saved while previewing, and a file containing errors cannot be committed.
 5. Choose **Confirm import** and approve the final confirmation.
 
-Up to 2,000 products and a 5 MB upload are accepted per file. Split larger
+Up to 2,000 products and a 15 MB upload are accepted per file. Split larger
 catalogs into smaller files.
+
+## Photos
+
+Product pictures travel inside the same workbook, so one file imports catalog
+details and photos together.
+
+1. Add a `Photo` column (or `Image` / `Picture`) to the worksheet. Any of these
+   headings is recognized automatically and can be remapped in step 3 of the
+   dialog.
+2. Paste or insert one picture per row so that it sits **inside that row's
+   Photo cell**. The picture belongs to the row it is anchored to; the cell
+   text stays empty.
+3. Preview. Each row that carries a picture shows its file name in the
+   detail column, and rows without a picture simply keep their current photo.
+
+Rules and limits:
+
+- One picture per row, at most 2 MB each (`png`, `jpg`, `gif` or `webp`).
+  Larger or unsupported pictures are reported as row errors instead of being
+  silently dropped.
+- **Skip existing products** leaves existing photos untouched. **Update
+  existing products** replaces the photo when the row carries a picture and
+  leaves it alone when the cell is empty. The replaced file is deleted after
+  the import commits.
+- Pictures placed *inside* a cell with Excel 365's **Place in Cell** feature
+  are not supported; paste them as floating pictures instead. The preview says
+  so explicitly when it finds them.
+- Previewing never writes image files. If the import fails or is rolled back,
+  no new image file is left behind.
+- CSV files cannot carry pictures. Use `.xlsx` when photos are required.
 
 ## Duplicate policy
 
@@ -29,7 +60,8 @@ catalogs into smaller files.
   Barcodes in other branches do not cause cross-branch updates.
 - **Skip** is the default: existing records are not changed.
 - **Update** changes only supplied, nonblank catalog fields. Blank cells do not
-  erase existing values. Stock, photos, record IDs and catalog identity are kept.
+  erase existing values. Stock, record IDs and catalog identity are kept, and a
+  row's picture replaces the existing photo (see [Photos](#photos)).
 - A name without a barcode is not safe enough for automatic updates. Existing
   name matches are skipped or flagged; provide the existing barcode to update.
 - Conflicting identities, ambiguous names and repeated products in the same
