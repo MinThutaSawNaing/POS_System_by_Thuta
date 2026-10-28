@@ -81,7 +81,12 @@ def _xlsx(data):
                 if rels not in names:
                     return {}
                 base = posixpath.dirname(path)
-                return {e.get('Id'): posixpath.normpath(posixpath.join(base, e.get('Target', '')))
+                # ZIP member names have no leading slash. Some writers use
+                # package-root targets (/xl/...), while others use ../ paths.
+                # Resolve both before checking the drawing/media boundaries.
+                return {e.get('Id'): posixpath.normpath(
+                            e.get('Target', '').lstrip('/') if e.get('Target', '').startswith('/')
+                            else posixpath.join(base, e.get('Target', '')))
                         for e in xml(rels) if e.get('TargetMode') != 'External'}
 
             def pictures(sheet_path):

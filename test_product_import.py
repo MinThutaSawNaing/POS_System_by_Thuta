@@ -3,6 +3,7 @@ import io
 import json
 import base64
 import os
+import posixpath
 import unittest
 import importlib.util
 from pathlib import Path
@@ -11,6 +12,7 @@ import sys
 import tempfile
 from unittest.mock import patch
 from zipfile import ZipFile, ZIP_DEFLATED
+from xml.etree import ElementTree as ET
 from flask import Flask
 from itsdangerous import URLSafeTimedSerializer
 from sqlalchemy.exc import IntegrityError
@@ -43,6 +45,27 @@ def picture_workbook(rows, column=None):
         sheet.insert_image(index, photo_column, 'photo.png',
                            {'image_data': io.BytesIO(base64.b64decode(PNG_1PX))})
     book.close()
+    return output.getvalue()
+
+
+def rewrite_picture_relationships(content, parts, external=False):
+    """Model package-root targets without adding another spreadsheet library."""
+    output = io.BytesIO()
+    with ZipFile(io.BytesIO(content)) as source, ZipFile(output, 'w', ZIP_DEFLATED) as target:
+        for member in source.infolist():
+            blob = source.read(member.filename)
+            if any(member.filename.startswith('xl/' + part + '/_rels/') for part in parts):
+                tree = ET.fromstring(blob)
+                base = posixpath.dirname(posixpath.dirname(member.filename))
+                for relation in tree:
+                    if external:
+                        relation.set('Target', 'https://example.invalid/photo.png')
+                        relation.set('TargetMode', 'External')
+                    else:
+                        path = posixpath.normpath(posixpath.join(base, relation.get('Target')))
+                        relation.set('Target', '/' + path)
+                blob = ET.tostring(tree)
+            target.writestr(member, blob)
     return output.getvalue()
 
 
@@ -406,6 +429,36 @@ class ProductImportTests(unittest.TestCase):
         product = Product.query.one()
         self.assertTrue(product.photo_filename.endswith('.png'), product.photo_filename)
         self.assertTrue((Path(app.config['UPLOAD_FOLDER']) / product.photo_filename).is_file())
+
+    def test_package_root_picture_relationships_preview_and_save_photos(self):
+        for parts in (('worksheets',), ('drawings',), ('worksheets', 'drawings')):
+            with self.subTest(parts=parts):
+                name = 'Tea ' + ' '.join(parts)
+                content = picture_workbook([['Name', 'Price', 'Photo'], [name, 12, '']])
+                content = rewrite_picture_relationships(content, parts)
+                before = set(os.listdir(app.config['UPLOAD_FOLDER']))
+                response = self.post('preview', content)
+                self.assertEqual(response.status_code, 200, response.get_json())
+                preview = response.get_json()
+                self.assertEqual(preview['preview']['summary']['error'], 0, preview)
+                self.assertEqual(preview['preview']['rows'][0]['photo'], 'image1.png')
+                self.assertEqual(set(os.listdir(app.config['UPLOAD_FOLDER'])), before)
+                result = self.post('commit', content, preview_token=preview['preview_token'])
+                self.assertEqual(result.status_code, 200, result.get_json())
+                product = Product.query.filter_by(name=name).one()
+                self.assertTrue(product.photo_filename.endswith('.png'))
+                saved = Path(app.config['UPLOAD_FOLDER']) / product.photo_filename
+                self.assertEqual(saved.read_bytes(), base64.b64decode(PNG_1PX))
+
+    def test_external_picture_relationships_are_not_imported(self):
+        for parts in (('worksheets',), ('drawings',)):
+            with self.subTest(parts=parts):
+                content = picture_workbook([['Name', 'Price', 'Photo'], ['Tea', 12, '']])
+                content = rewrite_picture_relationships(content, parts, external=True)
+                response = self.post('preview', content)
+                self.assertEqual(response.status_code, 200, response.get_json())
+                preview = response.get_json()
+                self.assertNotIn('photo', preview['preview']['rows'][0])
 
     def test_updating_a_row_replaces_its_photo_and_removes_the_previous_file(self):
         previous = Path(app.config['UPLOAD_FOLDER']) / 'previous.png'
