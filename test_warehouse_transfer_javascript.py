@@ -186,3 +186,16 @@ def test_permission_denied_does_not_touch_transfer_or_retry():
 authorized=false;open();await confirmRestock();
 assert.equal(requests.length,0);assert.equal(shown,0);assert.deepEqual(storage,{});
 """)
+
+
+def test_rejected_exact_retry_becoming_ambiguous_cannot_start_replacement():
+    run_transfer(r"""
+open();fill();mode='validation';await confirmRestock();
+assert.equal(readWarehouseTransferRetry().rejected,true);
+mode='network';await confirmRestock();
+assert.equal(readWarehouseTransferRetry().rejected,false);
+fill('5');await confirmRestock();assert.equal(requests.length,2);
+showRestockModal(99,'Other',100,0,'other');
+assert.equal(Number(fields['restock-product-id'].value),10);
+assert.equal(Number(fields['restock-quantity'].value),4);
+""")

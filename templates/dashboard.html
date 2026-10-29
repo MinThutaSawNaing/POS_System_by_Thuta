@@ -3538,6 +3538,7 @@
               <table class="table table-striped table-hover">
                 <thead>
                   <tr>
+                    <th><input type="checkbox" id="warehouse-select-page" class="form-check-input" aria-label="Select warehouse page" onchange="toggleWarehousePageSelection(this.checked)" /></th>
                     <th>Product</th>
                     <th class="d-none d-md-table-cell">Catalog Branch</th>
                     <th class="d-none d-md-table-cell">Barcode</th>
@@ -3552,12 +3553,18 @@
                 </thead>
                 <tbody id="warehouse-table">
                   <tr>
-                    <td colspan="10" class="text-center py-4">
+                    <td colspan="11" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status"></div>
                     </td>
                   </tr>
                 </tbody>
               </table>
+            </div>
+            <div class="d-flex align-items-center gap-2 flex-wrap mt-2">
+              <button id="warehouse-transfer-selected" class="btn btn-sm btn-success" onclick="showWarehouseBulkTransferModal()">Transfer Selected</button>
+              <span id="warehouse-selection-count" class="small text-muted" aria-live="polite">0 selected</span>
+              <button class="btn btn-sm btn-outline-secondary" onclick="clearWarehouseSelection()">Clear selection</button>
+              <button class="btn btn-sm btn-outline-warning" onclick="showWarehouseBulkTransferModal(true)">Resume saved bulk transfer</button>
             </div>
             <div id="warehouse-pagination" class="d-flex justify-content-start mt-3"></div>
           </div>
@@ -6702,6 +6709,19 @@
                 <i class="bi bi-plus"></i> Add Item
               </button>
             </div>
+            <details class="border rounded p-2 mb-3">
+              <summary class="text-primary">Select Multiple Products</summary>
+              <label for="po-products-search" class="form-label mt-2">Search products by name or barcode</label>
+              <input type="search" id="po-products-search" class="form-control form-control-sm mb-2" placeholder="Starts with product name or barcode…" oninput="loadPurchaseOrderProducts()" />
+              <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="selectPurchaseOrderProducts(true)">Select results</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="selectPurchaseOrderProducts(false)">Clear selection</button>
+                <button type="button" id="po-products-add" class="btn btn-sm btn-outline-primary" onclick="addSelectedPurchaseOrderProducts()" disabled>Add selected (0)</button>
+              </div>
+              <div id="po-products-results" class="overflow-auto" style="max-height: 240px" role="group" aria-label="Products to add"></div>
+              <small id="po-products-status" class="text-muted d-block" role="status"></small>
+              <small class="text-muted">Selections stay checked across searches. Add them together, then adjust each quantity and cost below.</small>
+            </details>
             <div id="po-items-container"></div>
           </div>
           <div class="modal-footer">
@@ -6944,6 +6964,34 @@
             <button type="button" class="btn btn-success" onclick="confirmRestock()">
               <i class="bi bi-box-arrow-in-up"></i> Transfer to Stock
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Warehouse bulk transfer: saved requests remain immutable until confirmed. -->
+    <div class="modal fade" id="warehouseBulkTransferModal" tabindex="-1" aria-labelledby="warehouse-bulk-title" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="warehouse-bulk-title">Transfer Selected Warehouse Items</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p class="small text-muted">Transfers run one at a time, not as a single transaction. A saved queue can be resumed safely after a partial failure or reload in this tab.</p>
+            <label for="warehouse-bulk-branch" class="form-label">Target Branch</label>
+            <select id="warehouse-bulk-branch" class="form-select mb-3"></select>
+            <label for="warehouse-bulk-notes" class="form-label">Notes</label>
+            <textarea id="warehouse-bulk-notes" class="form-control mb-3" rows="2"></textarea>
+            <div class="table-responsive">
+              <table class="table table-sm"><thead><tr><th>Product / Batch</th><th>Available</th><th>Quantity</th><th>Status</th></tr></thead><tbody id="warehouse-bulk-items"></tbody></table>
+            </div>
+            <div id="warehouse-bulk-status" class="alert alert-info" role="status" aria-live="polite"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            <button id="warehouse-bulk-skip" class="btn btn-outline-warning" hidden onclick="skipRejectedWarehouseBulkItem()">Skip rejected item</button>
+            <button id="warehouse-bulk-confirm" class="btn btn-success" onclick="confirmWarehouseBulkTransfer()">Transfer / Retry Remaining</button>
           </div>
         </div>
       </div>
@@ -19970,6 +20018,85 @@
       // across tab switches and only a full page reload cleared it.
       let purchaseOrderSaving = false;
       let purchaseOrderSaveButtonHtml = null;
+      const poProductPicker = {selected: new Map(), items: [], sequence: 0, controller: null, identity: null};
+
+      async function loadPurchaseOrderProducts() {
+        const token = ++poProductPicker.sequence;
+        poProductPicker.controller?.abort();
+        poProductPicker.controller = new AbortController();
+        const identity = inventoryIdentity();
+        const status = document.getElementById("po-products-status");
+        const results = document.getElementById("po-products-results");
+        poProductPicker.items = [];
+        renderPurchaseOrderProducts();
+        status.textContent = "Searching…";
+        try {
+          const params = new URLSearchParams({limit: "30", q: document.getElementById("po-products-search").value.trim()});
+          const response = await fetch(`/api/purchase_orders/products?${params}`, {signal: poProductPicker.controller.signal});
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const items = await response.json();
+          if (token !== poProductPicker.sequence || identity !== inventoryIdentity() || !results.isConnected) return;
+          if (!Array.isArray(items) || items.length > 30) throw new Error("Invalid product results");
+          poProductPicker.items = items;
+          renderPurchaseOrderProducts();
+          status.textContent = items.length === 30 ? "First 30 results — refine your search for more products." : `${items.length} results`;
+        } catch (error) {
+          if (token !== poProductPicker.sequence || identity !== inventoryIdentity() || error.name === "AbortError") return;
+          status.textContent = "Search failed. Type again to retry; selected products are unchanged.";
+        }
+      }
+
+      function renderPurchaseOrderProducts() {
+        const results = document.getElementById("po-products-results");
+        results.replaceChildren();
+        poProductPicker.items.forEach(product => {
+          const label = document.createElement("label");
+          label.className = "d-flex align-items-center gap-2 border-bottom py-2";
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.className = "form-check-input flex-shrink-0 m-0";
+          checkbox.checked = poProductPicker.selected.has(String(product.id));
+          checkbox.addEventListener("change", () => {
+            if (checkbox.checked) poProductPicker.selected.set(String(product.id), product);
+            else poProductPicker.selected.delete(String(product.id));
+            updatePurchaseOrderProductCount();
+          });
+          const text = document.createElement("span");
+          text.textContent = `${product.name} — ${product.branch_name || "Unassigned"} | Cost: ${formatCurrency(product.cost ?? 0)}`;
+          label.appendChild(checkbox);
+          label.appendChild(text);
+          results.appendChild(label);
+        });
+        updatePurchaseOrderProductCount();
+      }
+
+      function updatePurchaseOrderProductCount() {
+        const button = document.getElementById("po-products-add");
+        button.textContent = `Add selected (${poProductPicker.selected.size})`;
+        button.disabled = !poProductPicker.selected.size;
+      }
+
+      function selectPurchaseOrderProducts(selected) {
+        if (selected) poProductPicker.items.forEach(product => poProductPicker.selected.set(String(product.id), product));
+        else poProductPicker.selected.clear();
+        renderPurchaseOrderProducts();
+      }
+
+      function addSelectedPurchaseOrderProducts() {
+        if (purchaseOrderSaving || poProductPicker.identity !== inventoryIdentity() || !requireCapability("admin")) return;
+        const rows = Array.from(document.querySelectorAll(".po-item-row"));
+        const existing = new Set(rows.map(row => row.querySelector(".po-item-product").value));
+        const products = Array.from(poProductPicker.selected.values()).filter(product => !existing.has(String(product.id)));
+        if (products.length) {
+          // Keep any partially entered manual line; discard only untouched placeholders.
+          rows.filter(row => [".po-item-product", ".po-item-qty", ".po-item-cost"]
+            .every(selector => !row.querySelector(selector).value)).forEach(row => row.remove());
+          products.forEach(product => addPurchaseOrderItemRow(product));
+        }
+        poProductPicker.selected.clear();
+        renderPurchaseOrderProducts();
+        showToast(products.length ? `Added ${products.length} products. Adjust quantities below.` : "Selected products are already in this order.", products.length ? "success" : "info");
+      }
 
       function setPurchaseOrderSaving(saving) {
         purchaseOrderSaving = Boolean(saving);
@@ -20001,9 +20128,13 @@
         if (existingLookup) lookup.reset();
 
         addPurchaseOrderItemRow();
+        poProductPicker.selected.clear();
+        poProductPicker.identity = inventoryIdentity();
+        document.getElementById("po-products-search").value = "";
+        loadPurchaseOrderProducts();
       }
 
-      function addPurchaseOrderItemRow() {
+      function addPurchaseOrderItemRow(product = null) {
         const container = document.getElementById("po-items-container");
         const row = document.createElement("div");
         row.className = "row g-2 mb-2 po-item-row";
@@ -20012,10 +20143,10 @@
             <select class="form-select po-item-product" aria-label="Purchase product"></select>
           </div>
           <div class="col-md-3">
-            <input type="number" min="1" class="form-control po-item-qty" placeholder="Qty" />
+            <input type="number" min="1" step="1" class="form-control po-item-qty" placeholder="Qty" aria-label="Ordered quantity" />
           </div>
           <div class="col-md-3">
-            <input type="number" min="0" step="0.01" class="form-control po-item-cost" placeholder="Unit Cost" />
+            <input type="number" min="0" step="0.01" class="form-control po-item-cost" placeholder="Unit Cost" aria-label="Unit cost" />
           </div>
           <div class="col-md-1">
             <button class="btn btn-outline-danger w-100" onclick="removePurchaseOrderItemRow(this)"><i class="bi bi-x"></i></button>
@@ -20025,6 +20156,16 @@
 
         const productSelect = row.querySelector(".po-item-product");
         productSelect.innerHTML = '<option value="">Select product</option>';
+        if (product) {
+          const option = document.createElement("option");
+          option.value = String(product.id);
+          option.textContent = `${product.name} — ${product.branch_name || "Unassigned"} (${formatCurrency(product.price || 0)})`;
+          option.dataset.unitCost = String(product.cost ?? 0);
+          productSelect.appendChild(option);
+          productSelect.value = option.value;
+          row.querySelector(".po-item-qty").value = "1";
+          row.querySelector(".po-item-cost").value = option.dataset.unitCost;
+        }
         makeRemoteInventorySelect(productSelect, "/api/purchase_orders/products", "Purchase product", true);
         productSelect.addEventListener("change", () => {
           const option = productSelect.selectedOptions[0];
@@ -20592,8 +20733,11 @@
       }
 
       function loadWarehouseInventory() {
+        syncWarehouseSelectionIdentity();
+        warehousePageItems = [];
+        syncWarehouseSelectionUi();
         const table = document.getElementById("warehouse-table");
-        table.innerHTML = '<tr><td colspan="10" class="text-center py-4"><div class="spinner-border text-primary"></div></td></tr>';
+        table.innerHTML = '<tr><td colspan="11" class="text-center py-4"><div class="spinner-border text-primary"></div></td></tr>';
 
         const params = new URLSearchParams();
         const search = (document.getElementById("warehouse-search")?.value || "").trim();
@@ -20611,15 +20755,22 @@
             if (!request.current()) return;
             request.accept(data);
             table.innerHTML = "";
+            warehousePageItems = data.items;
+            // Refresh selected snapshots when their rows are visited again.
+            data.items.forEach(item => {
+              if (warehouseSelection.has(String(item.id))) warehouseSelection.set(String(item.id), {...item});
+            });
+            syncWarehouseSelectionUi();
 
             if (data.items.length === 0) {
-              table.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-muted">No warehouse inventory found.</td></tr>';
+              table.innerHTML = '<tr><td colspan="11" class="text-center py-4 text-muted">No warehouse inventory found.</td></tr>';
               return;
             }
 
             data.items.forEach((item) => {
               const row = document.createElement("tr");
               row.innerHTML = `
+                <td><input type="checkbox" class="form-check-input warehouse-row-select" aria-label="Select ${escapeHtml(item.product_name)}" ${warehouseSelection.has(String(item.id)) ? 'checked' : ''} ${item.quantity <= 0 ? 'disabled' : ''} /></td>
                 <td><strong>${escapeHtml(item.product_name)}</strong></td>
                 <td class="d-none d-md-table-cell">${escapeHtml(item.product_branch || '-')}</td>
                 <td class="d-none d-md-table-cell">${escapeHtml(item.barcode || '-')}</td>
@@ -20635,6 +20786,15 @@
                   </button>
                 </td>
               `;
+              row.dataset.warehouseId = String(item.id);
+              const rowIdentity = inventoryIdentity();
+              row.querySelector(".warehouse-row-select").addEventListener("change", (event) => {
+                if (!requireCapability("admin") || !warehouseTransferAllowed() || inventoryIdentity() !== rowIdentity) return;
+                syncWarehouseSelectionIdentity();
+                if (event.target.checked) warehouseSelection.set(String(item.id), {...item});
+                else warehouseSelection.delete(String(item.id));
+                syncWarehouseSelectionUi();
+              });
               row.querySelector(".warehouse-restock-btn").addEventListener("click", () =>
                 showRestockModal(item.product_id, item.product_name, item.quantity, item.main_stock, item.batch_number)
               );
@@ -20647,7 +20807,7 @@
             if (!request.current()) return;
             request.fail();
             console.error("Error loading warehouse inventory", e);
-            table.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-danger">Failed to load warehouse inventory.</td></tr>';
+            table.innerHTML = '<tr><td colspan="11" class="text-center py-4 text-danger">Failed to load warehouse inventory.</td></tr>';
           });
       }
 
@@ -20750,9 +20910,42 @@
         if (status) { status.textContent = message; status.hidden = !message; }
       }
 
+      function warehouseTransferAllowed() {
+        return !((typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) ||
+          (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) ||
+          (typeof branchSwitchInFlight !== "undefined" && branchSwitchInFlight));
+      }
+
+      async function sendWarehouseTransfer(retry, persistRejection) {
+        const response = await fetch("/api/warehouse/transfer", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({...retry.payload, idempotency_key: retry.key})
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          if (data.success === false && [400, 404, 422].includes(response.status)) {
+            retry.rejected = true;
+            persistRejection();
+          }
+          throw new Error(data.message || "Transfer was not confirmed");
+        }
+        return data;
+      }
+
+      function warehouseBulkBlocksSingleTransfer() {
+        if (typeof readWarehouseBulkQueue !== "function") return false;
+        try {
+          if (!readWarehouseBulkQueue()) return false;
+          showToast("Resume the saved bulk transfer before starting a single transfer.", "warning");
+        } catch (error) {
+          showToast("Cannot read saved bulk transfers. Reconcile transfer history and browser storage first.", "error");
+        }
+        return true;
+      }
+
       function showRestockModal(productId, productName, availableQty, mainStock, batchNumber) {
         if (!requireCapability("admin")) return;
-        if (warehouseTransferInFlight) return;
+        if (warehouseTransferInFlight || !warehouseTransferAllowed() || warehouseBulkBlocksSingleTransfer()) return;
         let retry;
         try { retry = readWarehouseTransferRetry(); }
         catch (error) {
@@ -20803,7 +20996,7 @@
 
       function confirmRestock() {
         if (!requireCapability("admin")) return;
-        if (warehouseTransferInFlight) return;
+        if (warehouseTransferInFlight || warehouseBulkBlocksSingleTransfer()) return;
         if ((typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) ||
             (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) ||
             (typeof branchSwitchInFlight !== "undefined" && branchSwitchInFlight)) return;
@@ -20853,6 +21046,12 @@
             // not manufacture a fresh key and duplicate a committed transfer.
             sessionStorage.setItem(warehouseTransferStorageKey(), JSON.stringify(retry));
           }
+          // A retry of a previously rejected intent can now commit. Clear the
+          // old rejection before sending so a lost response cannot be abandoned.
+          if (retry.rejected) {
+            retry.rejected = false;
+            sessionStorage.setItem(warehouseTransferStorageKey(), JSON.stringify(retry));
+          }
         } catch (error) {
           showToast("Cannot safely retain the transfer retry key. No transfer was sent. Check transfer history and browser storage before continuing.", "error");
           return;
@@ -20865,22 +21064,8 @@
           confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Processing...';
         }
 
-        return fetch("/api/warehouse/transfer", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({...retry.payload, idempotency_key: retry.key})
-        })
-          .then(async (response) => {
-            const data = await response.json();
-            if (!response.ok || !data.success) {
-              if (data.success === false && [400, 404, 422].includes(response.status)) {
-                retry.rejected = true;
-                sessionStorage.setItem(warehouseTransferStorageKey(), JSON.stringify(retry));
-              }
-              throw new Error(data.message || "Transfer was not confirmed");
-            }
-            return data;
-          })
+        return sendWarehouseTransfer(retry, () =>
+          sessionStorage.setItem(warehouseTransferStorageKey(), JSON.stringify(retry)))
           .then((data) => {
             if (data.success) {
               sessionStorage.removeItem(warehouseTransferStorageKey());
@@ -20888,6 +21073,7 @@
               showToast(data.message || "Items restocked successfully!", "success");
               if (typeof markBranchFormSaved === "function") markBranchFormSaved("warehouseRestockModal");
               bootstrap.Modal.getInstance(document.getElementById("warehouseRestockModal")).hide();
+              if (typeof clearWarehouseSelection === "function") clearWarehouseSelection();
               invalidateProductsCache();
               loadWarehouseSummary();
               loadWarehouseInventory();
@@ -20918,6 +21104,219 @@
           });
       }
       // ===== END WAREHOUSE TRANSFER RETRY =====
+
+      // ===== WAREHOUSE BULK TRANSFER =====
+      const warehouseSelection = new Map();
+      let warehousePageItems = [], warehouseSelectionIdentity = null;
+      let warehouseBulkDraft = [], warehouseBulkDraftIdentity = null;
+
+      function syncWarehouseSelectionIdentity() {
+        const identity = inventoryIdentity();
+        if (warehouseSelectionIdentity !== identity) {
+          warehouseSelection.clear();
+          warehousePageItems = [];
+          warehouseSelectionIdentity = identity;
+        }
+      }
+
+      function syncWarehouseSelectionUi() {
+        const eligible = warehousePageItems.filter(item => item.quantity > 0);
+        const checked = eligible.filter(item => warehouseSelection.has(String(item.id))).length;
+        const selectPage = document.getElementById("warehouse-select-page");
+        if (selectPage) {
+          selectPage.checked = eligible.length > 0 && checked === eligible.length;
+          selectPage.indeterminate = checked > 0 && checked < eligible.length;
+          selectPage.disabled = !eligible.length;
+        }
+        const count = document.getElementById("warehouse-selection-count");
+        if (count) count.textContent = `${warehouseSelection.size} selected (across pages)`;
+        const button = document.getElementById("warehouse-transfer-selected");
+        if (button) button.disabled = warehouseSelection.size === 0;
+        const table = document.getElementById("warehouse-table");
+        Array.from(table?.children || []).forEach(row => {
+          const checkbox = row.querySelector(".warehouse-row-select");
+          if (checkbox) checkbox.checked = warehouseSelection.has(row.dataset.warehouseId);
+        });
+      }
+
+      function toggleWarehousePageSelection(checked) {
+        if (!requireCapability("admin") || !warehouseTransferAllowed()) return;
+        syncWarehouseSelectionIdentity();
+        warehousePageItems.filter(item => item.quantity > 0).forEach(item => {
+          if (checked) warehouseSelection.set(String(item.id), {...item});
+          else warehouseSelection.delete(String(item.id));
+        });
+        syncWarehouseSelectionUi();
+      }
+
+      function clearWarehouseSelection() {
+        warehouseSelection.clear();
+        syncWarehouseSelectionUi();
+      }
+
+      function warehouseBulkStorageKey() {
+        // Not branch-scoped: a reload/switch must restore the original destination.
+        return `pos_transfer_bulk_v1:${CACHE_USER_ID}`;
+      }
+
+      function readWarehouseBulkQueue() {
+        const raw = sessionStorage.getItem(warehouseBulkStorageKey());
+        if (!raw) return null;
+        const queue = JSON.parse(raw);
+        if (!Array.isArray(queue?.items) || !queue.items.length || !queue.items.every(item =>
+          item.key && item.payload && item.view && typeof item.done === "boolean" &&
+          Number.isSafeInteger(item.payload.product_id) && Number.isSafeInteger(item.payload.quantity) &&
+          item.payload.quantity > 0 && item.payload.target_branch_id)) throw new Error("Invalid saved bulk transfer");
+        return queue;
+      }
+
+      function warehouseBulkNotice(message) {
+        document.getElementById("warehouse-bulk-status").textContent = message;
+      }
+
+      function renderWarehouseBulkItems(items, saved) {
+        const table = document.getElementById("warehouse-bulk-items");
+        table.innerHTML = "";
+        items.forEach(item => {
+          const row = document.createElement("tr");
+          row.innerHTML = `<td>${escapeHtml(item.view.productName)}<br><small>${escapeHtml(item.payload.batch_number || '-')}</small></td>
+            <td>${Number(item.view.availableQty)}</td>
+            <td><input class="form-control form-control-sm" type="number" min="1" step="1" max="${Number(item.view.availableQty)}" aria-label="Quantity for ${escapeHtml(item.view.productName)}" /></td>
+            <td>${item.skipped ? 'Skipped (rejected)' : item.done ? 'Confirmed' : item.rejected ? 'Rejected' : saved ? 'Pending / retry' : 'Ready'}</td>`;
+          const input = row.querySelector("input");
+          input.value = item.payload.quantity;
+          input.disabled = saved;
+          table.appendChild(row);
+        });
+        const next = items.find(item => !item.done);
+        document.getElementById("warehouse-bulk-skip").hidden = !next?.rejected;
+      }
+
+      function showWarehouseBulkTransferModal(resumeOnly = false) {
+        if (!requireCapability("admin") || warehouseTransferInFlight || !warehouseTransferAllowed()) return;
+        syncWarehouseSelectionIdentity();
+        try {
+          if (readWarehouseTransferRetry()) {
+            showToast("Resolve the saved single transfer first using a row's Transfer button.", "warning");
+            return;
+          }
+          const queue = readWarehouseBulkQueue();
+          if (!queue && (resumeOnly || !warehouseSelection.size)) {
+            showToast(resumeOnly ? "No saved bulk transfer." : "Select warehouse items first.", "info");
+            return;
+          }
+          warehouseBulkDraftIdentity = inventoryIdentity();
+          warehouseBulkDraft = queue?.items || [...warehouseSelection.values()].map(item => ({
+            done: false, rowId: String(item.id),
+            payload: {product_id: Number(item.product_id), quantity: 1, batch_number: item.batch_number || null},
+            view: {productName: item.product_name, availableQty: item.quantity}
+          }));
+          const branch = document.getElementById("warehouse-bulk-branch");
+          branch.innerHTML = branchesList.filter(b => b.is_active).map(b =>
+            `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join("");
+          const target = queue?.items[0].payload.target_branch_id || String(currentBranch?.id || "");
+          // An inactive original target still needs to be visible for exact replay.
+          if (queue && !branchesList.some(b => b.is_active && String(b.id) === String(target))) {
+            const option = document.createElement("option");
+            option.value = target; option.textContent = `Saved branch #${target}`; branch.appendChild(option);
+          }
+          branch.value = target;
+          branch.disabled = !!queue;
+          const notes = document.getElementById("warehouse-bulk-notes");
+          notes.value = queue?.items[0].payload.notes || ""; notes.disabled = !!queue;
+          renderWarehouseBulkItems(warehouseBulkDraft, !!queue);
+          warehouseBulkNotice(queue ? "Saved queue restored. Confirmed items will not be sent again; pending items keep their original keys and fields." : "Review all quantities before transferring. Selection is retained across pages and filters.");
+          new bootstrap.Modal(document.getElementById("warehouseBulkTransferModal")).show();
+        } catch (error) {
+          showToast("Cannot read saved transfer state. Reconcile transfer history and browser storage before continuing.", "error");
+        }
+      }
+
+      function skipRejectedWarehouseBulkItem() {
+        if (!requireCapability("admin") || warehouseTransferInFlight || !warehouseTransferAllowed()) return;
+        try {
+          const queue = readWarehouseBulkQueue();
+          const item = queue?.items.find(item => !item.done);
+          // Never abandon an ambiguous request; it may already be committed.
+          if (!item?.rejected) return;
+          item.done = true; item.skipped = true;
+          sessionStorage.setItem(warehouseBulkStorageKey(), JSON.stringify(queue));
+          renderWarehouseBulkItems(queue.items, true);
+          warehouseBulkNotice("Rejected item skipped. Continue to process the remaining saved requests.");
+        } catch (error) { showToast("Cannot safely update saved queue.", "error"); }
+      }
+
+      async function confirmWarehouseBulkTransfer() {
+        if (!requireCapability("admin") || warehouseTransferInFlight || !warehouseTransferAllowed()) return;
+        let queue;
+        try {
+          if (readWarehouseTransferRetry()) { showToast("Resolve the saved single transfer first.", "warning"); return; }
+          queue = readWarehouseBulkQueue();
+          if (!queue) {
+            if (!warehouseBulkDraft.length || warehouseBulkDraftIdentity !== inventoryIdentity()) {
+              showToast("Branch identity changed. Reopen the bulk transfer and select items again.", "warning"); return;
+            }
+            const branch = document.getElementById("warehouse-bulk-branch").value;
+            if (!branchesList.some(b => b.is_active && String(b.id) === branch)) {
+              showToast("Select an active target branch.", "warning"); return;
+            }
+            const rows = document.getElementById("warehouse-bulk-items").children;
+            const notes = document.getElementById("warehouse-bulk-notes").value.trim() || null;
+            const items = warehouseBulkDraft.map((item, i) => ({...item, key: generateClientTxnId(),
+              payload: {...item.payload, quantity: Number(rows[i].querySelector("input").value), target_branch_id: branch, notes}}));
+            if (!items.every(item => Number.isSafeInteger(item.payload.quantity) && item.payload.quantity > 0 &&
+              item.payload.quantity <= item.view.availableQty)) {
+              showToast("Every quantity must be a positive whole number within available warehouse stock.", "warning"); return;
+            }
+            queue = {items};
+            // Save every intent/key BEFORE the first request, not just the active row.
+            sessionStorage.setItem(warehouseBulkStorageKey(), JSON.stringify(queue));
+          }
+        } catch (error) { showToast("Cannot safely retain the bulk queue. No transfer was sent.", "error"); return; }
+        const identity = inventoryIdentity();
+        const button = document.getElementById("warehouse-bulk-confirm");
+        warehouseTransferInFlight = true; button.disabled = true;
+        document.getElementById("warehouse-bulk-branch").disabled = true;
+        document.getElementById("warehouse-bulk-notes").disabled = true;
+        try {
+          for (const item of queue.items) {
+            if (item.done) continue;
+            if (!warehouseTransferAllowed() || inventoryIdentity() !== identity || !requireCapability("admin")) {
+              throw new Error("Identity changed. Reload before resuming the saved queue.");
+            }
+            // A new attempt can itself be ambiguous, so clear a prior rejection
+            // durably before retrying it (otherwise Skip could discard a commit).
+            item.rejected = false;
+            sessionStorage.setItem(warehouseBulkStorageKey(), JSON.stringify(queue));
+            renderWarehouseBulkItems(queue.items, true);
+            warehouseBulkNotice(`Processing ${queue.items.filter(i => i.done).length + 1} of ${queue.items.length}…`);
+            await sendWarehouseTransfer(item, () => sessionStorage.setItem(warehouseBulkStorageKey(), JSON.stringify(queue)));
+            item.done = true;
+            sessionStorage.setItem(warehouseBulkStorageKey(), JSON.stringify(queue));
+            invalidateProductsCache();
+          }
+          sessionStorage.removeItem(warehouseBulkStorageKey());
+          warehouseBulkDraft = [];
+          clearWarehouseSelection();
+          if (typeof markBranchFormSaved === "function") markBranchFormSaved("warehouseBulkTransferModal");
+          renderWarehouseBulkItems(queue.items, true);
+          const skipped = queue.items.filter(i => i.skipped).length;
+          warehouseBulkNotice(`Bulk transfer finished: ${queue.items.length - skipped} confirmed, ${skipped} skipped.`);
+          showToast("Bulk transfer finished.", "success");
+        } catch (error) {
+          // If saving progress failed after a commit, the stored pending row
+          // still has its original key and can be replayed safely on reload.
+          warehouseBulkNotice("Queue paused. Pending transfers may already have completed. Retry remaining with the SAME saved requests. " + error.message);
+          renderWarehouseBulkItems(queue.items, true);
+          showToast("Bulk transfer paused; resume the saved queue safely.", "warning");
+        } finally {
+          warehouseTransferInFlight = false; button.disabled = false;
+          if (warehouseTransferAllowed() && inventoryIdentity() === identity) {
+            loadWarehouseSummary(); loadWarehouseInventory(); loadProducts(); loadProductsForPOS();
+          }
+        }
+      }
+      // ===== END WAREHOUSE BULK TRANSFER =====
 
       function showTransferHistoryModal() {
         const table = document.getElementById("transfer-history-table");

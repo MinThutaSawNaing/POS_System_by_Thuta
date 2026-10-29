@@ -64,8 +64,8 @@ See [setup, security controls, and recovery notes](docs/email-two-factor.md) bef
   - Customer management
   - Debt & payment tracking with aging analysis
   - Supplier management with price agreements
-  - Purchase order system (create, approve, cancel)
-  - Warehouse inventory management with transfers
+  - Purchase order system (create, approve, cancel); use **Select Multiple Products** to search, tick products across searches, and add them together with editable quantities and costs
+  - Warehouse inventory management with transfers; tick products across pages and use **Transfer Selected** to review quantities and transfer them to one branch
   - User roles (`manager`, `cashier`)
 
 - **Multi-Branch Support**

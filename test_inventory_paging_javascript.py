@@ -54,6 +54,10 @@ const pageState = {products: 1, purchases: 1, warehouse: 1};
 const pageSize = {products: 30, purchases: 30, warehouse: 30};
 // The Products table keeps a multi-select map keyed by product id.
 const productSelection = new Map();
+const warehouseSelection = new Map();
+let warehousePageItems = [];
+function syncWarehouseSelectionIdentity() {}
+function syncWarehouseSelectionUi() {}
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const pending = [];
 function fetch(url, init) { return new Promise((resolve, reject) => pending.push({url, init, resolve, reject})); }
