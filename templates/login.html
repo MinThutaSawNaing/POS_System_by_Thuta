@@ -282,6 +282,80 @@
             background: var(--primary-dark);
         }
 
+        /* Submitting state: faded, non-interactive, so a double click cannot
+           fire a second request while the first one is still in flight. */
+        .btn-login:disabled,
+        .btn-login[aria-busy="true"] {
+            opacity: .6;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        .btn-login:disabled:hover,
+        .btn-login[aria-busy="true"]:hover {
+            background: var(--primary);
+        }
+
+        .btn-outline-secondary:disabled {
+            opacity: .6;
+            cursor: not-allowed;
+        }
+
+        /* One-time code: one box per digit, paste and keyboard friendly. */
+        .otp-group {
+            display: grid;
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+            gap: .55rem;
+            margin-bottom: .55rem;
+        }
+
+        .otp-input {
+            width: 100%;
+            min-height: 56px;
+            padding: .4rem 0;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: #fff;
+            color: var(--text-main);
+            font-size: 1.35rem;
+            font-weight: 600;
+            line-height: 1;
+            text-align: center;
+            transition: border-color .2s ease, box-shadow .2s ease, background-color .2s ease;
+        }
+
+        .otp-input:hover {
+            border-color: #b8b8b8;
+        }
+
+        .otp-input:focus {
+            outline: none;
+            border-color: rgba(15, 98, 254, .75);
+            box-shadow: 0 0 0 .25rem rgba(15, 98, 254, .18);
+            background: #f7faff;
+        }
+
+        .otp-input.is-filled {
+            border-color: #a6c8ff;
+            background: #f8fbff;
+        }
+
+        .otp-input.is-invalid {
+            border-color: #da1e28;
+            box-shadow: 0 0 0 .25rem rgba(218, 30, 40, .15);
+        }
+
+        @media (max-width: 420px) {
+            .otp-group {
+                gap: .35rem;
+            }
+
+            .otp-input {
+                min-height: 48px;
+                font-size: 1.15rem;
+            }
+        }
+
         .meta-row {
             display: flex;
             align-items: center;
@@ -423,7 +497,8 @@
         @media (pointer: coarse) {
             .form-control,
             .btn-login,
-            .captcha-refresh {
+            .captcha-refresh,
+            .otp-input {
                 min-height: 48px;
             }
 
@@ -469,8 +544,15 @@
             <div class="alert alert-light border" role="status">{{ info or 'Enter the code sent to ' ~ masked_email ~ '.' }}</div>
             <form method="POST" action="/login/verify" id="verifyLoginForm">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                <label for="login-code" class="form-label">6-digit sign-in code</label>
-                <input id="login-code" name="code" type="text" class="form-control mb-2" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required autofocus aria-describedby="login-code-help">
+                <label for="login-code-digit-1" class="form-label">6-digit sign-in code</label>
+                <div class="otp-group" id="loginCodeGroup" role="group" aria-label="Six-digit sign-in code">
+                    {% for index in range(1, 7) %}
+                    <input class="otp-input" id="login-code-digit-{{ index }}" type="text" inputmode="numeric" maxlength="1" pattern="[0-9]*" aria-label="Digit {{ index }} of 6" autocomplete="{{ 'one-time-code' if index == 1 else 'off' }}" required{{ ' autofocus' if index == 1 }}>
+                    {% endfor %}
+                </div>
+                {# The visible boxes only feed this canonical field, so the server
+                   keeps receiving one six-digit value from /login/verify. #}
+                <input id="login-code" name="code" type="hidden" pattern="[0-9]{6}" autocomplete="one-time-code" required aria-describedby="login-code-help">
                 <p id="login-code-help" class="form-text mb-3">Codes expire after 10 minutes. Check spam if the email is missing. Never share your code.</p>
                 <button type="submit" class="btn btn-primary btn-login w-100">Verify and sign in</button>
             </form>
@@ -568,6 +650,8 @@
 
             document.getElementById('refreshCaptcha').addEventListener('click', generateCaptcha);
 
+            const loginButton = document.querySelector('#loginForm button[type="submit"]');
+
             document.getElementById('loginForm').addEventListener('submit', function(e) {
                 const captchaInput = document.getElementById('captchaInput').value;
                 const captchaCode = document.getElementById('captchaCode').value;
@@ -586,8 +670,138 @@
                     errorDiv.textContent = 'Invalid security code. Please try again.';
                     generateCaptcha();
                     document.getElementById('captchaInput').value = '';
+                    return;
+                }
+
+                // Lock the button the moment the request leaves, so repeated
+                // clicks cannot queue a second sign-in attempt.
+                if (loginButton) {
+                    loginButton.disabled = true;
+                    loginButton.setAttribute('aria-busy', 'true');
+                    loginButton.textContent = 'Signing in\u2026';
                 }
             });
+
+            // A back/forward cache restore must not leave the form locked.
+            window.addEventListener('pageshow', function() {
+                if (!loginButton) return;
+                loginButton.disabled = false;
+                loginButton.removeAttribute('aria-busy');
+                loginButton.textContent = 'Sign in securely';
+            });
+        });
+    </script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const group = document.getElementById('loginCodeGroup');
+            const hidden = document.getElementById('login-code');
+            const form = document.getElementById('verifyLoginForm');
+            if (!group || !hidden || !form) return;
+
+            const boxes = Array.prototype.slice.call(group.querySelectorAll('.otp-input'));
+            const button = form.querySelector('button[type="submit"]');
+            if (!boxes.length || !button) return;
+
+            const digits = () => boxes.map(function(box) { return box.value; }).join('');
+
+            const sync = () => {
+                hidden.value = digits();
+                boxes.forEach(function(box) {
+                    box.classList.toggle('is-filled', box.value !== '');
+                });
+            };
+
+            const clearInvalid = () => boxes.forEach(function(box) {
+                box.classList.remove('is-invalid');
+            });
+
+            const focusBox = index => {
+                const box = boxes[Math.min(Math.max(index, 0), boxes.length - 1)];
+                if (box) {
+                    box.focus();
+                    box.select();
+                }
+            };
+
+            const fill = (start, text) => {
+                let index = start;
+                for (const character of text.replace(/\D/g, '').split('')) {
+                    if (index >= boxes.length) break;
+                    boxes[index].value = character;
+                    index += 1;
+                }
+                sync();
+                focusBox(index);
+            };
+
+            boxes.forEach(function(box, index) {
+                box.addEventListener('input', function() {
+                    clearInvalid();
+                    // Autofill and mobile keyboards can deliver the whole code
+                    // at once; spread it across the remaining boxes.
+                    const typed = box.value.replace(/\D/g, '');
+                    if (typed.length > 1) {
+                        box.value = '';
+                        fill(index, typed);
+                        return;
+                    }
+                    box.value = typed;
+                    sync();
+                    if (typed && index < boxes.length - 1) focusBox(index + 1);
+                });
+
+                box.addEventListener('keydown', function(event) {
+                    if (event.key === 'Backspace' && !box.value && index > 0) {
+                        event.preventDefault();
+                        boxes[index - 1].value = '';
+                        sync();
+                        focusBox(index - 1);
+                    } else if (event.key === 'ArrowLeft' && index > 0) {
+                        event.preventDefault();
+                        focusBox(index - 1);
+                    } else if (event.key === 'ArrowRight' && index < boxes.length - 1) {
+                        event.preventDefault();
+                        focusBox(index + 1);
+                    }
+                });
+
+                box.addEventListener('paste', function(event) {
+                    const clipboard = event.clipboardData || window.clipboardData;
+                    const text = clipboard ? String(clipboard.getData('text') || '') : '';
+                    if (!text) return;
+                    event.preventDefault();
+                    clearInvalid();
+                    box.value = '';
+                    fill(index, text);
+                });
+
+                box.addEventListener('focus', function() {
+                    box.select();
+                });
+
+                box.addEventListener('blur', sync);
+            });
+
+            form.addEventListener('submit', function(event) {
+                sync();
+                if (hidden.value.length !== 6) {
+                    event.preventDefault();
+                    // Native validation normally stops this first; re-enable
+                    // the button in case another listener already locked it.
+                    button.disabled = false;
+                    boxes.forEach(function(box) {
+                        box.classList.toggle('is-invalid', box.value === '');
+                    });
+                    focusBox(boxes.findIndex(function(box) { return box.value === ''; }));
+                    return;
+                }
+                // Only one verification request may leave per code.
+                button.disabled = true;
+                button.setAttribute('aria-busy', 'true');
+                button.textContent = 'Verifying\u2026';
+            });
+
+            sync();
         });
     </script>
 </body>

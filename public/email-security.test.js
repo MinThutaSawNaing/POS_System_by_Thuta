@@ -722,3 +722,27 @@ test('login template countdown enables resend only when due and prevents duplica
   forms.resendLoginForm.submit.call(forms.resendLoginForm);
   assert.equal(resend.disabled, true);
 });
+test('login challenge renders one box per digit feeding a single six-digit field', () => {
+  const group = login.match(/<div class="otp-group" id="loginCodeGroup"[\s\S]*?<\/div>/);
+  assert.ok(group, 'the one-time code group exists');
+  assert.match(group[0], /\{% for index in range\(1, 7\) %\}/);
+  assert.match(group[0], /id="login-code-digit-\{\{ index \}\}"/);
+  const box = group[0].match(/<input\b[^>]*class="otp-input"[^>]*>/);
+  assert.ok(box, 'the digit box is defined once for the render loop');
+  assert.match(box[0], /inputmode="numeric"/);
+  assert.match(box[0], /maxlength="1"/);
+  assert.match(box[0], /pattern="\[0-9\]\*"/);
+  assert.match(box[0], /aria-label="Digit \{\{ index \}\} of 6"/);
+  assert.match(box[0], /\srequired/);
+  assert.match(box[0], /autofocus/);
+  assert.match(tagFor(login, 'login-code'), /type="hidden"/);
+  assert.match(tagFor(login, 'login-code'), /name="code"/);
+});
+
+test('login and verification buttons stay locked while a request is in flight', () => {
+  assert.match(login, /loginButton\.disabled = true/);
+  assert.match(login, /loginButton\.disabled = false/);
+  assert.match(login, /addEventListener\('pageshow'/);
+  assert.match(login, /button\.disabled = true/);
+  assert.match(login, /\.btn-login:disabled/);
+});
