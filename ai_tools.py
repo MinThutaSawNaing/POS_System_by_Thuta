@@ -40,7 +40,7 @@ from typing import Dict, List, Any, Optional
 from decimal import Decimal, ROUND_HALF_UP
 
 import pytz
-from sqlalchemy import text
+from sqlalchemy import and_, or_, text
 
 MONEY_QUANT = Decimal('0.01')
 
@@ -59,10 +59,17 @@ def money_dec(value):
     """Convert a value to a finite Decimal, defaulting to 0 for None/NaN/inf/unparseable input."""
     if value is None:
         return Decimal('0')
+    text = str(value).replace(',', '').strip()
     try:
-        result = Decimal(str(value).replace(',', ''))
+        result = Decimal(text)
     except (TypeError, ValueError, ArithmeticError):
-        return Decimal('0')
+        # Payloads sometimes carry the currency label ("2400000.00 MMK") or a
+        # symbol ("$1,234.50"); keep the digits so the amount still survives.
+        digits = ''.join(ch for ch in text if ch.isdigit() or ch in '.-')
+        try:
+            result = Decimal(digits) if digits not in ('', '.', '-', '-.') else Decimal('0')
+        except (TypeError, ValueError, ArithmeticError):
+            return Decimal('0')
     if not result.is_finite():
         return Decimal('0')
     return result
@@ -76,6 +83,67 @@ def money_plain(value):
 
     Used by NEW tools so downstream consumers can parse amounts numerically."""
     return f"{money_dec(value).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)}"
+
+
+# Currency labels mirror app.py's CURRENCY_OPTIONS (the settings UI writes the
+# same codes). Duplicated rather than imported: app.py builds the Flask app on
+# import, so this module must not depend on it.
+CURRENCY_LABELS = {
+    'USD': '$',
+    'MMK': 'MMK',
+    'THB': 'THB',
+}
+PREFIXED_CURRENCY_LABELS = {'$', '€', '£', '¥'}
+
+
+def currency_label(currency_code=None):
+    """Display label for a store currency code ('$' for USD, 'MMK' for MMK)."""
+    if not currency_code:
+        return CURRENCY_LABELS['USD']
+    code = str(currency_code).strip().upper()
+    return CURRENCY_LABELS.get(code, code) or CURRENCY_LABELS['USD']
+
+
+def money_display(value, currency_code=None):
+    """Money exactly as the POS shows it: '$1,234.50' or '1,234.50 MMK'.
+
+    Assistant answers used to hardcode '$' for every store, so a Myanmar shop
+    was told its prices were in USD.
+    """
+    amount = money_str(value)
+    label = currency_label(currency_code)
+    return f"{label}{amount}" if label in PREFIXED_CURRENCY_LABELS else f"{amount} {label}"
+
+
+# Words that carry no product identity in a search ("how many devices do we
+# have" must not be sent to the database as a name filter).
+PRODUCT_SEARCH_STOP_WORDS = {
+    'the', 'a', 'an', 'of', 'in', 'on', 'at', 'for', 'to', 'with', 'from',
+    'our', 'my', 'we', 'us', 'you', 'your', 'all', 'any', 'and', 'or', 'is',
+    'are', 'was', 'were', 'do', 'does', 'did', 'have', 'has', 'had', 'how',
+    'many', 'much', 'what', 'which', 'that', 'this', 'these', 'those',
+    'product', 'products', 'item', 'items', 'device', 'devices', 'model',
+    'models', 'stock', 'stocks', 'inventory', 'price', 'prices', 'selling',
+    'sell', 'list', 'show', 'give', 'me', 'there', 'left', 'total', 'count',
+}
+
+
+def product_search_terms(query, min_length=2, limit=4):
+    """Meaningful words from a product query, longest first.
+
+    "how many IOS devices did we have" -> ['ios'] (filler words are dropped),
+    "iphone 18 pro" -> ['iphone', '18', 'pro'].
+    """
+    words = []
+    seen = set()
+    for raw in str(query or '').lower().replace('-', ' ').replace('/', ' ').split():
+        word = ''.join(ch for ch in raw if ch.isalnum())
+        if len(word) < int(min_length) or word in PRODUCT_SEARCH_STOP_WORDS or word in seen:
+            continue
+        seen.add(word)
+        words.append(word)
+    words.sort(key=len, reverse=True)
+    return words[:limit]
 
 def round_money(value):
     """Quantize a money value to 2 decimals with ROUND_HALF_UP."""
@@ -1325,16 +1393,37 @@ class AITools:
         })
         
     def search_products(self, query: str, limit: int = 10) -> Dict[str, Any]:
-        """Search products in the active branch by name and return inventory-style rows."""
+        """Search products in the active branch by name, barcode or category.
+
+        The name filter is tried first exactly as asked. When that matches
+        nothing the query is reduced to its meaningful words and matched across
+        name/barcode/category, so "how many IOS devices" still finds stock
+        instead of reporting an empty catalogue. ``total_products`` is the real
+        number of matches (not the page size), because "how many" answers are
+        read straight off it.
+        """
         Product = self._get_model('Product')
-        if not Product or not (query or '').strip():
-            return self._scope({"total_products": 0, "inventory": []})
-        pattern = f"%{query.strip()}%"
-        products = self._branch_filter(
-            Product.query.filter(Product.name.ilike(pattern)), Product
-        ).limit(self._limit(limit)).all()
+        query_text = (query or '').strip()
+        if not Product or not query_text:
+            return self._scope({"total_products": 0, "inventory": [], "suggestions": []})
+        base = self._branch_filter(Product.query, Product)
+        rows = base.filter(Product.name.ilike(f"%{query_text}%")).all()
+        matched_by = "name"
+        if not rows:
+            terms = product_search_terms(query_text)
+            if terms:
+                # Every meaningful word must appear somewhere in the row, and
+                # each word may match name, barcode or category.
+                groups = []
+                for term in terms:
+                    like = f"%{term}%"
+                    groups.append(or_(Product.name.ilike(like),
+                                      Product.barcode.ilike(like),
+                                      Product.category.ilike(like)))
+                rows = base.filter(and_(*groups)).all()
+                matched_by = "terms"
         result = []
-        for product in products:
+        for product in rows[:self._limit(limit)]:
             current_stock = int(product.stock or 0)
             reorder_point = max(int(product.reorder_point or 0), 0)
             is_low = bool(product.reorder_enabled) and current_stock <= reorder_point
@@ -1350,7 +1439,50 @@ class AITools:
                 "price": money_str(product.price or 0),
                 "cost": money_str(product.cost or 0)
             })
-        return self._scope({"total_products": len(result), "inventory": result})
+        payload = {"total_products": len(rows), "inventory": result, "matched_by": matched_by}
+        if not result:
+            # Nothing matched: hand back the real vocabulary (size, categories and
+            # a spread of real names) so the assistant can retry with a term that
+            # exists instead of telling the user the catalogue is empty.
+            payload["query"] = query_text
+            payload["branch_total"] = self._scope_count(base)
+            payload["categories"] = self._scope_categories(base)
+            payload["suggestions"] = self._scope_sample_names(base)
+        return self._scope(payload)
+
+    @staticmethod
+    def _scope_count(query) -> int:
+        try:
+            return int(query.count())
+        except Exception:
+            return 0
+
+    def _scope_categories(self, query, limit: int = 8) -> List[str]:
+        """Distinct category names in scope (the vocabulary a user might mean)."""
+        categories = []
+        try:
+            rows = query.limit(500).all()
+        except Exception:
+            return categories
+        for row in rows:
+            category = getattr(row, "category", None)
+            if category and category not in categories:
+                categories.append(category)
+            if len(categories) >= self._limit(limit):
+                break
+        return categories
+
+    def _scope_sample_names(self, query, limit: int = 8) -> List[str]:
+        """A spread of real product names from the same scope, for suggestions."""
+        try:
+            rows = query.limit(200).all()
+        except Exception:
+            return []
+        names = [row.name for row in rows if getattr(row, "name", None)]
+        if len(names) <= limit:
+            return names
+        step = len(names) / float(limit)
+        return [names[int(index * step)] for index in range(limit)]
         
     def get_supplier_list(self, active_only: bool = True, category: str = None) -> Dict[str, Any]:
         """Get list of suppliers"""

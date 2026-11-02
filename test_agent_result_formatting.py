@@ -81,7 +81,18 @@ class ProductIdentifierTests(FormatterTestCase):
 
     def test_search_products_without_matches_says_so(self):
         text = self.render("search_products", EMPTY_SEARCH_RESULT)
-        self.assertIn("no product matched", text)
+        self.assertIn("nothing in this branch matches", text)
+
+    def test_empty_search_explains_what_does_exist(self):
+        payload = {"total_products": 0, "inventory": [], "query": "IOS devices",
+                   "branch_total": 44, "categories": ["Drinks", "Electronic"],
+                   "suggestions": ["Iphone 18 pro Glacier", "Iphone 13 pro max"]}
+        text = self.render("search_products", payload,
+                           "How many IOS devices did we have?")
+        self.assertIn("IOS devices", text)
+        self.assertIn("44 product(s)", text)
+        self.assertIn("Drinks, Electronic", text)
+        self.assertIn("Iphone 18 pro Glacier", text)
 
     def test_search_products_missing_barcode_is_stated_not_blank(self):
         payload = {"total_products": 1, "inventory": [
@@ -197,6 +208,36 @@ class FormattingResilienceTests(FormatterTestCase):
             [{"function_name": "search_products", "result": None,
               "error": "database is locked"}], "barcode please")
         self.assertIn("database is locked", text)
+
+
+class CurrencyRenderingTests(unittest.TestCase):
+    """Answers must use the store's currency, never a hardcoded dollar sign."""
+
+    def _render(self, currency_code, func_name, result, command="test"):
+        orchestrator = AgentOrchestrator(
+            None, {},
+            get_setting_func=lambda key, default=None: (
+                currency_code if key == 'currency_code' else default))
+        return orchestrator._format_tool_results_for_user(
+            [{"function_name": func_name, "result": result, "error": None}], command)
+
+    def test_mmk_store_sees_mmk_prices(self):
+        text = self._render("MMK", "search_products", SEARCH_RESULT)
+        self.assertIn("95,000.00 MMK", text)
+        self.assertNotIn("$", text)
+
+    def test_usd_store_still_sees_dollar_prices(self):
+        text = self._render("USD", "search_products", SEARCH_RESULT)
+        self.assertIn("$95,000.00", text)
+
+    def test_product_details_follows_store_currency(self):
+        text = self._render("MMK", "get_product_details", PRODUCT_DETAILS)
+        self.assertIn("Price: 68,000.00 MMK", text)
+        self.assertNotIn("$", text)
+
+    def test_unknown_currency_code_is_shown_not_dropped(self):
+        text = self._render("SGD", "get_product_details", PRODUCT_DETAILS)
+        self.assertIn("68,000.00 SGD", text)
 
 
 class BarcodeTurnTests(FormatterTestCase):

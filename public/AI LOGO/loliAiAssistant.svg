@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="100%" height="100%">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#E0F7FA" stop-opacity="0.8">
+        <animate attributeName="stop-opacity" values="0.8; 0.3; 0.8" dur="3s" keyTimes="0; 0.5; 1" keySplines="0.42 0 0.58 1; 0.42 0 0.58 1" calcMode="spline" repeatCount="indefinite" />
+      </stop>
+      <stop offset="100%" stop-color="#E0F7FA" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <circle cx="100" cy="100" r="90" fill="url(#glow)" />
+
+  <ellipse cx="100" cy="170" rx="35" ry="6" fill="rgba(0,0,0,0.1)">
+    <animate attributeName="rx" values="35; 25; 35" dur="3s" keyTimes="0; 0.5; 1" keySplines="0.42 0 0.58 1; 0.42 0 0.58 1" calcMode="spline" repeatCount="indefinite" />
+    <animate attributeName="fill-opacity" values="1; 0.4; 1" dur="3s" keyTimes="0; 0.5; 1" keySplines="0.42 0 0.58 1; 0.42 0 0.58 1" calcMode="spline" repeatCount="indefinite" />
+  </ellipse>
+
+  <g>
+    <animateTransform attributeName="transform" type="translate" values="0,2; 0,-8; 0,2" dur="3s" keyTimes="0; 0.5; 1" keySplines="0.42 0 0.58 1; 0.42 0 0.58 1" calcMode="spline" repeatCount="indefinite" />
+
+    <g>
+      <animateTransform attributeName="transform" type="rotate" values="0 60 90; 4 60 90; 0 60 90" dur="3s" keyTimes="0; 0.5; 1" keySplines="0.42 0 0.58 1; 0.42 0 0.58 1" calcMode="spline" repeatCount="indefinite" />
+      <path d="M 60,90 C 30,130 40,165 50,175 C 65,150 75,120 70,90 Z" fill="#9575CD" />
+    </g>
+
+    <g>
+      <animateTransform attributeName="transform" type="rotate" values="0 140 90; -4 140 90; 0 140 90" dur="3s" keyTimes="0; 0.5; 1" keySplines="0.42 0 0.58 1; 0.42 0 0.58 1" calcMode="spline" repeatCount="indefinite" />
+      <path d="M 140,90 C 170,130 160,165 150,175 C 135,150 125,120 130,90 Z" fill="#9575CD" />
+    </g>
+
+    <circle cx="100" cy="85" r="45" fill="#B39DDB" />
+
+    <ellipse cx="100" cy="100" rx="42" ry="34" fill="#FFE0B2" />
+
+    <path d="M 45,95 C 45,40 155,40 155,95 C 130,65 115,72 100,72 C 85,72 70,65 45,95 Z" fill="#9575CD" />
+    <path d="M 100,72 Q 105,65 105,50 Q 95,65 100,72 Z" fill="#9575CD" />
+
+    <rect x="50" y="85" width="16" height="34" rx="6" fill="#F48FB1" />
+    <path d="M 56,96 h4 v4 h4 v4 h-4 v4 h-4 v-4 h-4 v-4 h4 z" fill="#FFFFFF" />
+
+    <rect x="134" y="85" width="16" height="34" rx="6" fill="#F48FB1" />
+    <path d="M 140,96 h4 v4 h4 v4 h-4 v4 h-4 v-4 h-4 v-4 h4 z" fill="#FFFFFF" />
+
+    <ellipse cx="72" cy="112" rx="7" ry="4" fill="#FF8A80" opacity="0.6" />
+    <ellipse cx="128" cy="112" rx="7" ry="4" fill="#FF8A80" opacity="0.6" />
+
+    <path d="M 94,118 Q 100,124 106,118" fill="none" stroke="#5D4037" stroke-width="2.5" stroke-linecap="round" />
+
+    <g>
+      <ellipse cx="78" cy="101" rx="8" ry="12" fill="#311B92">
+        <animate attributeName="ry" values="12; 1; 12; 1; 12; 12" keyTimes="0; 0.03; 0.06; 0.09; 0.12; 1" dur="3s" repeatCount="indefinite" />
+      </ellipse>
+      <circle cx="75" cy="95" r="3" fill="#FFFFFF">
+        <animate attributeName="r" values="3; 0; 3; 0; 3; 3" keyTimes="0; 0.03; 0.06; 0.09; 0.12; 1" dur="3s" repeatCount="indefinite" />
+      </circle>
+    </g>
+
+    <g>
+      <ellipse cx="122" cy="101" rx="8" ry="12" fill="#311B92">
+        <animate attributeName="ry" values="12; 1; 12; 1; 12; 12" keyTimes="0; 0.03; 0.06; 0.09; 0.12; 1" dur="3s" repeatCount="indefinite" />
+      </ellipse>
+      <circle cx="119" cy="95" r="3" fill="#FFFFFF">
+        <animate attributeName="r" values="3; 0; 3; 0; 3; 3" keyTimes="0; 0.03; 0.06; 0.09; 0.12; 1" dur="3s" repeatCount="indefinite" />
+      </circle>
+    </g>
+
+  </g>
+</svg>

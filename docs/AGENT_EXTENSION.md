@@ -218,6 +218,11 @@ user-visible answer straight from the tool payload — for data questions it *is
 the answer, so it has to carry the field the user asked for and it must never
 raise.
 
+- **Money carries the store's currency.** Never write a `$` into an answer:
+  `_money(value)` renders `$1,234.50` for USD and `1,234.50 MMK` for MMK, using
+  `money_display` / `currency_label` from `ai_tools` with `currency_code` read
+  through the orchestrator's settings function. A Myanmar shop that was told
+  its own prices were "in USD format" lost trust in the whole approval round.
 - **Money is a string.** Tool payloads carry amounts already formatted
   (`"68,000.00"`, `"1,050,000.00"`). Format them with `money_str(...)` /
   `money_dec(...)` from `ai_tools`; `f"{amount:.2f}"` raises `ValueError` on a
@@ -237,6 +242,28 @@ raise.
   the other results or turn the turn into an error message.
 - Add a case to `test_agent_result_formatting.py` for every new tool payload
   shape, including the "asked for an identifier" path.
+
+## Truthful answers
+
+- **Approvals and failures are never narrated by a model.**
+  `_generate_plan_summary` returns `_deterministic_outcome_message(...)` whenever
+  a plan ends in `pending_approvals` or in a failed/skipped step. That message
+  shows the read data, then each proposed change as
+  `**product** - price X (currently Y)` in the store currency, then states that
+  nothing has been applied. Someone about to approve a write must see exactly
+  what will run; an LLM asked to summarise an approval invented a currency and
+  mangled an amount into "50.00 add,000 MMK". Read-only multi-step plans may
+  still use the model to explain data.
+- **Counts come from the payload.** `search_products` reports `total_products`
+  as the true number of matches (only `inventory` is capped), so "how many X do
+  we have" is answered with a real number instead of a page size. A query whose
+  words are not in the catalogue falls back to token matching across name,
+  barcode and category, and a zero-match payload carries `query`,
+  `branch_total`, `categories` and `suggestions`.
+- **A zero-match search is a retry, not an answer.** The orchestrator spends one
+  bounded retry (`_retry_empty_product_search`) letting the model search again
+  with a name that actually exists; when it cannot, the formatter names the real
+  categories and product names so the user can pick one.
 
 ## Token-budget guidelines
 

@@ -13,7 +13,8 @@ from datetime import datetime
 
 from ai_agent import AIAgent, ChatResponse, ToolCall
 from ai_tool_guard import guard_tool_call, schema_parameters
-from ai_tools import (create_tools_instance, get_all_tools, money_dec, money_str,
+from ai_tools import (create_tools_instance, currency_label, get_all_tools,
+                      money_dec, money_display, money_str,
                       tool_authorization_error, minimize_cashier_result)
 
 # Lightweight registry introspection. TOOL_METADATA is the single source of
@@ -203,6 +204,11 @@ def _row_status(row: Any) -> str:
     return _text_or_placeholder(row.get("status"), "unknown").strip().replace(" ", "_").lower()
 
 
+# Argument names that hold money: rendered in the store currency, never raw.
+_MONEY_ARG_TOKENS = ('price', 'cost', 'amount', 'total', 'balance', 'unit_price',
+                     'refund_amount', 'collected_amount', 'estimated_cost')
+
+
 # System prompt for the AI Agent
 SYSTEM_PROMPT = """You are Loli, the current-data assistant for Parrot POS, created by Min Thuta Saw Naing and owned by WinterArc Myanmar. You help with the active branch's inventory, categories, suppliers, purchase orders, warehouse activity, sales, promotions, customers, debts, deliveries, and returns/exchanges.
 
@@ -216,6 +222,8 @@ You own live database tools. Any question about stock, products, prices, sales, 
 - Fill arguments from the user's words: product names into name/search arguments, statuses into status filters, and date ranges computed from the Current Date above (for example "yesterday", "this month", or a number of days). Never invent argument names a tool does not document.
 - Chain tools when one result feeds the next: search_products to identify an item, then get_product_details or get_supplier_price_for_product with its id; get_low_stock_items before suggesting reorders.
 - If a tool returns empty results or fails, say so plainly and try at most one plausible alternative tool. Never substitute invented numbers for missing data.
+- For "how many" / counting questions, answer with the real count from the tool payload (`total_products` for a product search, or `get_inventory_status` for the whole catalogue) plus the names behind that number. A brand or platform word the catalogue may not store literally (for example "iOS devices") must be turned into a searchable keyword such as the product family name ("iphone"); when a search matches nothing, use the categories and product names the tool returned instead of repeating the same words.
+- Quote money exactly as the tool returned it: never restate a price in another currency, never re-format or re-round an amount, and never invent a currency symbol. The currency label in the tool data is the store's currency.
 - Greetings, identity, capability, and small-talk questions need no tool call.
 
 ## Safe operations
@@ -953,6 +961,13 @@ class AgentOrchestrator:
                         response.tool_calls, allowed_names=offered_names)
                 # else: forced retry still produced no tool call; fall through to the
                 # keyword fallback so real data can still be returned.
+
+            # A product search that matched nothing is usually a vocabulary
+            # mismatch ("iOS devices" vs "Iphone 18 pro"). One bounded retry with
+            # the real product names beats telling the user stock does not exist.
+            if tool_results and not any(r.get("rejected") for r in tool_results):
+                tool_results = self._retry_empty_product_search(
+                    tool_results, filtered_tools, temperature)
 
             rejected_calls = [r for r in tool_results if r.get("rejected")]
             if rejected_calls:
@@ -1901,6 +1916,52 @@ class AgentOrchestrator:
             return args["args"]
         return None
 
+    def _retry_empty_product_search(self, tool_results: List[Dict], filtered_tools: List[Dict],
+                                    temperature: float) -> List[Dict]:
+        """One bounded retry when a product search came back with nothing.
+
+        The empty result carries the branch's real vocabulary (categories and a
+        spread of product names), so the model can search again with a term that
+        exists. Without a usable answer the original results are returned and the
+        formatter explains what does exist.
+        """
+        empty = [r for r in tool_results
+                 if r.get("function_name") == "search_products"
+                 and isinstance(r.get("result"), dict)
+                 and not (r["result"].get("inventory") or [])]
+        if not empty:
+            return tool_results
+        hints: List[str] = []
+        for item in empty:
+            result = item["result"]
+            hints.extend([c for c in (result.get("categories") or []) if c])
+            hints.extend([s for s in (result.get("suggestions") or []) if s])
+        hints = list(dict.fromkeys(hints))
+        if not hints:
+            return tool_results
+        query = empty[0]["result"].get("query") or "that name"
+        prompt = (
+            f'Your search for "{query}" matched no product. Do not guess and do not '
+            "repeat the same words. Call search_products again with ONE keyword "
+            "taken from the real names/categories below, or say that nothing "
+            "matches. Real values in this branch: " + "; ".join(hints)
+        )
+        try:
+            retry = self.agent.chat(message=prompt, tools_override=filtered_tools,
+                                    temperature=temperature)
+        except Exception as exc:
+            print(f"[AI Agent] Empty-search retry failed: {exc}")
+            return tool_results
+        if retry.error or not retry.tool_calls:
+            return tool_results
+        offered = {schema.get("function", {}).get("name") for schema in filtered_tools}
+        retried = self._execute_tools_with_context(retry.tool_calls, allowed_names=offered)
+        useful = [r for r in retried if r.get("result") is not None and not r.get("rejected")]
+        if not useful:
+            return tool_results
+        print(f"[AI Agent] Empty search retried with {len(useful)} result(s)")
+        return useful
+
     @staticmethod
     def _persisted_step_args(persisted_results: Any) -> Dict[int, Dict[str, Any]]:
         """Arguments a human actually approved, keyed by step number.
@@ -1936,6 +1997,96 @@ class AgentOrchestrator:
             lines.append(line)
         return "\n".join(lines)
 
+    @staticmethod
+    def _money_arg_name(key: Any) -> bool:
+        """True when an argument name holds a money amount."""
+        lowered = str(key).lower()
+        return any(token in lowered for token in _MONEY_ARG_TOKENS)
+
+    def _product_rows_by_id(self, step_results: List[Dict[str, Any]]) -> Dict[Any, Dict[str, Any]]:
+        """Product rows earlier steps already returned, keyed by id.
+
+        Lets an approval line name the product instead of showing a bare id.
+        """
+        rows: Dict[Any, Dict[str, Any]] = {}
+        for sr in step_results:
+            result = sr.get("result")
+            inventory = result.get("inventory") if isinstance(result, dict) else None
+            for row in inventory or []:
+                if isinstance(row, dict) and row.get("product_id") is not None:
+                    rows[row["product_id"]] = row
+        return rows
+
+    def _describe_proposed_change(self, tool: str, args: Dict[str, Any],
+                                  rows: Dict[Any, Dict[str, Any]]) -> str:
+        """One line naming exactly what approving this step would change."""
+        args = args if isinstance(args, dict) else {}
+        row = rows.get(args.get("product_id"))
+        label = f"**{row.get('name')}**" if row and row.get("name") else None
+        if tool == "update_product_price" and "price" in args:
+            text = f"price {self._money(args.get('price'))}"
+            if row and row.get("price") is not None:
+                text += f" (currently {self._money(row.get('price'))})"
+            return f"{label} - {text}" if label else f"{tool} - {text}"
+        details = []
+        for key, value in args.items():
+            if key == "product_id" and label:
+                continue
+            name = str(key).replace('_', ' ')
+            if isinstance(value, dict) and "$from" in value:
+                details.append(f"{name}: {value['$from']}")
+            elif self._money_arg_name(key):
+                details.append(f"{name}: {self._money(value)}")
+            else:
+                details.append(f"{name}: {value}")
+        joined = ", ".join(details) or "no arguments"
+        return f"{label} ({tool}) - {joined}" if label else f"{tool} - {joined}"
+
+    def _deterministic_outcome_message(
+        self, command: str, step_results: List[Dict[str, Any]],
+        pending_approvals: List[Dict[str, Any]],
+    ) -> str:
+        """Exact account of a plan that proposed or failed, built without a model.
+
+        An LLM narrating an approval invented a currency and mangled an amount
+        ("The request says to 50.00 add,000 MMK"), and a user about to approve a
+        write must see exactly what will run. Read results are still shown, so
+        the answer keeps the data the user asked about.
+        """
+        blocks = []
+        data_results = [
+            {"function_name": sr["tool"], "result": sr.get("result"), "error": None}
+            for sr in step_results
+            if sr["status"] == "ok" and sr.get("result") is not None
+        ]
+        if data_results:
+            rendered = self._format_tool_results_for_user(data_results, command)
+            if rendered:
+                blocks.append(rendered)
+
+        rows = self._product_rows_by_id(step_results)
+
+        if pending_approvals:
+            lines = [f"📝 **{len(pending_approvals)} change(s) are awaiting your approval - "
+                     f"nothing has been applied yet.**", ""]
+            for item in pending_approvals:
+                args = item.get("args") if isinstance(item.get("args"), dict) else {}
+                lines.append("• " + self._describe_proposed_change(item.get("tool") or "", args, rows))
+            lines += ["", "Approve the step(s) in the panel, or reply \"yes\" to apply them."]
+            blocks.append("\n".join(lines))
+
+        failed = [sr for sr in step_results if sr["status"] in ("failed", "skipped")]
+        if failed:
+            lines = [f"❌ {len(failed)} step(s) failed or were skipped:"]
+            for sr in failed:
+                result = sr.get("result")
+                reason = sr.get("error") or (result.get("error") if isinstance(result, dict) else None)
+                lines.append(f"• Step {sr['step']} ({sr['tool']}): {reason or sr['status']}")
+            blocks.append("\n".join(lines))
+
+        return ("\n\n".join(block for block in blocks if block)
+                or self._deterministic_status_message(step_results))
+
     def _generate_plan_summary(
         self, command: str, plan: Dict[str, Any],
         step_results: List[Dict[str, Any]],
@@ -1945,7 +2096,14 @@ class AgentOrchestrator:
 
         ANTI-HALLUCINATION CONTRACT: only the compacted raw results below may
         be quoted; any failed/skipped/proposal step must be reported as such.
+
+        A turn that ends in pending writes or a failed step never reaches the
+        model at all: _deterministic_outcome_message describes it exactly.
         """
+        if pending_approvals or any(sr["status"] in ("failed", "skipped")
+                                    for sr in step_results):
+            return self._deterministic_outcome_message(command, step_results, pending_approvals)
+
         compact_steps = []
         for sr in step_results:
             entry = {"step": sr["step"], "tool": sr["tool"], "status": sr["status"]}
@@ -2231,7 +2389,7 @@ class AgentOrchestrator:
                 
             elif func_name == "create_purchase_order":
                 if result_data.get("success"):
-                    summary_parts.append(f"Created PO {result_data.get('po_number')} for {result_data.get('supplier_name')} totaling ${money_str(result_data.get('total_amount', 0))}")
+                    summary_parts.append(f"Created PO {result_data.get('po_number')} for {result_data.get('supplier_name')} totaling {self._money(result_data.get('total_amount', 0))}")
                 else:
                     summary_parts.append(f"Failed to create PO: {result_data.get('error', 'Unknown error')}")
                     
@@ -2293,6 +2451,24 @@ class AgentOrchestrator:
                 break
         return " · ".join(parts) if parts else f"{func_name} finished."
     
+    def _currency_code(self) -> str:
+        """The store's configured currency code ('MMK' for a Myanmar shop).
+
+        Read through the same settings function the rest of the app uses, so an
+        answer never claims MMK prices are USD.
+        """
+        getter = getattr(self, "get_setting_func", None)
+        if not getter:
+            return "USD"
+        try:
+            return getter('currency_code', 'USD') or 'USD'
+        except Exception:
+            return "USD"
+
+    def _money(self, value) -> str:
+        """Money text in the store currency: '$1,234.50' or '1,234.50 MMK'."""
+        return money_display(value, self._currency_code())
+
     def _format_tool_results_for_user(self, tool_results: List[Dict], original_command: str) -> str:
         """Public formatter: render every result, one failure at a time.
 
@@ -2321,6 +2497,33 @@ class AgentOrchestrator:
             except Exception:
                 return f"{name} finished, but the details could not be displayed."
 
+    def _empty_search_lines(self, result_data: Any) -> List[str]:
+        """Explain a zero-match search using the vocabulary that does exist.
+
+        "no product matched that name" alone made a count question look like a
+        broken assistant; naming the real categories and a few real product
+        names turns it into something the user can act on.
+        """
+        payload = result_data if isinstance(result_data, dict) else {}
+        query = _text_or_placeholder(payload.get("query"), "that name")
+        if len(query) > 80:
+            query = query[:77].rstrip() + "..."
+        lines = [f"🔎 **Product Search** - nothing in this branch matches \"{query}\"."]
+        total = payload.get("branch_total")
+        categories = [c for c in (payload.get("categories") or []) if c]
+        suggestions = [s for s in (payload.get("suggestions") or []) if s]
+        if isinstance(total, int) and total > 0:
+            line = f"This branch has {total} product(s)"
+            line += f" in categories: {', '.join(categories[:8])}." if categories else "."
+            lines.append(line)
+        if suggestions:
+            lines.append("Some names that do exist: " + "; ".join(suggestions[:6]) + ".")
+        if (isinstance(total, int) and total > 0) or suggestions:
+            lines.append("Give me a name or category from that list and I will pull the exact numbers.")
+        else:
+            lines.append("Check the spelling or try a shorter name.")
+        return lines
+
     def _render_tool_results(self, tool_results: List[Dict], original_command: str) -> str:
         """Render already-extracted tool results (one result per call)."""
         lines = []
@@ -2343,8 +2546,7 @@ class AgentOrchestrator:
                 matches = result_data.get('inventory') or []
                 total_matches = result_data.get('total_products', len(matches)) or 0
                 if not matches:
-                    lines.append("🔎 **Product Search** - no product matched that name. "
-                                 "Check the spelling or try a shorter name.")
+                    lines.extend(self._empty_search_lines(result_data))
                 else:
                     count_text = f"{total_matches} match" + ("" if total_matches == 1 else "es")
                     lines.append(f"🔎 **Product Search** ({count_text})")
@@ -2353,7 +2555,7 @@ class AgentOrchestrator:
                         facts = [f"Barcode: {_text_or_placeholder(p.get('barcode'))}"]
                         if p.get('category'):
                             facts.append(f"Category: {p['category']}")
-                        facts.append(f"Price: ${money_str(p.get('price', 0))}")
+                        facts.append(f"Price: {self._money(p.get('price', 0))}")
                         stock = p.get('current_stock')
                         status_label = _row_status(p).replace('_', ' ')
                         facts.append(f"Stock: {stock if stock is not None else '?'} "
@@ -2439,7 +2641,7 @@ class AgentOrchestrator:
                         status_emoji = {"draft": "📝", "pending": "⏳", "approved": "✅", "received": "📦", "cancelled": "❌"}.get(po['status'], "📋")
                         lines.append(f"{status_emoji} **{po.get('po_number')}** - {po.get('supplier_name')}")
                         lines.append(f"   Status: {_text_or_placeholder(po.get('status')).title()} | "
-                                     f"Total: ${money_str(po.get('total_amount', 0))}")
+                                     f"Total: {self._money(po.get('total_amount', 0))}")
                     if len(orders) > 10:
                         lines.append(f"\n... and {len(orders) - 10} more orders")
                         
@@ -2448,7 +2650,7 @@ class AgentOrchestrator:
                     lines.append(f"✅ **Purchase Order Created Successfully!**")
                     lines.append(f"📋 PO Number: {result_data.get('po_number')}")
                     lines.append(f"🏢 Supplier: {result_data.get('supplier_name')}")
-                    lines.append(f"💰 Total Amount: ${money_str(result_data.get('total_amount', 0))}")
+                    lines.append(f"💰 Total Amount: {self._money(result_data.get('total_amount', 0))}")
                     lines.append(f"📦 Items: {result_data.get('items_count', 0)}")
                     lines.append(f"📊 Status: {result_data.get('status', 'draft').title()}")
                 else:
@@ -2508,8 +2710,8 @@ class AgentOrchestrator:
                     # Money arrives as a formatted string ("68,000.00"), so it
                     # must go through money_str; ":.2f" raised and cost the user
                     # the whole answer.
-                    lines.append(f"Price: ${money_str(result_data.get('price', 0))}")
-                    lines.append(f"Cost: ${money_str(result_data.get('cost', 0))}")
+                    lines.append(f"Price: {self._money(result_data.get('price', 0))}")
+                    lines.append(f"Cost: {self._money(result_data.get('cost', 0))}")
                     stock = result_data.get('stock')
                     lines.append(f"Stock: {stock if stock is not None else '?'} units")
                     if result_data.get('reorder_enabled'):
@@ -2523,11 +2725,11 @@ class AgentOrchestrator:
                     lines.append("✅ No reorder suggestions needed. All inventory levels are adequate.")
                 else:
                     lines.append(f"📋 **Reorder Suggestions**")
-                    lines.append(f"💰 Total Estimated Cost: ${money_str(total_cost)}")
+                    lines.append(f"💰 Total Estimated Cost: {self._money(total_cost)}")
                     lines.append("")
                     for s in suggestions[:10]:
                         lines.append(f"• **{s['name']}** - Order {s['suggested_reorder_qty']} units")
-                        lines.append(f"  Current: {s['current_stock']} | Daily sales: {s['daily_sales_velocity']} | Cost: ${money_str(s['estimated_cost'])}")
+                        lines.append(f"  Current: {s['current_stock']} | Daily sales: {s['daily_sales_velocity']} | Cost: {self._money(s['estimated_cost'])}")
                     if len(suggestions) > 10:
                         lines.append(f"\n... and {len(suggestions) - 10} more suggestions")
                         
@@ -2537,17 +2739,17 @@ class AgentOrchestrator:
                 count = result_data.get('transaction_count', 0)
                 period_label = "All time" if result_data.get('period') == 'all_time' else f"last {period} days"
                 lines.append(f"📊 **Sales Summary** ({period_label})")
-                lines.append(f"Total sales: ${money_str(total)} | Transactions: {count}")
+                lines.append(f"Total sales: {self._money(total)} | Transactions: {count}")
                 methods = result_data.get('payment_method_totals', {}) or {}
                 if methods:
                     lines.append("Payment methods:")
                     for method, amount in list(methods.items())[:5]:
-                        lines.append(f"  • {method}: ${money_str(amount)}")
+                        lines.append(f"  • {method}: {self._money(amount)}")
                 recent = result_data.get('recent_sales', []) or []
                 if recent:
                     lines.append("Recent transactions:")
                     for s in recent[:5]:
-                        lines.append(f"  • {s.get('transaction_id')} - ${money_str(s.get('total', 0))} ({s.get('payment_method')})")
+                        lines.append(f"  • {s.get('transaction_id')} - {self._money(s.get('total', 0))} ({s.get('payment_method')})")
                         
             elif func_name == "get_customer_summary":
                 customers = result_data.get('customers', [])
@@ -2557,7 +2759,7 @@ class AgentOrchestrator:
                     lines.append(f"👥 **Customers** ({result_data.get('total_customers', 0)} total)")
                     for c in customers[:10]:
                         balance = money_dec(c.get('outstanding_balance', 0) or 0)
-                        balance_text = f" | Outstanding: ${money_str(balance)}" if balance else ""
+                        balance_text = f" | Outstanding: {self._money(balance)}" if balance else ""
                         lines.append(f"• **{c.get('name')}** - {c.get('phone') or 'No phone'}{balance_text}")
                         
             elif func_name == "get_debt_summary":
@@ -2567,13 +2769,13 @@ class AgentOrchestrator:
                 else:
                     lines.append(f"💳 **Debts** ({len(debts)} total)")
                     for d in debts[:10]:
-                        lines.append(f"• **{d.get('customer_name')}** - ${money_str(d.get('balance', 0))} ({d.get('status')}, due {d.get('due_date')})")
+                        lines.append(f"• **{d.get('customer_name')}** - {self._money(d.get('balance', 0))} ({d.get('status')}, due {d.get('due_date')})")
                     totals = result_data.get('totals_by_status', {}) or {}
                     if totals:
                         lines.append("")
                         lines.append("Totals by status:")
                         for key, value in totals.items():
-                            lines.append(f"  • {key}: ${money_str(value)}")
+                            lines.append(f"  • {key}: {self._money(value)}")
                             
             elif func_name == "get_promotion_summary":
                 promotions = result_data.get('promotions', [])
@@ -2603,7 +2805,7 @@ class AgentOrchestrator:
                 else:
                     lines.append(f"🔁 **Returns & Exchanges** ({result_data.get('total_workflows', 0)} total)")
                     for w in workflows[:10]:
-                        lines.append(f"• {str(w.get('mode', 'unknown')).title()} - refund ${money_str(w.get('refund_amount', 0) or 0)} / collected ${money_str(w.get('collected_amount', 0) or 0)}")
+                        lines.append(f"• {str(w.get('mode', 'unknown')).title()} - refund {self._money(w.get('refund_amount', 0) or 0)} / collected {self._money(w.get('collected_amount', 0) or 0)}")
                         
             elif func_name == "get_current_branch_context":
                 branch = result_data.get('name', 'unknown')
@@ -2642,13 +2844,13 @@ class AgentOrchestrator:
                 if agreements:
                     lines.append("Price agreements:")
                     for pa in agreements[:5]:
-                        lines.append(f"  • {pa.get('product_name', pa.get('product_id'))}: ${money_str(pa.get('unit_price', 0))}")
+                        lines.append(f"  • {pa.get('product_name', pa.get('product_id'))}: {self._money(pa.get('unit_price', 0))}")
                         
             elif func_name == "get_supplier_price_for_product":
                 if result_data.get('has_agreement'):
                     lines.append(f"💵 **Price Agreement**")
                     lines.append(f"Product ID: {result_data.get('product_id')} | Supplier ID: {result_data.get('supplier_id')}")
-                    lines.append(f"Agreed price: ${money_str(result_data.get('agreed_price', 0))}")
+                    lines.append(f"Agreed price: {self._money(result_data.get('agreed_price', 0))}")
                 else:
                     lines.append(f"ℹ️ {result_data.get('message', 'No price agreement found.')}")
                         
@@ -2895,7 +3097,7 @@ class AgentOrchestrator:
         lines = [f"Found {total} purchase orders:\n"]
         
         for po in orders[:10]:
-            lines.append(f"• **{po['po_number']}** - {po['supplier_name']} | Status: {po['status']} | Total: ${money_str(po.get('total_amount', 0))}")
+            lines.append(f"• **{po['po_number']}** - {po['supplier_name']} | Status: {po['status']} | Total: {self._money(po.get('total_amount', 0))}")
             
         if len(orders) > 10:
             lines.append(f"\n... and {len(orders) - 10} more orders")
@@ -2935,12 +3137,12 @@ class AgentOrchestrator:
         lines.append("Top selling products:" if products else "No identifiable products to rank.")
         
         for i, p in enumerate(products[:10], 1):
-            lines.append(f"{i}. **{p['product_name']}** - {p['total_quantity']} units sold (${money_str(p['total_revenue'])})")
+            lines.append(f"{i}. **{p['product_name']}** - {p['total_quantity']} units sold ({self._money(p['total_revenue'])})")
         if unknown.get('sale_count'):
             lines.append(
                 "\nUnknown/deleted product sales (not ranked): "
                 f"{unknown.get('total_quantity', 0)} units "
-                f"(${money_str(unknown.get('total_revenue', 0))}); "
+                f"({self._money(unknown.get('total_revenue', 0))}); "
                 "original product identities are unavailable.")
             
         return "\n".join(lines)
@@ -2958,9 +3160,9 @@ class AgentOrchestrator:
         
         for s in suggestions[:10]:
             lines.append(f"• **{s['name']}** - Order {s['suggested_reorder_qty']} units (Current: {s['current_stock']}, Daily sales: {s['daily_sales_velocity']})")
-            lines.append(f"  Estimated cost: ${money_str(s['estimated_cost'])}")
+            lines.append(f"  Estimated cost: {self._money(s['estimated_cost'])}")
             
-        lines.append(f"\n**Total estimated cost: ${money_str(total_cost)}**")
+        lines.append(f"\n**Total estimated cost: {self._money(total_cost)}**")
         
         return "\n".join(lines)
         
