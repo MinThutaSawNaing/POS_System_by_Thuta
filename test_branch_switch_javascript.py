@@ -27,7 +27,7 @@ const fields = {}, listeners = {}, notices = [], calls = [], toasts = [], cacheW
 let currentBranch = {id: 1, name: 'Original'}, cart = [], cachedCategories = [];
 let pendingReceiptLogoFile = null, pendingReceiptLogoObjectUrl = null;
 let pendingMMQRFile = null, pendingMMQRRemoval = false, currentLanguage = 'en';
-let savedAgentAutonomy = false, isSaleProcessing = false, isSyncingPendingSales = false;
+let isSaleProcessing = false, isSyncingPendingSales = false;
 const APP_SETTINGS = {currencyCode:'USD', receiptPaperSize:'THERMAL_80MM',
  receiptCustomization: {brand_name:'Store',email:'',phone:'',address:'',footer_message:'Thanks'},
  labelGeometry:{label_width_mm:32,label_height_mm:19,label_gap_mm:3,label_columns:3}};
@@ -140,7 +140,6 @@ assert.ok(queued.includes('retained'));
     "field('receipt-footer-message','New footer')",
     "field('label-columns','4')",
     "field('settings-ai-api-key','draft-secret')",
-    "field('agent-autonomy-toggle').checked=true",
     "document.querySelectorAll=()=>[{value:'A4',checked:true,disabled:false}]",
     "pendingReceiptLogoFile={name:'logo.png'}",
     "pendingMMQRFile={name:'qr.png'}",
@@ -192,7 +191,7 @@ fire('reset',root); await Promise.resolve();
 assert.deepEqual(getUnsavedBranchWork(),[]);
 field('settings-currency-code','USD'); field('settings-language','en');
 field('label-columns','3.0'); // equivalent numeric value
-field('receipt-brand-name','Store'); field('agent-autonomy-toggle').checked=false;
+field('receipt-brand-name','Store');
 assert.deepEqual(getUnsavedBranchWork(),[]);
 await switchBranch(2); assert.equal(dialog,null); assert.equal(calls.length,1);
 """)
@@ -245,13 +244,12 @@ def test_successful_settings_save_values_are_not_sticky_drafts():
     run_js(r"""
 field('settings-currency-code','MMK'); field('settings-language','my');
 field('receipt-brand-name','New brand'); field('label-columns','4');
-field('agent-autonomy-toggle').checked=true;
 assert.ok(getUnsavedBranchWork().includes('unsaved settings'));
 // Save callbacks update their persisted models independently; no generic dirty
 // flag may continue nagging after all corresponding saves succeeded.
 APP_SETTINGS.currencyCode='MMK'; currentLanguage='my';
 APP_SETTINGS.receiptCustomization.brand_name='New brand';
-APP_SETTINGS.labelGeometry.label_columns=4; savedAgentAutonomy=true;
+APP_SETTINGS.labelGeometry.label_columns=4;
 assert.deepEqual(getUnsavedBranchWork(),[]);
 await switchBranch(2);assert.equal(dialog,null);assert.equal(reloads,1);
 """)

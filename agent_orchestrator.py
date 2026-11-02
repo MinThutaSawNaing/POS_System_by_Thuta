@@ -14,8 +14,7 @@ from datetime import datetime
 from ai_agent import AIAgent, ChatResponse, ToolCall
 from ai_tool_guard import guard_tool_call, schema_parameters
 from ai_tools import (create_tools_instance, currency_label, get_all_tools,
-                      money_dec, money_display, money_str,
-                      tool_authorization_error, minimize_cashier_result)
+                      money_dec, money_display, money_str)
 
 # Lightweight registry introspection. TOOL_METADATA is the single source of
 # truth for tool capabilities (including the "mutates" write flag); if a future
@@ -42,10 +41,10 @@ except (ImportError, ModuleNotFoundError):
     get_memory_service = None
 
 
-# Role hierarchy for tool-level authorization. 'staff' means any logged-in
-# user (metadata uses it for low-risk writes like register_customer);
-# cashiers rank at staff level, managers above, boss highest.
-_ROLE_LEVELS = {"staff": 1, "cashier": 1, "manager": 2, "boss": 3}
+# Role hierarchy for the two agent-capable roles. Cashiers never reach the AI
+# assistant (enforced at the HTTP boundary in app.py); the executor itself has
+# no per-tool permission layer.
+_AGENT_ROLES = ("manager", "boss")
 
 
 class TaskType(Enum):
@@ -204,11 +203,6 @@ def _row_status(row: Any) -> str:
     return _text_or_placeholder(row.get("status"), "unknown").strip().replace(" ", "_").lower()
 
 
-# Argument names that hold money: rendered in the store currency, never raw.
-_MONEY_ARG_TOKENS = ('price', 'cost', 'amount', 'total', 'balance', 'unit_price',
-                     'refund_amount', 'collected_amount', 'estimated_cost')
-
-
 # System prompt for the AI Agent
 SYSTEM_PROMPT = """You are Loli, the current-data assistant for Parrot POS, created by Min Thuta Saw Naing and owned by WinterArc Myanmar. You help with the active branch's inventory, categories, suppliers, purchase orders, warehouse activity, sales, promotions, customers, debts, deliveries, and returns/exchanges.
 
@@ -227,12 +221,12 @@ You own live database tools. Any question about stock, products, prices, sales, 
 - Numeric tool arguments must be plain JSON numbers. Tool results show prices as formatted text, so compute any new amount yourself and pass the number; never pass text, a currency string, or an expression such as "5300000 + 50000".
 - Greetings, identity, capability, and small-talk questions need no tool call.
 
-## Safe operations
-Your registered read tools answer questions with live facts. Low-risk changes (for example registering a customer or supplier, or creating a category) may be executed automatically when autonomy is enabled for the current manager. Riskier changes — deletes, price or money changes, stock adjustments, approvals, cancellations, transfers — always require explicit human approval before they run. Ask for that approval through the plan itself: propose the change so the system records the exact proposal and shows the approval card. Never spend a turn asking for permission in prose and then plan the same change again, and never ask twice. When a proposal is already awaiting approval, a plain "yes" from the user approves and runs it. Never claim you created, approved, cancelled, transferred, or modified any business record unless a step result confirms it actually happened; otherwise say it is awaiting approval.
+## Operations
+Your registered tools read and change live data. Low-risk and high-risk changes alike (new customers or suppliers, categories, deletes, price or money changes, stock adjustments, approvals, cancellations, transfers) execute immediately when you plan them — there is no approval round-trip, so plan a change only when the user's request is clear. If a required detail is missing (which record, which amount), ask one short question instead of guessing. Never claim you created, approved, cancelled, transferred, or modified any business record unless a step result confirms it actually happened.
 Deleting a product is a manager (or owner) action. When the product is still used in other tabs (warehouse stock or transfers, promotions, purchase order lines, supplier price agreements), call delete_product once to surface exactly which records would go, then ask the user whether to delete the product everywhere and only re-call with cascade=true after they agree. When it also has sales history, ask "The product you selected have sale history. Are you sure you want to delete it?" and add confirm=true. Sales and return/exchange records are always kept, never deleted — they are only unlinked from the removed product.
 
 ## Changing records
-You can change records, not only read them. Rename or edit a product with `update_product` (name, barcode, category, selling price, tax and reorder settings; stock stays untouched), change price alone with `update_product_price`, adjust stock with `adjust_product_stock`, and delete with `delete_product`. Never tell the user you lack a tool for a change that exists in your list: use it and let the approval step confirm. Only if no listed tool can express the operation, say precisely which operation is missing.
+You can change records, not only read them. Rename or edit a product with `update_product` (name, barcode, category, selling price, tax and reorder settings; stock stays untouched), change price alone with `update_product_price`, adjust stock with `adjust_product_stock`, and delete with `delete_product`. Never tell the user you lack a tool for a change that exists in your list: use it. Only if no listed tool can express the operation, say precisely which operation is missing.
 
 ## Report delivery
 You can email reports as Excel and/or PDF attachments, and schedule them to repeat. Reports: `low_stock`, `inventory`, `sales_summary`. Use `get_email_delivery_status` when you are unsure whether email is configured, and `send_test_email` when the user asks to test delivery to an address. Use `email_report` to send one now and `schedule_report` to create a recurring delivery (`send_time` is 24-hour store time in Asia/Yangon; `frequency` is `daily` or `weekly` with a `weekday`). The recipient is a selector, not an address: `me` is the person asking, and only a manager may choose another selector. Manage existing schedules with `list_scheduled_reports`, `update_scheduled_report` and `cancel_scheduled_report`. The attachment is rendered by the server from live branch data, so never claim a report was emailed unless a tool result reports status `sent`.
@@ -252,17 +246,21 @@ Current Date: {current_date}
 # =============================================================================
 # PLAN-THEN-EXECUTE configuration
 # =============================================================================
+# Default step cap for one plan. The effective value comes from the manager's
+# "AI Agent limits" setting (PLAN_STEP_LIMIT_SETTING), so a shop can raise it
+# to update many products in one request; it is clamped to the range below.
 MAX_PLAN_STEPS = 5
+MIN_PLAN_STEPS = 1
+MAX_PLAN_STEPS_LIMIT = 50
+PLAN_STEP_LIMIT_SETTING = "ai_max_plan_steps"
 
 # Exactly one corrective retry when the model invents a tool name or fills an
 # argument no tool accepts. The rejection text already lists the real tools.
 MAX_TOOL_REPAIR_ATTEMPTS = 1
 
 # A "$from" reference that cannot be resolved against real data used to abort
-# the whole plan (the user had already approved the change, so nothing ran).
-# Execution now retries the *argument mapping only* a bounded number of times:
-# the model sees the real result keys and rewrites the path. It never decides
-# whether a write runs — write steps still become approval proposals.
+# the whole plan. Execution retries the *argument mapping only* a bounded
+# number of times: the model sees the real result keys and rewrites the path.
 MAX_PLAN_STEP_REPAIRS = 2
 
 
@@ -315,7 +313,7 @@ PLAN_TOOL_SCHEMA = {
 
 # The single repair tool used when a step's "$from" reference cannot be
 # resolved. It may only rewrite that step's arguments: the executor keeps the
-# tool, the step order, and every approval rule unchanged.
+# tool and the step order unchanged.
 STEP_ARGS_TOOL_SCHEMA = {
     "type": "function",
     "function": {
@@ -498,7 +496,6 @@ class AgentOrchestrator:
             "message": message,
             "plan": None,
             "step_results": [],
-            "pending_approvals": [],
         }
         result.update(extra)
         return result
@@ -718,23 +715,16 @@ class AgentOrchestrator:
     def _filter_tools_for_query(self, command: str) -> List[Dict]:
         """Filter tools based on the user's query to reduce API load.
 
-        The result is also the ONLY thing ever passed as tools_override to the
-        LLM, so mutating tools are always stripped here: the model must never
-        see write-tool schemas in the single-shot chat path.
+        Every registered tool is offered: there is no per-tool permission layer,
+        so write tools are visible to the model in the single-shot chat path as
+        well as to the planner.
         """
-        def _read_only(tool_schemas: List[Dict]) -> List[Dict]:
-            return [
-                t for t in tool_schemas
-                if not _TOOL_METADATA.get(t["function"]["name"], {}).get("mutates")
-                and not tool_authorization_error(t["function"]["name"], self.request_context)
-            ]
-
         categories = self._detect_relevant_categories(command)
 
         if not categories:
             # Complex query - use all tools
             print(f"[AI Agent] Complex query detected, using all {len(self.agent.tools)} tools")
-            return _read_only(self.agent.tools)
+            return self.agent.tools
 
         relevant_tools = self._get_tools_for_categories(categories)
         relevant_tool_names = set(relevant_tools) | set(CORE_TOOL_NAMES)
@@ -742,42 +732,33 @@ class AgentOrchestrator:
         # Filter agent's tools, keeping the always-visible core lookup tools so
         # the model is never left without a tool that can reach the data.
         filtered = [t for t in self.agent.tools if t["function"]["name"] in relevant_tool_names]
-        filtered = _read_only(filtered)
 
         print(f"[AI Agent] Filtered to {len(filtered)} relevant tools for categories: {categories}")
         return filtered
 
-    def _autonomy_allowed(self) -> bool:
-        """Autonomy gate for auto-executing low-risk write tools.
+    def _max_plan_steps(self) -> int:
+        """Effective plan-step cap for this turn.
 
-        True only when ALL hold: (a) the 'agent_autonomy_enabled' kill-switch
-        setting is truthy; (b) the current user exists and their role is
-        'manager' or 'boss'. Any failure resolving either side denies autonomy.
+        Reads the manager setting (``ai_max_plan_steps``) through the same
+        settings callback the tools use, so a saved value applies on the next
+        request without restarting the process. An unset, unparsable or
+        out-of-range value falls back to the default; the result is always
+        clamped to ``MIN_PLAN_STEPS..MAX_PLAN_STEPS_LIMIT``.
         """
+        raw = None
+        getter = self.get_setting_func
+        if callable(getter):
+            try:
+                raw = getter(PLAN_STEP_LIMIT_SETTING)
+            except Exception:
+                raw = None
+        text = str(raw).strip() if raw is not None else ""
         try:
-            raw = self.get_setting_func("agent_autonomy_enabled")
-        except Exception:
-            return False
-        if str(raw or "").strip().lower() not in {"true", "1", "on", "yes"}:
-            return False
+            value = int(text) if text else MAX_PLAN_STEPS
+        except (TypeError, ValueError):
+            value = MAX_PLAN_STEPS
+        return max(MIN_PLAN_STEPS, min(value, MAX_PLAN_STEPS_LIMIT))
 
-        user_id = self.request_context.get("user_id")
-        if user_id is None:
-            return False
-        try:
-            User = self.ai_tools._get_model("User") or self.ai_tools.models.get("User")
-        except Exception:
-            return False
-        if User is None:
-            return False
-        try:
-            user = User.query.filter_by(id=user_id).first()
-        except Exception:
-            return False
-        if user is None:
-            return False
-        return getattr(user, "role", None) in ("manager", "boss")
-                
     def process_command(self, command: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         """
         Process a user command through the AI agent
@@ -1001,7 +982,7 @@ class AgentOrchestrator:
                     # Never let a lookup look like a completed change.
                     final_message += ("\n\nI only gathered the details above; nothing has been "
                                       "changed yet. Say \"go ahead\" and I will prepare the "
-                                      "change for your approval.")
+                                      "change.")
             
             if final_message is None:
                 # No real tool data yet - try keyword fallback intent detection.
@@ -1027,8 +1008,7 @@ class AgentOrchestrator:
                     final_message = ("I couldn't retrieve that from the database with the tools "
                                      "available right now. If you'd like me to change something, "
                                      "tell me the details (for example: \"add a product called "
-                                     "Sprite, price 1500\") and I'll prepare the action for "
-                                     "your approval.")
+                                     "Sprite, price 1500\") and I'll apply it.")
                 elif not response.content or response.content.strip() == "":
                     final_message = "I'm here to help with your inventory and procurement tasks. You can ask me to check stock levels, create purchase orders, review suppliers, analyze sales trends, and more!"
                 else:
@@ -1086,7 +1066,6 @@ class AgentOrchestrator:
         """Guarantee the process_command return contract on every path."""
         result.setdefault("plan", None)
         result.setdefault("step_results", [])
-        result.setdefault("pending_approvals", [])
         return result
 
     def _get_tool_registry(self) -> Dict[str, Dict[str, Any]]:
@@ -1113,8 +1092,7 @@ class AgentOrchestrator:
                 "one_line": fn.get("description", ""),
                 "params": fn.get("parameters", {}) or {},
             }
-        return {name: meta for name, meta in registry.items()
-                if not tool_authorization_error(name, self.request_context)}
+        return registry
 
     def _build_planning_catalog(self, registry: Dict[str, Dict[str, Any]]) -> str:
         """Compact one-line-per-tool catalog for the planning prompt.
@@ -1124,11 +1102,7 @@ class AgentOrchestrator:
         """
         lines = []
         for name, meta in sorted(registry.items()):
-            if meta["mutates"]:
-                auto = _TOOL_METADATA.get(name, {}).get("autonomy") == "auto"
-                flag = " [write - auto]" if auto else " [write - requires approval]"
-            else:
-                flag = ""
+            flag = " [write]" if meta["mutates"] else ""
             arg_names = ", ".join(
                 f"{arg}: {json.dumps(spec, ensure_ascii=False, separators=(',', ':'))}"
                 for arg, spec in (meta["params"].get("properties") or {}).items())
@@ -1155,8 +1129,8 @@ class AgentOrchestrator:
             return None, f"'steps' must be a list, got {type(steps).__name__}", False
         if not steps:
             return None, "'steps' must contain at least one step", False
-        if len(steps) > MAX_PLAN_STEPS:
-            return None, f"plan has {len(steps)} steps; maximum is {MAX_PLAN_STEPS}", True
+        if len(steps) > (limit := self._max_plan_steps()):
+            return None, f"plan has {len(steps)} steps; maximum is {limit}", True
 
         normalized = []
         for idx, raw in enumerate(steps):
@@ -1376,7 +1350,7 @@ class AgentOrchestrator:
                     + f"Request: {command}\n\n"
                     f"Available tools:\n{catalog}\n\n"
                     "Rules:\n"
-                    f"- Maximum {MAX_PLAN_STEPS} steps.\n"
+                    f"- Maximum {self._max_plan_steps()} steps.\n"
                     "- Respond ONLY by calling the propose_plan tool.\n"
                     "- Only the tools listed above exist. Never invent a tool name, "
                     "endpoint, or provider API; an unknown tool invalidates the plan.\n"
@@ -1394,8 +1368,9 @@ class AgentOrchestrator:
                     'results show prices as formatted text, so compute the new value '
                     'yourself (for example 5300000 + 50000 -> 5350000) and write the '
                     'number. "$from" can copy a value but cannot do arithmetic.\n'
-                    "- Write tools are allowed but execute only after explicit user "
-                    "approval, so read steps may only gather the arguments a write step needs.\n"
+                    "- Write tools are allowed and execute immediately once the plan "
+                    "runs; the tool names flagged [write] change data, so include "
+                    "them only when the user asked for a change.\n"
                     "- A change request (create, update, delete, email, schedule) MUST "
                     "end with the write tool that performs it; a read-only plan cannot "
                     "satisfy it. Read steps exist only to supply its arguments. "
@@ -1699,35 +1674,25 @@ class AgentOrchestrator:
 
         return compact(obj, 0)
 
-    def _execute_plan(
-        self, plan: Dict[str, Any],
-        approved_steps: Optional[Set[int]] = None,
-        fallback_args: Optional[Dict[int, Dict[str, Any]]] = None,
-    ) -> tuple:
+    def _execute_plan(self, plan: Dict[str, Any]) -> tuple:
         """PHASE B: sequential execution with no model decisions.
 
         Fail-stop: the first failed step aborts all later ones (marked
-        'skipped'). Read tools execute directly. Mutating tools execute ONLY
-        when TOOL_METADATA marks them autonomy=="auto" AND _autonomy_allowed()
-        (kill-switch on + manager user; such runs are tagged
-        'executed_by': 'agent-auto'), OR when their step number is listed in
-        approved_steps — a human explicitly approved that exact persisted step
-        via the approval flow (tagged 'executed_by': 'approved'). Every other
-        mutating tool becomes an approval proposal and never touches the
-        database here.
+        'skipped'). There is no permission/approval gate: every step — read or
+        write — executes immediately once its arguments validate.
 
         Argument resolution is the one place where a model may still speak: a
         "$from" reference that does not match real data is repaired (bounded by
-        MAX_PLAN_STEP_REPAIRS) instead of destroying an already-approved task.
-        The repair may only rewrite that step's arguments — the tool, the step
-        order, and every approval rule stay exactly as planned.
+        MAX_PLAN_STEP_REPAIRS). The repair may only rewrite that step's
+        arguments — the tool and the step order stay exactly as planned.
+
+        Returns ``(step_results, executed_writes)`` where ``executed_writes``
+        lists the step numbers whose mutating tool actually changed data.
         """
         registry = self._get_tool_registry()
         parameters = {name: meta['params'] for name, meta in registry.items()}
-        autonomy_ok = self._autonomy_allowed()  # once per plan, not per step
-        approved = {int(n) for n in (approved_steps or ())}
         step_results: List[Dict[str, Any]] = []
-        pending_approvals: List[Dict[str, Any]] = []
+        executed_writes: List[int] = []
         step_outputs: Dict[int, Any] = {}
         repairs_left = MAX_PLAN_STEP_REPAIRS
         aborted = False
@@ -1744,7 +1709,7 @@ class AgentOrchestrator:
             # Resolve $from references against earlier step outputs.
             resolved_args, args_source, args_error = self._prepare_step_arguments(
                 plan, step, step_outputs, registry, parameters,
-                fallback_args=fallback_args, allow_repair=repairs_left > 0)
+                allow_repair=repairs_left > 0)
             if args_error:
                 step_results.append({**base, "status": "failed", "error": args_error})
                 aborted = True
@@ -1753,31 +1718,6 @@ class AgentOrchestrator:
                 repairs_left -= 1
                 print(f"[AI Agent] Repaired $from arguments for step {step_no} ({tool})")
             provenance = {"args_source": args_source} if args_source != "plan" else {}
-
-            mutates = registry.get(tool, {}).get("mutates")
-            auto_allowed = (
-                mutates
-                and _TOOL_METADATA.get(tool, {}).get("autonomy") == "auto"
-                and autonomy_ok
-            )
-            human_approved = bool(mutates and step_no in approved)
-
-            # Write tools default to approval proposals; they never run unless
-            # explicitly marked autonomous AND the manager gate passes, or the
-            # user approved this exact persisted step.
-            if mutates and not auto_allowed and not human_approved:
-                proposal = {
-                    "step": step_no,
-                    "tool": tool,
-                    "args": resolved_args,
-                    "reason": step.get("reason") or "",
-                }
-                if provenance:
-                    proposal.update(provenance)
-                pending_approvals.append(proposal)
-                step_results.append({**base, "status": "proposal",
-                                     "result": proposal, **provenance})
-                continue
 
             if tool not in self.agent.tool_functions:
                 step_results.append({
@@ -1796,25 +1736,17 @@ class AgentOrchestrator:
                     raise RuntimeError(str(outcome["error"]))
                 result = outcome.get("result")
                 step_outputs[step_no] = result
-                if human_approved:
-                    # Human provenance outranks the machine gate in the audit trail.
-                    step_results.append({**base, "status": "ok",
-                                         "result": result,
-                                         "executed_by": "approved", **provenance})
-                elif auto_allowed:
-                    step_results.append({**base, "status": "ok",
-                                         "result": result,
-                                         "executed_by": "agent-auto", **provenance})
-                else:
-                    step_results.append({**base, "status": "ok", "result": result,
-                                         **provenance})
+                step_results.append({**base, "status": "ok", "result": result,
+                                     **provenance})
+                if registry.get(tool, {}).get("mutates"):
+                    executed_writes.append(step_no)
                 self.session_context["last_tool_used"] = tool
                 self.session_context["last_results"] = result
             except Exception as exc:
                 step_results.append({**base, "status": "failed", "error": str(exc)})
                 aborted = True
 
-        return step_results, pending_approvals
+        return step_results, executed_writes
 
     def _guarded_arguments(
         self, tool: str, args: Dict[str, Any], step_outputs: Dict[int, Any],
@@ -1831,15 +1763,13 @@ class AgentOrchestrator:
         self, plan: Dict[str, Any], step: Dict[str, Any],
         step_outputs: Dict[int, Any], registry: Dict[str, Dict[str, Any]],
         parameters: Dict[str, Any],
-        fallback_args: Optional[Dict[int, Dict[str, Any]]] = None,
         allow_repair: bool = True,
     ) -> tuple:
         """Return ``(args, source, error)`` for one plan step.
 
-        Resolution order: the plan's own arguments, then the arguments the human
-        actually approved earlier (persisted fallback), then one bounded model
-        repair of the broken reference. Only argument values change; the tool,
-        the step order and every approval rule stay as planned.
+        Resolution order: the plan's own arguments, then one bounded model
+        repair of a broken reference. Only argument values change; the tool and
+        the step order stay as planned.
         """
         declared = step.get("args") or {}
         try:
@@ -1853,16 +1783,6 @@ class AgentOrchestrator:
             # reference: the model wrote an argument this tool cannot accept.
             # Give it the same single bounded chance to restate that step.
             first_error = exc
-
-        persisted = (fallback_args or {}).get(step["step"])
-        if persisted:
-            try:
-                return (self._guarded_arguments(step["tool"], persisted, step_outputs,
-                                                registry, parameters),
-                        "persisted-approval", None)
-            except Exception as exc:
-                print(f"[AI Agent] Persisted arguments for step {step['step']} "
-                      f"were rejected: {exc}")
 
         if allow_repair:
             repaired = self._repair_step_args(plan, step, step_outputs, str(first_error))
@@ -1974,30 +1894,12 @@ class AgentOrchestrator:
         print(f"[AI Agent] Empty search retried with {len(useful)} result(s)")
         return useful
 
-    @staticmethod
-    def _persisted_step_args(persisted_results: Any) -> Dict[int, Dict[str, Any]]:
-        """Arguments a human actually approved, keyed by step number.
-
-        Used only when a re-run cannot rebuild a reference from fresh data: the
-        approved arguments are better evidence than failing the task again.
-        """
-        fallback: Dict[int, Dict[str, Any]] = {}
-        for entry in persisted_results or []:
-            if not isinstance(entry, dict):
-                continue
-            step_no = entry.get("step")
-            payload = entry.get("result")
-            args = payload.get("args") if isinstance(payload, dict) else None
-            if isinstance(step_no, int) and isinstance(args, dict):
-                fallback[step_no] = args
-        return fallback
-
     def _deterministic_status_message(self, step_results: List[Dict[str, Any]]) -> str:
         """Fallback human summary built only from real per-step statuses."""
         lines = ["Here is what happened, step by step:"]
         for sr in step_results:
             status = sr["status"]
-            icon = {"ok": "✅", "failed": "❌", "proposal": "📝", "skipped": "⏭️"}.get(status, "•")
+            icon = {"ok": "✅", "failed": "❌", "skipped": "⏭️"}.get(status, "•")
             line = f"{icon} Step {sr['step']} ({sr['tool']}): {status}"
             # Guarded tools (for example delete_product asking for confirmation)
             # report the reason inside their result dict, not as a step error.
@@ -2009,61 +1911,15 @@ class AgentOrchestrator:
             lines.append(line)
         return "\n".join(lines)
 
-    @staticmethod
-    def _money_arg_name(key: Any) -> bool:
-        """True when an argument name holds a money amount."""
-        lowered = str(key).lower()
-        return any(token in lowered for token in _MONEY_ARG_TOKENS)
-
-    def _product_rows_by_id(self, step_results: List[Dict[str, Any]]) -> Dict[Any, Dict[str, Any]]:
-        """Product rows earlier steps already returned, keyed by id.
-
-        Lets an approval line name the product instead of showing a bare id.
-        """
-        rows: Dict[Any, Dict[str, Any]] = {}
-        for sr in step_results:
-            result = sr.get("result")
-            inventory = result.get("inventory") if isinstance(result, dict) else None
-            for row in inventory or []:
-                if isinstance(row, dict) and row.get("product_id") is not None:
-                    rows[row["product_id"]] = row
-        return rows
-
-    def _describe_proposed_change(self, tool: str, args: Dict[str, Any],
-                                  rows: Dict[Any, Dict[str, Any]]) -> str:
-        """One line naming exactly what approving this step would change."""
-        args = args if isinstance(args, dict) else {}
-        row = rows.get(args.get("product_id"))
-        label = f"**{row.get('name')}**" if row and row.get("name") else None
-        if tool == "update_product_price" and "price" in args:
-            text = f"price {self._money(args.get('price'))}"
-            if row and row.get("price") is not None:
-                text += f" (currently {self._money(row.get('price'))})"
-            return f"{label} - {text}" if label else f"{tool} - {text}"
-        details = []
-        for key, value in args.items():
-            if key == "product_id" and label:
-                continue
-            name = str(key).replace('_', ' ')
-            if isinstance(value, dict) and "$from" in value:
-                details.append(f"{name}: {value['$from']}")
-            elif self._money_arg_name(key):
-                details.append(f"{name}: {self._money(value)}")
-            else:
-                details.append(f"{name}: {value}")
-        joined = ", ".join(details) or "no arguments"
-        return f"{label} ({tool}) - {joined}" if label else f"{tool} - {joined}"
-
     def _deterministic_outcome_message(
         self, command: str, step_results: List[Dict[str, Any]],
-        pending_approvals: List[Dict[str, Any]],
     ) -> str:
-        """Exact account of a plan that proposed or failed, built without a model.
+        """Exact account of a plan that failed, built without a model.
 
-        An LLM narrating an approval invented a currency and mangled an amount
-        ("The request says to 50.00 add,000 MMK"), and a user about to approve a
-        write must see exactly what will run. Read results are still shown, so
-        the answer keeps the data the user asked about.
+        A model narrating an outcome mangled amounts ("The request says to 50.00
+        add,000 MMK"), so a failed plan is described from real step statuses
+        only. Read results are still shown, so the answer keeps the data the
+        user asked about.
         """
         blocks = []
         data_results = [
@@ -2076,45 +1932,34 @@ class AgentOrchestrator:
             if rendered:
                 blocks.append(rendered)
 
-        rows = self._product_rows_by_id(step_results)
-
-        if pending_approvals:
-            lines = [f"📝 **{len(pending_approvals)} change(s) are awaiting your approval - "
-                     f"nothing has been applied yet.**", ""]
-            for item in pending_approvals:
-                args = item.get("args") if isinstance(item.get("args"), dict) else {}
-                lines.append("• " + self._describe_proposed_change(item.get("tool") or "", args, rows))
-            lines += ["", "Approve the step(s) in the panel, or reply \"yes\" to apply them."]
-            blocks.append("\n".join(lines))
-
-        failed = [sr for sr in step_results if sr["status"] in ("failed", "skipped")]
-        if failed:
-            lines = [f"❌ {len(failed)} step(s) failed or were skipped:"]
-            for sr in failed:
+        failures = [sr for sr in step_results if sr["status"] in ("failed", "skipped")]
+        if failures:
+            lines = [f"⚠️ **{len(failures)} step(s) could not be completed**", ""]
+            for sr in failures:
+                reason = sr.get("error")
                 result = sr.get("result")
-                reason = sr.get("error") or (result.get("error") if isinstance(result, dict) else None)
-                lines.append(f"• Step {sr['step']} ({sr['tool']}): {reason or sr['status']}")
+                if not reason and isinstance(result, dict):
+                    reason = result.get("error")
+                lines.append(f"• Step {sr['step']} ({sr['tool']}): "
+                             f"{reason or 'not run'}")
             blocks.append("\n".join(lines))
 
-        return ("\n\n".join(block for block in blocks if block)
-                or self._deterministic_status_message(step_results))
+        return "\n\n".join(blocks) or self._deterministic_status_message(step_results)
 
     def _generate_plan_summary(
         self, command: str, plan: Dict[str, Any],
         step_results: List[Dict[str, Any]],
-        pending_approvals: List[Dict[str, Any]],
     ) -> str:
         """One optional LLM call turning compacted step outputs into an answer.
 
         ANTI-HALLUCINATION CONTRACT: only the compacted raw results below may
-        be quoted; any failed/skipped/proposal step must be reported as such.
+        be quoted; any failed or skipped step must be reported as such.
 
-        A turn that ends in pending writes or a failed step never reaches the
-        model at all: _deterministic_outcome_message describes it exactly.
+        A turn that ended in a failed step never reaches the model at all:
+        _deterministic_outcome_message describes it exactly.
         """
-        if pending_approvals or any(sr["status"] in ("failed", "skipped")
-                                    for sr in step_results):
-            return self._deterministic_outcome_message(command, step_results, pending_approvals)
+        if any(sr["status"] in ("failed", "skipped") for sr in step_results):
+            return self._deterministic_outcome_message(command, step_results)
 
         compact_steps = []
         for sr in step_results:
@@ -2125,19 +1970,14 @@ class AgentOrchestrator:
                 entry["error"] = sr["error"]
             compact_steps.append(entry)
 
-        incomplete = any(sr["status"] in ("failed", "skipped") for sr in step_results)
-        awaiting = len(pending_approvals)
-
         prompt = (
             "You wrote a plan and it was executed deterministically. Answer the "
             "user's original request using ONLY the JSON step results below. "
             "Never invent counts, prices, names, or totals that are not in the "
-            "results. If any step failed, was skipped, or produced an unapproved "
-            "proposal, you MUST say the task is incomplete or awaiting approval — "
-            "never claim success.\n\n"
+            "results. If any step failed or was skipped, you MUST say the task "
+            "is incomplete — never claim success.\n\n"
             f"Original request: {command}\n\n"
             f"Step results (compacted):\n{json.dumps(compact_steps, default=str)}\n\n"
-            + (f"Note: {awaiting} write action(s) await user approval.\n" if awaiting else "")
         )
 
         message = None
@@ -2154,20 +1994,6 @@ class AgentOrchestrator:
 
         if message is None:
             message = self._deterministic_status_message(step_results)
-
-        # Guarantee the anti-hallucination contract even if the model forgot.
-        if incomplete or awaiting:
-            bits = []
-            failed_n = sum(1 for sr in step_results if sr["status"] in ("failed", "skipped"))
-            if failed_n:
-                bits.append(f"{failed_n} step(s) failed or were skipped")
-            if awaiting:
-                bits.append(f"{awaiting} change(s) await your approval")
-            guarantee = "Task incomplete: " + "; ".join(bits) + "."
-            lower = message.lower()
-            if not any(w in lower for w in ("incomplete", "failed", "could not",
-                                            "not completed", "approval", "await")):
-                message = f"{message}\n\n⚠️ {guarantee}"
         return message
 
     def _execute_planned_command(
@@ -2182,7 +2008,7 @@ class AgentOrchestrator:
                 "plan": plan,
             })
 
-        step_results, pending_approvals = self._execute_plan(plan)
+        step_results, _executed_writes = self._execute_plan(plan)
         failed = [sr for sr in step_results if sr["status"] in ("failed", "skipped")]
 
         # Trivial single-step success: skip the summary LLM call entirely and
@@ -2198,106 +2024,18 @@ class AgentOrchestrator:
                 "message": message,
                 "plan": plan,
                 "step_results": step_results,
-                "pending_approvals": pending_approvals,
             })
 
         # Restore the pre-plan conversation so the summary call starts from a
         # clean context; large results travel only inside the summary prompt.
         self.agent.conversation_history = history_snapshot
-        message = self._generate_plan_summary(command, plan, step_results, pending_approvals)
+        message = self._generate_plan_summary(command, plan, step_results)
 
         return self._with_contract({
             "success": not failed,
             "message": message,
             "plan": plan,
             "step_results": step_results,
-            "pending_approvals": pending_approvals,
-        })
-
-    def run_approved_plan(
-        self, command: str, plan: Dict[str, Any],
-        approved_step_nos: Any,
-        persisted_results: Optional[List[Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
-        """Execute a persisted plan, running ONLY the human-approved steps.
-
-        This is the execution half of the approval flow: the user approved
-        specific proposal steps of a previously persisted AgentTask. The plan
-        is re-run deterministically (read steps fetch fresh data, approved
-        mutating steps execute, every other mutating step stays a proposal).
-        Arguments come from the persisted plan, never from the caller.
-
-        ``persisted_results`` are the task's stored step results. When a re-run
-        cannot rebuild a "$from" reference from fresh data (the earlier tool
-        returned something different this time), the exact arguments the human
-        approved are used instead of failing the task they already approved.
-        """
-        steps = plan.get("steps") if isinstance(plan, dict) else None
-        if not isinstance(steps, list) or not steps:
-            return self._with_contract({
-                "success": False,
-                "message": ("No stored plan was found for this task, so no "
-                            "approved change can be executed. Please ask again "
-                            "and approve the new plan."),
-                "plan": plan if isinstance(plan, dict) else None,
-            })
-
-        try:
-            approved = {int(n) for n in (approved_step_nos or [])}
-        except (TypeError, ValueError):
-            return self._with_contract({
-                "success": False,
-                "message": "Invalid approved step list; nothing was executed.",
-                "plan": plan,
-            })
-
-        registry = self._get_tool_registry()
-        plan_step_nos = {step.get("step") for step in steps}
-        unknown = approved - plan_step_nos
-        if unknown:
-            return self._with_contract({
-                "success": False,
-                "message": (f"Approved step(s) {sorted(unknown)} do not exist "
-                            "in the stored plan; nothing was executed."),
-                "plan": plan,
-            })
-
-        # Only mutating tools can be "approved"; approving a read step is a
-        # harmless no-op because read steps run anyway.
-        mutating_nos = {
-            step.get("step") for step in steps
-            if registry.get(step.get("tool"), {}).get("mutates")
-        }
-        approved_mutating = approved & mutating_nos
-
-        step_results, pending_approvals = self._execute_plan(
-            plan, approved_steps=approved_mutating,
-            fallback_args=self._persisted_step_args(persisted_results))
-        failed = [sr for sr in step_results if sr["status"] in ("failed", "skipped")]
-        executed = [sr for sr in step_results if sr.get("executed_by") == "approved"]
-        awaiting = len(pending_approvals)
-
-        if len(step_results) == 1 and step_results[0]["status"] == "ok":
-            sr = step_results[0]
-            message = self._format_tool_results_for_user(
-                [{"function_name": sr["tool"], "result": sr.get("result"), "error": None}],
-                command,
-            ) or f"Completed '{sr['tool']}'."
-        else:
-            bits = [f"{len(executed)} approved change(s) applied"] if executed else []
-            if failed:
-                bits.append(f"{len(failed)} step(s) failed or were skipped")
-            if awaiting:
-                bits.append(f"{awaiting} change(s) still await approval")
-            message = ("Done: " + "; ".join(bits) + ".") if bits else \
-                self._deterministic_status_message(step_results)
-
-        return self._with_contract({
-            "success": not failed,
-            "message": message,
-            "plan": plan,
-            "step_results": step_results,
-            "pending_approvals": pending_approvals,
         })
 
     def _execute_tools_with_context(self, tool_calls: List,
@@ -2335,13 +2073,6 @@ class AgentOrchestrator:
                     f"{', '.join(sorted(name for name in allowed if name)) or 'none'}."))
                 continue
 
-            authorization_error = tool_authorization_error(tc.function_name, self.request_context)
-            if authorization_error:
-                results.append({"tool_call_id": tc.id, "function_name": tc.function_name,
-                                "result": None, "error": authorization_error})
-                self.agent.add_tool_result(tc.id, json.dumps({"error": authorization_error}))
-                continue
-
             guarded = guard_tool_call(tc.function_name, tc.arguments, executable, parameters,
                                       getattr(tc, "parse_error", None))
             if not guarded.ok:
@@ -2360,7 +2091,6 @@ class AgentOrchestrator:
                 else:
                     result = func(**guarded.arguments)
                     
-                result = minimize_cashier_result(result, self.request_context)
                 results.append({
                     "tool_call_id": tc.id,
                     "function_name": tc.function_name,

@@ -9,14 +9,14 @@ Every tool is registered exactly once in TOOL_METADATA. Adding a future
 feature requires exactly TWO changes:
 
     1. Add ONE entry to TOOL_METADATA below (name, description, parameters,
-       category, mutates, requires_role, description_one_line,
-       result_size_hint, autonomy).
+       category, mutates, description_one_line, result_size_hint).
     2. Add ONE method with the same name on the AITools class.
 
-The ``autonomy`` field controls smart autonomy:
-    - "auto": the tool may execute immediately for managers when the global
-      autonomy switch is on (no human approval round-trip needed).
-    - "approval": always requires human approval before execution.
+There is no permission/approval layer: every registered tool is executable by
+the agent for any account allowed to use the AI assistant. The ``mutates`` flag
+is descriptive only (it tells the planner and the UI which steps write data).
+Access to the AI assistant itself is restricted at the HTTP boundary
+(``/api/agent/*`` is manager/boss only); see ``app.py``.
 
 TOOL_SCHEMAS (the legacy format consumed by agent callers/tests) is DERIVED
 from TOOL_METADATA, so old imports keep working unchanged. Read-only callers
@@ -34,7 +34,6 @@ Safety rails every WRITE tool (mutates=True) must follow:
 
 import json
 import uuid
-from functools import wraps
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from decimal import Decimal, ROUND_HALF_UP
@@ -697,7 +696,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
             "required": ["delivery_id", "stage"]
         }
     },
-    # --- smart-autonomy write tools ---
+    # --- additional write tools ---
     "create_supplier": {
         "name": "create_supplier",
         "description": "Create a shared supplier with optional contact details and a category from any branch. Refuses duplicate supplier names across branches.",
@@ -1032,133 +1031,82 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     }
 }
 
-# Smart autonomy: tools that may execute immediately for managers when the
-# global autonomy switch is on. All other write tools require approval.
-_AUTO_EXECUTE_TOOLS = {
-    "register_customer", "create_supplier", "update_supplier", "update_customer",
-    "create_category",
-    # Report delivery: these only read POS data, render a file and send it to an
-    # address resolved by the server, so they run without a proposal step.
-    "email_report", "schedule_report", "update_scheduled_report",
-    "cancel_scheduled_report", "send_test_email",
-}
-
 # ==============================================================================
 # TOOL_METADATA -- the single source of truth for every tool.
 # Each entry: name, description, parameters, category
 # (inventory|sales|purchasing|customers|debts|deliveries|promotions|system),
-# mutates (bool), requires_role (None|'manager'|'boss'),
-# description_one_line (token-cheap planning prompts), result_size_hint
-# ('small'|'medium'|'large').
+# mutates (bool), description_one_line (token-cheap planning prompts),
+# result_size_hint ('small'|'medium'|'large').
 # Adding a tool = ONE entry here + ONE method on AITools. See module docstring.
 # ==============================================================================
 _TOOL_META = {
     # --- read tools ---
-    "get_inventory_status":            ("inventory",   False, None,     "Current stock levels and reorder status for all or one product.", "medium"),
-    "get_low_stock_items":             ("inventory",   False, None,     "Products at or below reorder point with suggested reorder quantities.", "medium"),
-    "search_products":                 ("inventory",   False, None,     "Search active-branch products by name; returns stock, price, cost.", "small"),
-    "get_supplier_list":               ("purchasing",  False, None,     "List shared suppliers with contact info, ratings, and performance.", "medium"),
-    "get_supplier_categories":         ("purchasing",  False, 'manager', "Shared supplier category choices with explicit IDs and branches.", "medium"),
-    "get_purchase_order_products":     ("purchasing",  False, 'manager', "Shared purchase-order product choices with explicit IDs and branches.", "medium"),
-    "get_supplier_details":            ("purchasing",  False, None,     "Detailed supplier info including price agreements and recent POs.", "large"),
-    "get_purchase_orders":             ("purchasing",  False, None,     "List purchase orders filtered by status, supplier, or date.", "medium"),
-    "get_warehouse_inventory":         ("inventory",   False, None,     "Warehouse stock received but not yet transferred to main stock.", "medium"),
-    "get_sales_trends":                ("sales",       False, None,     "Sales trend analysis per product over a period for reorder decisions.", "large"),
-    "get_product_details":             ("inventory",   False, None,     "Full product detail: stock, pricing, tax, supplier agreements.", "small"),
-    "suggest_reorder_quantities":      ("inventory",   False, None,     "Suggested reorder quantities from 30-day sales velocity analysis.", "medium"),
-    "get_supplier_price_for_product":  ("purchasing",  False, None,     "Agreed supplier price for a product, if an agreement exists.", "small"),
-    "get_current_branch_context":      ("system",      False, None,     "Active POS branch for local tools; procurement and warehouse are shared.", "small"),
-    "get_category_summary":            ("inventory",   False, None,     "Categories with active-branch product and supplier counts.", "small"),
-    "get_promotion_summary":           ("promotions",  False, None,     "Active-branch promotions filtered by active/upcoming/expired.", "medium"),
-    "get_customer_summary":            ("customers",   False, None,     "Find active-branch customers and outstanding debt balances.", "medium"),
-    "get_debt_summary":                ("debts",       False, None,     "Summarize customer debts, overdue balances, and aging status.", "medium"),
-    "get_delivery_summary":            ("deliveries",  False, None,     "Deliveries by stage plus open delivery work for the branch.", "medium"),
-    "get_return_exchange_summary":     ("sales",       False, None,     "Recent returns/exchanges with refund and collection totals.", "medium"),
-    "get_warehouse_transfer_history":  ("inventory",   False, None,     "Recent warehouse-to-stock transfers.", "small"),
-    "get_sales_summary":               ("sales",       False, None,     "Sales totals, transaction count, payment methods for a period.", "medium"),
+    "get_inventory_status":            ("inventory",   False,     "Current stock levels and reorder status for all or one product.", "medium"),
+    "get_low_stock_items":             ("inventory",   False,     "Products at or below reorder point with suggested reorder quantities.", "medium"),
+    "search_products":                 ("inventory",   False,     "Search active-branch products by name; returns stock, price, cost.", "small"),
+    "get_supplier_list":               ("purchasing",  False,     "List shared suppliers with contact info, ratings, and performance.", "medium"),
+    "get_supplier_categories":         ("purchasing",  False, "Shared supplier category choices with explicit IDs and branches.", "medium"),
+    "get_purchase_order_products":     ("purchasing",  False, "Shared purchase-order product choices with explicit IDs and branches.", "medium"),
+    "get_supplier_details":            ("purchasing",  False,     "Detailed supplier info including price agreements and recent POs.", "large"),
+    "get_purchase_orders":             ("purchasing",  False,     "List purchase orders filtered by status, supplier, or date.", "medium"),
+    "get_warehouse_inventory":         ("inventory",   False,     "Warehouse stock received but not yet transferred to main stock.", "medium"),
+    "get_sales_trends":                ("sales",       False,     "Sales trend analysis per product over a period for reorder decisions.", "large"),
+    "get_product_details":             ("inventory",   False,     "Full product detail: stock, pricing, tax, supplier agreements.", "small"),
+    "suggest_reorder_quantities":      ("inventory",   False,     "Suggested reorder quantities from 30-day sales velocity analysis.", "medium"),
+    "get_supplier_price_for_product":  ("purchasing",  False,     "Agreed supplier price for a product, if an agreement exists.", "small"),
+    "get_current_branch_context":      ("system",      False,     "Active POS branch for local tools; procurement and warehouse are shared.", "small"),
+    "get_category_summary":            ("inventory",   False,     "Categories with active-branch product and supplier counts.", "small"),
+    "get_promotion_summary":           ("promotions",  False,     "Active-branch promotions filtered by active/upcoming/expired.", "medium"),
+    "get_customer_summary":            ("customers",   False,     "Find active-branch customers and outstanding debt balances.", "medium"),
+    "get_debt_summary":                ("debts",       False,     "Summarize customer debts, overdue balances, and aging status.", "medium"),
+    "get_delivery_summary":            ("deliveries",  False,     "Deliveries by stage plus open delivery work for the branch.", "medium"),
+    "get_return_exchange_summary":     ("sales",       False,     "Recent returns/exchanges with refund and collection totals.", "medium"),
+    "get_warehouse_transfer_history":  ("inventory",   False,     "Recent warehouse-to-stock transfers.", "small"),
+    "get_sales_summary":               ("sales",       False,     "Sales totals, transaction count, payment methods for a period.", "medium"),
     # --- write tools ---
-    "create_purchase_order":           ("purchasing",  True,  'manager', "Create a draft purchase order for one or more products from a supplier.", "small"),
-    "approve_purchase_order":          ("purchasing",  True,  'manager', "Approve a pending purchase order (pending -> approved).", "small"),
-    "cancel_purchase_order":           ("purchasing",  True,  'manager', "Cancel a draft/pending/approved purchase order with a reason.", "small"),
-    "create_warehouse_transfer":       ("inventory",   True,  'manager', "Move warehouse stock into main product stock (FIFO deduction).", "small"),
-    "upsert_product":                  ("inventory",   True,  'manager', "Create a product or update an existing one's price/cost/stock/reorder settings.", "small"),
-    "adjust_product_stock":            ("inventory",   True,  'manager', "Apply a signed stock delta to a product with a mandatory reason; result must stay >= 0.", "small"),
-    "create_promotion":                ("promotions",  True,  'manager', "Create a percent or fixed discount promotion for a product over a date range.", "small"),
-    "register_customer":               ("customers",   True,  'staff',   "Register a new customer in the active branch with optional contact details.", "small"),
-    "record_debt_payment":             ("debts",       True,  'staff',   "Record a payment against a customer debt using exact decimal math; marks paid at zero balance.", "small"),
-    "update_delivery_stage":           ("deliveries",  True,  'staff',   "Advance a delivery to its next valid stage (to_deliver -> packaged -> delivering -> delivered/cancelled).", "small"),
-    # --- smart-autonomy write tools ---
-    "create_supplier":                 ("purchasing",  True,  'manager', "Create a shared supplier with contact details and an unambiguous category.", "small"),
-    "update_supplier":                 ("purchasing",  True,  'manager', "Partially update a supplier's contact details, category, or active status.", "small"),
-    "update_customer":                 ("customers",   True,  'manager', "Partially update a customer's name/phone/email/address in the active branch.", "small"),
-    "create_category":                 ("inventory",   True,  'manager', "Create a new category with optional description/color/sort order.", "small"),
-    "delete_product":                  ("inventory",   True,  'manager', "Delete a product; sales and return history are kept, while other tabs (warehouse/promotions/PO lines/prices) need cascade=true.", "small"),
-    "delete_supplier":                 ("purchasing",  True,  'manager', "Delete an unused shared supplier; refuse linked procurement history.", "small"),
-    "delete_customer":                 ("customers",   True,  'manager', "Delete a customer; refuses when outstanding debt balances exist.", "small"),
-    "update_product_price":            ("inventory",   True,  'manager', "Update a product's price with exact decimal math and an optional audit reason.", "small"),
-    "write_off_debt":                  ("debts",       True,  'manager', "Write off a debt with a mandatory reason; zeroes balance and appends an audit note.", "small"),
+    "create_purchase_order":           ("purchasing",  True, "Create a draft purchase order for one or more products from a supplier.", "small"),
+    "approve_purchase_order":          ("purchasing",  True, "Approve a pending purchase order (pending -> approved).", "small"),
+    "cancel_purchase_order":           ("purchasing",  True, "Cancel a draft/pending/approved purchase order with a reason.", "small"),
+    "create_warehouse_transfer":       ("inventory",   True, "Move warehouse stock into main product stock (FIFO deduction).", "small"),
+    "upsert_product":                  ("inventory",   True, "Create a product or update an existing one's price/cost/stock/reorder settings.", "small"),
+    "adjust_product_stock":            ("inventory",   True, "Apply a signed stock delta to a product with a mandatory reason; result must stay >= 0.", "small"),
+    "create_promotion":                ("promotions",  True, "Create a percent or fixed discount promotion for a product over a date range.", "small"),
+    "register_customer":               ("customers",   True,   "Register a new customer in the active branch with optional contact details.", "small"),
+    "record_debt_payment":             ("debts",       True,   "Record a payment against a customer debt using exact decimal math; marks paid at zero balance.", "small"),
+    "update_delivery_stage":           ("deliveries",  True,   "Advance a delivery to its next valid stage (to_deliver -> packaged -> delivering -> delivered/cancelled).", "small"),
+    # --- additional write tools ---
+    "create_supplier":                 ("purchasing",  True, "Create a shared supplier with contact details and an unambiguous category.", "small"),
+    "update_supplier":                 ("purchasing",  True, "Partially update a supplier's contact details, category, or active status.", "small"),
+    "update_customer":                 ("customers",   True, "Partially update a customer's name/phone/email/address in the active branch.", "small"),
+    "create_category":                 ("inventory",   True, "Create a new category with optional description/color/sort order.", "small"),
+    "delete_product":                  ("inventory",   True, "Delete a product; sales and return history are kept, while other tabs (warehouse/promotions/PO lines/prices) need cascade=true.", "small"),
+    "delete_supplier":                 ("purchasing",  True, "Delete an unused shared supplier; refuse linked procurement history.", "small"),
+    "delete_customer":                 ("customers",   True, "Delete a customer; refuses when outstanding debt balances exist.", "small"),
+    "update_product_price":            ("inventory",   True, "Update a product's price with exact decimal math and an optional audit reason.", "small"),
+    "write_off_debt":                  ("debts",       True, "Write off a debt with a mandatory reason; zeroes balance and appends an audit note.", "small"),
     # --- full-feature coverage tools (all remaining tabs) ---
-    "receive_purchase_order":          ("purchasing",  True,  'manager', "Record received quantities against a purchase order into warehouse stock.", "small"),
-    "process_return_exchange":         ("sales",       True,  'manager', "Process a return/refund or exchange against an original sale transaction.", "small"),
-    "update_category":                 ("inventory",   True,  'manager', "Rename or edit a category; propagates renames to products/suppliers.", "small"),
-    "delete_category":                 ("inventory",   True,  'manager', "Delete an unused category; refuses when products or suppliers use it.", "small"),
-    "update_promotion":                ("promotions",  True,  'manager', "Update a promotion's dates, discount type, or value.", "small"),
-    "cancel_promotion":                ("promotions",  True,  'manager', "Cancel (delete) a promotion entirely.", "small"),
-    "create_delivery":                 ("deliveries",  True,  'manager', "Create a delivery record for a sale with recipient and courier details.", "small"),
-    "get_branch_list":                 ("system",      False, None,      "List all branches with active/default status.", "small"),
-    "create_branch":                   ("system",      True,  'manager', "Create a new branch with a unique code.", "small"),
-    "update_branch":                   ("system",      True,  'manager', "Update a branch's details or active status.", "small"),
-    "set_default_branch":              ("system",      True,  'manager', "Make a branch the company-wide default.", "small"),
-    "deactivate_branch":               ("system",      True,  'manager', "Deactivate a branch; refuses the default branch.", "small"),
+    "receive_purchase_order":          ("purchasing",  True, "Record received quantities against a purchase order into warehouse stock.", "small"),
+    "process_return_exchange":         ("sales",       True, "Process a return/refund or exchange against an original sale transaction.", "small"),
+    "update_category":                 ("inventory",   True, "Rename or edit a category; propagates renames to products/suppliers.", "small"),
+    "delete_category":                 ("inventory",   True, "Delete an unused category; refuses when products or suppliers use it.", "small"),
+    "update_promotion":                ("promotions",  True, "Update a promotion's dates, discount type, or value.", "small"),
+    "cancel_promotion":                ("promotions",  True, "Cancel (delete) a promotion entirely.", "small"),
+    "create_delivery":                 ("deliveries",  True, "Create a delivery record for a sale with recipient and courier details.", "small"),
+    "get_branch_list":                 ("system",      False,      "List all branches with active/default status.", "small"),
+    "create_branch":                   ("system",      True, "Create a new branch with a unique code.", "small"),
+    "update_branch":                   ("system",      True, "Update a branch's details or active status.", "small"),
+    "set_default_branch":              ("system",      True, "Make a branch the company-wide default.", "small"),
+    "deactivate_branch":               ("system",      True, "Deactivate a branch; refuses the default branch.", "small"),
     # --- report delivery (email + schedules) ---
-    "get_email_delivery_status":       ("reports",     False, None,      "Whether report email is configured, plus available reports and recipient choices.", "small"),
-    "send_test_email":                 ("reports",     True,  None,      "Send a one-off test email to verify delivery before scheduling reports.", "small"),
-    "update_product":                  ("inventory",   True,  'manager', "Rename or partially edit a product without touching its stock.", "small"),
-    "email_report":                    ("reports",     True,  None,      "Email a report now as Excel and/or PDF to a server-resolved recipient.", "small"),
-    "schedule_report":                 ("reports",     True,  None,      "Email a report every day or week at a chosen local time.", "small"),
-    "list_scheduled_reports":          ("reports",     False, None,      "List scheduled report emails, their schedule and last delivery status.", "medium"),
-    "update_scheduled_report":         ("reports",     True,  None,      "Change a scheduled report's time, frequency, format, recipient or pauses it.", "small"),
-    "cancel_scheduled_report":         ("reports",     True,  None,      "Stop a scheduled report email permanently.", "small"),
+    "get_email_delivery_status":       ("reports",     False,      "Whether report email is configured, plus available reports and recipient choices.", "small"),
+    "send_test_email":                 ("reports",     True,      "Send a one-off test email to verify delivery before scheduling reports.", "small"),
+    "update_product":                  ("inventory",   True, "Rename or partially edit a product without touching its stock.", "small"),
+    "email_report":                    ("reports",     True,      "Email a report now as Excel and/or PDF to a server-resolved recipient.", "small"),
+    "schedule_report":                 ("reports",     True,      "Email a report every day or week at a chosen local time.", "small"),
+    "list_scheduled_reports":          ("reports",     False,      "List scheduled report emails, their schedule and last delivery status.", "medium"),
+    "update_scheduled_report":         ("reports",     True,      "Change a scheduled report's time, frequency, format, recipient or pauses it.", "small"),
+    "cancel_scheduled_report":         ("reports",     True,      "Stop a scheduled report email permanently.", "small"),
 }
-
-# Explicit allowlist: new tools are managerial until reviewed for cashier safety.
-CASHIER_SAFE_TOOLS = frozenset({
-    'get_inventory_status', 'get_low_stock_items', 'search_products',
-    'get_product_details', 'get_current_branch_context',
-    # Read-only report delivery: staff may see whether email is configured and
-    # which schedules exist. Sending and scheduling are managerial.
-    'get_email_delivery_status', 'list_scheduled_reports',
-})
-_ROLE_LEVELS = {'staff': 1, 'cashier': 1, 'manager': 2, 'boss': 3}
-
-
-def tool_authorization_error(name, context):
-    """Authorize trusted execution scope, never model-provided arguments.
-
-    Empty context remains supported for standalone legacy/test callers. A Flask
-    request is never such a caller: derive its authenticated session if needed.
-    """
-    context = trusted_tool_context(context)
-    if not context:
-        return None
-    meta = TOOL_METADATA.get(name)
-    if not meta:
-        return f"Tool '{name}' has no authorization policy"
-    role = context.get('role')
-    if _ROLE_LEVELS.get(role, 0) < 1:
-        return "A valid authenticated role is required"
-    if _ROLE_LEVELS.get(role, 0) < 2:
-        if name not in CASHIER_SAFE_TOOLS:
-            return f"Tool '{name}' requires the 'manager' role"
-        branch_id = context.get('branch_id')
-        if (not context.get('user_id') or isinstance(branch_id, bool)
-                or not isinstance(branch_id, int) or branch_id <= 0):
-            return "Authenticated cashier requires a trusted active branch and user"
-    required = meta.get('requires_role')
-    if required and _ROLE_LEVELS.get(role, 0) < _ROLE_LEVELS.get(required, 99):
-        return f"Tool '{name}' requires the '{required}' role"
-    return None
-
 
 def trusted_tool_context(context=None):
     from flask import g, has_request_context, session
@@ -1175,15 +1123,13 @@ def trusted_tool_context(context=None):
 
 TOOL_METADATA: Dict[str, Dict[str, Any]] = {}
 for _name, _schema in _BASE_TOOL_PARAMETER_SCHEMAS.items():
-    _category, _mutates, _role, _one_line, _size = _TOOL_META[_name]
+    _category, _mutates, _one_line, _size = _TOOL_META[_name]
     TOOL_METADATA[_name] = {
         **_schema,
         "category": _category,
         "mutates": _mutates,
-        "requires_role": _role if _name in CASHIER_SAFE_TOOLS else (_role if _role == 'boss' else 'manager'),
         "description_one_line": _one_line,
         "result_size_hint": _size,
-        "autonomy": "auto" if _name in _AUTO_EXECUTE_TOOLS else "approval",
     }
 
 # Backward-compatible legacy schema view, derived from the registry.
@@ -2790,7 +2736,7 @@ class AITools:
             "updated_at": now.isoformat()
         }
     # ------------------------------------------------------------------
-    # Smart-autonomy write tools (Phase A)
+    # Additional write tools (Phase A)
     # ------------------------------------------------------------------
 
     def create_supplier(self, name: str, contact_person: str = None, phone: str = None,
@@ -3822,52 +3768,11 @@ class AITools:
 
 
 
-# Defense in depth for direct tool calls as well as both agent executors.
-# Projection is an allowlist, so future result fields cannot leak financial data.
-_CASHIER_RESULT_FIELDS = frozenset({
-    'branch_id', 'message', 'name', 'code', 'is_default', 'error',
-    'total_products', 'inventory', 'summary', 'items', 'low_stock_count',
-    'out_of_stock_count', 'product_id', 'barcode', 'category', 'current_stock',
-    'stock', 'status', 'price', 'tax_rate',
-    # Report-delivery presentation fields (no costs, prices or supplier data).
-    'success', 'title', 'rows', 'subject', 'recipients', 'attachments',
-    'task', 'tasks', 'count', 'schedule', 'next_run',
-})
-
-
-def minimize_cashier_result(result, context):
-    if trusted_tool_context(context).get('role') not in ('cashier', 'staff'):
-        return result
-    def project(value):
-        if isinstance(value, dict):
-            return {key: project(item) for key, item in value.items()
-                    if key in _CASHIER_RESULT_FIELDS}
-        if isinstance(value, list):
-            return [project(item) for item in value]
-        return value
-    return project(result)
-
-
-def _authorized_tool(name, function):
-    @wraps(function)
-    def execute(self, *args, **kwargs):
-        error = tool_authorization_error(name, self.context)
-        if error:
-            return {'error': error}
-        return minimize_cashier_result(function(self, *args, **kwargs), self.context)
-    return execute
-
-
-for _tool_name in TOOL_METADATA:
-    setattr(AITools, _tool_name,
-            _authorized_tool(_tool_name, getattr(AITools, _tool_name)))
-
-
 def get_all_tools(read_only: bool = False) -> Dict[str, Dict]:
     """Get tool schemas; agent callers receive only safe read-only tools.
 
     The legacy TOOL_SCHEMAS format is derived from TOOL_METADATA; write tools
-    are filtered out via their ``mutates`` flag."""
+    are filtered out via their ``mutates`` flag when ``read_only`` is set."""
     if not read_only:
         return TOOL_SCHEMAS
     return {

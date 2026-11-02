@@ -5,7 +5,9 @@ from ai_tools import AITools, TOOL_SCHEMAS, get_all_tools
 
 
 class AiRefreshContractTests(unittest.TestCase):
-    def test_agent_registry_excludes_mutation_tools(self):
+    def test_read_only_registry_excludes_mutation_tools(self):
+        """`get_all_tools(read_only=True)` is a caller-side helper; the agent
+        itself is offered every tool now, so this is not its registry."""
         read_only_tools = get_all_tools(read_only=True)
 
         self.assertIn('get_current_branch_context', read_only_tools)

@@ -1,16 +1,14 @@
-"""An approval decision must be described exactly, never narrated by a model.
+"""An execution outcome must be described exactly, never narrated by a model.
 
 The transcript that motivated this: after searching four iPhone 18 Pro rows,
 "add extra 50000 MMK to all of their selling prices" was answered with "The
 price values shown are in USD ($) format, not MMK. The request says to 50.00
-add,000 MMK. Should I 50.00 add,000 ..." — a model narrating an approval,
+add,000 MMK. Should I 50.00 add,000 ..." — a model narrating an execution,
 inventing a currency and mangling the amount.
 
 Contracts under test:
-  * A plan that ends in pending writes or a failed step never reaches the model
-    for its summary.
-  * The message names each pending change with the real product and the amount
-    in the store currency, and says plainly that nothing was applied.
+  * A plan that ends in a failed step never reaches the model for its summary.
+  * The message names every failed step with the real reason.
   * Read-only multi-step plans may still use the model to explain the data.
   * A product search that matched nothing is retried once with real names.
 """
@@ -44,12 +42,6 @@ PLAN = {
     ],
 }
 
-PENDING = [
-    {"step": 2, "tool": "update_product_price",
-     "args": {"product_id": 101, "price": 5350000}},
-]
-
-
 class SummaryTestCase(unittest.TestCase):
     """Orchestrator wired to an MMK store, with the model stubbed out."""
 
@@ -69,55 +61,6 @@ class SummaryTestCase(unittest.TestCase):
             side_effect=AssertionError("the model must not narrate this turn"))
 
 
-class DeterministicApprovalTests(SummaryTestCase):
-    def test_pending_approval_is_described_without_the_model(self):
-        step_results = [{"step": 1, "tool": "search_products", "status": "ok",
-                         "result": SEARCH_ROWS}]
-        with self._no_model():
-            message = self.orchestrator._generate_plan_summary(
-                "add extra 50000 MMK to all of their selling prices",
-                PLAN, step_results, PENDING)
-        self.assertIn("Iphone 18 pro Glacier", message)
-        self.assertIn("5,350,000.00 MMK", message)
-        self.assertIn("nothing has been applied yet", message)
-
-    def test_approval_shows_the_current_price_too(self):
-        step_results = [{"step": 1, "tool": "search_products", "status": "ok",
-                         "result": SEARCH_ROWS}]
-        with self._no_model():
-            message = self.orchestrator._generate_plan_summary(
-                "add 50000", PLAN, step_results, PENDING)
-        self.assertIn("currently 5,300,000.00 MMK", message)
-
-    def test_the_data_the_user_asked_about_is_still_shown(self):
-        step_results = [{"step": 1, "tool": "search_products", "status": "ok",
-                         "result": SEARCH_ROWS}]
-        with self._no_model():
-            message = self.orchestrator._generate_plan_summary(
-                "add 50000", PLAN, step_results, PENDING)
-        self.assertIn("Product Search", message)
-        self.assertIn("Barcode: 7583949", message)
-
-    def test_message_never_invents_a_currency(self):
-        step_results = [{"step": 1, "tool": "search_products", "status": "ok",
-                         "result": SEARCH_ROWS}]
-        with self._no_model():
-            message = self.orchestrator._generate_plan_summary(
-                "add extra 50000 MMK", PLAN, step_results, PENDING)
-        self.assertNotIn("USD", message)
-        self.assertNotIn("$", message)
-        # The mangled amount from the reported transcript must never appear.
-        self.assertNotIn("50.00 add,000", message)
-
-    def test_amount_is_quoted_once_and_exactly(self):
-        step_results = [{"step": 1, "tool": "search_products", "status": "ok",
-                         "result": SEARCH_ROWS}]
-        with self._no_model():
-            message = self.orchestrator._generate_plan_summary(
-                "add extra 50000 MMK", PLAN, step_results, PENDING)
-        self.assertEqual(message.count("5,350,000.00 MMK"), 1)
-
-
 class DeterministicFailureTests(SummaryTestCase):
     def test_failed_step_reports_the_real_reason_without_the_model(self):
         step_results = [
@@ -128,8 +71,8 @@ class DeterministicFailureTests(SummaryTestCase):
         ]
         with self._no_model():
             message = self.orchestrator._generate_plan_summary(
-                "add 50000", PLAN, step_results, [])
-        self.assertIn("2 step(s) failed or were skipped", message)
+                "add 50000", PLAN, step_results)
+        self.assertIn("2 step(s) could not be completed", message)
         self.assertIn("Product with ID 9 not found in the active branch", message)
 
     def test_read_only_multi_step_plan_may_use_the_model(self):
@@ -141,16 +84,16 @@ class DeterministicFailureTests(SummaryTestCase):
         reply = ChatResponse(content="Both look healthy.", tool_calls=[])
         with mock.patch.object(self.orchestrator, "_planner_chat", return_value=reply):
             message = self.orchestrator._generate_plan_summary(
-                "compare stock", PLAN, step_results, [])
+                "compare stock", PLAN, step_results)
         self.assertIn("Both look healthy.", message)
 
 
 class NumericArgumentRecoveryTests(SummaryTestCase):
-    """The reported 4-step price plan must produce proposals, not failures.
+    """The reported 4-step price plan must execute, not fail.
 
     The planner copied prices straight out of the search result, where they are
-    formatted strings, so every write was rejected as "must have JSON type
-    number" before any proposal could reach the user.
+    formatted strings, so every write used to be rejected as "must have JSON
+    type number" before any write could run.
     """
 
     def _plan(self):
@@ -190,17 +133,27 @@ class NumericArgumentRecoveryTests(SummaryTestCase):
         self.assertIn("must have JSON type number", error)
         self.assertIn("5300000 + 50000", error)
 
-    def test_reported_plan_now_ends_in_proposals(self):
+    def test_reported_plan_now_applies_every_price(self):
         plan = self._plan()
-        search = [{"tool_call_id": "plan-step-1", "function_name": "search_products",
-                   "result": SEARCH_ROWS, "error": None}]
+        calls = []
+
+        def fake_execute(tool_calls):
+            recorded = []
+            for tc in tool_calls:
+                calls.append((tc.function_name, dict(tc.arguments)))
+                payload = SEARCH_ROWS if tc.function_name == "search_products" else {"success": True}
+                recorded.append({"tool_call_id": tc.id, "function_name": tc.function_name,
+                                 "result": payload, "error": None})
+            return recorded
+
         with mock.patch.object(self.orchestrator, "_execute_tools_with_context",
-                               return_value=search), \
-             mock.patch.object(self.orchestrator, "_autonomy_allowed", return_value=False):
-            step_results, pending = self.orchestrator._execute_plan(plan)
-        self.assertEqual([sr["status"] for sr in step_results],
-                         ["ok", "proposal", "proposal"])
-        self.assertEqual([item["args"]["price"] for item in pending], [5350000, 5050000])
+                               side_effect=fake_execute):
+            step_results, executed = self.orchestrator._execute_plan(plan)
+        self.assertEqual([sr["status"] for sr in step_results], ["ok", "ok", "ok"])
+        self.assertEqual(executed, [2, 3])
+        prices = [args["price"] for name, args in calls
+                  if name == "update_product_price"]
+        self.assertEqual(prices, [5350000, 5050000])
 
     def test_failed_step_message_is_still_deterministic(self):
         plan = self._plan()
@@ -215,8 +168,8 @@ class NumericArgumentRecoveryTests(SummaryTestCase):
         ]
         with self._no_model():
             message = self.orchestrator._generate_plan_summary(
-                "add 50000 to each", plan, results, [])
-        self.assertIn("failed or were skipped", message)
+                "add 50000 to each", plan, results)
+        self.assertIn("could not be completed", message)
         self.assertIn("5300000 + 50000", message)
 
 

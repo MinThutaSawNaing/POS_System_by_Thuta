@@ -2,8 +2,9 @@
 
 The tab is the user-facing half of the memory layer: it shows what Loli
 remembers, whether each memory is always-on, and the chat commands that manage
-them. It must render for every role (a cashier's memories are their own) and it
-must stay registered in the SPA section cache so opening it always re-reads.
+them. It belongs to the AI assistant, which is a manager/owner capability, so
+it must be admin-gated (cashiers have no assistant access) and it must stay
+registered in the SPA section cache so opening it always re-reads.
 """
 
 import re
@@ -49,13 +50,12 @@ class _Balance(HTMLParser):
             self.errors.append(tag)
 
 
-@pytest.mark.parametrize("role", ["manager", "boss", "cashier"])
-def test_memory_tab_renders_for_every_role_with_its_commands(role):
+@pytest.mark.parametrize("role", ["manager", "boss"])
+def test_memory_tab_renders_for_agent_roles_with_its_commands(role):
     html = render(role)
     assert 'id="memory-section"' in html
     assert "onclick=\"showSection('memory')\"" in html
-    # The tab is not manager-only: every user may review their own memories.
-    assert '<div data-capability="admin" id="memory-section"' not in html
+    assert '<div data-capability="admin" id="memory-section"' in html
     assert "#remember &lt;detail&gt;" in html
     assert "#memory" in html
     assert "#forget &lt;id&gt;" in html
@@ -64,9 +64,27 @@ def test_memory_tab_renders_for_every_role_with_its_commands(role):
     assert 'id="memory-tab-form"' in html
 
 
+def test_memory_tab_is_admin_gated_and_cashiers_cannot_navigate_to_it():
+    html = render("cashier")
+    # The section exists in the shared markup but is hidden for cashiers, and
+    # the client-side section guard refuses to open it.
+    assert '<div data-capability="admin" id="memory-section"' in html
+    assert '<a class="nav-link" href="#" data-capability="admin" onclick="showSection(\'memory\')">' in html
+    cashier_sections = re.search(
+        r"const CASHIER_SECTIONS = new Set\(\[(.*?)\]\);", SOURCE, re.S).group(1)
+    assert '"memory"' not in cashier_sections
+
+
+@pytest.mark.parametrize("role", ["manager", "boss", "cashier"])
+def test_ai_widget_is_only_rendered_for_agent_roles(role):
+    html = render(role)
+    shown = 'id="loli-widget"' in html or 'loli-chat' in html
+    assert shown is (role in ("manager", "boss"))
+
+
 def test_memory_section_markup_is_balanced():
     html = render("manager")
-    start = html.index("<!-- AI Memory Section -->")
+    start = html.index("<!-- AI Memory Section")
     end = html.index("<!-- Users Section -->", start)
     parser = _Balance()
     parser.feed(html[start:end])
@@ -82,9 +100,20 @@ def test_memory_tab_is_registered_in_the_section_cache():
     # An empty resource list means "always re-render": memories change from chat.
     assert re.search(r"^\s*memory: \[\],", resources, re.M)
     assert "memory: () => loadMemoryTab()," in loaders
-    # Cashiers use Loli too, so their own memory tab stays reachable.
-    cashier_sections = re.search(r"const CASHIER_SECTIONS = new Set\(\[(.*?)\]\);", SOURCE, re.S).group(1)
-    assert '"memory"' in cashier_sections
+
+
+def test_memory_tab_shows_the_savable_agent_plan_limit():
+    html = render("manager")
+    assert 'id="ai-plan-limit-card"' in html
+    assert 'id="ai-max-plan-steps"' in html
+    assert 'id="save-ai-plan-limit-btn"' in html
+    assert 'onclick="saveAIPlanLimit()"' in html
+    # The card is filled and saved through the guarded agent endpoint.
+    assert "fetch(\"/api/agent/plan-limit\")" in SOURCE
+    assert 'body: JSON.stringify({ max_plan_steps: value })' in SOURCE
+    # Opening the section reads the saved value.
+    assert "memory: () => loadMemoryTab()," in SOURCE
+    assert "loadAIPlanLimit();" in SOURCE.split("function loadMemoryTab()", 1)[1]
 
 
 def test_memory_tab_uses_the_guarded_memory_endpoints():

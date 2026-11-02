@@ -67,14 +67,18 @@ class ToolExposureTests(SmartsTestBase):
         for core in CORE_TOOL_NAMES:
             self.assertIn(core, names)
 
-    def test_filtering_still_never_exposes_mutating_tools(self):
+    def test_filtering_keeps_write_tools_for_the_model(self):
+        """No read-only stripping: the model must be able to plan writes."""
         for command in ("cancel purchase order",
                         "how much Cola stock do we have",
                         "show me suppliers with overdue debts"):
             schemas = self.orchestrator._filter_tools_for_query(command)
             names = {s["function"]["name"] for s in schemas}
-            self.assertNotIn("create_purchase_order", names, msg=command)
-            self.assertNotIn("approve_purchase_order", names, msg=command)
+            self.assertIn("search_products", names, msg=command)
+        names = {s["function"]["name"] for s in
+                 self.orchestrator._filter_tools_for_query("cancel purchase order")}
+        self.assertIn("create_purchase_order", names)
+        self.assertIn("cancel_purchase_order", names)
 
     def test_debt_and_supplier_query_sees_both_domains(self):
         schemas = self.orchestrator._filter_tools_for_query(
@@ -165,9 +169,9 @@ class WriteIntentRoutingTests(SmartsTestBase):
 
 class AddProductEndToEndTests(SmartsTestBase):
     """The exact user report: 'Can you add a new product?' must produce a real
-    upsert_product proposal via plan-then-execute, not a dead-end message."""
+    upsert_product write via plan-then-execute, not a dead-end message."""
 
-    def test_add_product_question_yields_upsert_proposal(self):
+    def test_add_product_question_yields_upsert_write(self):
         import json as _json
 
         plan = {"description": "Add product Sprite",
@@ -181,9 +185,9 @@ class AddProductEndToEndTests(SmartsTestBase):
                  "function": {"name": "propose_plan",
                               "arguments": _json.dumps(plan)}}]},
                 "finish_reason": "tool_calls"}], "usage": {}},
-            # 2nd call: the summary turn reports the pending approval.
+            # 2nd call: the summary turn reports the applied change.
             {"choices": [{"message": {"role": "assistant", "content":
-                "Ready to add Sprite - awaiting your approval."},
+                "Added Sprite with price 1,500."},
                 "finish_reason": "stop"}], "usage": {}},
         ]
 
@@ -196,20 +200,28 @@ class AddProductEndToEndTests(SmartsTestBase):
             def json(self):
                 return bodies.pop(0)
 
+        written = []
+
+        def fake_execute(tool_calls):
+            written.extend(dict(tc.arguments) for tc in tool_calls)
+            return [{"tool_call_id": tc.id, "function_name": tc.function_name,
+                     "result": {"success": True}, "error": None}
+                    for tc in tool_calls]
+
         with mock.patch("ai_agent.requests.post",
                         side_effect=lambda *a, **k: FakeBody()), \
-             mock.patch.object(self.orchestrator, "_autonomy_allowed",
-                               return_value=False):
+             mock.patch.object(self.orchestrator, "_execute_tools_with_context",
+                               side_effect=fake_execute):
             result = self.orchestrator.process_command(
                 "Can you add a new product?", user_id=1)
 
         self.assertTrue(result["success"], msg=result.get("message"))
-        proposals = [sr for sr in result.get("step_results", [])
-                     if sr.get("status") == "proposal"]
-        self.assertEqual(len(proposals), 1)
-        self.assertEqual(proposals[0]["tool"], "upsert_product")
-        self.assertEqual(proposals[0]["result"]["args"]["name"], "Sprite")
-        self.assertTrue(result.get("pending_approvals"))
+        applied = [sr for sr in result.get("step_results", [])
+                   if sr.get("status") == "ok"]
+        self.assertEqual(len(applied), 1)
+        self.assertEqual(applied[0]["tool"], "upsert_product")
+        self.assertEqual(written[0]["name"], "Sprite")
+        self.assertNotIn("pending_approvals", result)
 
 
 class ModelConfigTests(unittest.TestCase):

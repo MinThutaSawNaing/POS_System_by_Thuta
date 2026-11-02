@@ -91,6 +91,38 @@ class MemoryApiTests(unittest.TestCase):
             self.assertIsNone(MemoryRegistry.query.filter_by(memory_id='private').first())
             self.assertIsNotNone(MemoryRegistry.query.filter_by(memory_id='shared').first())
 
+    def test_plan_step_limit_round_trips_and_rejects_invalid_values(self):
+        client = self._client()
+        listed = client.get('/api/agent/plan-limit')
+        self.assertEqual(listed.status_code, 200)
+        body = listed.get_json()
+        self.assertTrue(body['success'])
+        self.assertGreaterEqual(body['max_plan_steps'], body['min'])
+        self.assertLessEqual(body['max_plan_steps'], body['max'])
+        # Never leak a changed limit into other tests sharing this database.
+        self.addCleanup(client.post, '/api/agent/plan-limit',
+                        json={'max_plan_steps': body['max_plan_steps']})
+
+        saved = client.post('/api/agent/plan-limit', json={'max_plan_steps': 12})
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.get_json()['max_plan_steps'], 12)
+        reread = client.get('/api/agent/plan-limit').get_json()
+        self.assertEqual(reread['max_plan_steps'], 12)
+
+        for bad in (0, 999, 'abc', None, 2.5):
+            with self.subTest(value=bad):
+                response = client.post('/api/agent/plan-limit',
+                                       json={'max_plan_steps': bad})
+                self.assertEqual(response.status_code, 400)
+        # A rejected save never changes the stored limit.
+        self.assertEqual(client.get('/api/agent/plan-limit').get_json()['max_plan_steps'], 12)
+
+    def test_plan_step_limit_is_manager_and_owner_only(self):
+        for role in ('cashier', 'boss'):
+            with self.subTest(role=role):
+                response = self._client(role=role).get('/api/agent/plan-limit')
+                self.assertEqual(response.status_code, 403 if role == 'cashier' else 200)
+
 
 if __name__ == '__main__':
     unittest.main()

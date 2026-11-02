@@ -13,7 +13,6 @@ def test_each_independent_configuration_card_has_a_save_button():
         'save-mmqr-btn': 'saveMMQRConfiguration()',
         'save-receipt-printer-btn': 'saveReceiptPrinterSettings()',
         'save-label-printing-btn': 'saveLabelPrintingSettings()',
-        'save-agent-autonomy-btn': 'saveAgentAutonomy()',
         'save-mmpay-btn': 'savePaymentSettings()',
     }
     for button_id, handler in expected.items():
@@ -34,17 +33,11 @@ def test_mmqr_selection_and_removal_are_staged_until_save():
     assert 'function saveMMQRConfiguration()' in DASHBOARD
 
 
-def test_autonomy_toggle_does_not_post_on_change():
-    load_block = DASHBOARD.split('function loadAgentAutonomy()', 1)[1].split(
-        'function saveAgentAutonomy()', 1
-    )[0]
-    assert 'method: "POST"' not in load_block
-    assert 'addEventListener("change"' not in load_block
-    save_block = DASHBOARD.split('function saveAgentAutonomy()', 1)[1].split(
-        'function toggleApiKeyVisibility()', 1
-    )[0]
-    assert 'method: "POST"' in save_block
-    assert '/api/agent/autonomy' in save_block
+def test_autonomy_toggle_is_gone():
+    """Autonomy is no longer a setting: the assistant always acts."""
+    assert 'agent-autonomy-toggle' not in DASHBOARD
+    assert 'saveAgentAutonomy' not in DASHBOARD
+    assert '/api/agent/autonomy' not in DASHBOARD
 
 
 def test_scoped_save_functions_send_only_their_own_configuration():

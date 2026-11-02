@@ -162,7 +162,16 @@ DENIED = [
 ('/api/units/1', 'PUT DELETE'), ('/api/deliveries', 'POST'),
 ('/api/deliveries/1', 'PUT'), ('/api/deliveries/export', 'GET'),
 ('/api/reports/sales/export', 'GET'), ('/api/dashboard/sales_data', 'GET'),
-('/api/dashboard/top_products', 'GET')]
+('/api/dashboard/top_products', 'GET'),
+# The AI assistant is a manager/owner capability: cashiers have no access to
+# the chat, its memory store or any conversation endpoint.
+('/api/agent/chat', 'POST'), ('/api/agent/status', 'GET'),
+('/api/agent/history', 'GET'), ('/api/agent/clear', 'POST'),
+('/api/agent/memories', 'GET POST'),
+('/api/agent/memories/memory-1', 'DELETE'),
+('/api/agent/memories/forget', 'POST'),
+('/api/agent/memories/forget-all', 'POST'),
+('/api/agent/plan-limit', 'GET POST')]
 
 
 @pytest.mark.parametrize('path,method', [(p, v) for p, verbs in DENIED for v in verbs.split()])
@@ -171,6 +180,14 @@ def test_cashier_manager_endpoint_matrix_denied_without_writes(world, path, meth
     response = world['client'].open(path, method=method, json={})
     assert response.status_code == 403, (method, path, response.get_data(as_text=True))
     assert state(world) == before
+
+
+def test_cashier_has_no_ai_assistant_access(world):
+    response = world['client'].post('/api/agent/chat', json={'command': 'list products'})
+    assert response.status_code == 403
+    body = response.get_json()
+    assert body['success'] is False
+    assert 'cashier' in body['message'].lower()
 
 
 @pytest.mark.parametrize('path', ['/api/products', '/api/products/search?q=Product',

@@ -9,10 +9,8 @@ keep green (`test_agent_plan_execute.py`).
 1. **Registry entry** — add the tool to `TOOL_METADATA` in `ai_tools.py`
    with all required keys:
    `name`, `description`, `parameters` (JSON-schema dict, `type: object`),
-   `category`, `mutates` (bool), `requires_role` (e.g. `"manager"` or
-   `None` for read-only), `autonomy` (`"auto"` or `"approval"` — use
-   `"auto"` only for low-risk writes on the `_AUTO_EXECUTE_TOOLS` list;
-   `"approval"` is the default), and `description_one_line`.
+   `category`, `mutates` (bool, descriptive), `description_one_line`, and
+   `result_size_hint`.
    `TOOL_SCHEMAS` is derived from the registry; do not maintain a separate copy.
    `get_all_tools()` keys must equal `TOOL_SCHEMAS` keys.
 2. **Method** — implement the tool method on the `AITools` class in
@@ -22,8 +20,7 @@ keep green (`test_agent_plan_execute.py`).
    database results only.
 3. **Optional UI** — if the feature needs a surface beyond chat, add an
    endpoint/template in `app.py`; the agent result contract
-   (`success/message/step_results/pending_approvals`) is designed to be
-   rendered directly.
+   (`success/message/step_results`) is designed to be rendered directly.
 
 ## Safety rules
 
@@ -33,109 +30,71 @@ drift are checked by `test_ai_tool_contracts.py`. The planner receives parameter
 types, descriptions, defaults and bounds from the same registry, not a separate
 handwritten list. This is runtime grounding, not model fine-tuning.
 
-- **mutates / requires_role**: any tool with `mutates=True` MUST set
-  `requires_role` (currently `"manager"`). Read-only tools use
-  `requires_role=None`. Enforced by
-  `RegistryCompletenessTests.test_mutating_tools_require_a_role`.
+- **mutates**: a descriptive flag only. It tells the planner and the widget
+  which steps change data; it does not gate execution.
 - **Validation**: validate all arguments against the schema before calling
   the method; unknown tool names are rejected at plan-validation time.
-- **Proposals by default, autonomy as the narrow exception**: write tools
-  never run directly from the agent loop unless they are explicitly marked
-  autonomous AND every gate below passes. A blocked or non-autonomous write
-  produces a step_result with `status="proposal"` plus an entry in
-  `pending_approvals`; the actual mutation happens only after explicit human
-  approval.
+- **No permission or approval layer**: every registered tool runs when the
+  agent calls it, including deletes and money changes. Access control lives at
+  the HTTP boundary (`agent_required`: manager/owner only); never give a cashier
+  account an AI endpoint, widget or memory tab.
 - **No mock data**: answers must come from real tool results; the summary
   prompt receives compacted results so the model cannot invent numbers.
 
-## Smart autonomy
+## Execution model: no permission layer
 
-Every `TOOL_METADATA` entry carries an **`autonomy`** field:
+Every `TOOL_METADATA` entry records only descriptive facts
+(`category`, `mutates`, `description_one_line`, `result_size_hint`). There is
+**no** per-tool role check, approval gate, autonomy switch or proposal state:
+a plan step that names a registered tool runs immediately, read or write.
 
-- `"auto"` — low-risk writes that may execute immediately (see conditions).
-- `"approval"` — everything else; these are always proposals. This is the
-  **default**: `_AUTO_EXECUTE_TOOLS` in `ai_tools.py` is the explicit opt-in
-  list, and any mutating tool not on it gets `"approval"`. Enforced by
-  `AutonomyTests.test_registry_contract_for_autonomy_fields`.
+What still protects the data:
 
-### Auto-execute conditions
+- The **agent itself is manager/owner only.** `agent_required` in `app.py`
+  rejects cashier accounts on every `/api/agent/*` route, the cashier
+  allowlist (`CASHIER_API_METHODS`) no longer contains any agent endpoint, and
+  the dashboard omits the widget and the AI Memory tab for cashiers.
+- **Argument validation** (`ai_tool_guard.py`) runs before any database code:
+  unknown tools, undocumented arguments, wrong JSON types, enums and numeric
+  bounds are rejected with a corrective message the model can fix once.
+- **Tool-layer business guards** still refuse impossible operations
+  (`delete_product` cascade/confirm rules, `delete_supplier` with open POs,
+  `delete_customer` with debt), independent of the agent.
+- **Fail-stop execution**: a failed step aborts the rest and the answer must
+  say the task is incomplete.
 
-A mutating plan step executes immediately (`status="ok"`,
-`executed_by="agent-auto"`) only when ALL of the following hold, checked once
-per plan via `AgentOrchestrator._autonomy_allowed()`:
+### Removed endpoints
 
-1. the step's tool has `autonomy == "auto"` in `TOOL_METADATA`;
-2. the `agent_autonomy_enabled` kill-switch setting parses truthy
-   (`"true"/"1"/"on"/"yes"`, case-insensitive);
-3. the current user resolves and their role is exactly `"manager"`
-   (cashiers/admins/anonymous never get autonomy).
+`/api/agent/approve`, `/api/agent/reject`, `/api/agent/task/<id>/advance`,
+`/api/agent/task/<id>`, the `agent_autonomy_enabled` setting, the
+`GET|POST /api/agent/autonomy` kill switch and the `AgentTask` table have been
+removed together with `AgentOrchestrator.run_approved_plan()`. A "yes"/"no"
+reply in chat is now an ordinary message, not an approval shortcut.
 
-If any condition fails, the same step becomes a proposal and the tool function
-is never invoked.
+Contracts live in `test_agent_plan_execute.py`; cashier access is covered by
+`test_cashier_permissions.py` and `test_ai_memory_tab.py`.
 
-### Approval execution (human-approved proposals)
+### Plan-step limit (dynamic)
 
-A proposal becomes a real database write ONLY after a human approves that
-exact persisted step:
+`MAX_PLAN_STEPS` (5) is only the default. The effective cap comes from the
+`ai_max_plan_steps` app setting, read on every planning turn by
+`AgentOrchestrator._max_plan_steps()` and clamped to
+`MIN_PLAN_STEPS..MAX_PLAN_STEPS_LIMIT` (1..50).
 
-1. `POST /api/agent/approve/<task_id>/<step_no>` records `approved: true` on
-   the proposal inside the task's persisted `step_results_json`.
-2. `POST /api/agent/task/<task_id>/advance` calls
-   `AgentOrchestrator.run_approved_plan(command, plan, approved_step_nos,
-   persisted_results=...)`: the persisted plan is re-run deterministically
-   (fresh read data) and approved mutating steps execute tagged
-   `"executed_by": "approved"`. Arguments come only from the persisted plan —
-   never from the request. `persisted_results` only supplies a fallback when a
-   re-run cannot rebuild a `$from` reference from fresh data.
-3. Proposals expire: `/advance` refuses tasks older than
-   `AI_APPROVAL_TTL_HOURS` (default 24; `<= 0` disables expiry) and marks
-   them `expired`.
-4. `POST /api/agent/reject/<task_id>/<step_no>` records rejection; when every
-   proposal is decided and none are approved, the task status becomes
-   `rejected`. The widget's Reject button is wired to this endpoint.
-5. A plain chat reply to a pending proposal is deterministic:
-   `POST /api/agent/chat` with a short affirmative ("yes", "ok", "ok i
-   approve", "go ahead", "ဟုတ်ကဲ့", …) approves every undecided proposal of this
-   user's newest `pending_approval` task and advances it through the same
-   helper; a short negative ("no", "cancel", "never mind") rejects it with
-   "Cancelled — nothing was changed." No planning call happens, so "yes" can
-   never create a different plan. Anything longer ("yes, but make it 2700")
-   is treated as a normal instruction and reaches the agent.
+- `GET /api/agent/plan-limit` → `{success, max_plan_steps, default, min, max}`.
+- `POST /api/agent/plan-limit` `{max_plan_steps: int}` → saves the value
+  (manager/owner only; out-of-range and non-integer values are refused).
+- The dashboard exposes it as an **AI Agent limits** card inside the
+  AI Memory tab: a number input plus a *Save limit* button, loaded on every
+  section open.
 
-Contracts live in `test_agent_approval.py`.
-
-### Kill switch endpoints (`app.py`)
-
-- `GET /api/agent/autonomy` — `{success, enabled}`; backed by
-  `get_agent_autonomy_enabled()` which defaults to **OFF** when the setting
-  is missing or unparsable.
-- `POST /api/agent/autonomy` — manager-only (`@manager_required`); toggles
-  the setting. The dashboard toggle consumes both.
-
-The orchestrator-side truthy check is unit-tested directly on
-`_autonomy_allowed` (`AutonomyTests`) without importing `app.py`, keeping
-these tests free of Flask/app-import side effects.
-
-### Current auto vs approval tools
-
-- **auto** (`_AUTO_EXECUTE_TOOLS`): `register_customer`, `create_supplier`,
-  `update_supplier`, `update_customer`, `create_category`.
-- **approval** (default for all other writes), notably:
-  `delete_product`, `delete_supplier`, `delete_customer`,
-  `update_product_price`, `write_off_debt`, `create_purchase_order`,
-  `adjust_product_stock`, `create_promotion`, `record_debt_payment`,
-  `update_delivery_stage`, plus the full-feature coverage tools
-  (`receive_purchase_order`, `process_return_exchange`, `update_category`,
-  `delete_category`, `update_promotion`, `cancel_promotion`,
-  `create_delivery`, `create_branch`, `update_branch`,
-  `set_default_branch`, `deactivate_branch`).
-  User accounts and system settings are deliberately NOT exposed as agent
-  tools.
+Raise it to let one command change more records at once (bulk product edits);
+lower it to keep every request small. No restart is needed — the orchestrator
+reads the setting per turn.
 
 ### Delete guards
 
-Destructive tools are approval-tier AND refuse in the tool layer itself,
-independent of the agent:
+Destructive tools refuse in the tool layer itself, independent of the agent:
 
 - `delete_product` — manager/owner only (the dashboard hides the button and
   the API refuses with 403 for other roles). Sales and return/exchange history
@@ -150,9 +109,8 @@ independent of the agent:
 - `delete_supplier` — refuses while non-terminal purchase orders exist.
 - `delete_customer` — refuses while outstanding debt balances exist.
 
-Never downgrade a guarded/destructive tool to `"auto"`: the registry test
-pins `delete_*`, `update_product_price`, and `write_off_debt` to
-`"approval"`.
+Never remove a guarded/destructive tool's own checks: they are the only
+remaining brake on a destructive step.
 
 ## Plan-then-execute contract
 
@@ -165,10 +123,9 @@ pins `delete_*`, `update_product_price`, and `write_off_debt` to
     "plan": [...],           # validated plan steps (max 5)
     "step_results": [
         {"step": str, "tool": str,
-         "status": "ok" | "failed" | "proposal" | "skipped",
+         "status": "ok" | "failed" | "skipped",
          "result": dict | None, "error": str | None}
-    ],
-    "pending_approvals": [...]  # non-empty when proposals exist
+    ]
 }
 ```
 
@@ -198,14 +155,11 @@ Rules:
   earlier tool never returns and retries planning once with that shape; the
   retry is advisory, so a stubborn plan still executes through the forgiving
   resolver above rather than dead-ending a change request.
-- Broken references no longer destroy an approved task. `_execute_plan`
-  resolves arguments in this order: the plan's own arguments, then — when the
-  step is an approved step of a persisted task — the exact arguments the human
-  approved (`run_approved_plan(..., persisted_results=...)`), then one bounded
-  model repair (`MAX_PLAN_STEP_REPAIRS`) that may only rewrite that step's
-  arguments against the real result data. Repaired/persisted arguments are
-  re-validated by the guard and still require approval before any write, and
-  the step records `args_source: "repaired" | "persisted-approval"` for audit.
+- Broken references never kill a plan. `_execute_plan` resolves arguments in
+  this order: the plan's own arguments, then one bounded model repair
+  (`MAX_PLAN_STEP_REPAIRS`) that may only rewrite that step's arguments against
+  the real result data. Repaired arguments are re-validated by the guard and
+  the step records `args_source: "repaired"` for audit.
 - Fail-stop: when a step raises, its status is `"failed"` and every later
   step is `"skipped"`; later steps are never executed.
 - When any step fails, `success` is false and `message` must indicate the
@@ -222,7 +176,7 @@ raise.
   `_money(value)` renders `$1,234.50` for USD and `1,234.50 MMK` for MMK, using
   `money_display` / `currency_label` from `ai_tools` with `currency_code` read
   through the orchestrator's settings function. A Myanmar shop that was told
-  its own prices were "in USD format" lost trust in the whole approval round.
+  its own prices were "in USD format" lost trust in the whole plan.
 - **Money is a string.** Tool payloads carry amounts already formatted
   (`"68,000.00"`, `"1,050,000.00"`). Format them with `money_str(...)` /
   `money_dec(...)` from `ai_tools`; `f"{amount:.2f}"` raises `ValueError` on a
@@ -245,15 +199,12 @@ raise.
 
 ## Truthful answers
 
-- **Approvals and failures are never narrated by a model.**
+- **Failures are never narrated by a model.**
   `_generate_plan_summary` returns `_deterministic_outcome_message(...)` whenever
-  a plan ends in `pending_approvals` or in a failed/skipped step. That message
-  shows the read data, then each proposed change as
-  `**product** - price X (currently Y)` in the store currency, then states that
-  nothing has been applied. Someone about to approve a write must see exactly
-  what will run; an LLM asked to summarise an approval invented a currency and
-  mangled an amount into "50.00 add,000 MMK". Read-only multi-step plans may
-  still use the model to explain data.
+  a plan ends in a failed/skipped step. That message shows the read data and
+  then each failed step with its real error, because an LLM narrating an
+  outcome invented a currency and mangled an amount into "50.00 add,000 MMK".
+  Read-only multi-step plans may still use the model to explain data.
 - **Counts come from the payload.** `search_products` reports `total_products`
   as the true number of matches (only `inventory` is capped), so "how many X do
   we have" is answered with a real number instead of a page size. A query whose
@@ -282,4 +233,4 @@ raise.
 - Keep the serialized summary payload small (target well under ~60 KB);
   tests assert large payloads (`500 rows x 200-char fields`) are truncated.
 - Prefer `description_one_line` for per-tool prompt text; full
-  descriptions stay in the registry for humans and approvals.
+  descriptions stay in the registry for humans.

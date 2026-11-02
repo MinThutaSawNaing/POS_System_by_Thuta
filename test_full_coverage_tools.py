@@ -456,8 +456,8 @@ class DeleteProductToolTests(FullCoverageToolsTestBase):
         db.session.commit()
         return purchase_order.id
 
-    def test_approved_plan_step_deletes_sold_product(self):
-        """The approved Loli step (confirm=true) really removes the product."""
+    def test_plan_step_deletes_sold_product(self):
+        """A planned Loli step (confirm=true) really removes the product."""
         product_id, sale_id, item_id = self._product_with_sale()
         orchestrator = AgentOrchestrator(db, AI_MODELS)
         orchestrator.set_request_context({"branch_id": self.branch_id,
@@ -468,11 +468,10 @@ class DeleteProductToolTests(FullCoverageToolsTestBase):
             "args": {"product_id": product_id, "confirm": True},
         }]}
 
-        step_results, pending_approvals = orchestrator._execute_plan(plan, approved_steps={1})
+        step_results, executed_writes = orchestrator._execute_plan(plan)
 
-        self.assertEqual(pending_approvals, [])
+        self.assertEqual(executed_writes, [1])
         self.assertEqual(step_results[0]["status"], "ok")
-        self.assertEqual(step_results[0].get("executed_by"), "approved")
         self.assertIsNone(db.session.get(Product, product_id))
         self.assertIsNone(db.session.get(SaleItem, item_id).product_id)
         self.assertEqual(db.session.get(Sale, sale_id).total, 200.0)
@@ -510,7 +509,7 @@ class DeliveryStageAndRoleTests(FullCoverageToolsTestBase):
 
 
 class RoleEnforcementTests(FullCoverageToolsTestBase):
-    """requires_role must be enforced at execution time (defence-in-depth)."""
+    """No per-tool role gate remains; the HTTP boundary owns access control."""
 
     def _orchestrator_with_role(self, role):
         import agent_orchestrator as ao
@@ -520,22 +519,23 @@ class RoleEnforcementTests(FullCoverageToolsTestBase):
                                   "user_id": self.admin_id, "role": role})
         return orch
 
-    def test_manager_only_tool_rejected_for_cashier_role(self):
+    def test_write_tool_runs_for_every_authenticated_role(self):
         import agent_orchestrator as ao
         from ai_agent import ToolCall
         orch = self._orchestrator_with_role('cashier')
         calls = []
         with mock.patch.dict(orch.agent.tool_functions,
                              {"create_purchase_order":
-                                  lambda **kw: calls.append(kw) or {}}):
+                                  lambda **kw: calls.append(kw) or {"success": True}}):
             results = orch._execute_tools_with_context([
                 ToolCall(id="r1", function_name="create_purchase_order",
-                         arguments={"supplier_id": 1})])
+                         arguments={"supplier_id": 1, "items": []})])
+        ao.reset_orchestrator()
 
-        self.assertIn("requires the 'manager' role", results[0]["error"])
-        self.assertEqual(calls, [])  # the tool body never ran
+        self.assertIsNone(results[0]["error"])
+        self.assertEqual(len(calls), 1)
 
-    def test_manager_role_passes_the_gate(self):
+    def test_manager_role_also_runs_the_same_tool(self):
         from ai_agent import ToolCall
         orch = self._orchestrator_with_role('manager')
         calls = []

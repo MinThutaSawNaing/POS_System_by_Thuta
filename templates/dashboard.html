@@ -1928,7 +1928,7 @@
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('memory')">
+          <a class="nav-link" href="#" data-capability="admin" onclick="showSection('memory')">
             <i class="bi bi-stars"></i> AI Memory
           </a>
         </li>
@@ -3667,8 +3667,8 @@
         </div>
       </div>
 
-      <!-- AI Memory Section -->
-      <div id="memory-section" style="display: none">
+      <!-- AI Memory Section (manager/owner only: it belongs to the AI assistant) -->
+      <div data-capability="admin" id="memory-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
             <h2 class="mb-0">AI Memory</h2>
@@ -3687,6 +3687,46 @@
           What Loli remembers for <strong>{{ session.username }}</strong> in this branch.
           Always-on memories are read at the start of <strong>every</strong> conversation.
         </p>
+
+        <div class="card mb-3" id="ai-plan-limit-card">
+          <div class="card-header"><i class="bi bi-sliders"></i> AI Agent limits</div>
+          <div class="card-body">
+            <p class="text-muted small mb-2">
+              How many tool steps one request may plan. Raise it to let a single command
+              change many products at once; lower it to keep every request small.
+            </p>
+            <div class="row g-2 align-items-end">
+              <div class="col-12 col-sm-4 col-md-3">
+                <label class="form-label small mb-1" for="ai-max-plan-steps">Maximum plan steps</label>
+                <input
+                  type="number"
+                  class="form-control"
+                  id="ai-max-plan-steps"
+                  min="1"
+                  max="50"
+                  step="1"
+                  inputmode="numeric"
+                  aria-describedby="ai-plan-limit-help"
+                />
+              </div>
+              <div class="col-12 col-sm-8 col-md-9">
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  id="save-ai-plan-limit-btn"
+                  onclick="saveAIPlanLimit()"
+                >
+                  <i class="bi bi-save"></i> Save limit
+                </button>
+                <span class="text-muted small ms-2" id="ai-plan-limit-status" aria-live="polite"></span>
+              </div>
+            </div>
+            <div class="form-text" id="ai-plan-limit-help">
+              Allowed range: 1&ndash;50 steps. The default is 5. The saved value applies to the
+              next request, no restart needed.
+            </div>
+          </div>
+        </div>
 
         <div class="row g-3 mb-3">
           <div class="col-12 col-xl-7">
@@ -4498,22 +4538,6 @@
                 <span class="badge bg-secondary">Checking...</span>
               </div>
             </div>
-            {% if session.get('role') == 'manager' %}
-            <div class="mb-3" id="agent-autonomy-setting">
-              <div class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" role="switch" id="agent-autonomy-toggle" />
-                <label class="form-check-label" for="agent-autonomy-toggle">
-                  <i class="bi bi-lightning-charge me-1"></i>Agent Autonomy
-                </label>
-              </div>
-              <div class="form-text">
-                When enabled, Loli can apply low-risk changes (new suppliers, customers, categories) immediately. Risky changes always require your approval. The change is not applied until you save it.
-              </div>
-              <button type="button" class="btn btn-primary btn-sm mt-2" id="save-agent-autonomy-btn" onclick="saveAgentAutonomy()">
-                <i class="bi bi-save me-1"></i>Save autonomy
-              </button>
-            </div>
-            {% endif %}
             <div class="d-flex flex-wrap gap-2">
               <button class="btn btn-primary" onclick="saveAISettings()">
                 <i class="bi bi-save"></i> Save API Key
@@ -7305,7 +7329,6 @@
       let pendingMMQRFile = null;
       let pendingMMQRObjectUrl = null;
       let pendingMMQRRemoval = false;
-      let savedAgentAutonomy = false;
       const CURRENT_USER_ROLE = "{{ session.role }}";
 
       document.addEventListener("change", (event) => {
@@ -7339,7 +7362,7 @@
 
       // Backend remains the security boundary. This allowlist keeps the operational
       // workspace deliberate and prevents stale navigation from invoking admin loaders.
-      const CASHIER_SECTIONS = new Set(["pos", "products", "categories", "sales", "returns", "deliveries", "reports", "memory"]);
+      const CASHIER_SECTIONS = new Set(["pos", "products", "categories", "sales", "returns", "deliveries", "reports"]);
       const MANAGER_CAPABILITIES = new Set(["catalog.write", "deliveries.write", "labels", "debts", "branches.switch", "admin"]);
       const MANAGER_MODAL_IDS = new Set(["addProductModal", "editProductModal", "importProductsModal", "addCategoryModal", "editCategoryModal", "barcodeLabelModal", "addDebtModal", "makePaymentModal", "debtDetailsModal", "addCommunicationModal", "createDeliveryModal", "updateDeliveryModal"]);
 
@@ -7886,7 +7909,7 @@
           .catch((error) => {
             console.error("Error loading AI settings:", error);
           });
-        loadAgentAutonomy();
+        // Agent autonomy is no longer configurable: the assistant always acts.
       }
 
       function updateAIStatusDisplay(isConfigured) {
@@ -7896,56 +7919,6 @@
         } else {
           statusDiv.innerHTML = '<span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle"></i> API Key Required</span>';
         }
-      }
-
-      // Agent Autonomy is loaded into a draft toggle. It is only persisted by
-      // saveAgentAutonomy(), never by changing the toggle itself.
-      function loadAgentAutonomy() {
-        const autonomyToggle = document.getElementById("agent-autonomy-toggle");
-        if (!autonomyToggle) return;
-        fetch("/api/agent/autonomy")
-          .then((response) => response.json())
-          .then((data) => {
-            savedAgentAutonomy = Boolean(data.enabled);
-            autonomyToggle.checked = savedAgentAutonomy;
-          })
-          .catch((error) => {
-            console.error("Error loading agent autonomy:", error);
-          });
-      }
-
-      function saveAgentAutonomy() {
-        const autonomyToggle = document.getElementById("agent-autonomy-toggle");
-        const button = document.getElementById("save-agent-autonomy-btn");
-        if (!autonomyToggle || !button) return;
-        const enabled = autonomyToggle.checked;
-        const originalContent = button.innerHTML;
-        button.disabled = true;
-        button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
-        fetch("/api/agent/autonomy", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled }),
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            if (!data.success) throw new Error(data.message || "Failed to update Agent Autonomy");
-            savedAgentAutonomy = enabled;
-            showToast(
-              enabled
-                ? "Agent Autonomy enabled — Loli can apply low-risk changes immediately"
-                : "Agent Autonomy disabled — all changes require approval",
-              "success"
-            );
-          })
-          .catch((error) => {
-            console.error("Error updating agent autonomy:", error);
-            showToast(error.message || "Failed to update Agent Autonomy", "error");
-          })
-          .finally(() => {
-            button.disabled = false;
-            button.innerHTML = originalContent;
-          });
       }
 
       function toggleApiKeyVisibility() {
@@ -8544,9 +8517,7 @@
             }) ||
           Array.from(document.querySelectorAll('input[name="receipt-paper-size"]')).some((field) =>
             !field.disabled && field.checked !== (field.value === APP_SETTINGS.receiptPaperSize)) ||
-          Boolean(document.getElementById("settings-ai-api-key")?.value.trim()) ||
-          Boolean(document.getElementById("agent-autonomy-toggle") &&
-            document.getElementById("agent-autonomy-toggle").checked !== savedAgentAutonomy);
+          Boolean(document.getElementById("settings-ai-api-key")?.value.trim());
         if (settingsChanged) work.push("unsaved settings");
         if (pendingReceiptLogoFile) work.push("the staged receipt logo");
         if (pendingMMQRFile || pendingMMQRRemoval) work.push("staged MMQR changes");
@@ -9295,14 +9266,11 @@
         // rows/POS cards, so a unit change repaints all three.
         ["/api/units", ["settings", "products", "pos"]],
         ["/api/branches", null],
-        // The assistant executes tools server-side, so a command or an approved
-        // step can change almost anything with no write to the affected endpoint.
-        // These are deliberate, low-frequency actions: drop everything rather than
-        // risk a tab painting rows the agent just changed.
+        // The assistant executes tools server-side, so a command can change
+        // almost anything with no write to the affected endpoint. This is a
+        // deliberate, low-frequency action: drop everything rather than risk a
+        // tab painting rows the agent just changed.
         ["/api/agent/chat", null],
-        ["/api/agent/task", null],
-        ["/api/agent/approve", null],
-        ["/api/agent/reject", null],
         // Memory/conversation endpoints only touch the assistant's own store.
         ["/api/agent", []],
         ["/api/ai", []],
@@ -9885,8 +9853,74 @@
         entries.forEach((entry) => container.appendChild(memoryTabEntryElement(entry)));
       }
 
+      // AI Agent limits: the plan-step cap is a saved setting, applied on the
+      // next request. Every section open/refresh re-reads the saved value, so
+      // the input always shows what the agent will actually use.
+      function loadAIPlanLimit() {
+        const field = document.getElementById("ai-max-plan-steps");
+        if (!field) return;
+        const status = document.getElementById("ai-plan-limit-status");
+        if (status) status.textContent = "";
+        fetch("/api/agent/plan-limit")
+          .then((response) => response.json()
+            .catch(() => ({}))
+            .then((data) => ({ response, data })))
+          .then(({ response, data }) => {
+            if (!response.ok || !data.success) {
+              throw new Error(data.error || "Could not load the AI limit.");
+            }
+            if (Number.isFinite(data.min)) field.min = String(data.min);
+            if (Number.isFinite(data.max)) field.max = String(data.max);
+            field.value = String(data.max_plan_steps);
+          })
+          .catch((error) => {
+            if (status) status.textContent = error.message || "Could not load the AI limit.";
+          });
+      }
+
+      function saveAIPlanLimit() {
+        const field = document.getElementById("ai-max-plan-steps");
+        const button = document.getElementById("save-ai-plan-limit-btn");
+        const status = document.getElementById("ai-plan-limit-status");
+        if (!field || !button) return;
+        const min = Number(field.min || 1);
+        const max = Number(field.max || 50);
+        const value = Number(field.value);
+        if (!Number.isInteger(value) || value < min || value > max) {
+          if (status) status.textContent = `Enter a whole number between ${min} and ${max}.`;
+          return;
+        }
+        button.disabled = true;
+        field.disabled = true;
+        if (status) status.textContent = "Saving…";
+        fetch("/api/agent/plan-limit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ max_plan_steps: value }),
+        })
+          .then((response) => response.json()
+            .catch(() => ({}))
+            .then((data) => ({ response, data })))
+          .then(({ response, data }) => {
+            if (!response.ok || !data.success) {
+              throw new Error(data.error || "Could not save the AI limit.");
+            }
+            field.value = String(data.max_plan_steps);
+            if (status) status.textContent = `Saved: ${data.max_plan_steps} steps per request.`;
+            showToast(`AI plan limit saved: ${data.max_plan_steps} steps`, "success");
+          })
+          .catch((error) => {
+            if (status) status.textContent = error.message || "Could not save the AI limit.";
+          })
+          .finally(() => {
+            button.disabled = false;
+            field.disabled = false;
+          });
+      }
+
       function loadMemoryTab() {
         if (!document.getElementById("memory-tab-always")) return;
+        loadAIPlanLimit();
         fetch("/api/agent/memories?limit=100")
           .then((response) => response.json()
             .catch(() => ({}))
@@ -21399,7 +21433,9 @@
     <script src="/public/myanmyanpay.js"></script>
     <script src="/public/product-import.js"></script>
     <script src="/public/email-security.js"></script>
-    <!-- AI Agent Widget -->
+    <!-- AI Agent Widget (manager/owner only; cashiers have no assistant access) -->
+    {% if session.role in ('manager', 'boss') %}
     {% include 'ai_agent_widget.html' %}
+    {% endif %}
   </body>
 </html>

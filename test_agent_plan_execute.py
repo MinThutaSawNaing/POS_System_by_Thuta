@@ -1,30 +1,23 @@
-"""Contract tests for the PLAN-THEN-EXECUTE AgentOrchestrator refactor.
+"""Contract tests for the PLAN-THEN-EXECUTE AgentOrchestrator.
 
 Contract under test (see docs/AGENT_EXTENSION.md):
-  * process_command returns {"success", "message", "plan", "step_results",
-    "pending_approvals"}; each step_result has {step, tool,
-    status in {"ok", "failed", "proposal", "skipped"}, result|error}.
+  * process_command returns {"success", "message", "plan", "step_results"};
+    each step_result has {step, tool, status in {"ok", "failed", "skipped"},
+    result|error}.
   * Plans are capped at 5 steps; invalid plans retry once, then fall back to
     single-shot execution.
   * "$from": "stepN.path" argument references are resolved between steps.
   * Execution fails fast: after a failed step every later step is "skipped".
-  * Mutating tools produce "proposal" step results + pending_approvals and
-    never touch the database directly from the agent loop — EXCEPT tools
-    with autonomy=="auto" when _autonomy_allowed() passes (kill-switch on
-    + manager user); those run immediately tagged "executed_by": "agent-auto"
+  * There is no permission/approval layer: mutating tools execute in the same
+    deterministic loop as reads.
   * The final summary chat call receives truncated (compacted) results and
     must report an incomplete task when any step failed.
 
 No real API calls and no real database writes: ai_agent.requests.post is
 mocked with scripted fake responses (style of test_ai_no_mock_data.py) and
 tool execution is stubbed at the orchestrator/ai_tools boundary.
-
-NOTE: these tests target code being written concurrently. Tests for the not-
-yet-merged plan loop are skipped with "pending core-loop implementation" and
-a TODO; assertions are NOT weakened — they activate once the code lands.
 """
 
-import inspect
 import json
 import unittest
 from unittest import mock
@@ -34,25 +27,12 @@ import ai_tools
 import agent_orchestrator
 from agent_orchestrator import AgentOrchestrator
 
-# Feature detection: which parts of the contract are merged already?
-ORCH_SRC = inspect.getsource(AgentOrchestrator)
-HAS_PLAN_LOOP = "pending_approvals" in ORCH_SRC          # TODO: remove gate when core loop merges
-HAS_COMPACT = hasattr(AgentOrchestrator, "_compact_result")  # TODO: remove gate
-HAS_METADATA = hasattr(ai_tools, "TOOL_METADATA")        # TODO: remove gate
+# The plan loop has shipped; these tests run against the real implementation.
 RESOLVER_NAME = next(
     (n for n in dir(AgentOrchestrator)
      if "resolve" in n.lower() and ("from" in n.lower() or "ref" in n.lower())),
     None,
 )
-HAS_RESOLVER = RESOLVER_NAME is not None                 # TODO: remove gate
-HAS_AUTONOMY = (
-    "_autonomy_allowed" in ORCH_SRC
-    and hasattr(ai_tools, "_AUTO_EXECUTE_TOOLS")
-    and bool(getattr(ai_tools, "TOOL_METADATA", {}))
-    and all("autonomy" in m for m in getattr(ai_tools, "TOOL_METADATA", {}).values())
-)  # TODO: remove gate once smart-autonomy merges
-
-PENDING = "pending core-loop implementation"
 
 
 class _FakeBody:
@@ -137,8 +117,6 @@ class PlanExecuteTestBase(unittest.TestCase):
 class PlanValidationTests(PlanExecuteTestBase):
     """Plan validation: size cap, unknown tools, malformed JSON fallback."""
 
-    @unittest.skipUnless(HAS_PLAN_LOOP, PENDING)
-    # TODO(agent-team): delete skipUnless once process_command returns plans.
     def test_plan_with_more_than_five_steps_is_rejected(self):
         steps = [{"step": f"s{i}", "tool": "get_inventory_status", "args": {}}
                  for i in range(6)]
@@ -152,8 +130,6 @@ class PlanValidationTests(PlanExecuteTestBase):
         self.assertIn("plan", result)
         self.assertLessEqual(len(result.get("plan") or []), 5)
 
-    @unittest.skipUnless(HAS_PLAN_LOOP, PENDING)
-    # TODO(agent-team): delete skipUnless once process_command returns plans.
     def test_unknown_tool_name_in_plan_is_rejected(self):
         steps = [{"step": "s1", "tool": "delete_everything", "args": {}}]
         fallback = api_response(content="Falling back.")
@@ -166,8 +142,6 @@ class PlanValidationTests(PlanExecuteTestBase):
         statuses = [sr.get("status") for sr in result.get("step_results", [])]
         self.assertNotIn(None, statuses)  # no unvalidated step was executed
 
-    @unittest.skipUnless(HAS_PLAN_LOOP, PENDING)
-    # TODO(agent-team): delete skipUnless once process_command returns plans.
     def test_malformed_plan_json_retries_once_then_falls_back(self):
         malformed = api_response(tool_calls=[{
             "id": "c1", "name": "propose_plan", "arguments": "{not valid json",
@@ -190,8 +164,6 @@ class PlanValidationTests(PlanExecuteTestBase):
 class FromReferenceResolutionTests(PlanExecuteTestBase):
     """$from references must be resolved between plan steps."""
 
-    @unittest.skipUnless(HAS_RESOLVER, PENDING)
-    # TODO(agent-team): point RESOLVER_NAME at the real helper name once merged.
     def test_resolver_direct_unit_test(self):
         resolver = getattr(self.orchestrator, RESOLVER_NAME)
         step_outputs = {
@@ -208,8 +180,6 @@ class FromReferenceResolutionTests(PlanExecuteTestBase):
         self.assertEqual(resolved["supplier_id"], 7)
         self.assertEqual(resolved["note"], "static value stays")
 
-    @unittest.skipUnless(HAS_PLAN_LOOP, PENDING)
-    # TODO(agent-team): delete skipUnless once $from resolution is wired in.
     def test_step2_arg_referencing_step1_output_via_scripted_plan(self):
         steps = [
             {"step": "find supplier", "tool": "get_supplier_list", "args": {}},
@@ -248,8 +218,6 @@ class FromReferenceResolutionTests(PlanExecuteTestBase):
 
 
 class FailStopTests(PlanExecuteTestBase):
-    @unittest.skipUnless(HAS_PLAN_LOOP, PENDING)
-    # TODO(agent-team): delete skipUnless once fail-stop semantics merge.
     def test_step_failure_stops_later_steps_and_marks_skipped(self):
         steps = [
             {"step": "one", "tool": "get_inventory_status", "args": {}},
@@ -287,219 +255,107 @@ class FailStopTests(PlanExecuteTestBase):
         self.assertEqual(calls["n"], 2)  # step three never executed
 
 
-class WriteAsProposalTests(PlanExecuteTestBase):
-    @unittest.skipUnless(HAS_PLAN_LOOP, PENDING)
-    # TODO(agent-team): delete skipUnless once write-proposals merge.
-    def test_create_purchase_order_yields_proposal_and_no_db_write(self):
+class PlanStepLimitTests(unittest.TestCase):
+    """The plan-step cap is an admin setting, clamped to a safe range."""
+
+    def _orchestrator(self, value):
+        orch = AgentOrchestrator(
+            None, {}, get_setting_func=lambda key, default=None: (
+                value if key == agent_orchestrator.PLAN_STEP_LIMIT_SETTING else default))
+        return orch
+
+    def test_default_and_clamped_values(self):
+        cases = [
+            (None, agent_orchestrator.MAX_PLAN_STEPS),
+            ("", agent_orchestrator.MAX_PLAN_STEPS),
+            ("not-a-number", agent_orchestrator.MAX_PLAN_STEPS),
+            ("0", agent_orchestrator.MIN_PLAN_STEPS),
+            ("-4", agent_orchestrator.MIN_PLAN_STEPS),
+            ("1", 1),
+            ("12", 12),
+            (" 7 ", 7),
+            ("999", agent_orchestrator.MAX_PLAN_STEPS_LIMIT),
+        ]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(self._orchestrator(raw)._max_plan_steps(), expected)
+
+    def test_missing_settings_callback_falls_back_to_default(self):
+        orch = AgentOrchestrator(None, {})
+        self.assertEqual(orch._max_plan_steps(), agent_orchestrator.MAX_PLAN_STEPS)
+
+    def test_validate_plan_uses_the_saved_limit(self):
+        orch = self._orchestrator("8")
+        registry = orch._get_tool_registry()
+        steps = [{"tool": "get_inventory_status", "args": {}} for _ in range(8)]
+        normalized, error, fatal = orch._validate_plan(steps, registry)
+        self.assertIsNone(error)
+        self.assertFalse(fatal)
+        self.assertEqual(len(normalized), 8)
+
+        steps.append({"tool": "get_inventory_status", "args": {}})
+        normalized, error, fatal = orch._validate_plan(steps, registry)
+        self.assertIsNone(normalized)
+        self.assertTrue(fatal)
+        self.assertIn("maximum is 8", error)
+
+    def test_lowered_limit_rejects_previously_valid_plans(self):
+        orch = self._orchestrator("2")
+        registry = orch._get_tool_registry()
+        steps = [{"tool": "get_inventory_status", "args": {}} for _ in range(3)]
+        _, error, fatal = orch._validate_plan(steps, registry)
+        self.assertTrue(fatal)
+        self.assertIn("maximum is 2", error)
+
+
+class WriteExecutionTests(PlanExecuteTestBase):
+    """Writes execute in the deterministic loop: no proposal, no second turn."""
+
+    def test_create_purchase_order_executes_and_is_reported(self):
         steps = [{
             "step": "create PO",
             "tool": "create_purchase_order",
             "args": {"supplier_id": 1,
                      "items": [{"product_id": 5, "quantity": 10}]},
         }]
-        proposal_summary = api_response(
-            content="A purchase order draft is ready for your approval.")
-        po_mock = mock.Mock(name="create_purchase_order",
-                            return_value={"po_id": 999})
+        summary = api_response(content="Purchase order PO-77 created.")
+        tool_mock = mock.Mock(name="create_purchase_order",
+                              return_value={"success": True, "po_number": "PO-77"})
 
-        with self.script(plan_response("restock cola", steps),
-                         proposal_summary), \
-             mock.patch.object(self.orchestrator.ai_tools, "create_purchase_order",
-                               po_mock):
+        with self.script(plan_response("restock cola", steps), summary), \
+             mock.patch.dict(self.orchestrator.agent.tool_functions,
+                             {"create_purchase_order": tool_mock}):
             result = self.orchestrator.process_command(
                 "order 10 cola from supplier 1", user_id=1)
 
         self.assertTrue(result["success"])
         step_results = result["step_results"]
         self.assertEqual(len(step_results), 1)
-        self.assertEqual(step_results[0]["status"], "proposal")
-        self.assertTrue(result["pending_approvals"])
-        # The mutating tool must never have been invoked by the agent loop.
-        po_mock.assert_not_called()
-
-
-class _FakeUserQuery:
-    """Flask-SQLAlchemy query stand-in returning one scripted user."""
-
-    def __init__(self, user):
-        self._user = user
-
-    def filter_by(self, **kwargs):
-        return self
-
-    def first(self):
-        return self._user
-
-
-class AutonomyTests(PlanExecuteTestBase):
-    """Smart autonomy: 'auto' tools may execute for managers when the
-    agent_autonomy_enabled kill-switch is on; everything else — and every
-    path with the gate closed — stays a proposal."""
-
-    @unittest.skipUnless(HAS_PLAN_LOOP and HAS_AUTONOMY, PENDING)
-    # TODO(agent-team): delete skipUnless once smart-autonomy merges.
-    def test_auto_tool_executes_with_executed_by_agent_auto_when_gate_open(self):
-        steps = [{
-            "step": "register customer",
-            "tool": "register_customer",
-            "args": {"name": "U Aung", "phone": "0977000000"},
-        }]
-        ok_summary = api_response(content="Customer registered.")
-        tool_mock = mock.Mock(name="register_customer",
-                              return_value={"success": True, "customer_id": 42})
-
-        with self.script(plan_response("add a customer", steps), ok_summary), \
-             mock.patch.object(self.orchestrator, "_autonomy_allowed",
-                               return_value=True), \
-             mock.patch.dict(self.orchestrator.agent.tool_functions,
-                             {"register_customer": tool_mock}):
-            result = self.orchestrator.process_command(
-                "register customer U Aung", user_id=1)
-
-        self.assertTrue(result["success"])
-        step_results = result["step_results"]
-        self.assertEqual(len(step_results), 1)
         self.assertEqual(step_results[0]["status"], "ok")
-        self.assertEqual(step_results[0].get("executed_by"), "agent-auto")
-        self.assertEqual(result.get("pending_approvals"), [])
-        # The tool WAS actually invoked through the real execution path.
+        self.assertNotIn("pending_approvals", result)
         tool_mock.assert_called_once()
-        self.assertEqual(tool_mock.call_args.kwargs.get("name"), "U Aung")
+        self.assertEqual(tool_mock.call_args.kwargs["supplier_id"], 1)
 
-    @unittest.skipUnless(HAS_PLAN_LOOP and HAS_AUTONOMY, PENDING)
-    # TODO(agent-team): delete skipUnless once smart-autonomy merges.
-    def test_gate_closed_same_auto_tool_stays_proposal(self):
-        steps = [{
-            "step": "register customer",
-            "tool": "register_customer",
-            "args": {"name": "U Bala", "phone": "0988000000"},
-        }]
-        proposal_summary = api_response(
-            content="Customer registration is awaiting your approval.")
-        tool_mock = mock.Mock(name="register_customer",
-                              return_value={"success": True, "customer_id": 43})
+    def test_delete_product_executes_without_approval(self):
+        steps = [{"step": "delete product", "tool": "delete_product",
+                  "args": {"product_id": 7}}]
+        summary = api_response(content="Product 7 deleted.")
+        tool_mock = mock.Mock(name="delete_product", return_value={"success": True})
 
-        with self.script(plan_response("add a customer", steps),
-                         proposal_summary), \
-             mock.patch.object(self.orchestrator, "_autonomy_allowed",
-                               return_value=False), \
-             mock.patch.dict(self.orchestrator.agent.tool_functions,
-                             {"register_customer": tool_mock}):
-            result = self.orchestrator.process_command(
-                "register customer U Bala", user_id=1)
-
-        self.assertTrue(result["success"])
-        step_results = result["step_results"]
-        self.assertEqual(len(step_results), 1)
-        self.assertEqual(step_results[0]["status"], "proposal")
-        self.assertTrue(result["pending_approvals"])
-        self.assertNotIn("executed_by", step_results[0])
-        # Kill switch off => the mutating tool is never invoked.
-        tool_mock.assert_not_called()
-
-    @unittest.skipUnless(HAS_PLAN_LOOP and HAS_AUTONOMY, PENDING)
-    # TODO(agent-team): delete skipUnless once smart-autonomy merges.
-    def test_approval_tier_tool_never_auto_executes_even_when_gate_open(self):
-        steps = [{
-            "step": "delete product",
-            "tool": "delete_product",
-            "args": {"product_id": 7},
-        }]
-        proposal_summary = api_response(
-            content="Product deletion requires your approval.")
-        tool_mock = mock.Mock(name="delete_product",
-                              return_value={"success": True})
-
-        with self.script(plan_response("remove stale product", steps),
-                         proposal_summary), \
-             mock.patch.object(self.orchestrator, "_autonomy_allowed",
-                               return_value=True), \
+        with self.script(plan_response("remove stale product", steps), summary), \
              mock.patch.dict(self.orchestrator.agent.tool_functions,
                              {"delete_product": tool_mock}):
             result = self.orchestrator.process_command(
                 "do delete product 7 now", user_id=1)
 
         self.assertTrue(result["success"])
-        step_results = result["step_results"]
-        self.assertEqual(len(step_results), 1)
-        self.assertEqual(step_results[0]["status"], "proposal")
-        self.assertTrue(result["pending_approvals"])
-        # autonomy=="approval" tools never run even with the gate wide open.
-        tool_mock.assert_not_called()
+        self.assertEqual(result["step_results"][0]["status"], "ok")
+        self.assertNotIn("executed_by", result["step_results"][0])
+        tool_mock.assert_called_once()
 
-    @unittest.skipUnless(HAS_AUTONOMY, PENDING)
-    # TODO(agent-team): delete skipUnless once smart-autonomy merges.
-    def test_autonomy_allowed_denies_non_manager_roles(self):
-        class FakeUser:
-            def __init__(self, role):
-                self.role = role
-
-        cases = [
-            (FakeUser("cashier"), False),
-            (FakeUser("admin"), False),
-            (FakeUser(None), False),
-            (FakeUser("manager"), True),
-        ]
-        for user, expected in cases:
-            with self.subTest(role=getattr(user, "role", None)):
-                orch = AgentOrchestrator(None, {})
-                orch.set_request_context({"branch_id": 1, "user_id": 1})
-                orch.ai_tools.models["User"] = mock.Mock(
-                    query=_FakeUserQuery(user))
-                orch.get_setting_func = lambda key: "true"
-                self.assertIs(orch._autonomy_allowed(), expected)
-
-    @unittest.skipUnless(HAS_AUTONOMY, PENDING)
-    # TODO(agent-team): delete skipUnless once smart-autonomy merges.
-    def test_autonomy_allowed_parses_kill_switch_truthy_values(self):
-        """Unit-test the orchestrator-side truthy check ('true'/'1'/'on'/'yes',
-        case-insensitive) directly on _autonomy_allowed — no app.py import."""
-        truthy = ["true", "TRUE", "True", "1", "on", "ON", "yes", "YES"]
-        falsy = ["false", "0", "off", "no", "", None, "enabled-ish", "2"]
-
-        class ManagerUser:
-            role = "manager"
-
-        for raw, expected in ([(v, True) for v in truthy]
-                              + [(v, False) for v in falsy]):
-            with self.subTest(raw=raw):
-                orch = AgentOrchestrator(None, {})
-                orch.set_request_context({"user_id": 1})
-                orch.ai_tools.models["User"] = mock.Mock(
-                    query=_FakeUserQuery(ManagerUser()))
-                orch.get_setting_func = lambda key, _raw=raw: _raw
-                self.assertIs(orch._autonomy_allowed(), bool(expected))
-
-    @unittest.skipUnless(HAS_AUTONOMY, PENDING)
-    # TODO(agent-team): delete skipUnless once smart-autonomy merges.
-    def test_registry_contract_for_autonomy_fields(self):
-        valid = {"auto", "approval"}
-        approval_required = {
-            "delete_product", "delete_supplier", "delete_customer",
-            "update_product_price", "write_off_debt",
-        }
-        metadata = ai_tools.TOOL_METADATA
-        for name, meta in metadata.items():
-            with self.subTest(tool=name):
-                self.assertIn(meta.get("autonomy"), valid,
-                              f"{name} has invalid/missing autonomy tier")
-        for name in ai_tools._AUTO_EXECUTE_TOOLS:
-            with self.subTest(auto_tool=name):
-                self.assertIn(name, metadata,
-                              f"{name} in _AUTO_EXECUTE_TOOLS but not TOOL_METADATA")
-                meta = metadata[name]
-                self.assertTrue(meta.get("mutates"))
-                self.assertTrue(meta.get("requires_role"))
-                self.assertEqual(meta["autonomy"], "auto")
-        for name in approval_required:
-            with self.subTest(approval_tool=name):
-                self.assertIn(name, metadata)
-                self.assertEqual(metadata[name]["autonomy"], "approval")
 
 
 class AntiHallucinationSummaryTests(PlanExecuteTestBase):
-    @unittest.skipUnless(HAS_PLAN_LOOP, PENDING)
-    # TODO(agent-team): delete skipUnless once summary generation merges.
     def test_summary_receives_truncated_results_and_reports_incomplete_task(self):
         steps = [
             {"step": "inventory", "tool": "get_inventory_status", "args": {}},
@@ -550,8 +406,6 @@ class AntiHallucinationSummaryTests(PlanExecuteTestBase):
 
 
 class TokenCompactionTests(unittest.TestCase):
-    @unittest.skipUnless(HAS_COMPACT, PENDING)
-    # TODO(agent-team): delete skipUnless once _compact_result merges.
     def test_large_lists_and_strings_truncated_but_counts_preserved(self):
         orch = AgentOrchestrator.__new__(AgentOrchestrator)  # pure helper, no init
         big = {
@@ -599,8 +453,7 @@ class DeterministicStatusMessageTests(unittest.TestCase):
 
 
 class RegistryCompletenessTests(unittest.TestCase):
-    """Registry contract. Base checks run against TOOL_SCHEMAS today; the
-    richer TOOL_METADATA checks activate once that registry lands."""
+    """Registry contract: descriptive metadata only, no permission fields."""
 
     def test_tool_schemas_importable_and_well_formed(self):
         from ai_tools import TOOL_SCHEMAS, get_all_tools
@@ -617,27 +470,17 @@ class RegistryCompletenessTests(unittest.TestCase):
         # get_all_tools() stays consistent with TOOL_SCHEMAS keys.
         self.assertEqual(set(get_all_tools()), set(TOOL_SCHEMAS))
 
-    @unittest.skipUnless(HAS_METADATA, PENDING)
-    # TODO(ai-tools team): delete skipUnless once TOOL_METADATA lands.
     def test_every_metadata_entry_has_required_keys(self):
         required = {"name", "description", "parameters", "category",
-                    "mutates", "requires_role", "description_one_line"}
+                    "mutates", "description_one_line", "result_size_hint"}
         for name, meta in ai_tools.TOOL_METADATA.items():
             with self.subTest(tool=name):
                 missing = required - set(meta)
                 self.assertFalse(missing, f"missing keys: {missing}")
+                # The removed permission model must not creep back in.
+                self.assertNotIn("requires_role", meta)
+                self.assertNotIn("autonomy", meta)
 
-    @unittest.skipUnless(HAS_METADATA, PENDING)
-    # TODO(ai-tools team): delete skipUnless once TOOL_METADATA lands.
-    def test_mutating_tools_require_a_role(self):
-        for name, meta in ai_tools.TOOL_METADATA.items():
-            with self.subTest(tool=name):
-                if meta.get("mutates"):
-                    self.assertTrue(meta.get("requires_role"),
-                                    f"{name} mutates but has no requires_role")
-
-    @unittest.skipUnless(HAS_METADATA, PENDING)
-    # TODO(ai-tools team): delete skipUnless once TOOL_METADATA lands.
     def test_registry_and_schemas_stay_consistent(self):
         for name in ai_tools.TOOL_METADATA:
             self.assertIn(name, ai_tools.TOOL_SCHEMAS,

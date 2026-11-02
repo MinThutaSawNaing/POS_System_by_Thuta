@@ -277,19 +277,15 @@ class SharedAIWorkflowTests(unittest.TestCase):
         self.assertTrue(t.upsert_product('No barcode one', 1, barcode='')['success'])
         self.assertTrue(t.upsert_product('No barcode two', 1, barcode='')['success'])
 
-    def test_cashier_cannot_access_shared_tools_even_with_forged_context(self):
-        names = ('get_supplier_list', 'get_supplier_details', 'get_supplier_categories',
-                 'get_purchase_order_products', 'get_purchase_orders', 'create_supplier',
-                 'update_supplier', 'delete_supplier', 'create_purchase_order', 'approve_purchase_order',
-                 'cancel_purchase_order', 'receive_purchase_order', 'get_warehouse_inventory',
-                 'create_warehouse_transfer', 'get_warehouse_transfer_history', 'get_supplier_price_for_product')
+    def test_cashier_scope_still_cannot_reach_another_branch(self):
+        """No per-tool role gate remains, so branch scoping is the guard."""
         with self.app.test_request_context('/'):
             session.update(user_id=self.user, role='cashier', branch_id=self.a)
-            for name in names:
-                with self.subTest(tool=name):
-                    self.assertEqual(TOOL_METADATA[name]['requires_role'], 'manager')
-                    self.assertIn('manager', getattr(self.tools, name)()['error'])
-            self.assertEqual(self.tools.get_product_details(product_id=self.foreign)['error'], 'Product not found')
+            self.assertEqual(self.tools.get_product_details(product_id=self.foreign)['error'],
+                             'Product not found')
+            inventory = self.tools.get_inventory_status()
+            self.assertEqual(inventory['branch_id'], self.a)
+            self.assertEqual([p['product_id'] for p in inventory['inventory']], [self.local])
 
 
 if __name__ == '__main__':

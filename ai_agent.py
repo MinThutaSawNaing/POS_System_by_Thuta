@@ -347,12 +347,8 @@ class AIAgent:
                 continue
 
             try:
-                from ai_tools import tool_authorization_error, minimize_cashier_result
-                error = tool_authorization_error(tc.function_name, self.request_context)
-                if error:
-                    raise PermissionError(error)
                 func = self.tool_functions[guarded.name]
-                result = minimize_cashier_result(func(**guarded.arguments), self.request_context)
+                result = func(**guarded.arguments)
                 results.append({
                     "tool_call_id": tc.id,
                     "function_name": tc.function_name,

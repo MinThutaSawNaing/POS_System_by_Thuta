@@ -85,6 +85,8 @@ from cryptography.fernet import Fernet, InvalidToken
 
 # Import AI Agent modules
 from agent_orchestrator import get_orchestrator
+from agent_orchestrator import (MAX_PLAN_STEPS, MAX_PLAN_STEPS_LIMIT,
+                                MIN_PLAN_STEPS, PLAN_STEP_LIMIT_SETTING)
 
 
 def _load_local_env(path=None):
@@ -714,17 +716,6 @@ def seed_account_barrier_credential():
     set_setting(ACCOUNT_BARRIER_PASSWORD_SETTING, generate_password_hash(password))
 
 
-def get_agent_autonomy_enabled():
-    """Kill switch for AI agent autonomy. Default is OFF."""
-    try:
-        value = get_setting('agent_autonomy_enabled')
-        if value is None:
-            return False
-        return str(value).strip().lower() in {'true', '1', 'on', 'yes'}
-    except Exception:
-        return False
-
-
 def get_currency_code():
     code = get_setting('currency_code', 'USD')
     return code if code in CURRENCY_OPTIONS else 'USD'
@@ -1128,6 +1119,25 @@ def manager_or_boss_required(f):
     return decorated_function
 
 
+def agent_required(f):
+    """The AI assistant is a manager/owner capability.
+
+    Cashier accounts are denied outright: the assistant can change any record in
+    the active branch, which no cashier session is allowed to do.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+        if session.get('role') not in ('manager', 'boss'):
+            return jsonify({
+                'success': False,
+                'message': 'The AI assistant is not available for cashier accounts',
+            }), 403
+        return f(*args, **kwargs)
+    return decorated_function
+
+
 # Deny by default: a newly added API must not silently become cashier-accessible.
 CASHIER_API_METHODS = {
     'api_auth_email': {'GET'}, 'api_user_email_start': {'POST'},
@@ -1144,11 +1154,6 @@ CASHIER_API_METHODS = {
     'api_deliveries': {'GET'}, 'api_single_delivery': {'GET'},
     'api_delivery_stats': {'GET'}, 'print_delivery_slip': {'GET'},
     'api_delivery_report': {'GET'}, 'api_pos_customers': {'GET'},
-    'agent_chat': {'POST'}, 'api_agent_memories': {'GET', 'POST'},
-    'api_delete_agent_memory': {'DELETE'}, 'api_forget_agent_memory': {'POST'},
-    'api_forget_all_agent_memories': {'POST'}, 'api_agent_approve_step': {'POST'},
-    'api_agent_reject_step': {'POST'}, 'api_agent_advance_task': {'POST'},
-    'api_agent_get_task': {'GET'}, 'api_agent_autonomy_get': {'GET'},
     'mmpay_config': {'GET'}, 'mmpay_intents': {'GET', 'POST'},
     'mmpay_intent': {'GET'}, 'mmpay_refresh': {'POST'},
     'mmpay_complete': {'POST'}, 'mmpay_cancel': {'POST'}, 'mmpay_qr': {'GET'},
@@ -1226,6 +1231,11 @@ def enforce_cashier_api_permissions():
         return None
     if session.get('role') != 'cashier':
         return jsonify({'success': False, 'message': 'Account role is not authorized'}), 403
+    if request.path.startswith('/api/agent/'):
+        # The AI assistant can change any record in the branch, so cashier
+        # accounts have no access to it or to its memory store.
+        return jsonify({'success': False,
+                        'message': 'The AI assistant is not available for cashier accounts'}), 403
     if request.method not in CASHIER_API_METHODS.get(request.endpoint, set()):
         return jsonify({'success': False, 'message': 'Manager access required'}), 403
     # Never allow a missing/inactive scope to widen a query to all branches.
@@ -1610,42 +1620,6 @@ class MemoryAudit(db.Model):
     __table_args__ = (
         db.Index('idx_memory_audit_actor_branch', 'actor_user_id', 'branch_id', 'created_at'),
     )
-
-class AgentTask(db.Model):
-    """Persistent record of one AI-agent command, its plan and step results.
-
-    New table for GOAL 1 (task persistence). Created automatically by the
-    existing startup ``db.create_all()`` call (app.py ~line 1160) — no
-    ALTER-TABLE migration needed because this is a brand-new table.
-    """
-    __tablename__ = 'agent_task'
-
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True, index=True)
-    command = db.Column(db.Text, nullable=False)
-    plan_json = db.Column(db.Text, nullable=True)
-    status = db.Column(db.String(30), nullable=False, default='pending_approval')
-    # allowed statuses: pending_approval | executing | completed | failed | clarification
-    step_results_json = db.Column(db.Text, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-
-    def to_dict(self):
-        def _load(raw):
-            try:
-                return json.loads(raw) if raw else None
-            except (ValueError, TypeError):
-                return None
-        return {
-            'id': self.id,
-            'user_id': self.user_id,
-            'command': self.command,
-            'plan': _load(self.plan_json),
-            'status': self.status,
-            'step_results': _load(self.step_results_json),
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
-        }
 
 def category_chain(category, limit=64):
     """Return ``category``'s ancestors from the root down to the category itself.
@@ -2245,12 +2219,11 @@ AUDIT_CATEGORY_BY_ENTITY = {
     'Customer': 'Customers', 'Debt': 'Customers', 'DebtPayment': 'Customers',
     'Delivery': 'Deliveries', 'Promotion': 'Promotions',
     'User': 'Users', 'Branch': 'Settings', 'AppSetting': 'Settings',
-    'AgentTask': 'AI Assistant', 'MemoryRegistry': 'AI Assistant',
-    'MemoryAudit': 'AI Assistant',
+    'MemoryRegistry': 'AI Assistant', 'MemoryAudit': 'AI Assistant',
 }
 AUDIT_SENSITIVE_FIELDS = {
-    'password', 'value', 'receipt_snapshot', 'command', 'plan_json',
-    'step_results_json', 'details', 'bank_account', 'tax_id',
+    'password', 'value', 'receipt_snapshot', 'command', 'details',
+    'bank_account', 'tax_id',
     'payment_breakdown', 'phone', 'email', 'address', 'delivery_address',
     'recipient_phone', 'courier_phone', 'notes', 'communication_notes',
     'instructions',
@@ -2920,13 +2893,6 @@ with app.app_context():
     db.session.execute(text('PRAGMA journal_mode=WAL'))
     db.session.execute(text('PRAGMA busy_timeout=5000'))
     db.create_all()
-    # Loli works on her own for managers and the boss until an operator turns
-    # the kill switch off in Settings. Explicit saved values always win.
-    try:
-        if get_setting('agent_autonomy_enabled') is None:
-            set_setting('agent_autonomy_enabled', 'true')
-    except Exception as autonomy_error:
-        app.logger.warning(f'Could not seed agent autonomy default: {autonomy_error}')
     inspector = inspect(db.engine)
     # Must precede *every* ORM User query: create_all does not alter old tables.
     for column_name, column_sql in (
@@ -10352,7 +10318,7 @@ def capture_low_risk_memory(command):
 
 
 @app.route('/api/agent/memories', methods=['GET', 'POST'])
-@login_required
+@agent_required
 def api_agent_memories():
     """List or explicitly save memory, bounded to the active user and branch."""
     # Authorization must precede optional-backend availability so a disabled
@@ -10421,7 +10387,7 @@ def api_agent_memories():
 
 
 @app.route('/api/agent/memories/<string:memory_id>', methods=['DELETE'])
-@login_required
+@agent_required
 def api_delete_agent_memory(memory_id):
     entry = visible_memory_registry_query().filter_by(memory_id=memory_id).first()
     if not entry:
@@ -10448,7 +10414,7 @@ def api_delete_agent_memory(memory_id):
 
 
 @app.route('/api/agent/memories/forget', methods=['POST'])
-@login_required
+@agent_required
 def api_forget_agent_memory():
     """Compatibility endpoint for a UI forget action; delegates to the same guarded delete path."""
     memory_id = (request.get_json(silent=True) or {}).get('memory_id')
@@ -10458,7 +10424,7 @@ def api_forget_agent_memory():
 
 
 @app.route('/api/agent/memories/forget-all', methods=['POST'])
-@login_required
+@agent_required
 def api_forget_all_agent_memories():
     """Forget only the current user's private memories in the active branch."""
     entries = visible_memory_registry_query('private').all()
@@ -10483,12 +10449,66 @@ def api_forget_all_agent_memories():
         return jsonify({'success': False, 'error': 'Unable to forget private memories'}), 503
 
 
+def _agent_plan_step_limit():
+    """Effective AI plan-step cap reported to the dashboard.
+
+    Mirrors ``AgentOrchestrator._max_plan_steps`` so the input always shows the
+    value the agent will actually use.
+    """
+    try:
+        raw = get_setting(PLAN_STEP_LIMIT_SETTING)
+        value = int(str(raw).strip()) if str(raw or '').strip() else MAX_PLAN_STEPS
+    except (TypeError, ValueError):
+        value = MAX_PLAN_STEPS
+    return max(MIN_PLAN_STEPS, min(value, MAX_PLAN_STEPS_LIMIT))
+
+
+@app.route('/api/agent/plan-limit', methods=['GET', 'POST'])
+@agent_required
+def api_agent_plan_limit():
+    """Read or save the AI plan-step cap (manager/owner only).
+
+    Raising it lets one command change more records at once (for example a bulk
+    product update); lowering it keeps every request small. The orchestrator
+    reads the saved value on the next turn and clamps it to a safe range.
+    """
+    if request.method == 'GET':
+        return jsonify({
+            'success': True,
+            'max_plan_steps': _agent_plan_step_limit(),
+            'default': MAX_PLAN_STEPS,
+            'min': MIN_PLAN_STEPS,
+            'max': MAX_PLAN_STEPS_LIMIT,
+        })
+
+    payload = request.get_json(silent=True) or {}
+    try:
+        value = int(str(payload.get('max_plan_steps')).strip())
+    except (TypeError, ValueError):
+        return jsonify({'success': False,
+                        'error': 'max_plan_steps must be a whole number'}), 400
+    if not MIN_PLAN_STEPS <= value <= MAX_PLAN_STEPS_LIMIT:
+        return jsonify({
+            'success': False,
+            'error': (f'max_plan_steps must be between {MIN_PLAN_STEPS} '
+                      f'and {MAX_PLAN_STEPS_LIMIT}'),
+        }), 400
+    try:
+        set_setting(PLAN_STEP_LIMIT_SETTING, str(value))
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    return jsonify({'success': True, 'max_plan_steps': value})
+
+
 @app.route('/api/agent/chat', methods=['POST'])
-@login_required
+@agent_required
 def agent_chat():
     """
     Process a chat command through the AI Agent
     Expects JSON: {"command": "your command here"}
+
+    Manager/owner only. There is no approval round-trip: a planned write runs
+    immediately, so the reply always reflects what really happened.
     """
     try:
         data = request.get_json()
@@ -10505,15 +10525,6 @@ def agent_chat():
                 'error': 'Command cannot be empty'
             }), 400
 
-        # A plain "yes"/"no" answers the proposal already on the table. Running
-        # the approval deterministically (instead of planning again) is what
-        # makes "Ok I approve" reliable: the same stored plan runs, no second
-        # proposal is invented, and an approved change can never be lost.
-        if _is_approval_reply(command) or _is_rejection_reply(command):
-            answered = _answer_pending_approval(session.get('user_id'), command)
-            if answered is not None:
-                return jsonify(answered)
-
         # Process the command through the agent
         orchestrator = get_ai_orchestrator()
         result = orchestrator.process_command(command, session.get('user_id'))
@@ -10521,30 +10532,6 @@ def agent_chat():
         # auto-capture must never double-save a command.
         if result.get('success') and not command.startswith('#'):
             capture_low_risk_memory(command)
-
-        # GOAL 1: persist plan-bearing results so proposals can be approved later.
-        # The orchestrator returns the plan as a dict ({"description", "steps"}),
-        # so accepting only a list here silently dropped task_id and made the
-        # Approve button call /approve/undefined/...
-        planned = result.get('plan')
-        plan_steps = planned.get('steps') if isinstance(planned, dict) else planned
-        if isinstance(plan_steps, list) and isinstance(result.get('step_results'), list):
-            try:
-                has_proposals = any(sr.get('status') == 'proposal' for sr in result['step_results'])
-                task = AgentTask(
-                    user_id=session.get('user_id'),
-                    command=command,
-                    plan_json=json.dumps(planned),
-                    status='pending_approval' if has_proposals else (
-                        'completed' if result.get('success') else 'failed'),
-                    step_results_json=json.dumps(result.get('step_results')),
-                )
-                db.session.add(task)
-                db.session.commit()
-                result['task_id'] = task.id
-            except Exception as persist_error:
-                db.session.rollback()
-                app.logger.warning(f"AgentTask persistence failed: {persist_error}")
 
         return jsonify(result)
 
@@ -10558,7 +10545,7 @@ def agent_chat():
 
 
 @app.route('/api/agent/status', methods=['GET'])
-@manager_required
+@agent_required
 def agent_status():
     """Get the current status of the AI Agent"""
     try:
@@ -10576,7 +10563,7 @@ def agent_status():
 
 
 @app.route('/api/agent/history', methods=['GET'])
-@manager_required
+@agent_required
 def agent_history():
     """Get the conversation history (truncated for display)"""
     try:
@@ -10594,371 +10581,9 @@ def agent_history():
 
 
 @app.route('/api/agent/clear', methods=['POST'])
-@login_required
+@agent_required
 def agent_clear():
     """Clear this user's conversation context (the widget keeps its own copy)."""
-    try:
-        orchestrator = get_ai_orchestrator()
-        orchestrator.clear_conversation()
-        return jsonify({
-            'success': True,
-            'message': 'Conversation history cleared'
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-
-# ---------------------------------------------------------------------------
-# GOAL 1: Agent task persistence + approval flow
-#
-# APPROVAL EXECUTION (implemented): POST /api/agent/approve/<task_id>/<step_no>
-# records the approval on the persisted task (step_results_json marks the step
-# "approved"). POST /api/agent/task/<id>/advance then calls
-# orchestrator.run_approved_plan() with the persisted plan and the approved
-# step numbers: the plan is re-run deterministically (fresh read data, zero
-# LLM calls) and ONLY the approved mutating steps touch the database, tagged
-# "executed_by": "approved". Unapproved proposals stay proposals; proposals
-# expire after AI_APPROVAL_TTL_HOURS (default 24h).
-# ---------------------------------------------------------------------------
-
-def _agent_task_step_results(task):
-    """Load step_results list from a task's JSON blob (never mutates)."""
-    try:
-        results = json.loads(task.step_results_json) if task.step_results_json else []
-    except (ValueError, TypeError):
-        results = []
-    return results if isinstance(results, list) else []
-
-
-def _agent_task_plan(task):
-    """Load a task's persisted plan dict (never mutates)."""
-    try:
-        plan = json.loads(task.plan_json) if task.plan_json else None
-    except (ValueError, TypeError):
-        plan = None
-    return plan if isinstance(plan, dict) else None
-
-
-# A plain "yes"/"no" answers the proposal already on the table. Recognising it
-# here keeps approval deterministic (one stored plan, one execution) instead of
-# paying for another planning turn that could create a different proposal — the
-# bug where "Ok I approve" produced a fresh plan that failed and the change was
-# silently lost. Only short, unambiguous replies qualify.
-_APPROVAL_PHRASES = frozenset({
-    "yes", "y", "yeah", "yep", "yup", "ok", "okay", "sure", "fine",
-    "go ahead", "do it", "proceed", "please proceed", "approve", "approved",
-    "i approve", "confirm", "confirmed", "yes please", "ok do it",
-    "yes go ahead", "okay go ahead", "yes approve",
-    "ok i approve", "yes i approve", "i approve it", "ok approved",
-    "ဟုတ်ကဲ့", "အိုကေ", "ဟုတ်", "ဟုတ်ကဲ့ပါ",
-})
-_REJECTION_PHRASES = frozenset({
-    "no", "n", "nope", "cancel", "cancel it", "stop", "reject", "rejected",
-    "no thanks", "do not", "dont", "don t", "never mind", "nevermind",
-    "ဘူး", "မလုပ်ပါ", "တော်", "မလိုပါ",
-})
-
-
-def _normalized_reply(text):
-    """Lowercase reply with punctuation collapsed to single spaces."""
-    cleaned = re.sub(r"[^a-z\u1000-\u109f\s]", " ", (text or "").lower())
-    return " ".join(cleaned.split())
-
-
-def _is_approval_reply(text):
-    return _normalized_reply(text) in _APPROVAL_PHRASES
-
-
-def _is_rejection_reply(text):
-    return _normalized_reply(text) in _REJECTION_PHRASES
-
-
-def _pending_agent_task(user_id):
-    """Most recent task of this user that is still waiting on a decision."""
-    if user_id is None:
-        return None
-    return (AgentTask.query
-            .filter(AgentTask.user_id == user_id,
-                    AgentTask.status == 'pending_approval')
-            .order_by(AgentTask.created_at.desc(), AgentTask.id.desc())
-            .first())
-
-
-def _undecided_proposal_step_nos(task):
-    """Step numbers of proposals the user has neither approved nor rejected."""
-    return sorted({sr.get('step') for sr in _agent_task_step_results(task)
-                   if sr.get('status') == 'proposal' and not sr.get('approved')
-                   and not sr.get('rejected') and isinstance(sr.get('step'), int)})
-
-
-def _advance_agent_task(task, approved_nos):
-    """Execute the approved proposal steps of one task; returns (payload, status).
-
-    Shared by POST /api/agent/task/<id>/advance and the chat shortcut, so both
-    paths keep the same expiry, claim and provenance guards.
-    """
-    ttl_hours = _agent_approval_ttl_hours()
-    age_hours = (datetime.utcnow() - (task.created_at or datetime.utcnow())
-                 ).total_seconds() / 3600.0
-    if ttl_hours > 0 and age_hours > ttl_hours:
-        task.status = 'expired'
-        task.updated_at = datetime.utcnow()
-        db.session.commit()
-        return ({
-            'success': False,
-            'error': (f'This proposal expired after {int(ttl_hours)}h. '
-                      'Ask Loli again and approve the fresh plan.'),
-        }, 410)
-
-    plan = _agent_task_plan(task)
-    persisted = _agent_task_step_results(task)
-
-    # Atomic claim: only one concurrent request may flip this task into
-    # 'executing' — prevents double execution of approved writes.
-    claimed = AgentTask.query.filter(
-        AgentTask.id == task.id,
-        AgentTask.status != 'executing',
-    ).update({'status': 'executing', 'updated_at': datetime.utcnow()})
-    db.session.commit()
-    if not claimed:
-        return {'success': False, 'error': 'Task is already executing'}, 409
-
-    try:
-        orchestrator = get_ai_orchestrator()
-        result = orchestrator.run_approved_plan(
-            task.command, plan or {}, approved_nos, persisted_results=persisted)
-
-        if isinstance(result.get('step_results'), list):
-            task.step_results_json = json.dumps(result['step_results'])
-        still_pending = any(sr.get('status') == 'proposal'
-                            for sr in _agent_task_step_results(task))
-        if result.get('success') and not still_pending:
-            task.status = 'completed'
-        elif result.get('success'):
-            task.status = 'pending_approval'
-        else:
-            task.status = 'failed'
-        db.session.commit()
-    except Exception as exc:
-        app.logger.error(f"Agent task advance error: {exc}")
-        # Never leave the task bricked in 'executing'.
-        task.status = 'failed'
-        try:
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-        return {'success': False, 'error': str(exc)}, 500
-
-    result['task_id'] = task.id
-    return result, 200
-
-
-def _answer_pending_approval(user_id, command):
-    """Answer a plain yes/no against the proposal already awaiting approval.
-
-    Returns the chat payload, or None when there is nothing to answer (no
-    pending task for this user), so ordinary chat continues untouched.
-    """
-    task = _pending_agent_task(user_id)
-    if task is None:
-        return None
-    step_results = _agent_task_step_results(task)
-    if not _undecided_proposal_step_nos(task):
-        return None
-
-    if _is_rejection_reply(command):
-        for step in step_results:
-            if step.get('status') == 'proposal' and not step.get('approved'):
-                step['rejected'] = True
-        task.step_results_json = json.dumps(step_results)
-        task.status = 'rejected'
-        task.updated_at = datetime.utcnow()
-        db.session.commit()
-        return {
-            'success': True,
-            'message': 'Cancelled — nothing was changed.',
-            'plan': _agent_task_plan(task),
-            'step_results': step_results,
-            'pending_approvals': [],
-            'task_id': task.id,
-            'approval_reply': 'rejected',
-        }
-
-    approved_nos = []
-    for step in step_results:
-        if (step.get('status') == 'proposal' and not step.get('approved')
-                and not step.get('rejected') and isinstance(step.get('step'), int)):
-            step['approved'] = True
-            approved_nos.append(step['step'])
-    task.step_results_json = json.dumps(step_results)
-    task.updated_at = datetime.utcnow()
-    db.session.commit()
-
-    payload, status = _advance_agent_task(task, sorted(set(approved_nos)))
-    payload['task_id'] = task.id
-    payload['approval_reply'] = 'approved'
-    if status != 200:
-        payload.setdefault('message',
-                           payload.get('error') or 'The approved change did not run.')
-    return payload
-
-
-@app.route('/api/agent/approve/<int:task_id>/<int:step_no>', methods=['POST'])
-@login_required
-def api_agent_approve_step(task_id, step_no):
-    """Record approval for ONE proposal step of a persisted agent task."""
-    task = AgentTask.query.get_or_404(task_id)
-    if task.user_id != session.get('user_id'):
-        return jsonify({'success': False, 'error': 'Forbidden'}), 403
-
-    step_results = _agent_task_step_results(task)
-    if not (0 <= step_no < len(step_results)):
-        return jsonify({'success': False, 'error': 'Invalid step number'}), 400
-
-    step = step_results[step_no]
-    if step.get('status') != 'proposal':
-        return jsonify({'success': False,
-                        'error': f"Step {step_no} is not a pending proposal "
-                                 f"(status={step.get('status')})"}), 409
-
-    # Safety rail: do not accept approvals for expired proposals.
-    ttl_hours = _agent_approval_ttl_hours()
-    if ttl_hours > 0:
-        age_hours = (datetime.utcnow() - (task.created_at or datetime.utcnow())
-                     ).total_seconds() / 3600.0
-        if age_hours > ttl_hours:
-            task.status = 'expired'
-            task.updated_at = datetime.utcnow()
-            db.session.commit()
-            return jsonify({
-                'success': False,
-                'error': (f'This proposal expired after {int(ttl_hours)}h. '
-                          'Ask Loli again and approve the fresh plan.'),
-            }), 410
-
-    # Store approval state; actual execution happens via /advance.
-    step['approved'] = True
-    task.step_results_json = json.dumps(step_results)
-    task.updated_at = datetime.utcnow()
-    db.session.commit()
-    return jsonify({'success': True, 'task': task.to_dict(),
-                    'message': f"Step {step_no} approved. Send /advance to execute."})
-
-
-def _agent_approval_ttl_hours():
-    """Proposal expiry window in hours (AI_APPROVAL_TTL_HOURS env, default 24).
-
-    A value <= 0 disables expiry entirely.
-    """
-    try:
-        return float(os.environ.get('AI_APPROVAL_TTL_HOURS', '24'))
-    except (TypeError, ValueError):
-        return 24.0
-
-
-@app.route('/api/agent/reject/<int:task_id>/<int:step_no>', methods=['POST'])
-@login_required
-def api_agent_reject_step(task_id, step_no):
-    """Record rejection for ONE proposal step of a persisted agent task."""
-    task = AgentTask.query.get_or_404(task_id)
-    if task.user_id != session.get('user_id'):
-        return jsonify({'success': False, 'error': 'Forbidden'}), 403
-
-    step_results = _agent_task_step_results(task)
-    if not (0 <= step_no < len(step_results)):
-        return jsonify({'success': False, 'error': 'Invalid step number'}), 400
-
-    step = step_results[step_no]
-    if step.get('status') != 'proposal':
-        return jsonify({'success': False,
-                        'error': f"Step {step_no} is not a pending proposal "
-                                 f"(status={step.get('status')})"}), 409
-
-    step['rejected'] = True
-    task.step_results_json = json.dumps(step_results)
-    approved_left = any(sr.get('approved') for sr in step_results
-                        if sr.get('status') == 'proposal')
-    undecided_left = any(not sr.get('approved') and not sr.get('rejected')
-                         for sr in step_results
-                         if sr.get('status') == 'proposal')
-    if not approved_left and not undecided_left:
-        task.status = 'rejected'
-    task.updated_at = datetime.utcnow()
-    db.session.commit()
-    return jsonify({'success': True, 'task': task.to_dict(),
-                    'message': f"Step {step_no} rejected."})
-
-
-@app.route('/api/agent/task/<int:task_id>/advance', methods=['POST'])
-@login_required
-def api_agent_advance_task(task_id):
-    """Deterministically execute the approved proposal steps of a stored plan.
-
-    The persisted plan's own arguments are re-run with fresh read data; only
-    the human-approved mutating steps execute. Shared with the chat shortcut,
-    where a plain "yes" approves and advances the same task.
-    """
-    task = AgentTask.query.get_or_404(task_id)
-    if task.user_id != session.get('user_id'):
-        # Fail closed: a missing user_id must never open access to a task.
-        return jsonify({'success': False, 'error': 'Forbidden'}), 403
-
-    step_results = _agent_task_step_results(task)
-    approved_nos = sorted({sr.get('step') for sr in step_results
-                           if sr.get('status') == 'proposal' and sr.get('approved')
-                           and isinstance(sr.get('step'), int)})
-    if not approved_nos:
-        return jsonify({'success': False, 'error': 'No approved steps to advance'}), 409
-
-    payload, status = _advance_agent_task(task, approved_nos)
-    return jsonify(payload), status
-
-
-@app.route('/api/agent/task/<int:task_id>', methods=['GET'])
-@login_required
-def api_agent_get_task(task_id):
-    """Return plan + step statuses + pending proposals for the widget."""
-    task = AgentTask.query.get_or_404(task_id)
-    if task.user_id != session.get('user_id'):
-        return jsonify({'success': False, 'error': 'Forbidden'}), 403
-    data = task.to_dict()
-    data['success'] = True
-    data['pending_proposals'] = [
-        {'step_no': i, **sr}
-        for i, sr in enumerate(data.get('step_results') or [])
-        if sr.get('status') == 'proposal' and not sr.get('approved')
-    ]
-    return jsonify(data)
-
-@app.route('/api/agent/autonomy', methods=['GET'])
-@login_required
-def api_agent_autonomy_get():
-    """Report whether agent autonomy (kill switch) is enabled."""
-    return jsonify({'success': True, 'enabled': get_agent_autonomy_enabled()})
-
-
-@app.route('/api/agent/autonomy', methods=['POST'])
-@manager_required
-def api_agent_autonomy_set():
-    """Enable/disable the agent autonomy kill switch (manager only)."""
-    payload = request.get_json(silent=True)
-    if not isinstance(payload, dict) or not isinstance(payload.get('enabled'), bool):
-        return jsonify({'success': False,
-                        'error': "Request body must be JSON with a boolean 'enabled' field"}), 400
-    enabled = payload['enabled']
-    try:
-        set_setting('agent_autonomy_enabled', 'true' if enabled else 'false')
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-    return jsonify({'success': True, 'enabled': enabled})
-
-
-@manager_required
-def agent_clear():
-    """Clear the conversation history"""
     try:
         orchestrator = get_ai_orchestrator()
         orchestrator.clear_conversation()
