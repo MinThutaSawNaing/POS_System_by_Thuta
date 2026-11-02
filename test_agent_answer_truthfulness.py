@@ -145,6 +145,81 @@ class DeterministicFailureTests(SummaryTestCase):
         self.assertIn("Both look healthy.", message)
 
 
+class NumericArgumentRecoveryTests(SummaryTestCase):
+    """The reported 4-step price plan must produce proposals, not failures.
+
+    The planner copied prices straight out of the search result, where they are
+    formatted strings, so every write was rejected as "must have JSON type
+    number" before any proposal could reach the user.
+    """
+
+    def _plan(self):
+        return {
+            "description": "add 50000 to the price of each iphone 18 pro",
+            "steps": [
+                {"step": 1, "tool": "search_products", "args": {"query": "iphone 18 pro"}},
+                {"step": 2, "tool": "update_product_price",
+                 "args": {"product_id": 101, "price": "5350000"}},
+                {"step": 3, "tool": "update_product_price",
+                 "args": {"product_id": 102, "price": "5,050,000 MMK"}},
+            ],
+        }
+
+    def _prepare(self, step):
+        registry = self.orchestrator._get_tool_registry()
+        parameters = {name: meta["params"] for name, meta in registry.items()}
+        return self.orchestrator._prepare_step_arguments(
+            self._plan(), step, {1: SEARCH_ROWS}, registry, parameters)
+
+    def test_text_amount_from_the_search_result_is_accepted(self):
+        args, source, error = self._prepare(self._plan()["steps"][1])
+        self.assertIsNone(error)
+        self.assertEqual(source, "plan")
+        self.assertEqual(args["price"], 5350000)
+
+    def test_formatted_amount_with_currency_is_accepted(self):
+        args, source, error = self._prepare(self._plan()["steps"][2])
+        self.assertIsNone(error)
+        self.assertEqual(args["price"], 5050000)
+
+    def test_arithmetic_text_is_reported_not_guessed(self):
+        step = {"step": 2, "tool": "update_product_price",
+                "args": {"product_id": 101, "price": "5300000 + 50000"}}
+        args, source, error = self._prepare(step)
+        self.assertIsNone(args)
+        self.assertIn("must have JSON type number", error)
+        self.assertIn("5300000 + 50000", error)
+
+    def test_reported_plan_now_ends_in_proposals(self):
+        plan = self._plan()
+        search = [{"tool_call_id": "plan-step-1", "function_name": "search_products",
+                   "result": SEARCH_ROWS, "error": None}]
+        with mock.patch.object(self.orchestrator, "_execute_tools_with_context",
+                               return_value=search), \
+             mock.patch.object(self.orchestrator, "_autonomy_allowed", return_value=False):
+            step_results, pending = self.orchestrator._execute_plan(plan)
+        self.assertEqual([sr["status"] for sr in step_results],
+                         ["ok", "proposal", "proposal"])
+        self.assertEqual([item["args"]["price"] for item in pending], [5350000, 5050000])
+
+    def test_failed_step_message_is_still_deterministic(self):
+        plan = self._plan()
+        plan["steps"][1]["args"]["price"] = "5300000 + 50000"
+        results = [
+            {"step": 1, "tool": "search_products", "status": "ok", "result": SEARCH_ROWS},
+            {"step": 2, "tool": "update_product_price", "status": "failed",
+             "error": "Invalid argument 'price' for 'update_product_price': "
+                      "must have JSON type number (received the text "
+                      "'5300000 + 50000')."},
+            {"step": 3, "tool": "update_product_price", "status": "skipped"},
+        ]
+        with self._no_model():
+            message = self.orchestrator._generate_plan_summary(
+                "add 50000 to each", plan, results, [])
+        self.assertIn("failed or were skipped", message)
+        self.assertIn("5300000 + 50000", message)
+
+
 class EmptySearchRetryTests(SummaryTestCase):
     EMPTY = {"function_name": "search_products", "error": None, "result": {
         "total_products": 0, "inventory": [], "query": "IOS devices",

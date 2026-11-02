@@ -12,7 +12,7 @@ from unittest import mock
 import agent_orchestrator
 from agent_orchestrator import AgentOrchestrator
 from ai_agent import AIAgent, ChatResponse, ToolCall
-from ai_tool_guard import guard_tool_call, schema_parameters
+from ai_tool_guard import coerce_number, guard_tool_call, schema_parameters
 
 
 SCHEMAS = [{
@@ -63,12 +63,15 @@ class GuardUnitTests(unittest.TestCase):
             'all_time': {'type': 'boolean'},
             'mode': {'type': 'string', 'enum': ['gross', 'net']},
         }, 'required': ['days']}}
-        for args in ({}, {'days': True}, {'days': '30'}, {'days': 0},
-                     {'days': 366}, {'days': 30, 'all_time': 'true'},
-                     {'days': 30, 'mode': 'invented'}):
+        for args in ({}, {'days': True}, {'days': 0}, {'days': 366},
+                     {'days': 30, 'all_time': 'true'}, {'days': 30, 'mode': 'invented'},
+                     {'days': 'thirty'}, {'days': 30.5}):
             with self.subTest(args=args):
                 self.assertFalse(guard_tool_call('report', args, ['report'], params).ok)
-        self.assertTrue(guard_tool_call('report', {'days': 30, 'all_time': True}, ['report'], params).ok)
+        for args in ({'days': 30, 'all_time': True}, {'days': '30'},
+                     {'days': '30 '}):
+            with self.subTest(args=args):
+                self.assertTrue(guard_tool_call('report', args, ['report'], params).ok)
 
     def test_arguments_must_be_a_json_object(self):
         self.assertFalse(guard_tool_call(
@@ -82,6 +85,77 @@ class GuardUnitTests(unittest.TestCase):
                                  parse_error="Expecting value: line 1 column 1")
         self.assertFalse(result.ok)
         self.assertIn("not valid JSON", result.error)
+
+
+class NumericArgumentTests(unittest.TestCase):
+    """A price the planner copied from a tool result must still be usable.
+
+    Reported failure: a plan to "add 50000 to all of their selling prices" wrote
+    ``"price": "5350000"`` (the tool result showed prices as strings), the guard
+    rejected it as "must have JSON type number", and all four writes died.
+    """
+
+    PARAMS = {'update_product_price': {
+        'properties': {'product_id': {'type': 'integer'},
+                       'price': {'type': 'number'},
+                       'reason': {'type': 'string'}},
+        'required': ['product_id', 'price']}}
+
+    def test_plain_numeric_text_becomes_a_number(self):
+        result = guard_tool_call('update_product_price',
+                                 {'product_id': 1, 'price': '5350000'},
+                                 ['update_product_price'], self.PARAMS)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.arguments['price'], 5350000)
+        self.assertIsInstance(result.arguments['price'], int)
+
+    def test_formatted_amounts_are_understood(self):
+        for text, expected in (('5,350,000', 5350000),
+                               ('5,350,000 MMK', 5350000),
+                               ('5350000.50', 5350000.5),
+                               (' 5300000 ', 5300000)):
+            with self.subTest(text=text):
+                result = guard_tool_call('update_product_price',
+                                         {'product_id': 1, 'price': text},
+                                         ['update_product_price'], self.PARAMS)
+                self.assertTrue(result.ok, result.error)
+                self.assertEqual(result.arguments['price'], expected)
+
+    def test_arithmetic_is_not_guessed(self):
+        result = guard_tool_call('update_product_price',
+                                 {'product_id': 1, 'price': '5300000 + 50000'},
+                                 ['update_product_price'], self.PARAMS)
+        self.assertFalse(result.ok)
+        self.assertIn('must have JSON type number', result.error)
+        self.assertIn('5300000 + 50000', result.error)
+
+    def test_non_numeric_text_is_still_rejected(self):
+        result = guard_tool_call('update_product_price',
+                                 {'product_id': 1, 'price': 'free'},
+                                 ['update_product_price'], self.PARAMS)
+        self.assertFalse(result.ok)
+        self.assertIn("received the text 'free'", result.error)
+
+    def test_string_parameters_are_not_touched(self):
+        result = guard_tool_call('update_product_price',
+                                 {'product_id': 1, 'price': 100, 'reason': '2600'},
+                                 ['update_product_price'], self.PARAMS)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.arguments['reason'], '2600')
+
+    def test_bounds_still_apply_after_coercion(self):
+        params = {'report': {'properties': {'days': {'type': 'integer',
+                                                     'minimum': 1, 'maximum': 365}},
+                             'required': ['days']}}
+        self.assertFalse(guard_tool_call('report', {'days': '366'},
+                                         ['report'], params).ok)
+        self.assertTrue(guard_tool_call('report', {'days': '365'},
+                                        ['report'], params).ok)
+
+    def test_coerce_number_ignores_non_strings(self):
+        for value in (True, 12, 1.5, None, ['1']):
+            with self.subTest(value=value):
+                self.assertIsNone(coerce_number(value))
 
 
 class OrchestratorHallucinationTests(unittest.TestCase):

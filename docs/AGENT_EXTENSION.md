@@ -260,6 +260,15 @@ raise.
   words are not in the catalogue falls back to token matching across name,
   barcode and category, and a zero-match payload carries `query`,
   `branch_total`, `categories` and `suggestions`.
+- **Numeric arguments are numbers.** Tool results show prices as formatted text
+  (`"5,350,000.00"`), so a planner copying one back into `price` is common.
+  `ai_tool_guard.coerce_number` accepts a clean numeric string — `"5350000"`,
+  `"5,350,000"`, `"5,350,000 MMK"` — for any parameter the schema declares as
+  `number`/`integer`, and rejects text that still contains arithmetic
+  (`"5300000 + 50000"`) with a message quoting what arrived. A rejected
+  argument is repairable: `_prepare_step_arguments` gives the model the same one
+  bounded repair it gives a broken `$from` reference, so an amount written as
+  text no longer kills every write in the plan.
 - **A zero-match search is a retry, not an answer.** The orchestrator spends one
   bounded retry (`_retry_empty_product_search`) letting the model search again
   with a name that actually exists; when it cannot, the formatter names the real

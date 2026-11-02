@@ -17,10 +17,59 @@ from __future__ import annotations
 import difflib
 import json
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 # Keep rejection text small enough to travel inside a tool-result message.
 MAX_LISTED_TOOLS = 25
+
+# Currency words and symbols a model copies from a tool result along with an
+# amount ("5,350,000 MMK"). They are stripped before a numeric string is
+# accepted for a number parameter.
+_CURRENCY_NOISE = ('mmk', 'usd', 'thb', 'kyat', '$', '\u20ac', '\u00a3', '\u00a5')
+
+
+def coerce_number(value: Any) -> Optional[Any]:
+    """Return an int/float for a clean numeric string, else None.
+
+    Models copy amounts straight out of tool results, so ``"5350000"``,
+    ``"5,350,000"`` and ``"5,350,000 MMK"`` all mean the same number and are
+    accepted for a parameter the schema declares as numeric. Only a clean
+    numeric literal is converted: text containing arithmetic
+    (``"5300000 + 50000"``) is left alone so the caller's bounded repair can fix
+    it instead of this guard guessing a value.
+    """
+    if isinstance(value, bool) or not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    if not text:
+        return None
+    for noise in _CURRENCY_NOISE:
+        text = text.replace(noise, '')
+    text = text.replace(',', '').replace('_', '').replace(' ', '')
+    if not text:
+        return None
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+    if not number.is_finite():
+        return None
+    return int(number) if number == number.to_integral_value() else float(number)
+
+
+def _describe_received(value: Any) -> str:
+    """Short human description of a rejected argument value."""
+    if isinstance(value, str):
+        text = value.strip()
+        if len(text) > 40:
+            text = text[:37] + "..."
+        return f" (received the text '{text}')"
+    if value is None:
+        return " (received null)"
+    if isinstance(value, bool):
+        return f" (received {'true' if value else 'false'})"
+    return f" (received {type(value).__name__})"
 
 
 @dataclass(frozen=True)
@@ -151,6 +200,13 @@ def guard_tool_call(
                 spec = properties[key]
                 kind = spec.get('type')
                 types = kind if isinstance(kind, list) else [kind]
+                # A numeric parameter fed a numeric string ("5350000",
+                # "5,350,000 MMK") is the same value the planner read from a
+                # tool result, so coerce it instead of failing the step.
+                if isinstance(value, str) and ('number' in types or 'integer' in types):
+                    coerced = coerce_number(value)
+                    if coerced is not None and ('number' in types or isinstance(coerced, int)):
+                        cleaned[key] = value = coerced
                 matches = {
                     'integer': type(value) is int,
                     'number': type(value) in (int, float),
@@ -162,7 +218,7 @@ def guard_tool_call(
                 }
                 error = None
                 if kind and not any(matches.get(t, True) for t in types):
-                    error = f"must have JSON type {kind}"
+                    error = f"must have JSON type {kind}{_describe_received(value)}"
                 elif 'enum' in spec and value not in spec['enum']:
                     error = f"must be one of {spec['enum']}"
                 elif type(value) in (int, float):

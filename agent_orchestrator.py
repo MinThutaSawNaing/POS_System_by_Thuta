@@ -224,6 +224,7 @@ You own live database tools. Any question about stock, products, prices, sales, 
 - If a tool returns empty results or fails, say so plainly and try at most one plausible alternative tool. Never substitute invented numbers for missing data.
 - For "how many" / counting questions, answer with the real count from the tool payload (`total_products` for a product search, or `get_inventory_status` for the whole catalogue) plus the names behind that number. A brand or platform word the catalogue may not store literally (for example "iOS devices") must be turned into a searchable keyword such as the product family name ("iphone"); when a search matches nothing, use the categories and product names the tool returned instead of repeating the same words.
 - Quote money exactly as the tool returned it: never restate a price in another currency, never re-format or re-round an amount, and never invent a currency symbol. The currency label in the tool data is the store's currency.
+- Numeric tool arguments must be plain JSON numbers. Tool results show prices as formatted text, so compute any new amount yourself and pass the number; never pass text, a currency string, or an expression such as "5300000 + 50000".
 - Greetings, identity, capability, and small-talk questions need no tool call.
 
 ## Safe operations
@@ -1388,6 +1389,11 @@ class AgentOrchestrator:
                     'and list indexes, e.g. {"$from": "step1.inventory.0.product_id"}. '
                     'Copy key names exactly from the "returns:" list on that tool; '
                     'a key the tool does not return makes the step fail.\n'
+                    '- Numeric arguments (price, quantity, days, ids) must be plain '
+                    'JSON numbers, never text and never an expression: the earlier '
+                    'results show prices as formatted text, so compute the new value '
+                    'yourself (for example 5300000 + 50000 -> 5350000) and write the '
+                    'number. "$from" can copy a value but cannot do arithmetic.\n'
                     "- Write tools are allowed but execute only after explicit user "
                     "approval, so read steps may only gather the arguments a write step needs.\n"
                     "- A change request (create, update, delete, email, schedule) MUST "
@@ -1842,8 +1848,11 @@ class AgentOrchestrator:
         except FromReferenceError as exc:
             first_error = exc
         except Exception as exc:
-            # A schema problem is not repairable here: report it as before.
-            return None, None, str(exc)
+            # A guard rejection (undocumented argument, wrong JSON type, amount
+            # written as text) is the same class of problem as a broken
+            # reference: the model wrote an argument this tool cannot accept.
+            # Give it the same single bounded chance to restate that step.
+            first_error = exc
 
         persisted = (fallback_args or {}).get(step["step"])
         if persisted:
@@ -1881,10 +1890,13 @@ class AgentOrchestrator:
         evidence = {f"step{no}": self._compact_result(step_outputs[no], max_chars=1500)
                     for no in sorted(step_outputs)}
         prompt = (
-            "One step of a saved plan could not run because an argument reference "
-            "did not match the real data. Rewrite ONLY that step's arguments so "
-            "every {\"$from\": ...} path uses a key that exists in the results "
-            "below. Keep every value the user asked for; do not add new steps.\n\n"
+            "One step of a saved plan could not run because its arguments did not "
+            "match the tool. Rewrite ONLY that step's arguments so every value "
+            "satisfies the tool's documented parameters and every {\"$from\": ...} "
+            "path uses a key that exists in the results below. Do any arithmetic "
+            "yourself and answer with a plain number (no currency text, no "
+            "expression). Keep every value the user asked for; do not add new "
+            "steps.\n\n"
             f"Plan: {plan.get('description') or ''}\n"
             f"Failing step: {json.dumps({'step': step.get('step'), 'tool': step.get('tool'), 'args': step.get('args') or {}}, default=str)}\n"
             f"Error: {error}\n\n"
