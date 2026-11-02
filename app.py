@@ -1967,6 +1967,13 @@ class WarehouseTransfer(db.Model):
     product = db.relationship('Product', backref='transfers')
     performer = db.relationship('User', backref='warehouse_transfers')
 
+class DeletedSaleRequest(db.Model):
+    """Independent offline-retry tombstone; never replay a deleted sale into stock."""
+    transaction_id = db.Column(db.String(128), primary_key=True)
+    branch_id = db.Column(db.Integer, nullable=False)
+    deleted_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
 class Sale(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     transaction_id = db.Column(db.String(128), unique=True)
@@ -5866,6 +5873,18 @@ def generate_barcode_labels():
         app.logger.error(f"Error generating barcode labels: {str(e)}")
         return jsonify({'success': False, 'message': f'Error generating labels: {str(e)}'}), 500
 
+@app.route('/api/sales/<string:transaction_id>', methods=['DELETE'])
+@manager_or_boss_required
+def api_delete_sale_history(transaction_id):
+    from record_management import delete_sale
+    data = request.get_json(silent=True)
+    result, status = delete_sale(db, globals(), transaction_id,
+        branch_id=get_current_branch_id(),
+        confirm=data.get('confirm', False) if isinstance(data, dict) else False,
+        actor_id=session.get('user_id'))
+    return jsonify(result), status
+
+
 @app.route('/api/sales', methods=['POST'])
 def api_create_sale():
     if 'user_id' not in session:
@@ -5938,6 +5957,16 @@ def _sale_replay_response(existing):
 def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
     """Run a single sale transaction. Raises OperationalError on DB lock so the caller can retry."""
     try:
+        if not quote_only and db.engine.dialect.name == 'sqlite':
+            # Serialize checkout with history deletion BEFORE reading either
+            # idempotency guard. SELECT alone need not start a real transaction
+            # in sqlite3 legacy mode, allowing deletion between guard reads and
+            # INSERT otherwise. Both callers enter with read-only sessions:
+            # ordinary checkout and payment completion (intent already durable).
+            db.session.rollback()
+            db.session.execute(text('BEGIN IMMEDIATE'))
+            # Validation/replay early returns are released by request teardown;
+            # payment completion also explicitly rolls back after this call.
         branch_id = get_current_branch_id()
         customer_id = data.get('customer_id')
         payment_method = str(data.get('payment_method') or 'cash').strip().lower()
@@ -5953,6 +5982,8 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
         # transaction_id (e.g. a retried sync after a lost response), return the
         # original sale instead of creating a duplicate.
         client_txn_id = str(data.get('transaction_id') or '').strip()
+        if client_txn_id and db.session.get(DeletedSaleRequest, client_txn_id):
+            return jsonify(success=False, message='This transaction was already processed and its history deleted. It cannot be synced again.'), 409
         if client_txn_id and not quote_only and verified_payment_id is None:
             reserved_payment = PaymentIntent.query.filter_by(transaction_id=client_txn_id).first()
             if reserved_payment:
@@ -8296,7 +8327,7 @@ def serialize_purchase_order(po, include_items=False):
 
 
 @app.route('/api/purchase_orders', methods=['GET', 'POST'])
-@manager_required
+@manager_or_boss_required
 def api_purchase_orders():
     if request.method == 'GET':
         # Get filter parameters
@@ -8390,7 +8421,7 @@ def api_purchase_orders():
 
 
 @app.route('/api/purchase_orders/products', methods=['GET'])
-@manager_required
+@manager_or_boss_required
 def api_purchase_order_products():
     """Catalog choices from every branch for the shared purchase form."""
     query = Product.query
@@ -8413,7 +8444,7 @@ def api_purchase_order_products():
     } for product in products])
 
 @app.route('/api/purchase_orders/export', methods=['GET'])
-@manager_required
+@manager_or_boss_required
 def export_purchase_orders():
     """Download the purchase order register as a professional PDF or Excel report.
 
@@ -8481,7 +8512,7 @@ def export_purchase_orders():
 
 
 @app.route('/api/purchase_orders/summary', methods=['GET'])
-@manager_required
+@manager_or_boss_required
 def api_purchase_orders_summary():
     """Get purchase order summary statistics"""
     now = datetime.utcnow()
@@ -8500,9 +8531,20 @@ def api_purchase_orders_summary():
     result['monthly_amount'] = money_float(result['monthly_amount'])
     return jsonify(result)
 
-@app.route('/api/purchase_orders/<int:po_id>', methods=['GET', 'PUT'])
-@manager_required
+@app.route('/api/purchase_orders/<int:po_id>', methods=['GET', 'PUT', 'DELETE'])
+@manager_or_boss_required
 def api_single_purchase_order(po_id):
+    if request.method in ('PUT', 'DELETE'):
+        from record_management import edit_purchase_order, delete_purchase_order
+        data = request.get_json(silent=True)
+        if request.method == 'PUT':
+            result, status = edit_purchase_order(db, globals(), po_id, data,
+                                                actor_id=session.get('user_id'))
+        else:
+            result, status = delete_purchase_order(db, globals(), po_id,
+                confirm=data.get('confirm', False) if isinstance(data, dict) else False,
+                actor_id=session.get('user_id'))
+        return jsonify(result), status
     po = PurchaseOrder.query.options(joinedload(PurchaseOrder.supplier), joinedload(PurchaseOrder.creator),
         joinedload(PurchaseOrder.approver)).filter_by(id=po_id).first()
     if not po:
@@ -8551,33 +8593,10 @@ def api_single_purchase_order(po_id):
             } for item in items]
         })
     
-    elif request.method == 'PUT':
-        # Update PO (only draft status)
-        if po.status != 'draft':
-            return jsonify({'success': False, 'message': 'Only draft purchase orders can be edited'}), 400
-        
-        data = request.get_json() or {}
-        
-        if 'notes' in data:
-            po.notes = (data['notes'] or '').strip() or None
-        
-        if 'expected_delivery_date' in data:
-            if data['expected_delivery_date']:
-                try:
-                    po.expected_delivery_date = datetime.fromisoformat(data['expected_delivery_date'].replace('Z', '+00:00'))
-                except ValueError:
-                    try:
-                        po.expected_delivery_date = datetime.strptime(data['expected_delivery_date'], '%Y-%m-%d')
-                    except ValueError:
-                        pass
-            else:
-                po.expected_delivery_date = None
-        
-        db.session.commit()
-        return jsonify({'success': True, 'message': 'Purchase order updated'})
+
 
 @app.route('/api/purchase_orders/<int:po_id>/approve', methods=['POST'])
-@manager_required
+@manager_or_boss_required
 def api_approve_purchase_order(po_id):
     """Approve a purchase order"""
     po = db.session.get(PurchaseOrder, po_id)
@@ -8595,7 +8614,7 @@ def api_approve_purchase_order(po_id):
     return jsonify({'success': True, 'message': 'Purchase order approved'})
 
 @app.route('/api/purchase_orders/<int:po_id>/submit', methods=['POST'])
-@manager_required
+@manager_or_boss_required
 def api_submit_purchase_order(po_id):
     """Submit a draft purchase order for approval"""
     po = db.session.get(PurchaseOrder, po_id)
@@ -8611,7 +8630,7 @@ def api_submit_purchase_order(po_id):
     return jsonify({'success': True, 'message': 'Purchase order submitted for approval'})
 
 @app.route('/api/purchase_orders/<int:po_id>/cancel', methods=['POST'])
-@manager_required
+@manager_or_boss_required
 def api_cancel_purchase_order(po_id):
     """Cancel a purchase order"""
     po = db.session.get(PurchaseOrder, po_id)
@@ -8632,7 +8651,7 @@ def api_cancel_purchase_order(po_id):
     return jsonify({'success': True, 'message': 'Purchase order cancelled'})
 
 @app.route('/api/purchase_orders/<int:po_id>/receive', methods=['POST'])
-@manager_required
+@manager_or_boss_required
 def api_receive_purchase_order(po_id):
     from purchase_receiving import receive_purchase_order
     data = request.get_json(silent=True)
@@ -8650,7 +8669,7 @@ def api_receive_purchase_order(po_id):
         return jsonify(success=False, message='Failed to process receiving'), 500
 
 @app.route('/api/purchase_orders/<int:po_id>/print', methods=['GET'])
-@manager_required
+@manager_or_boss_required
 def api_print_purchase_order(po_id):
     """Generate PDF for purchase order (internal use invoice)"""
     po = db.session.get(PurchaseOrder, po_id)

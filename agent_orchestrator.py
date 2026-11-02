@@ -87,7 +87,7 @@ TOOL_CATEGORIES = {
         "keywords": ["supplier", "vendor", "supply", "contact", "price agreement", "distributor", "who supplies"]
     },
     "purchase_order": {
-        "tools": ["get_purchase_orders", "get_purchase_order_products", "create_purchase_order", "approve_purchase_order", "cancel_purchase_order", "receive_purchase_order"],
+        "tools": ["get_purchase_orders", "get_purchase_order_products", "create_purchase_order", "update_purchase_order", "delete_purchase_order", "approve_purchase_order", "cancel_purchase_order", "receive_purchase_order"],
         "keywords": ["purchase order", "po", "order", "approve", "cancel", "create order", "buy", "procurement", "receive"]
     },
     "warehouse": {
@@ -95,7 +95,7 @@ TOOL_CATEGORIES = {
         "keywords": ["warehouse", "transfer", "unstocked", "receive", "location", "batch"]
     },
     "sales": {
-        "tools": ["get_sales_trends", "get_sales_summary"],
+        "tools": ["get_sales_trends", "get_sales_summary", "delete_sale_history"],
         "keywords": ["sales", "trend", "best seller", "top selling", "revenue", "sold", "performance", "daily sales", "monthly sales"]
     },
     "branch": {
@@ -224,7 +224,11 @@ You own live database tools. Any question about stock, products, prices, sales, 
 
 ## Operations
 Your registered tools read and change live data. Low-risk and high-risk changes alike (new customers or suppliers, categories, deletes, price or money changes, stock adjustments, approvals, cancellations, transfers) execute immediately when you plan them — there is no approval round-trip, so plan a change only when the user's request is clear. If a required detail is missing (which record, which amount), ask one short question instead of guessing. Never claim you created, approved, cancelled, transferred, or modified any business record unless a step result confirms it actually happened.
-Deleting a product is a manager (or owner) action. When the product is still used in other tabs (warehouse stock or transfers, promotions, purchase order lines, supplier price agreements), call delete_product once to surface exactly which records would go, then ask the user whether to delete the product everywhere and only re-call with cascade=true after they agree. When it also has sales history, ask "The product you selected have sale history. Are you sure you want to delete it?" and add confirm=true. Sales and return/exchange records are always kept, never deleted — they are only unlinked from the removed product.
+Deleting a product is a manager (or owner) action. When the product is still used in other tabs (warehouse stock or transfers, promotions, purchase order lines, supplier price agreements), call delete_product once to surface exactly which records would go, then ask the user whether to delete the product everywhere and only re-call with cascade=true after they agree. When it also has sales history, ask "The product you selected have sale history. Are you sure you want to delete it?" and add confirm=true. Product deletion preserves sales and return/exchange records — they are only unlinked from the removed product.
+
+## Purchase order edits and history deletion
+Use `update_purchase_order` to edit PO notes, expected delivery date, supplier or a complete replacement item list. Read existing PO lines first; never drop unmentioned lines accidentally. Received POs allow notes/date edits only: do not rewrite received quantities or bypass receiving safeguards.
+Admins (the manager role) and bosses may explicitly delete a PO using `delete_purchase_order` or a sale history record using `delete_sale_history`. These are HISTORY-ONLY deletions, not cancellations, refunds, stock restoration or reversals. They affect history and reports. First call with confirm=false, then explain those consequences and ask for confirmation. Set confirm=true only when a later user reply explicitly agrees to that exact deletion; never combine the preview and confirmed deletion into one plan without that reply. Never work around linked financial record restrictions by deleting debts, returns or payment records. Cashiers cannot use these operations or the AI assistant.
 
 ## Changing records
 You can change records, not only read them. Rename or edit a product with `update_product` (name, barcode, category, selling price, tax and reorder settings; stock stays untouched), change price alone with `update_product_price`, adjust stock with `adjust_product_stock`, and delete with `delete_product`. Never tell the user you lack a tool for a change that exists in your list: use it. Only if no listed tool can express the operation, say precisely which operation is missing.

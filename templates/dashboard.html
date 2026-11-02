@@ -6690,6 +6690,31 @@
       </div>
     </div>
 
+    <!-- Record management: metadata remains editable after receiving. -->
+    <div class="modal fade" id="editPurchaseOrderModal" tabindex="-1" aria-labelledby="edit-po-title" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-scrollable"><div class="modal-content">
+        <form id="edit-po-form" onsubmit="event.preventDefault(); savePurchaseOrderEdit()">
+          <div class="modal-header"><h5 class="modal-title" id="edit-po-title">Edit Purchase Order</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+          <div class="modal-body">
+            <p id="edit-po-number" class="fw-semibold"></p>
+            <div id="edit-po-receipt-notice" class="alert alert-info">After receipt, only notes and expected delivery can be changed. Stock and payments are not changed by this editor.</div>
+            <div class="mb-3"><label for="edit-po-supplier" class="form-label">Supplier</label><select id="edit-po-supplier" class="form-select" required></select></div>
+            <div class="mb-3"><label for="edit-po-expected" class="form-label">Expected delivery date</label><input id="edit-po-expected" class="form-control" type="date"></div>
+            <div class="mb-3"><label for="edit-po-notes" class="form-label">Notes</label><textarea id="edit-po-notes" class="form-control" rows="3"></textarea></div>
+            <h6>Order lines</h6><div id="edit-po-items"></div>
+            <button id="edit-po-add-line" type="button" class="btn btn-outline-primary btn-sm" onclick="addPurchaseOrderEditLine()"><i class="bi bi-plus-lg me-1"></i>Add line</button>
+          </div>
+          <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button><button id="edit-po-save" type="submit" class="btn btn-primary">Save changes</button></div>
+        </form>
+      </div></div>
+    </div>
+    <div class="modal fade" id="deleteRecordModal" tabindex="-1" aria-labelledby="delete-record-title" aria-hidden="true">
+      <div class="modal-dialog"><div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title" id="delete-record-title">Permanently delete history?</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+        <div class="modal-body"><p id="delete-record-label" class="fw-semibold text-break"></p><div class="alert alert-danger">This permanently removes the record from history and reports. It does not reverse stock movements or payments. This cannot be undone.</div><p class="text-muted">Sales linked to returns, debts, deliveries or other records may not be deletable. Use the appropriate reversal workflow if you need to reverse a transaction.</p></div>
+        <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Keep record</button><button id="delete-record-confirm" type="button" class="btn btn-danger" onclick="confirmRecordDeletion()">Permanently delete history</button></div>
+      </div></div>
+    </div>
     <!-- Add Purchase Order Modal -->
     <div
       class="modal fade"
@@ -16278,34 +16303,33 @@
                 : '';
               const row = document.createElement("tr");
               row.innerHTML = `
-                                  <td>${sale.transaction_id}${deliveryBadge}</td>
+                                  <td>${escapeHtml(sale.transaction_id)}${deliveryBadge}</td>
                                   <td>${new Date(
                                     sale.date
                                   ).toLocaleString()}</td>
                                   <td>$${sale.total.toFixed(2)}</td>
                                   <td>$${(sale.refund_amount || 0).toFixed(2)}</td>
                                   <td>${escapeHtml(paymentLabel)}</td>
-                                  <td>${sale.username || "Unknown"}</td>
+                                  <td>${escapeHtml(sale.username || "Unknown")}</td>
                                   <td>
                                       <div class="btn-group btn-group-sm" role="group">
-                                        <button class="btn btn-info" onclick="viewSaleDetails('${
-                                          sale.transaction_id
-                                        }')">
+                                        <button class="btn btn-info" data-sale-action="view" aria-label="View sale">
                                             <i class="bi bi-info-circle"></i>
                                         </button>
-                                        <button class="btn btn-warning" onclick="openReturnExchangeModal('${
-                                          sale.transaction_id
-                                        }')">
+                                        <button class="btn btn-warning" data-sale-action="return" aria-label="Return or exchange sale">
                                             <i class="bi bi-arrow-left-right"></i>
                                         </button>
-                                        <button class="btn btn-secondary" title="Returns &amp; Exchanges" onclick="showReturnsForTransaction('${
-                                          sale.transaction_id
-                                        }')">
+                                        <button class="btn btn-secondary" title="Returns &amp; Exchanges" data-sale-action="history" aria-label="Returns and exchanges">
                                             <i class="bi bi-list-check"></i>
                                         </button>
+                                        ${hasManagerOrBossAccess() ? '<button class="btn btn-outline-danger" data-sale-action="delete" title="Delete sale history" aria-label="Delete sale history"><i class="bi bi-trash"></i></button>' : ''}
                                       </div>
                                   </td>
                               `;
+              row.querySelector('[data-sale-action="view"]').addEventListener("click", () => viewSaleDetails(sale.transaction_id));
+              row.querySelector('[data-sale-action="return"]').addEventListener("click", () => openReturnExchangeModal(sale.transaction_id));
+              row.querySelector('[data-sale-action="history"]').addEventListener("click", () => showReturnsForTransaction(sale.transaction_id));
+              row.querySelector('[data-sale-action="delete"]')?.addEventListener("click", () => showRecordDeletion("sales", sale.transaction_id));
               salesTable.appendChild(row);
             });
             renderPagination(
@@ -19629,6 +19653,140 @@
         makeRemoteInventorySelect(select, "/api/suppliers?view=lookup", "Supplier filter");
       }
 
+      let editingPurchaseOrder = null;
+      let recordEditLoading = 0;
+      let recordManagementSaving = false;
+      let deletingRecord = null;
+
+      function refreshManagedRecords(kind) {
+        invalidateCacheGroups(["purchases", "sales", "reports", "dashboard", "suppliers", "warehouse", "returns", "deliveries", "debts", "customers"]);
+        invalidateSalesReport();
+        if (kind === "purchase_orders" || kind === "all") loadPurchaseOrders();
+        if (kind === "sales" || kind === "all") loadSales();
+        loadDashboardStats();
+      }
+
+      window.addEventListener("ai-records-changed", (event) => {
+        if (!hasManagerOrBossAccess()) return;
+        const tools = event.detail?.tools || [];
+        const purchase = tools.some(tool => ["update_purchase_order", "delete_purchase_order"].includes(tool));
+        const sale = tools.includes("delete_sale_history");
+        if (purchase || sale) refreshManagedRecords(purchase && sale ? "all" : purchase ? "purchase_orders" : "sales");
+      });
+
+      async function editPurchaseOrder(poId) {
+        if (!hasManagerOrBossAccess() || recordManagementSaving) return;
+        const sequence = ++recordEditLoading;
+        const identity = inventoryIdentity();
+        try {
+          const response = await fetch(`/api/purchase_orders/${encodeURIComponent(poId)}`, {cache: "no-store"});
+          const po = await response.json();
+          if (!response.ok || po.success === false) throw new Error(po.message || "Unable to load purchase order");
+          if (sequence !== recordEditLoading || identity !== inventoryIdentity() || !hasManagerOrBossAccess()) return;
+          editingPurchaseOrder = {id: po.id, identity, locked: ["received", "partially_received"].includes(po.status) || po.items.some(item => Number(item.received_qty) > 0)};
+          editingPurchaseOrder.linesLocked = editingPurchaseOrder.locked || po.status === "cancelled";
+          document.getElementById("edit-po-number").textContent = po.po_number;
+          document.getElementById("edit-po-notes").value = po.notes || "";
+          document.getElementById("edit-po-expected").value = (po.expected_delivery_date || "").slice(0, 10);
+          const supplier = document.getElementById("edit-po-supplier");
+          supplier.replaceChildren(new Option("Select supplier", ""), new Option(po.supplier_name || "Current supplier", String(po.supplier_id), true, true));
+          supplier.disabled = editingPurchaseOrder.locked;
+          if (!editingPurchaseOrder.locked) makeRemoteInventorySelect(supplier, "/api/suppliers?view=lookup", "Supplier");
+          const supplierSearch = supplier.parentNode.querySelector('input[type="search"]');
+          if (supplierSearch) {
+            supplierSearch.disabled = editingPurchaseOrder.locked;
+            supplierSearch.value = "";
+          }
+          if (!editingPurchaseOrder.locked) supplier.remoteLookup?.load(po.supplier_id);
+          document.getElementById("edit-po-items").replaceChildren();
+          po.items.forEach(item => addPurchaseOrderEditLine(item));
+          document.getElementById("edit-po-add-line").disabled = editingPurchaseOrder.linesLocked;
+          bootstrap.Modal.getOrCreateInstance(document.getElementById("editPurchaseOrderModal")).show();
+        } catch (error) { showToast(error.message, "error"); }
+      }
+
+      function addPurchaseOrderEditLine(item = {}) {
+        if (!hasManagerOrBossAccess() || !editingPurchaseOrder) return;
+        const row = document.createElement("div");
+        row.className = "row g-2 mb-3 edit-po-line";
+        row.innerHTML = `<div class="col-md-5"><label class="form-label">Product<select class="form-select edit-po-product" required></select></label></div>
+          <div class="col"><label class="form-label">Quantity<input class="form-control edit-po-quantity" type="number" min="1" step="1" required></label></div>
+          <div class="col"><label class="form-label">Unit cost<input class="form-control edit-po-cost" type="number" min="0" step="0.01" required></label></div>
+          <div class="col-auto align-self-end"><button type="button" class="btn btn-outline-danger mb-2" aria-label="Remove order line"><i class="bi bi-trash"></i></button></div>`;
+        const product = row.querySelector("select");
+        product.add(new Option("Select product", ""));
+        if (item.product_id != null) product.add(new Option(item.product_name || "Current product", String(item.product_id), true, true));
+        row.querySelector(".edit-po-quantity").value = item.ordered_qty ?? item.quantity ?? 1;
+        row.querySelector(".edit-po-cost").value = item.unit_cost ?? 0;
+        row.querySelector("button").addEventListener("click", () => { if (!recordManagementSaving && !editingPurchaseOrder.linesLocked) row.remove(); });
+        document.getElementById("edit-po-items").appendChild(row);
+        if (!editingPurchaseOrder.linesLocked) makeRemoteInventorySelect(product, "/api/purchase_orders/products", "Purchase product", true);
+        row.querySelectorAll("input, select, button").forEach(field => field.disabled = editingPurchaseOrder.linesLocked);
+      }
+
+      async function savePurchaseOrderEdit() {
+        if (!hasManagerOrBossAccess() || !editingPurchaseOrder || recordManagementSaving) return;
+        if (editingPurchaseOrder.identity !== inventoryIdentity()) { showToast("Branch changed. Reopen the purchase order before editing.", "warning"); return; }
+        const form = document.getElementById("edit-po-form");
+        if (!form.reportValidity()) return;
+        const payload = {notes: document.getElementById("edit-po-notes").value.trim(), expected_delivery_date: document.getElementById("edit-po-expected").value || null};
+        if (!editingPurchaseOrder.locked) {
+          payload.supplier_id = Number(document.getElementById("edit-po-supplier").value);
+          if (!payload.supplier_id) { showToast("Select a supplier.", "warning"); return; }
+        }
+        if (!editingPurchaseOrder.linesLocked && !editingPurchaseOrder.locked) {
+          payload.items = Array.from(document.querySelectorAll("#edit-po-items .edit-po-line"), row => ({
+            product_id: Number(row.querySelector(".edit-po-product").value),
+            quantity: Number(row.querySelector(".edit-po-quantity").value),
+            unit_cost: Number(row.querySelector(".edit-po-cost").value)
+          }));
+          if (!payload.supplier_id || !payload.items.length || payload.items.some(item => !item.product_id || !Number.isInteger(item.quantity) || item.quantity <= 0 || !Number.isFinite(item.unit_cost) || item.unit_cost < 0)) {
+            showToast("Select a supplier and at least one valid product line with a positive whole quantity and non-negative cost.", "warning"); return;
+          }
+        }
+        recordManagementSaving = true;
+        const button = document.getElementById("edit-po-save");
+        button.disabled = true;
+        button.textContent = "Saving...";
+        try {
+          const response = await fetch(`/api/purchase_orders/${encodeURIComponent(editingPurchaseOrder.id)}`, {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+          const data = await response.json();
+          if (!response.ok || data.success === false) throw new Error(data.message || "Unable to save purchase order");
+          if (typeof markBranchFormSaved === "function") markBranchFormSaved("editPurchaseOrderModal");
+          bootstrap.Modal.getInstance(document.getElementById("editPurchaseOrderModal"))?.hide();
+          showToast("Purchase order updated", "success");
+          refreshManagedRecords("purchase_orders");
+        } catch (error) { showToast(error.message, "error"); }
+        finally { recordManagementSaving = false; button.disabled = false; button.textContent = "Save changes"; }
+      }
+
+      function showRecordDeletion(kind, id) {
+        if (!hasManagerOrBossAccess() || recordManagementSaving || !["sales", "purchase_orders"].includes(kind)) return;
+        deletingRecord = {kind, id, identity: inventoryIdentity()};
+        document.getElementById("delete-record-label").textContent = `${kind === "sales" ? "Sale" : "Purchase order"}: ${id}`;
+        bootstrap.Modal.getOrCreateInstance(document.getElementById("deleteRecordModal")).show();
+      }
+
+      async function confirmRecordDeletion() {
+        if (!hasManagerOrBossAccess() || !deletingRecord || recordManagementSaving) return;
+        if (deletingRecord.identity !== inventoryIdentity()) { showToast("Branch changed. Reopen the record before deleting.", "warning"); return; }
+        const record = deletingRecord;
+        const button = document.getElementById("delete-record-confirm");
+        recordManagementSaving = true;
+        button.disabled = true;
+        button.textContent = "Deleting...";
+        try {
+          const response = await fetch(`/api/${record.kind}/${encodeURIComponent(record.id)}`, {method: "DELETE", headers: {"Content-Type": "application/json"}, body: JSON.stringify({confirm: true})});
+          const data = await response.json();
+          if (!response.ok || data.success === false) throw new Error(data.message || "Unable to delete history");
+          bootstrap.Modal.getInstance(document.getElementById("deleteRecordModal"))?.hide();
+          deletingRecord = null;
+          showToast("History permanently deleted. Stock and payments were not reversed.", "success");
+          refreshManagedRecords(record.kind);
+        } catch (error) { showToast(error.message, "error"); }
+        finally { recordManagementSaving = false; button.disabled = false; button.textContent = "Permanently delete history"; }
+      }
+
       function loadPurchaseOrders() {
         const table = document.getElementById("purchase-orders-table");
         table.innerHTML = `
@@ -19701,8 +19859,8 @@
               
               const row = document.createElement("tr");
               row.innerHTML = `
-                <td><strong>${po.po_number}</strong></td>
-                <td>${po.supplier_name}</td>
+                <td><strong>${escapeHtml(po.po_number)}</strong></td>
+                <td>${escapeHtml(po.supplier_name)}</td>
                 <td class="d-none d-md-table-cell">${escapeHtml(po.product_branch || '-')}</td>
                 <td>${formatCurrency(po.total_amount || 0)}</td>
                 <td><span class="badge bg-${badgeClass}">${statusLabel}</span></td>
@@ -19714,6 +19872,7 @@
                     <button class="btn btn-outline-info" onclick="viewPurchaseOrderDetails(${po.id})" title="View Details">
                       <i class="bi bi-eye"></i>
                     </button>
+                    ${hasManagerOrBossAccess() ? `<button class="btn btn-outline-warning" data-record-action="edit" title="Edit purchase order" aria-label="Edit purchase order"><i class="bi bi-pencil"></i></button><button class="btn btn-outline-danger" data-record-action="delete" title="Delete purchase order history" aria-label="Delete purchase order history"><i class="bi bi-trash"></i></button>` : ''}
                     ${po.status === 'draft' ? `
                       <button class="btn btn-outline-warning" onclick="submitPurchaseOrderForApproval(${po.id})" title="Submit for Approval">
                         <i class="bi bi-send"></i>
@@ -19730,7 +19889,7 @@
                       </button>
                     ` : ''}
                     ${po.status !== 'received' && po.status !== 'cancelled' ? `
-                      <button class="btn btn-outline-danger" onclick="showCancelPOModal(${po.id}, '${po.po_number}')" title="Cancel">
+                      <button class="btn btn-outline-danger" data-record-action="cancel" title="Cancel">
                         <i class="bi bi-x-lg"></i>
                       </button>
                     ` : ''}
@@ -19740,6 +19899,9 @@
                   </div>
                 </td>
               `;
+              row.querySelector('[data-record-action="edit"]')?.addEventListener("click", () => editPurchaseOrder(po.id));
+              row.querySelector('[data-record-action="delete"]')?.addEventListener("click", () => showRecordDeletion("purchase_orders", po.id));
+              row.querySelector('[data-record-action="cancel"]')?.addEventListener("click", () => showCancelPOModal(po.id, po.po_number));
               table.appendChild(row);
             });
 

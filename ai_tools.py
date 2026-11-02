@@ -294,6 +294,58 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
             "required": ["supplier_id", "items"]
         }
     },
+    "update_purchase_order": {
+        "name": "update_purchase_order",
+        "description": "Edit a shared purchase order's notes, delivery date, supplier or complete item list. After any receiving, only notes and delivery date may change. Cancelled PO lines cannot change. Never changes stock or received quantities.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "po_id": {"type": "integer", "minimum": 1},
+                "supplier_id": {"type": "integer", "minimum": 1},
+                "notes": {"type": "string", "description": "Use an empty string to clear notes."},
+                "expected_delivery_date": {"type": "string", "description": "YYYY-MM-DD, or an empty string to clear."},
+                "items": {
+                    "type": "array", "minItems": 1,
+                    "description": "Complete replacement list, not a delta. Look up existing lines before editing.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "product_id": {"type": "integer", "minimum": 1},
+                            "quantity": {"type": "integer", "minimum": 1},
+                            "unit_cost": {"type": "number", "minimum": 0}
+                        },
+                        "required": ["product_id", "quantity", "unit_cost"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            "required": ["po_id"]
+        }
+    },
+    "delete_purchase_order": {
+        "name": "delete_purchase_order",
+        "description": "Permanently delete a shared PO history record and its lines. Does NOT reverse warehouse stock or payments. First call without confirm, explain the consequence, then set confirm=true only after the user explicitly agrees.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "po_id": {"type": "integer", "minimum": 1},
+                "confirm": {"type": "boolean", "description": "True only after explicit user confirmation of history-only deletion."}
+            },
+            "required": ["po_id"]
+        }
+    },
+    "delete_sale_history": {
+        "name": "delete_sale_history",
+        "description": "Permanently delete a sale history record in the active branch. Does NOT restore stock or refund money; changes sales reports. Refuses linked financial workflows. First call without confirm, explain the consequence, then set confirm=true only after explicit user agreement.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "transaction_id": {"type": "string", "description": "Exact sale transaction identifier; do not guess."},
+                "confirm": {"type": "boolean", "description": "True only after explicit user confirmation of history-only deletion."}
+            },
+            "required": ["transaction_id"]
+        }
+    },
     "approve_purchase_order": {
         "name": "approve_purchase_order",
         "description": "Approve a pending purchase order. Changes status from 'pending' to 'approved'.",
@@ -1065,6 +1117,9 @@ _TOOL_META = {
     "get_sales_summary":               ("sales",       False,     "Sales totals, transaction count, payment methods for a period.", "medium"),
     # --- write tools ---
     "create_purchase_order":           ("purchasing",  True, "Create a draft purchase order for one or more products from a supplier.", "small"),
+    "update_purchase_order":           ("purchasing",  True, "Edit PO notes/date; replace supplier and lines only before receiving. Stock unchanged.", "small"),
+    "delete_purchase_order":           ("purchasing",  True, "Delete PO history after explicit confirmation; warehouse stock stays unchanged.", "small"),
+    "delete_sale_history":             ("sales",       True, "Delete an active-branch sale history record after confirmation; no restock or refund.", "small"),
     "approve_purchase_order":          ("purchasing",  True, "Approve a pending purchase order (pending -> approved).", "small"),
     "cancel_purchase_order":           ("purchasing",  True, "Cancel a draft/pending/approved purchase order with a reason.", "small"),
     "create_warehouse_transfer":       ("inventory",   True, "Move warehouse stock into main product stock (FIFO deduction).", "small"),
@@ -1167,7 +1222,7 @@ TOOL_OUTPUT_HINTS: Dict[str, str] = {
     "get_supplier_price_for_product":
         "has_agreement, product_id, supplier_id, agreed_price, valid_from, valid_to",
     "get_purchase_orders":
-        "total_orders, orders[] {po_id, po_number, supplier_id, status, total_amount, items[] {purchase_order_item_id, product_id, ordered_qty, received_qty}}",
+        "total_orders, orders[] {po_id, po_number, supplier_id, status, total_amount, notes, items[] {purchase_order_item_id, product_id, ordered_qty, received_qty, unit_cost}}",
     "get_purchase_order_products":
         "total_products, products[] {product_id, name, branch_id, cost}",
     "get_warehouse_inventory":
@@ -1569,6 +1624,7 @@ class AITools:
                 "status": po.status,
                 "total_amount": money_str(po.total_amount or 0),
                 "expected_delivery_date": po.expected_delivery_date.isoformat() if po.expected_delivery_date else None,
+                "notes": po.notes,
                 "created_at": po.created_at.isoformat() if po.created_at else None,
                 "items": items
             })
@@ -3183,6 +3239,59 @@ class AITools:
         except Exception as exc:
             self.db.session.rollback()
             return {"error": f"Failed to record receiving: {exc}"}
+
+    def update_purchase_order(self, po_id: int, supplier_id: int = None,
+                              notes: str = None, expected_delivery_date: str = None,
+                              items: List[Dict] = None) -> Dict[str, Any]:
+        """Edit through the same validated, authorized transaction as the UI."""
+        from record_management import edit_purchase_order
+        scope = trusted_tool_context(self.context)
+        if scope.get('role') not in ('manager', 'boss') or not scope.get('user_id'):
+            return {"success": False, "error": "Manager or boss access required"}
+        data = {key: value for key, value in {
+            'supplier_id': supplier_id, 'notes': notes,
+            'expected_delivery_date': expected_delivery_date, 'items': items,
+        }.items() if value is not None}
+        try:
+            result, status = edit_purchase_order(
+                self.db, self.models, po_id, data, actor_id=scope['user_id'])
+            if result.get('total_amount') is not None:
+                result['total_amount'] = money_plain(result['total_amount'])
+            return result
+        except Exception:
+            self.db.session.rollback()
+            return {"success": False, "error": "Unable to update the purchase order"}
+
+    def delete_purchase_order(self, po_id: int, confirm: bool = False) -> Dict[str, Any]:
+        """Remove PO history, never stock; confirmation is enforced by service."""
+        from record_management import delete_purchase_order
+        scope = trusted_tool_context(self.context)
+        if scope.get('role') not in ('manager', 'boss') or not scope.get('user_id'):
+            return {"success": False, "error": "Manager or boss access required"}
+        try:
+            result, status = delete_purchase_order(
+                self.db, self.models, po_id, confirm=confirm, actor_id=scope['user_id'])
+            return result
+        except Exception:
+            self.db.session.rollback()
+            return {"success": False, "error": "Unable to delete purchase order history"}
+
+    def delete_sale_history(self, transaction_id: str, confirm: bool = False) -> Dict[str, Any]:
+        """Branch-local history deletion; no stock restoration or refunds."""
+        from record_management import delete_sale
+        scope = trusted_tool_context(self.context)
+        if scope.get('role') not in ('manager', 'boss') or not scope.get('user_id'):
+            return {"success": False, "error": "Manager or boss access required"}
+        if not scope.get('branch_id'):
+            return {"success": False, "error": "An active branch is required"}
+        try:
+            result, status = delete_sale(
+                self.db, self.models, transaction_id, branch_id=scope['branch_id'],
+                confirm=confirm, actor_id=scope['user_id'])
+            return result
+        except Exception:
+            self.db.session.rollback()
+            return {"success": False, "error": "Unable to delete sale history"}
 
     def _returned_qty_map(self, sale_id):
         """Quantities already returned per sale_item_id across all workflows."""

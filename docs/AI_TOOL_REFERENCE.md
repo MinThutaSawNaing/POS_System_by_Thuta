@@ -616,6 +616,62 @@ Permanently delete a product from the active branch. Sales and return/exchange h
 }
 ```
 
+## `delete_purchase_order`
+
+Permanently delete a shared PO history record and its lines. Does NOT reverse warehouse stock or payments. First call without confirm, explain the consequence, then set confirm=true only after the user explicitly agrees.
+
+- Category: `purchasing`
+- Mutates data: `True`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "po_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "confirm": {
+      "type": "boolean",
+      "description": "True only after explicit user confirmation of history-only deletion."
+    }
+  },
+  "required": [
+    "po_id"
+  ]
+}
+```
+
+## `delete_sale_history`
+
+Permanently delete a sale history record in the active branch. Does NOT restore stock or refund money; changes sales reports. Refuses linked financial workflows. First call without confirm, explain the consequence, then set confirm=true only after explicit user agreement.
+
+- Category: `sales`
+- Mutates data: `True`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "transaction_id": {
+      "type": "string",
+      "description": "Exact sale transaction identifier; do not guess."
+    },
+    "confirm": {
+      "type": "boolean",
+      "description": "True only after explicit user confirmation of history-only deletion."
+    }
+  },
+  "required": [
+    "transaction_id"
+  ]
+}
+```
+
 ## `delete_supplier`
 
 Permanently delete an unused shared supplier. Refuses if purchase orders, communications or price agreements reference it.
@@ -1939,6 +1995,70 @@ Update a promotion's start/end dates, discount type, or discount value.
   },
   "required": [
     "promo_id"
+  ]
+}
+```
+
+## `update_purchase_order`
+
+Edit a shared purchase order's notes, delivery date, supplier or complete item list. After any receiving, only notes and delivery date may change. Cancelled PO lines cannot change. Never changes stock or received quantities.
+
+- Category: `purchasing`
+- Mutates data: `True`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "po_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "supplier_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "notes": {
+      "type": "string",
+      "description": "Use an empty string to clear notes."
+    },
+    "expected_delivery_date": {
+      "type": "string",
+      "description": "YYYY-MM-DD, or an empty string to clear."
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Complete replacement list, not a delta. Look up existing lines before editing.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "quantity": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "unit_cost": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "product_id",
+          "quantity",
+          "unit_cost"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "po_id"
   ]
 }
 ```
