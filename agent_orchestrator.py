@@ -715,7 +715,40 @@ class AgentOrchestrator:
         # Serialize a user's turns so concurrent requests cannot interleave tool-call
         # messages and corrupt the conversation sent to the upstream API.
         with self._conversation_lock:
-            return self._process_command_locked(command, user_id)
+            result = self._process_command_locked(command, user_id)
+        self._remember_turn(result)
+        return result
+
+    def _remember_turn(self, result: Dict[str, Any]) -> None:
+        """Keep Loli's own answer in history so the next turn has context.
+
+        Without this the model only ever saw user messages, so "it", "that
+        product" or "the same list" had nothing to resolve against.
+        """
+        try:
+            message = result.get("message") if isinstance(result, dict) else None
+            if not isinstance(message, str) or not message.strip():
+                return
+            history = self.agent.conversation_history
+            if history and history[-1].role == "assistant" and history[-1].content == message:
+                return
+            self.agent.add_assistant_message(message)
+        except Exception as exc:
+            print(f"[AI Agent] Could not record the reply in history: {exc}")
+
+    def _recent_transcript(self, limit: int = 6) -> str:
+        """Short transcript of earlier turns for the stateless planning call."""
+        try:
+            turns = [m for m in self.agent.conversation_history
+                     if getattr(m, "role", "") in ("user", "assistant")
+                     and getattr(m, "content", "")]
+        except Exception:
+            return ""
+        if turns and turns[-1].role == "user":
+            turns = turns[:-1]          # the current request is sent separately
+        lines = [f"{'User' if m.role == 'user' else 'Loli'}: {str(m.content).strip()[:300]}"
+                 for m in turns[-limit:]]
+        return "\n".join(lines)
 
     def _process_command_locked(self, command: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         """Process one command while the owning conversation lock is held."""
@@ -1182,7 +1215,9 @@ class AgentOrchestrator:
             if attempt == 0:
                 message = (
                     "Plan how to fulfill this request using the available POS tools.\n\n"
-                    f"Request: {command}\n\n"
+                    + (f"Conversation so far (context only):\n{self._recent_transcript()}\n\n"
+                       if self._recent_transcript() else "")
+                    + f"Request: {command}\n\n"
                     f"Available tools:\n{catalog}\n\n"
                     "Rules:\n"
                     f"- Maximum {MAX_PLAN_STEPS} steps.\n"
