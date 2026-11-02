@@ -570,6 +570,26 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
             "required": ["to"]
         }
     },
+    "update_product": {
+        "name": "update_product",
+        "description": "Rename or partially edit one existing product: name, barcode, category, price, cost, tax rate or reorder settings. Only the fields you pass change; stock is untouched (use adjust_product_stock). Use get_product_details or search_products first to find product_id.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_id": {"type": "integer", "description": "The product to edit (find it with search_products)."},
+                "name": {"type": "string", "description": "New product name, for a rename."},
+                "barcode": {"type": "string", "description": "New barcode value."},
+                "category": {"type": "string", "description": "Category name to move the product into."},
+                "price": {"type": "number", "description": "New selling price, >= 0."},
+                "cost": {"type": "number", "description": "New unit cost, >= 0."},
+                "tax_rate": {"type": "number", "description": "Tax rate percent between 0 and 100."},
+                "reorder_point": {"type": "integer", "description": "New reorder point, >= 0."},
+                "reorder_quantity": {"type": "integer", "description": "New reorder quantity, >= 0."},
+                "reorder_enabled": {"type": "boolean", "description": "Turn low-stock tracking on or off."}
+            },
+            "required": ["product_id"]
+        }
+    },
     "register_customer": {
         "name": "register_customer",
         "description": "Register a new customer in the active branch with optional phone, email, and address.",
@@ -1025,6 +1045,7 @@ _TOOL_META = {
     # --- report delivery (email + schedules) ---
     "get_email_delivery_status":       ("reports",     False, None,      "Whether report email is configured, plus available reports and recipient choices.", "small"),
     "send_test_email":                 ("reports",     True,  None,      "Send a one-off test email to verify delivery before scheduling reports.", "small"),
+    "update_product":                  ("inventory",   True,  'manager', "Rename or partially edit a product without touching its stock.", "small"),
     "email_report":                    ("reports",     True,  None,      "Email a report now as Excel and/or PDF to a server-resolved recipient.", "small"),
     "schedule_report":                 ("reports",     True,  None,      "Email a report every day or week at a chosen local time.", "small"),
     "list_scheduled_reports":          ("reports",     False, None,      "List scheduled report emails, their schedule and last delivery status.", "medium"),
@@ -2256,6 +2277,127 @@ class AITools:
             "reorder_point": int(product.reorder_point or 0),
             "reorder_quantity": int(product.reorder_quantity or 0)
         }
+
+    def update_product(self, product_id: int, name: str = None, barcode: str = None,
+                       category: str = None, price=None, cost=None, tax_rate=None,
+                       reorder_point: int = None, reorder_quantity: int = None,
+                       reorder_enabled: bool = None) -> Dict[str, Any]:
+        """Edit one product in place; every field you do not pass keeps its value."""
+        Product = self._get_model('Product')
+        Category = self._get_model('Category')
+        if isinstance(product_id, bool) or not isinstance(product_id, int) or product_id <= 0:
+            return {"error": "product_id must be a positive integer"}
+        product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
+        if not product:
+            return {"error": f"Product with ID {product_id} not found in the active branch"}
+        fields = {"name": name, "barcode": barcode, "category": category, "price": price,
+                  "cost": cost, "tax_rate": tax_rate, "reorder_point": reorder_point,
+                  "reorder_quantity": reorder_quantity, "reorder_enabled": reorder_enabled}
+        if all(value is None for value in fields.values()):
+            return {"error": "Tell me which field to change: name, barcode, category, price, "
+                             "cost, tax_rate, reorder_point, reorder_quantity or reorder_enabled"}
+
+        changed = []
+        if name is not None:
+            new_name = str(name).strip()
+            if not new_name:
+                return {"error": "Product name cannot be empty"}
+            duplicate = self._branch_filter(Product.query.filter(
+                self.db.func.lower(Product.name) == new_name.lower(),
+                Product.id != product.id), Product).first()
+            if duplicate:
+                return {"error": f"Another product is already named '{new_name}' "
+                                 f"(ID {duplicate.id})"}
+            if new_name != product.name:
+                product.name = new_name
+                changed.append("name")
+
+        if barcode is not None:
+            new_code = str(barcode).strip() or None
+            if new_code:
+                clash = self._branch_filter(
+                    Product.query.filter_by(barcode=new_code), Product).filter(
+                    Product.id != product.id).first()
+                if clash:
+                    return {"error": f"Barcode '{new_code}' is already used by "
+                                     f"product {clash.id}"}
+            if new_code != product.barcode:
+                product.barcode = new_code
+                changed.append("barcode")
+
+        if category is not None:
+            label = str(category).strip()
+            if label:
+                record = self._branch_filter(Category.query.filter(
+                    self.db.func.lower(Category.name) == label.lower()), Category).first()
+                if not record:
+                    return {"error": f"Category '{label}' not found in the active branch"}
+                if product.category_id != record.id or product.category != record.name:
+                    product.category_id = record.id
+                    product.category = record.name
+                    changed.append("category")
+            elif product.category_id or product.category:
+                product.category_id = None
+                product.category = None
+                changed.append("category")
+
+        if price is not None:
+            price_dec = money_dec(price)
+            if price_dec < 0:
+                return {"error": "price must be >= 0"}
+            if money_dec(product.price or 0) != price_dec:
+                product.price = float(price_dec)
+                changed.append("price")
+
+        if cost is not None:
+            cost_dec = money_dec(cost)
+            if cost_dec < 0:
+                return {"error": "cost must be >= 0"}
+            product.cost = float(cost_dec)
+            changed.append("cost")
+
+        if tax_rate is not None:
+            try:
+                rate = float(tax_rate)
+            except (TypeError, ValueError):
+                return {"error": "tax_rate must be a number between 0 and 100"}
+            if not 0 <= rate <= 100:
+                return {"error": "tax_rate must be between 0 and 100"}
+            product.tax_rate = rate
+            changed.append("tax_rate")
+
+        for field in ("reorder_point", "reorder_quantity"):
+            value = fields[field]
+            if value is None:
+                continue
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                return {"error": f"{field} must be an integer"}
+            if number < 0:
+                return {"error": f"{field} must be >= 0"}
+            setattr(product, field, number)
+            changed.append(field)
+
+        if reorder_enabled is not None:
+            product.reorder_enabled = bool(reorder_enabled)
+            changed.append("reorder_enabled")
+
+        if not changed:
+            return {"success": True, "product_id": product.id,
+                    "product_name": product.name, "changed": [],
+                    "message": f"Nothing to change: '{product.name}' already matches."}
+        self.db.session.commit()
+        if changed == ["name"]:
+            message = f"Renamed product {product.id} to '{product.name}'."
+        else:
+            message = f"Updated '{product.name}' ({', '.join(changed)})."
+        return {"success": True, "product_id": product.id, "product_name": product.name,
+                "barcode": product.barcode, "category": product.category,
+                "price": money_plain(product.price or 0),
+                "cost": money_plain(product.cost or 0),
+                "stock": int(product.stock or 0),
+                "changed": changed, "message": message}
 
     def adjust_product_stock(self, product_id: int, delta: int, reason: str) -> Dict[str, Any]:
         """Apply a signed stock delta with a mandatory audit reason (manager only)."""

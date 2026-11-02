@@ -1916,6 +1916,68 @@ Move a delivery to its next valid stage: to_deliver -> packaged -> delivering ->
 }
 ```
 
+## `update_product`
+
+Rename or partially edit one existing product: name, barcode, category, price, cost, tax rate or reorder settings. Only the fields you pass change; stock is untouched (use adjust_product_stock). Use get_product_details or search_products first to find product_id.
+
+- Category: `inventory`
+- Mutates data: `True`
+- Required role metadata: `manager` (runtime policy also applies)
+- Autonomy: `approval`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "product_id": {
+      "type": "integer",
+      "description": "The product to edit (find it with search_products)."
+    },
+    "name": {
+      "type": "string",
+      "description": "New product name, for a rename."
+    },
+    "barcode": {
+      "type": "string",
+      "description": "New barcode value."
+    },
+    "category": {
+      "type": "string",
+      "description": "Category name to move the product into."
+    },
+    "price": {
+      "type": "number",
+      "description": "New selling price, >= 0."
+    },
+    "cost": {
+      "type": "number",
+      "description": "New unit cost, >= 0."
+    },
+    "tax_rate": {
+      "type": "number",
+      "description": "Tax rate percent between 0 and 100."
+    },
+    "reorder_point": {
+      "type": "integer",
+      "description": "New reorder point, >= 0."
+    },
+    "reorder_quantity": {
+      "type": "integer",
+      "description": "New reorder quantity, >= 0."
+    },
+    "reorder_enabled": {
+      "type": "boolean",
+      "description": "Turn low-stock tracking on or off."
+    }
+  },
+  "required": [
+    "product_id"
+  ]
+}
+```
+
 ## `update_product_price`
 
 Update a product's selling price with exact decimal math and an optional audit reason.
