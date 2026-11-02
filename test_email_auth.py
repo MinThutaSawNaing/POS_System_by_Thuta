@@ -219,12 +219,26 @@ def resend(w, client, challenge_id, target='cashier'):
                        json={'challenge_id': challenge_id}, headers=csrf(client))
 
 
+def mail_bodies(message):
+    """Every text/html body of a delivered challenge email, plain text first."""
+    return [part.get_content() for part in message.walk()
+            if part.get_content_type() in ('text/plain', 'text/html')]
+
+
+def mail_text(message):
+    part = message.get_body(preferencelist=('plain',))
+    return part.get_content() if part is not None else message.get_content()
+
+
 def mail_code(w):
     assert w.deliveries, 'A challenge must actually be delivered before it is usable'
     message = w.deliveries[-1]['message']
-    body = message.get_content()
-    codes = set(re.findall(r'(?<!\d)\d{6}(?!\d)', body))
-    assert len(codes) == 1, f'Expected one six-digit OTP in provider body: {body}'
+    bodies = mail_bodies(message)
+    found = [set(re.findall(r'(?<!\d)\d{6}(?!\d)', body)) for body in bodies]
+    assert found and all(len(codes) == 1 for codes in found), \
+        f'Expected one six-digit OTP in each provider body: {bodies}'
+    codes = set().union(*found)
+    assert len(codes) == 1, f'Plain text and HTML must carry the same OTP: {bodies}'
     return codes.pop()
 
 
@@ -914,7 +928,7 @@ def test_settings_and_link_unlink_audits_contain_no_sensitive_values(world):
         records = json.dumps([{'summary': row.summary, 'changes': world.m.decode_audit_changes(row)}
                               for row in [*settings, *changes]])
     secrets = [API_KEY, FROM_EMAIL, EMAIL, PASSWORD, MANAGER_PASSWORD]
-    secrets.extend(re.findall(r'(?<!\d)\d{6}(?!\d)', mail['message'].get_content())[0]
+    secrets.extend(re.findall(r'(?<!\d)\d{6}(?!\d)', mail_text(mail['message']))[0]
                    for mail in world.deliveries)
     for value in secrets:
         assert value not in records
@@ -1000,7 +1014,7 @@ def test_otp_cannot_verify_while_provider_delivery_is_still_pending(world, monke
     codes = []
 
     def provider_in_flight(message):
-        code = re.search(r'code is (\d{6})\.', message.get_content()).group(1)
+        code = re.search(r'code is (\d{6})\.', mail_text(message)).group(1)
         codes.append(code)
         # A second request arrives before the first provider request returns.
         # Reuse the real browser cookie and OTP, not a verification bypass.
@@ -1055,11 +1069,44 @@ def test_all_resend_ports_require_verified_tls_before_authentication(world, port
     assert str(sent['message']['Subject']) == 'Your POS verification code'
     assert str(sent['message']['To']) == EMAIL
     assert str(sent['message']['From']) == FROM_EMAIL
-    assert 'expires in 10 minutes' in sent['message'].get_content()
+    assert 'expires in 10 minutes' in mail_text(sent['message'])
     with world.m.app.app_context():
         for key, expected in [('email_smtp_host', 'smtp.resend.com'), ('email_smtp_port', str(port)),
                               ('email_smtp_username', 'resend')]:
             assert world.m.get_setting(key) == expected
+
+
+@pytest.mark.parametrize('purpose', ['login', 'link', 'unlink'])
+def test_verification_email_offers_html_and_plain_text_alternatives(world, purpose):
+    import email_auth
+
+    code = '048213'
+    subject, text, html = email_auth.verification_email(code, purpose)
+    assert subject == 'Your POS verification code'
+    assert code in text and code in html
+    assert text.count(code) == 1 and html.count(code) == 1
+    assert 'expires in 10 minutes' in text and '10 minutes' in html
+    assert 'Never share this code' in text and 'Never share this code' in html
+    assert html.startswith('<!DOCTYPE html>') and '</html>' in html
+    # Email clients need inline styles only: no external assets or scripts.
+    for forbidden in ('<script', '<link', '<img', 'src=', 'http://', 'https://'):
+        assert forbidden not in html
+    # The label matches the action the code authorises.
+    assert email_auth.PURPOSE_COPY[purpose][0].lower() in text.lower()
+    assert email_auth.PURPOSE_COPY[purpose][0].lower() in html.lower()
+
+
+def test_delivered_challenge_email_is_multipart_with_one_code_in_each_body(world):
+    configure(world)
+    payload(start(world, world.client('cashier')))
+    message = world.deliveries[-1]['message']
+    assert message.get_content_type() == 'multipart/alternative'
+    assert message.get_content_subtype() == 'alternative'
+    html = message.get_body(preferencelist=('html',)).get_content()
+    text = mail_text(message)
+    code = mail_code(world)
+    assert html.count(code) == 1 and text.count(code) == 1
+    assert 'Your verification code' in html
 
 
 @pytest.mark.parametrize('field,value', [

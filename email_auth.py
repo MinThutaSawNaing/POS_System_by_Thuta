@@ -15,7 +15,7 @@ import ssl
 import time
 from contextlib import contextmanager
 from email.message import EmailMessage
-from email.utils import parseaddr, getaddresses
+from email.utils import formatdate, parseaddr, getaddresses
 from types import SimpleNamespace
 
 from flask import jsonify, redirect, render_template, request, session, url_for
@@ -28,6 +28,91 @@ COOLDOWN = 60
 MAX_ATTEMPTS = 5
 SMTP_SSL_PORTS = (465, 2465)
 SMTP_STARTTLS_PORTS = (25, 587, 2587)
+
+SUBJECT = 'Your POS verification code'
+PURPOSE_COPY = {
+    'login': ('Sign-in verification', 'Use this code to finish signing in to your POS account.'),
+    'link': ('Email verification', 'Use this code to confirm this email address for your POS account.'),
+    'unlink': ('Email removal', 'Use this code to remove this email address from your POS account.'),
+}
+
+
+def verification_email(code, purpose):
+    """Build the (subject, plain text, html) bodies for a one-time code email.
+
+    The message carries nothing but a purpose label: no username, branch, IP or
+    request metadata ever reaches the provider. Both bodies hold the code once.
+    Colours use three-digit hex so Outlook keeps the styling and no six-digit
+    run can be mistaken for the code by a scanner.
+    """
+    title, instruction = PURPOSE_COPY.get(
+        purpose, ('Account verification', 'Use this code to verify your POS account.'))
+    text = '\n'.join((
+        'POS SYSTEM',
+        title,
+        '',
+        f'Your POS {title.lower()} code is {code}.',
+        '',
+        'This code expires in 10 minutes and can be used once.',
+        'Never share this code with anyone. POS staff will never ask you for it.',
+        'If you did not request this email, ignore it. No changes were made to your account.',
+        '',
+        'Sent automatically by POS System. Replies to this message are not monitored.',
+    ))
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{SUBJECT}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f4f4;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Your {title.lower()} code expires in 10 minutes.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="background-color:#f4f4f4;padding:28px 12px;">
+<tr><td align="center">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="max-width:520px;background-color:#ffffff;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;
+              font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<tr><td bgcolor="#111" style="background-color:#111;padding:20px 28px;">
+<span style="color:#ffffff;font-size:16px;font-weight:700;letter-spacing:.08em;">POS SYSTEM</span>
+<span style="color:#8d8d8d;font-size:12px;letter-spacing:.04em;">&nbsp;&middot;&nbsp;SECURE ACCESS</span>
+</td></tr>
+<tr><td style="padding:30px 28px 26px;">
+<p style="margin:0 0 6px;color:#0f62fe;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;">{title}</p>
+<h1 style="margin:0 0 14px;color:#111;font-size:22px;line-height:1.3;font-weight:700;">Your verification code</h1>
+<p style="margin:0 0 22px;color:#555;font-size:15px;line-height:1.6;">{instruction}</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+<tr><td align="center" bgcolor="#edf5ff"
+        style="background-color:#edf5ff;border:1px dashed #0f62fe;border-radius:8px;padding:18px 12px;">
+<span style="font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:34px;
+             font-weight:700;letter-spacing:10px;color:#0043ce;">{code}</span>
+</td></tr>
+</table>
+<p style="margin:20px 0 0;color:#555;font-size:14px;line-height:1.6;">
+This code expires in <strong style="color:#111;">10 minutes</strong> and can be used once.
+</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:22px;">
+<tr><td style="border-top:1px solid #e0e0e0;padding-top:16px;
+               color:#555;font-size:13px;line-height:1.7;">
+<strong style="color:#111;">Security reminder</strong><br>
+Never share this code with anyone. POS staff will never ask you for it.<br>
+If you did not request this email, ignore it. No changes were made to your account.
+</td></tr>
+</table>
+</td></tr>
+<tr><td style="background-color:#f8fafc;border-top:1px solid #e0e0e0;padding:18px 28px;">
+<p style="margin:0;color:#6f6f6f;font-size:12px;line-height:1.6;">
+Sent automatically by POS System. Replies to this message are not monitored.
+</p>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>
+"""
+    return SUBJECT, text, html
 
 
 def normalize_smtp(host, port, username):
@@ -177,11 +262,16 @@ def register_email_auth(app, db, pos):
         if not secure_session_key() or not settings.valid:
             raise EmailAuthError('Email authentication is not configured. Contact a manager.', 503)
         try:
+            subject, text, html = verification_email(code, purpose)
             message = EmailMessage()
             message['From'] = settings.sender
             message['To'] = email
-            message['Subject'] = 'Your POS verification code'
-            message.set_content(f'Your POS {purpose} verification code is {code}. It expires in 10 minutes. If you did not request it, ignore this email.')
+            message['Subject'] = subject
+            message['Date'] = formatdate(localtime=True)
+            message['Auto-Submitted'] = 'auto-generated'
+            # Plain text first: clients without HTML support still read the code.
+            message.set_content(text)
+            message.add_alternative(html, subtype='html')
             context = ssl.create_default_context()
             if settings.port in SMTP_SSL_PORTS:
                 transport = smtplib.SMTP_SSL(settings.host, settings.port, timeout=10, context=context)
