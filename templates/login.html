@@ -201,62 +201,6 @@
             box-shadow: 0 0 0 .25rem rgba(15, 98, 254, .18);
         }
 
-        .captcha-container {
-            display: flex;
-            align-items: center;
-            gap: .65rem;
-            margin-bottom: .65rem;
-        }
-
-        .captcha-display {
-            flex: 1;
-            min-height: 52px;
-            background: #f4f4f4;
-            border: 1px solid #c6c6c6;
-            border-radius: 4px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.4rem;
-            font-weight: 700;
-            letter-spacing: 5px;
-            color: var(--primary-dark);
-            user-select: none;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .captcha-display::before {
-            content: "";
-            position: absolute;
-            inset: 0;
-            background: repeating-linear-gradient(
-                135deg,
-                transparent,
-                transparent 12px,
-                rgba(15, 98, 254, .05) 12px,
-                rgba(15, 98, 254, .05) 24px
-            );
-        }
-
-        .captcha-refresh {
-            border: 1px solid var(--border);
-            background: #fff;
-            color: var(--primary-dark);
-            border-radius: 4px;
-            width: 45px;
-            height: 45px;
-            display: grid;
-            place-items: center;
-            transition: transform .25s ease, background-color .2s ease;
-            cursor: pointer;
-        }
-
-        .captcha-refresh:hover {
-            background: #edf5ff;
-            transform: rotate(180deg);
-        }
-
         .helper-text {
             color: var(--text-muted);
             font-size: .8rem;
@@ -508,6 +452,8 @@
             }
         }
     </style>
+    <link rel="stylesheet" href="/public/captcha.css">
+    <script src="/public/captcha.js"></script>
 </head>
 <body>
     <main class="auth-shell">
@@ -617,15 +563,7 @@
             document.getElementById('captchaDisplay').textContent = captcha;
             document.getElementById('captchaCode').value = captcha;
 
-            const captchaDisplay = document.getElementById('captchaDisplay');
-            captchaDisplay.style.transform = `rotate(${Math.random() * 3 - 1.5}deg)`;
-            captchaDisplay.style.letterSpacing = `${4 + Math.random() * 3}px`;
-
-            const characters = captchaDisplay.textContent.split('');
-            captchaDisplay.innerHTML = characters.map(char => {
-                const color = Math.random() > 0.5 ? '#0043ce' : '#0f62fe';
-                return `<span style="color: ${color}; display: inline-block; transform: rotate(${Math.random() * 12 - 6}deg)">${char}</span>`;
-            }).join('');
+            renderSecurityCaptcha(document.getElementById('captchaDisplay'), captcha);
         }
 
         document.addEventListener('DOMContentLoaded', function() {

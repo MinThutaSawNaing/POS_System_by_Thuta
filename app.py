@@ -625,8 +625,7 @@ def _barrier_clear_failures(client_key):
 
 def _barrier_issue_captcha():
     """Create a fresh numeric captcha; return (token, human-readable question)."""
-    left = random.randint(2, 9)
-    right = random.randint(2, 9)
+    code = random.randint(1000, 9999)
     token = uuid.uuid4().hex
     now = time.time()
     with _barrier_lock:
@@ -636,9 +635,9 @@ def _barrier_issue_captcha():
         # Bound memory even under a burst of challenge requests.
         while len(_barrier_captchas) >= _BARRIER_MAX_CAPTCHAS:
             _barrier_captchas.pop(next(iter(_barrier_captchas)))
-        _barrier_captchas[token] = {'answer': left + right,
+        _barrier_captchas[token] = {'answer': code,
                                     'expires': now + _BARRIER_CAPTCHA_TTL}
-    return token, f'What is {left} + {right}?'
+    return token, str(code)
 
 
 def _barrier_consume_captcha(token, answer):

@@ -16,6 +16,8 @@
       rel="stylesheet"
       href="/public/vendor/bootstrap-icons/bootstrap-icons.css"
     />
+    <link rel="stylesheet" href="/public/captcha.css" />
+    <script src="/public/captcha.js"></script>
     <!-- Myanmar Font Support -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -5738,25 +5740,22 @@
               />
             </div>
             <div class="mb-3">
-              <label class="form-label">Verification <span class="text-danger">*</span></label>
-              <div class="input-group">
-                <span class="input-group-text" id="account-barrier-captcha-question">Loading...</span>
-                <input
-                  type="number"
-                  class="form-control"
-                  id="account-barrier-captcha-answer"
-                  inputmode="numeric"
-                  placeholder="Answer"
-                />
+              <label class="form-label" for="account-barrier-captcha-answer">Security verification <span class="text-danger">*</span></label>
+              <div class="captcha-container">
+                <div class="captcha-display" id="account-barrier-captcha-question">Loading...</div>
                 <button
-                  class="btn btn-outline-secondary"
+                  class="captcha-refresh"
                   type="button"
                   onclick="refreshAccountBarrierCaptcha()"
-                  title="New sum"
+                  title="Refresh security code"
+                  aria-label="Refresh security code"
                 >
                   <i class="bi bi-arrow-repeat"></i>
                 </button>
               </div>
+              <input type="text" class="form-control" id="account-barrier-captcha-answer"
+                inputmode="numeric" maxlength="4" pattern="[0-9]{4}"
+                autocomplete="off" placeholder="Enter the 4-digit code" required />
             </div>
           </div>
           <div class="modal-footer">
@@ -17386,7 +17385,7 @@
               if (onUnlock) onUnlock();
               return;
             }
-            if (questionEl) questionEl.textContent = data.question;
+            if (questionEl) renderSecurityCaptcha(questionEl, data.question);
           })
           .catch(() => {
             if (questionEl) questionEl.textContent = "—";

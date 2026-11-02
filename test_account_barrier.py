@@ -98,9 +98,20 @@ class AccountBarrierTests(unittest.TestCase):
         challenge = client.get('/api/account_barrier/challenge')
         self.assertEqual(challenge.status_code, 200, challenge.get_data(as_text=True))
         question = challenge.get_json()['question']
-        match = re.match(r'What is (\d+) \+ (\d+)\?', question)
+        match = re.fullmatch(r'[1-9]\d{3}', question)
         self.assertIsNotNone(match, f'unexpected captcha question: {question!r}')
-        return int(match.group(1)) + int(match.group(2))
+        return int(question)
+
+    def test_captcha_is_single_use(self):
+        token, code = app_module._barrier_issue_captcha()
+        self.assertTrue(app_module._barrier_consume_captcha(token, code))
+        self.assertFalse(app_module._barrier_consume_captcha(token, code))
+
+    def test_captcha_expires(self):
+        token, code = app_module._barrier_issue_captcha()
+        with mock.patch.object(app_module.time, 'time',
+                               return_value=app_module._barrier_captchas[token]['expires'] + 1):
+            self.assertFalse(app_module._barrier_consume_captcha(token, code))
 
     def test_barrier_endpoints_require_manager(self):
         client = self._client(role='cashier')
@@ -157,12 +168,12 @@ class AccountBarrierTests(unittest.TestCase):
         with app.app_context():
             self.assertEqual(db.session.get(User, self.role_target_id).role, 'manager')
 
-    def test_challenge_question_is_a_numeric_sum(self):
+    def test_challenge_is_a_four_digit_code_like_login(self):
         client = self._client()
         challenge = client.get('/api/account_barrier/challenge').get_json()
         self.assertTrue(challenge['success'])
         self.assertTrue(challenge['configured'])
-        self.assertRegex(challenge['question'], r'^What is \d \+ \d\?$')
+        self.assertRegex(challenge['question'], r'^[1-9]\d{3}$')
 
     def test_unlock_with_master_credential_allows_creating_users(self):
         client = self._client()
@@ -203,7 +214,7 @@ class AccountBarrierTests(unittest.TestCase):
             'captcha_answer': int(answer) + 1})
         self.assertEqual(response.status_code, 400)
         self.assertTrue(response.get_json()['refresh_captcha'])
-        # The correct credential is not accepted when the sum is wrong.
+        # The correct credential is not accepted when the code is wrong.
         with client.session_transaction() as current:
             self.assertNotIn('account_barrier_unlocked', current)
 
