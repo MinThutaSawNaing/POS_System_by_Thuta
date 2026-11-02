@@ -188,6 +188,21 @@ _WRITE_INTENT_PATTERN = re.compile(
     re.IGNORECASE)
 
 
+def _text_or_placeholder(value: Any, placeholder: str = "not set") -> str:
+    """Human text for an optional payload field: never the word 'None'."""
+    if value is None:
+        return placeholder
+    text = str(value).strip()
+    return text or placeholder
+
+
+def _row_status(row: Any) -> str:
+    """Normalised stock status for an inventory row (missing -> 'unknown')."""
+    if not isinstance(row, dict):
+        return "unknown"
+    return _text_or_placeholder(row.get("status"), "unknown").strip().replace(" ", "_").lower()
+
+
 # System prompt for the AI Agent
 SYSTEM_PROMPT = """You are Loli, the current-data assistant for Parrot POS, created by Min Thuta Saw Naing and owned by WinterArc Myanmar. You help with the active branch's inventory, categories, suppliers, purchase orders, warehouse activity, sales, promotions, customers, debts, deliveries, and returns/exchanges.
 
@@ -2216,7 +2231,7 @@ class AgentOrchestrator:
                 
             elif func_name == "create_purchase_order":
                 if result_data.get("success"):
-                    summary_parts.append(f"Created PO {result_data.get('po_number')} for {result_data.get('supplier_name')} totaling ${result_data.get('total_amount', 0):.2f}")
+                    summary_parts.append(f"Created PO {result_data.get('po_number')} for {result_data.get('supplier_name')} totaling ${money_str(result_data.get('total_amount', 0))}")
                 else:
                     summary_parts.append(f"Failed to create PO: {result_data.get('error', 'Unknown error')}")
                     
@@ -2279,7 +2294,35 @@ class AgentOrchestrator:
         return " · ".join(parts) if parts else f"{func_name} finished."
     
     def _format_tool_results_for_user(self, tool_results: List[Dict], original_command: str) -> str:
-        """Format tool results directly for user display without second API call"""
+        """Public formatter: render every result, one failure at a time.
+
+        Results are rendered in isolation so an unreadable payload degrades to
+        a sentence instead of costing the user the whole answer.
+        """
+        blocks = [self._format_single_result(result, original_command)
+                  for result in tool_results]
+        return "\n".join(block for block in blocks if block)
+
+    def _format_single_result(self, result: Dict, original_command: str) -> str:
+        """Render one tool result, degrading instead of raising.
+
+        The renderers below read payloads from a dozen tools whose shapes are
+        not identical; a single unexpected value (a money amount arriving as a
+        string, a missing key) used to escape to the top-level handler and turn
+        a real answer into "I'm sorry, something went wrong".
+        """
+        name = result.get("function_name", "") or "the tool"
+        try:
+            return self._render_tool_results([result], original_command)
+        except Exception as exc:
+            print(f"[AI Agent] Could not format the {name} result: {exc}")
+            try:
+                return self._readable_result(name, result.get("result"))
+            except Exception:
+                return f"{name} finished, but the details could not be displayed."
+
+    def _render_tool_results(self, tool_results: List[Dict], original_command: str) -> str:
+        """Render already-extracted tool results (one result per call)."""
         lines = []
         
         for result in tool_results:
@@ -2292,23 +2335,56 @@ class AgentOrchestrator:
                 continue
             
             # Format based on tool type
-            if func_name in ("get_inventory_status", "search_products"):
+            if func_name == "search_products":
+                # A search exists to identify a product, so the identifying
+                # fields belong in the answer. The old shared branch printed a
+                # stock summary only, which silently dropped the barcode the
+                # user actually asked for.
+                matches = result_data.get('inventory') or []
+                total_matches = result_data.get('total_products', len(matches)) or 0
+                if not matches:
+                    lines.append("🔎 **Product Search** - no product matched that name. "
+                                 "Check the spelling or try a shorter name.")
+                else:
+                    count_text = f"{total_matches} match" + ("" if total_matches == 1 else "es")
+                    lines.append(f"🔎 **Product Search** ({count_text})")
+                    for p in matches[:10]:
+                        lines.append(f"• **{p.get('name') or 'Unknown product'}**")
+                        facts = [f"Barcode: {_text_or_placeholder(p.get('barcode'))}"]
+                        if p.get('category'):
+                            facts.append(f"Category: {p['category']}")
+                        facts.append(f"Price: ${money_str(p.get('price', 0))}")
+                        stock = p.get('current_stock')
+                        status_label = _row_status(p).replace('_', ' ')
+                        facts.append(f"Stock: {stock if stock is not None else '?'} "
+                                     f"units ({status_label})")
+                        lines.append("  " + " | ".join(facts))
+                    if len(matches) > 10:
+                        lines.append(f"  ... and {len(matches) - 10} more matches")
+
+            elif func_name == "get_inventory_status":
                 total = result_data.get('total_products', 0)
                 inventory = result_data.get('inventory', [])
                 lines.append(f"📦 **Inventory Status** ({total} products)")
                 
                 # Count by status
-                out_of_stock = [p for p in inventory if p['status'] == 'out_of_stock']
-                low_stock = [p for p in inventory if p['status'] == 'low_stock']
+                out_of_stock = [p for p in inventory if _row_status(p) == 'out_of_stock']
+                low_stock = [p for p in inventory if _row_status(p) == 'low_stock']
                 ok_count = total - len(out_of_stock) - len(low_stock)
                 
                 lines.append(f"✅ OK: {ok_count} | ⚠️ Low Stock: {len(low_stock)} | ❌ Out of Stock: {len(out_of_stock)}")
                 
                 # Show the actual per-product numbers so answers are precise and
                 # always reflect exactly what the database returned.
+                show_barcode = "barcode" in (original_command or "").lower()
                 for p in inventory[:10]:
-                    status_label = p['status'].replace('_', ' ')
-                    lines.append(f"• **{p['name']}** - {p['current_stock']} units ({status_label})")
+                    status_label = _row_status(p).replace('_', ' ')
+                    stock = p.get('current_stock')
+                    line = (f"• **{p.get('name') or 'Unknown product'}** - "
+                            f"{stock if stock is not None else '?'} units ({status_label})")
+                    if show_barcode:
+                        line += f" | Barcode: {_text_or_placeholder(p.get('barcode'))}"
+                    lines.append(line)
                 if len(inventory) > 10:
                     lines.append(f"  ... and {len(inventory) - 10} more products")
                         
@@ -2321,10 +2397,16 @@ class AgentOrchestrator:
                 else:
                     lines.append(f"⚠️ **Low Stock Alert** ({summary.get('low_stock_count', 0)} items, {summary.get('out_of_stock_count', 0)} out of stock)")
                     lines.append("")
+                    wants_barcode = "barcode" in (original_command or "").lower()
                     for item in items[:10]:
-                        status = "🔴 OUT OF STOCK" if item['current_stock'] <= 0 else f"🟡 Stock: {item['current_stock']}"
-                        lines.append(f"• **{item['name']}** - {status}")
-                        lines.append(f"  Reorder point: {item['reorder_point']} | Suggested qty: {item['suggested_reorder_qty']}")
+                        stock = item.get('current_stock') or 0
+                        status = "🔴 OUT OF STOCK" if stock <= 0 else f"🟡 Stock: {stock}"
+                        lines.append(f"• **{item.get('name') or 'Unknown product'}** - {status}")
+                        details = (f"Reorder point: {item.get('reorder_point', 0)} | "
+                                   f"Suggested qty: {item.get('suggested_reorder_qty', 0)}")
+                        if wants_barcode:
+                            details += f" | Barcode: {_text_or_placeholder(item.get('barcode'))}"
+                        lines.append(f"  {details}")
                     if len(items) > 10:
                         lines.append(f"\n... and {len(items) - 10} more items")
                         
@@ -2355,8 +2437,9 @@ class AgentOrchestrator:
                     lines.append("")
                     for po in orders[:10]:
                         status_emoji = {"draft": "📝", "pending": "⏳", "approved": "✅", "received": "📦", "cancelled": "❌"}.get(po['status'], "📋")
-                        lines.append(f"{status_emoji} **{po['po_number']}** - {po['supplier_name']}")
-                        lines.append(f"   Status: {po['status'].title()} | Total: ${po['total_amount']:.2f}")
+                        lines.append(f"{status_emoji} **{po.get('po_number')}** - {po.get('supplier_name')}")
+                        lines.append(f"   Status: {_text_or_placeholder(po.get('status')).title()} | "
+                                     f"Total: ${money_str(po.get('total_amount', 0))}")
                     if len(orders) > 10:
                         lines.append(f"\n... and {len(orders) - 10} more orders")
                         
@@ -2365,7 +2448,7 @@ class AgentOrchestrator:
                     lines.append(f"✅ **Purchase Order Created Successfully!**")
                     lines.append(f"📋 PO Number: {result_data.get('po_number')}")
                     lines.append(f"🏢 Supplier: {result_data.get('supplier_name')}")
-                    lines.append(f"💰 Total Amount: ${result_data.get('total_amount', 0):.2f}")
+                    lines.append(f"💰 Total Amount: ${money_str(result_data.get('total_amount', 0))}")
                     lines.append(f"📦 Items: {result_data.get('items_count', 0)}")
                     lines.append(f"📊 Status: {result_data.get('status', 'draft').title()}")
                 else:
@@ -2419,12 +2502,16 @@ class AgentOrchestrator:
                 if result_data.get("error"):
                     lines.append(f"❌ **Error**: {result_data['error']}")
                 else:
-                    lines.append(f"📦 **{result_data.get('name')}**")
-                    lines.append(f"Barcode: {result_data.get('barcode', 'N/A')}")
-                    lines.append(f"Category: {result_data.get('category', 'N/A')}")
-                    lines.append(f"Price: ${result_data.get('price', 0):.2f}")
-                    lines.append(f"Cost: ${result_data.get('cost', 0):.2f}")
-                    lines.append(f"Stock: {result_data.get('stock', 0)} units")
+                    lines.append(f"📦 **{result_data.get('name') or 'Product'}**")
+                    lines.append(f"Barcode: {_text_or_placeholder(result_data.get('barcode'))}")
+                    lines.append(f"Category: {_text_or_placeholder(result_data.get('category'))}")
+                    # Money arrives as a formatted string ("68,000.00"), so it
+                    # must go through money_str; ":.2f" raised and cost the user
+                    # the whole answer.
+                    lines.append(f"Price: ${money_str(result_data.get('price', 0))}")
+                    lines.append(f"Cost: ${money_str(result_data.get('cost', 0))}")
+                    stock = result_data.get('stock')
+                    lines.append(f"Stock: {stock if stock is not None else '?'} units")
                     if result_data.get('reorder_enabled'):
                         lines.append(f"Reorder Point: {result_data.get('reorder_point', 0)}")
                         
@@ -2808,7 +2895,7 @@ class AgentOrchestrator:
         lines = [f"Found {total} purchase orders:\n"]
         
         for po in orders[:10]:
-            lines.append(f"• **{po['po_number']}** - {po['supplier_name']} | Status: {po['status']} | Total: ${po['total_amount']:.2f}")
+            lines.append(f"• **{po['po_number']}** - {po['supplier_name']} | Status: {po['status']} | Total: ${money_str(po.get('total_amount', 0))}")
             
         if len(orders) > 10:
             lines.append(f"\n... and {len(orders) - 10} more orders")

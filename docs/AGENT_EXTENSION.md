@@ -211,6 +211,33 @@ Rules:
 - When any step fails, `success` is false and `message` must indicate the
   task is incomplete.
 
+## Answer formatting contract
+
+`_format_tool_results_for_user(tool_results, original_command)` builds the
+user-visible answer straight from the tool payload — for data questions it *is*
+the answer, so it has to carry the field the user asked for and it must never
+raise.
+
+- **Money is a string.** Tool payloads carry amounts already formatted
+  (`"68,000.00"`, `"1,050,000.00"`). Format them with `money_str(...)` /
+  `money_dec(...)` from `ai_tools`; `f"{amount:.2f}"` raises `ValueError` on a
+  string and used to surface as the generic "I'm sorry, something went wrong.
+  Please try again." reply.
+- **A specific question needs a specific field.** `search_products` renders as
+  `🔎 Product Search` with barcode, category, price and stock per match;
+  `get_product_details` always prints the barcode; `get_inventory_status` and
+  `get_low_stock_items` add `Barcode:` when the request asked for one
+  (`original_command` is passed in for exactly this). Never answer a "what is
+  the barcode / price / id" question with a stock-only summary.
+- **Optional fields use `_text_or_placeholder`** (`"not set"`) and `.get(...)`,
+  never a bare `row['key']`, so a missing key cannot break a whole list.
+- **Failures stay local.** Each result is rendered through
+  `_format_single_result`, which degrades to `_readable_result` (a plain
+  sentence) on any exception. One unreadable payload can therefore never hide
+  the other results or turn the turn into an error message.
+- Add a case to `test_agent_result_formatting.py` for every new tool payload
+  shape, including the "asked for an identifier" path.
+
 ## Token-budget guidelines
 
 - Compact tool results before they enter the summary prompt
