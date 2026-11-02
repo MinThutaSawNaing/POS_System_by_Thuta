@@ -2901,6 +2901,11 @@ email_auth = register_email_auth(app, db, globals())
 EmailChallenge = email_auth.Challenge
 EmailSendEvent = email_auth.SendEvent
 
+# Register report delivery (email + schedules). Its tables are new, so
+# create_all below provisions them without an ALTER-TABLE migration.
+from report_scheduler import register_report_scheduler
+report_scheduler = register_report_scheduler(app, db, globals())
+
 # Create database tables and admin user
 with app.app_context():
     # Harden SQLite for concurrent POS writes: WAL journaling plus a busy timeout
@@ -2915,6 +2920,13 @@ with app.app_context():
     db.session.execute(text('PRAGMA journal_mode=WAL'))
     db.session.execute(text('PRAGMA busy_timeout=5000'))
     db.create_all()
+    # Loli works on her own for managers and the boss until an operator turns
+    # the kill switch off in Settings. Explicit saved values always win.
+    try:
+        if get_setting('agent_autonomy_enabled') is None:
+            set_setting('agent_autonomy_enabled', 'true')
+    except Exception as autonomy_error:
+        app.logger.warning(f'Could not seed agent autonomy default: {autonomy_error}')
     inspector = inspect(db.engine)
     # Must precede *every* ORM User query: create_all does not alter old tables.
     for column_name, column_sql in (
@@ -10244,7 +10256,11 @@ AI_MODELS = {
     'DebtPayment': DebtPayment,
     'Delivery': Delivery,
     'ReturnExchange': ReturnExchange,
-    'ReturnExchangeItem': ReturnExchangeItem
+    'ReturnExchangeItem': ReturnExchangeItem,
+    'ScheduledReport': report_scheduler.models['ScheduledReport'],
+    'ScheduledReportRun': report_scheduler.models['ScheduledReportRun'],
+    # Service object (not a model): report delivery for the AI tools.
+    'report_scheduler': report_scheduler,
 }
 
 
@@ -10815,6 +10831,10 @@ def healthcheck():
 
 from product_import import register_product_import
 register_product_import(app, db, globals())
+
+# Loli's report schedules are delivered by one daemon poller inside this
+# process. It no-ops under pytest/Testing and when AI_SCHEDULER_ENABLED is off.
+report_scheduler.start()
 
 
 if __name__ == '__main__':

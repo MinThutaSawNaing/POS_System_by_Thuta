@@ -142,6 +142,36 @@ Cancel a purchase order. Can only cancel orders in draft, pending, or approved s
 }
 ```
 
+## `cancel_scheduled_report`
+
+Stop a scheduled report email so it never sends again.
+
+- Category: `reports`
+- Mutates data: `True`
+- Required role metadata: `manager` (runtime policy also applies)
+- Autonomy: `auto`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "integer",
+      "description": "The scheduled report id."
+    },
+    "reason": {
+      "type": "string",
+      "description": "Optional reason for the audit trail."
+    }
+  },
+  "required": [
+    "task_id"
+  ]
+}
+```
+
 ## `create_branch`
 
 Create a new branch with a unique code.
@@ -642,6 +672,77 @@ Permanently delete an unused shared supplier. Refuses if purchase orders, commun
 }
 ```
 
+## `email_report`
+
+Email a report right now as an Excel and/or PDF attachment. The file is generated from live data for the active branch.
+
+- Category: `reports`
+- Mutates data: `True`
+- Required role metadata: `manager` (runtime policy also applies)
+- Autonomy: `auto`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "report": {
+      "type": "string",
+      "enum": [
+        "low_stock",
+        "inventory",
+        "sales_summary"
+      ],
+      "description": "Which report to send."
+    },
+    "recipient": {
+      "type": "string",
+      "enum": [
+        "me",
+        "managers",
+        "boss",
+        "staff",
+        "everyone",
+        "custom"
+      ],
+      "description": "'me' sends to the requester. Other choices need a manager role. Default 'me'."
+    },
+    "custom_recipients": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Email addresses, only when recipient is 'custom'."
+    },
+    "delivery_format": {
+      "type": "string",
+      "enum": [
+        "xlsx",
+        "pdf",
+        "both"
+      ],
+      "description": "Attachment format. Default 'xlsx'."
+    },
+    "note": {
+      "type": "string",
+      "description": "Optional short message shown above the report in the email."
+    },
+    "params": {
+      "type": "object",
+      "description": "Report options, for example {\"days\": 7} for sales_summary."
+    },
+    "notify_when_empty": {
+      "type": "boolean",
+      "description": "Send anyway when the report has zero rows. Default true."
+    }
+  },
+  "required": [
+    "report"
+  ]
+}
+```
+
 ## `get_branch_list`
 
 List all branches with active/default status.
@@ -783,6 +884,24 @@ Summarize active-branch deliveries by stage and show open delivery work.
       "description": "Maximum results, 1 to 100."
     }
   }
+}
+```
+
+## `get_email_delivery_status`
+
+Check whether report email delivery is configured (Resend SMTP), which reports can be sent, and which recipient choices exist.
+
+- Category: `reports`
+- Mutates data: `False`
+- Required role metadata: `None` (runtime policy also applies)
+- Autonomy: `approval`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {}
 }
 ```
 
@@ -1201,6 +1320,29 @@ List recent active-branch warehouse-to-stock transfers.
 }
 ```
 
+## `list_scheduled_reports`
+
+List scheduled report emails with their schedule, next run time and last delivery status.
+
+- Category: `reports`
+- Mutates data: `False`
+- Required role metadata: `None` (runtime policy also applies)
+- Autonomy: `approval`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "include_disabled": {
+      "type": "boolean",
+      "description": "Include cancelled/disabled schedules. Default false."
+    }
+  }
+}
+```
+
 ## `process_return_exchange`
 
 Process a return (refund) or exchange against an original sale transaction. Returned items restock automatically; exchanges create an adjustment sale.
@@ -1398,6 +1540,102 @@ Register a new customer in the active branch with optional phone, email, and add
   },
   "required": [
     "name"
+  ]
+}
+```
+
+## `schedule_report`
+
+Schedule a report email to be sent every day or every week at a chosen local time (store timezone Asia/Yangon).
+
+- Category: `reports`
+- Mutates data: `True`
+- Required role metadata: `manager` (runtime policy also applies)
+- Autonomy: `auto`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "report": {
+      "type": "string",
+      "enum": [
+        "low_stock",
+        "inventory",
+        "sales_summary"
+      ],
+      "description": "Which report to send."
+    },
+    "send_time": {
+      "type": "string",
+      "description": "24-hour local time, for example '09:00'. Default 09:00."
+    },
+    "frequency": {
+      "type": "string",
+      "enum": [
+        "daily",
+        "weekly"
+      ],
+      "description": "How often. Default daily."
+    },
+    "weekday": {
+      "type": "string",
+      "enum": [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday"
+      ],
+      "description": "Required when frequency is weekly."
+    },
+    "recipient": {
+      "type": "string",
+      "enum": [
+        "me",
+        "managers",
+        "boss",
+        "staff",
+        "everyone",
+        "custom"
+      ],
+      "description": "'me' sends to the requester. Other choices need a manager role."
+    },
+    "custom_recipients": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Email addresses, only when recipient is 'custom'."
+    },
+    "delivery_format": {
+      "type": "string",
+      "enum": [
+        "xlsx",
+        "pdf",
+        "both"
+      ],
+      "description": "Attachment format. Default 'xlsx'."
+    },
+    "note": {
+      "type": "string",
+      "description": "Optional short message shown above the report."
+    },
+    "params": {
+      "type": "object",
+      "description": "Report options, for example {\"days\": 7}."
+    },
+    "notify_when_empty": {
+      "type": "boolean",
+      "description": "Send anyway when the report has zero rows. Default true."
+    }
+  },
+  "required": [
+    "report"
   ]
 }
 ```
@@ -1721,6 +1959,98 @@ Update a promotion's start/end dates, discount type, or discount value.
   },
   "required": [
     "promo_id"
+  ]
+}
+```
+
+## `update_scheduled_report`
+
+Change an existing scheduled report: time, frequency, weekday, format, recipient, report or note.
+
+- Category: `reports`
+- Mutates data: `True`
+- Required role metadata: `manager` (runtime policy also applies)
+- Autonomy: `auto`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "integer",
+      "description": "The scheduled report id."
+    },
+    "send_time": {
+      "type": "string",
+      "description": "New 24-hour local time, for example '08:30'."
+    },
+    "frequency": {
+      "type": "string",
+      "enum": [
+        "daily",
+        "weekly"
+      ]
+    },
+    "weekday": {
+      "type": "string",
+      "enum": [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday"
+      ]
+    },
+    "recipient": {
+      "type": "string",
+      "enum": [
+        "me",
+        "managers",
+        "boss",
+        "staff",
+        "everyone",
+        "custom"
+      ]
+    },
+    "custom_recipients": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "delivery_format": {
+      "type": "string",
+      "enum": [
+        "xlsx",
+        "pdf",
+        "both"
+      ]
+    },
+    "report": {
+      "type": "string",
+      "enum": [
+        "low_stock",
+        "inventory",
+        "sales_summary"
+      ]
+    },
+    "note": {
+      "type": "string"
+    },
+    "notify_when_empty": {
+      "type": "boolean"
+    },
+    "enabled": {
+      "type": "boolean",
+      "description": "Pause or resume the schedule."
+    }
+  },
+  "required": [
+    "task_id"
   ]
 }
 ```

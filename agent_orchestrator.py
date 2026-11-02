@@ -120,6 +120,15 @@ TOOL_CATEGORIES = {
     "transfer_history": {
         "tools": ["get_warehouse_transfer_history"],
         "keywords": ["transfer history", "warehouse transfer", "restock history"]
+    },
+    "reports": {
+        "tools": ["get_email_delivery_status", "email_report", "schedule_report",
+                  "list_scheduled_reports", "update_scheduled_report",
+                  "cancel_scheduled_report"],
+        "keywords": ["email", "e-mail", "mail", "send me", "send it", "report",
+                     "schedule", "scheduled", "every day", "everyday", "daily",
+                     "weekly", "every week", "excel", "spreadsheet", "pdf",
+                     "attachment", "inbox", "remind me"]
     }
 }
 
@@ -153,6 +162,9 @@ _WRITE_INTENT_KEYWORDS = (
     "set price", "change price", "update price", "price update",
     "adjust stock", "update stock", "stock adjustment",
     "rename", "deactivate", "mark as delivered", "mark as paid",
+    "email", "mail me", "send me", "send it", "schedule", "every day",
+    "every morning", "daily at", "weekly", "every week", "stop sending",
+    "cancel the report",
 )
 
 
@@ -174,6 +186,9 @@ You own live database tools. Any question about stock, products, prices, sales, 
 ## Safe operations
 Your registered read tools answer questions with live facts. Low-risk changes (for example registering a customer or supplier, or creating a category) may be executed automatically when autonomy is enabled for the current manager. Riskier changes — deletes, price or money changes, stock adjustments, approvals, cancellations, transfers — always require explicit human approval before they run. Never claim you created, approved, cancelled, transferred, or modified any business record unless a step result confirms it actually happened; otherwise say it is awaiting approval.
 Deleting a product is a manager (or owner) action. When the product is still used in other tabs (warehouse stock or transfers, promotions, purchase order lines, supplier price agreements), call delete_product once to surface exactly which records would go, then ask the user whether to delete the product everywhere and only re-call with cascade=true after they agree. When it also has sales history, ask "The product you selected have sale history. Are you sure you want to delete it?" and add confirm=true. Sales and return/exchange records are always kept, never deleted — they are only unlinked from the removed product.
+
+## Report delivery
+You can email reports as Excel and/or PDF attachments, and schedule them to repeat. Reports: `low_stock`, `inventory`, `sales_summary`. Use `get_email_delivery_status` when you are unsure whether email is configured. Use `email_report` to send one now and `schedule_report` to create a recurring delivery (`send_time` is 24-hour store time in Asia/Yangon; `frequency` is `daily` or `weekly` with a `weekday`). The recipient is a selector, not an address: `me` is the person asking, and only a manager may choose another selector. Manage existing schedules with `list_scheduled_reports`, `update_scheduled_report` and `cancel_scheduled_report`. The attachment is rendered by the server from live branch data, so never claim a report was emailed unless a tool result reports status `sent`.
 
 ## Memory commands
 The user can type `#remember <detail>` to store an always-on memory, `#memory` to list those memories, and `#forget <id>` to remove one. Those commands are handled by the system before your turn, so never write, confirm, or invent a memory yourself.
@@ -660,7 +675,7 @@ class AgentOrchestrator:
 
         True only when ALL hold: (a) the 'agent_autonomy_enabled' kill-switch
         setting is truthy; (b) the current user exists and their role is
-        exactly 'manager'. Any failure resolving either side denies autonomy.
+        'manager' or 'boss'. Any failure resolving either side denies autonomy.
         """
         try:
             raw = self.get_setting_func("agent_autonomy_enabled")
@@ -684,7 +699,7 @@ class AgentOrchestrator:
             return False
         if user is None:
             return False
-        return getattr(user, "role", None) == "manager"
+        return getattr(user, "role", None) in ("manager", "boss")
                 
     def process_command(self, command: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -1056,7 +1071,9 @@ class AgentOrchestrator:
             return False
         task_hints = ("plan", "step", " then ", "report",
                       "first", "second", "third",
-                      "compare", " vs ", "versus")
+                      "compare", " vs ", "versus",
+                      "email", "mail", "schedule", "every day", "everyday",
+                      "daily", "weekly", "every week")
         if any(hint in text for hint in task_hints):
             return True
         starters = ("do ", "run ", "use ", "order ", "create ", "make ",

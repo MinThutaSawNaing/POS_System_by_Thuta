@@ -459,6 +459,105 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
             "required": ["product_id", "discount_type", "discount_value", "start_date", "end_date"]
         }
     },
+    "get_email_delivery_status": {
+        "name": "get_email_delivery_status",
+        "description": "Check whether report email delivery is configured (Resend SMTP), which reports can be sent, and which recipient choices exist.",
+        "parameters": {"type": "object", "properties": {}}
+    },
+    "email_report": {
+        "name": "email_report",
+        "description": "Email a report right now as an Excel and/or PDF attachment. The file is generated from live data for the active branch.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "report": {"type": "string", "enum": ["low_stock", "inventory", "sales_summary"],
+                           "description": "Which report to send."},
+                "recipient": {"type": "string", "enum": ["me", "managers", "boss", "staff", "everyone", "custom"],
+                              "description": "'me' sends to the requester. Other choices need a manager role. Default 'me'."},
+                "custom_recipients": {"type": "array", "items": {"type": "string"},
+                                      "description": "Email addresses, only when recipient is 'custom'."},
+                "delivery_format": {"type": "string", "enum": ["xlsx", "pdf", "both"],
+                                    "description": "Attachment format. Default 'xlsx'."},
+                "note": {"type": "string", "description": "Optional short message shown above the report in the email."},
+                "params": {"type": "object", "description": "Report options, for example {\"days\": 7} for sales_summary."},
+                "notify_when_empty": {"type": "boolean",
+                                      "description": "Send anyway when the report has zero rows. Default true."}
+            },
+            "required": ["report"]
+        }
+    },
+    "schedule_report": {
+        "name": "schedule_report",
+        "description": "Schedule a report email to be sent every day or every week at a chosen local time (store timezone Asia/Yangon).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "report": {"type": "string", "enum": ["low_stock", "inventory", "sales_summary"],
+                           "description": "Which report to send."},
+                "send_time": {"type": "string", "description": "24-hour local time, for example '09:00'. Default 09:00."},
+                "frequency": {"type": "string", "enum": ["daily", "weekly"], "description": "How often. Default daily."},
+                "weekday": {"type": "string", "enum": ["monday", "tuesday", "wednesday", "thursday",
+                                                       "friday", "saturday", "sunday"],
+                            "description": "Required when frequency is weekly."},
+                "recipient": {"type": "string", "enum": ["me", "managers", "boss", "staff", "everyone", "custom"],
+                              "description": "'me' sends to the requester. Other choices need a manager role."},
+                "custom_recipients": {"type": "array", "items": {"type": "string"},
+                                      "description": "Email addresses, only when recipient is 'custom'."},
+                "delivery_format": {"type": "string", "enum": ["xlsx", "pdf", "both"],
+                                    "description": "Attachment format. Default 'xlsx'."},
+                "note": {"type": "string", "description": "Optional short message shown above the report."},
+                "params": {"type": "object", "description": "Report options, for example {\"days\": 7}."},
+                "notify_when_empty": {"type": "boolean",
+                                      "description": "Send anyway when the report has zero rows. Default true."}
+            },
+            "required": ["report"]
+        }
+    },
+    "list_scheduled_reports": {
+        "name": "list_scheduled_reports",
+        "description": "List scheduled report emails with their schedule, next run time and last delivery status.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "include_disabled": {"type": "boolean",
+                                     "description": "Include cancelled/disabled schedules. Default false."}
+            }
+        }
+    },
+    "update_scheduled_report": {
+        "name": "update_scheduled_report",
+        "description": "Change an existing scheduled report: time, frequency, weekday, format, recipient, report or note.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "integer", "description": "The scheduled report id."},
+                "send_time": {"type": "string", "description": "New 24-hour local time, for example '08:30'."},
+                "frequency": {"type": "string", "enum": ["daily", "weekly"]},
+                "weekday": {"type": "string", "enum": ["monday", "tuesday", "wednesday", "thursday",
+                                                      "friday", "saturday", "sunday"]},
+                "recipient": {"type": "string", "enum": ["me", "managers", "boss", "staff", "everyone", "custom"]},
+                "custom_recipients": {"type": "array", "items": {"type": "string"}},
+                "delivery_format": {"type": "string", "enum": ["xlsx", "pdf", "both"]},
+                "report": {"type": "string", "enum": ["low_stock", "inventory", "sales_summary"]},
+                "note": {"type": "string"},
+                "notify_when_empty": {"type": "boolean"},
+                "enabled": {"type": "boolean", "description": "Pause or resume the schedule."}
+            },
+            "required": ["task_id"]
+        }
+    },
+    "cancel_scheduled_report": {
+        "name": "cancel_scheduled_report",
+        "description": "Stop a scheduled report email so it never sends again.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "integer", "description": "The scheduled report id."},
+                "reason": {"type": "string", "description": "Optional reason for the audit trail."}
+            },
+            "required": ["task_id"]
+        }
+    },
     "register_customer": {
         "name": "register_customer",
         "description": "Register a new customer in the active branch with optional phone, email, and address.",
@@ -835,7 +934,14 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
 
 # Smart autonomy: tools that may execute immediately for managers when the
 # global autonomy switch is on. All other write tools require approval.
-_AUTO_EXECUTE_TOOLS = {"register_customer", "create_supplier", "update_supplier", "update_customer", "create_category"}
+_AUTO_EXECUTE_TOOLS = {
+    "register_customer", "create_supplier", "update_supplier", "update_customer",
+    "create_category",
+    # Report delivery: these only read POS data, render a file and send it to an
+    # address resolved by the server, so they run without a proposal step.
+    "email_report", "schedule_report", "update_scheduled_report",
+    "cancel_scheduled_report",
+}
 
 # ==============================================================================
 # TOOL_METADATA -- the single source of truth for every tool.
@@ -904,12 +1010,22 @@ _TOOL_META = {
     "update_branch":                   ("system",      True,  'manager', "Update a branch's details or active status.", "small"),
     "set_default_branch":              ("system",      True,  'manager', "Make a branch the company-wide default.", "small"),
     "deactivate_branch":               ("system",      True,  'manager', "Deactivate a branch; refuses the default branch.", "small"),
+    # --- report delivery (email + schedules) ---
+    "get_email_delivery_status":       ("reports",     False, None,      "Whether report email is configured, plus available reports and recipient choices.", "small"),
+    "email_report":                    ("reports",     True,  None,      "Email a report now as Excel and/or PDF to a server-resolved recipient.", "small"),
+    "schedule_report":                 ("reports",     True,  None,      "Email a report every day or week at a chosen local time.", "small"),
+    "list_scheduled_reports":          ("reports",     False, None,      "List scheduled report emails, their schedule and last delivery status.", "medium"),
+    "update_scheduled_report":         ("reports",     True,  None,      "Change a scheduled report's time, frequency, format, recipient or pauses it.", "small"),
+    "cancel_scheduled_report":         ("reports",     True,  None,      "Stop a scheduled report email permanently.", "small"),
 }
 
 # Explicit allowlist: new tools are managerial until reviewed for cashier safety.
 CASHIER_SAFE_TOOLS = frozenset({
     'get_inventory_status', 'get_low_stock_items', 'search_products',
     'get_product_details', 'get_current_branch_context',
+    # Read-only report delivery: staff may see whether email is configured and
+    # which schedules exist. Sending and scheduling are managerial.
+    'get_email_delivery_status', 'list_scheduled_reports',
 })
 _ROLE_LEVELS = {'staff': 1, 'cashier': 1, 'manager': 2, 'boss': 3}
 
@@ -1885,6 +2001,133 @@ class AITools:
     # {"success": True, ...} or {"error": ...} with audit info, and
     # serialize money as plain 2-decimal strings via money_plain().
     # ==================================================================
+
+    # ------------------------------------------------------------------
+    # Report delivery (email + schedules)
+    # ------------------------------------------------------------------
+
+    def _report_service(self):
+        service = (self.models or {}).get('report_scheduler')
+        if service is None:
+            return None, {"error": "Report delivery is unavailable in this process."}
+        return service, None
+
+    def _report_scope(self):
+        scope = trusted_tool_context(self.context)
+        return {'user_id': scope.get('user_id'), 'role': scope.get('role'),
+                'branch_id': scope.get('branch_id')}
+
+    @staticmethod
+    def _report_error(exc):
+        return getattr(exc, 'message', None) or str(exc) or 'Report delivery failed.'
+
+    def get_email_delivery_status(self) -> Dict[str, Any]:
+        """Whether report email is configured, and what can be sent to whom."""
+        service, error = self._report_service()
+        if error:
+            return error
+        try:
+            mail = service.mail_status()
+            status = service.status(self._report_scope())
+        except Exception as exc:
+            return {"error": self._report_error(exc)}
+        configured = bool(mail.get('configured'))
+        return {
+            "email_configured": configured,
+            "sender": mail.get('sender') or '',
+            "timezone": status.get('timezone'),
+            "reports": service.kinds(),
+            "recipients": list(service.recipients),
+            "scheduled_reports": status.get('active', 0),
+            "next_scheduled_run": status.get('next_run', ''),
+            "message": ("Email delivery is ready. I can email a report now or schedule it."
+                        if configured else
+                        "Email is not configured yet. A manager must save the Resend SMTP "
+                        "settings before I can send reports."),
+        }
+
+    def email_report(self, report: str, recipient: str = "me", custom_recipients=None,
+                     delivery_format: str = "xlsx", note: str = "", params: Dict = None,
+                     notify_when_empty: bool = True) -> Dict[str, Any]:
+        """Generate a report and email it immediately."""
+        service, error = self._report_service()
+        if error:
+            return error
+        try:
+            result = service.send_now(
+                self._report_scope(), report, recipient=recipient,
+                custom_recipients=custom_recipients, delivery_format=delivery_format,
+                note=note, params=params, notify_when_empty=notify_when_empty)
+        except Exception as exc:
+            return {"error": self._report_error(exc)}
+        if result.get('status') == 'sent':
+            result['message'] = (
+                f"Emailed the {result.get('title', report)} to "
+                f"{', '.join(result.get('recipients') or [])} "
+                f"({len(result.get('attachments') or [])} attachment(s), "
+                f"{result.get('rows', 0)} row(s)).")
+        return result
+
+    def schedule_report(self, report: str, send_time: str = "09:00", frequency: str = "daily",
+                        weekday: str = None, recipient: str = "me", custom_recipients=None,
+                        delivery_format: str = "xlsx", note: str = "", params: Dict = None,
+                        notify_when_empty: bool = True) -> Dict[str, Any]:
+        """Save a recurring report email."""
+        service, error = self._report_service()
+        if error:
+            return error
+        try:
+            return service.create(
+                self._report_scope(), report, send_time=send_time, frequency=frequency,
+                weekday=weekday, recipient=recipient, custom_recipients=custom_recipients,
+                delivery_format=delivery_format, note=note, params=params,
+                notify_when_empty=notify_when_empty)
+        except Exception as exc:
+            return {"error": self._report_error(exc)}
+
+    def list_scheduled_reports(self, include_disabled: bool = False) -> Dict[str, Any]:
+        """Scheduled report emails for this user (managers see their branch)."""
+        service, error = self._report_service()
+        if error:
+            return error
+        try:
+            return service.list_tasks(self._report_scope(), include_disabled=include_disabled)
+        except Exception as exc:
+            return {"error": self._report_error(exc)}
+
+    def update_scheduled_report(self, task_id: int, send_time: str = None,
+                                frequency: str = None, weekday: str = None,
+                                recipient: str = None, custom_recipients=None,
+                                delivery_format: str = None, report: str = None,
+                                note: str = None, notify_when_empty: bool = None,
+                                enabled: bool = None) -> Dict[str, Any]:
+        """Change an existing schedule."""
+        service, error = self._report_service()
+        if error:
+            return error
+        changes = {key: value for key, value in {
+            'send_time': send_time, 'frequency': frequency, 'weekday': weekday,
+            'recipient': recipient, 'custom_recipients': custom_recipients,
+            'delivery_format': delivery_format, 'report_kind': report, 'note': note,
+            'notify_when_empty': notify_when_empty, 'enabled': enabled,
+        }.items() if value is not None}
+        if not changes:
+            return {"error": "Tell me what to change: time, frequency, weekday, format, "
+                             "recipient, report or note."}
+        try:
+            return service.update(self._report_scope(), task_id, **changes)
+        except Exception as exc:
+            return {"error": self._report_error(exc)}
+
+    def cancel_scheduled_report(self, task_id: int, reason: str = None) -> Dict[str, Any]:
+        """Stop a schedule permanently."""
+        service, error = self._report_service()
+        if error:
+            return error
+        try:
+            return service.cancel(self._report_scope(), task_id, reason=reason or '')
+        except Exception as exc:
+            return {"error": self._report_error(exc)}
 
     def upsert_product(self, name: str, price, cost=None, tax_rate=0.0, stock: int = 0,
                        category: str = None, reorder_point: int = 10,
@@ -3231,6 +3474,9 @@ _CASHIER_RESULT_FIELDS = frozenset({
     'total_products', 'inventory', 'summary', 'items', 'low_stock_count',
     'out_of_stock_count', 'product_id', 'barcode', 'category', 'current_stock',
     'stock', 'status', 'price', 'tax_rate',
+    # Report-delivery presentation fields (no costs, prices or supplier data).
+    'success', 'title', 'rows', 'subject', 'recipients', 'attachments',
+    'task', 'tasks', 'count', 'schedule', 'next_run',
 })
 
 

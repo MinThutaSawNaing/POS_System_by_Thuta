@@ -526,6 +526,80 @@ def build_product_catalog_report(
     )
 
 
+LOW_STOCK_COLUMNS = (
+    column("product_name", "Product Name", width=34),
+    column("barcode", "Barcode", width=18),
+    column("category", "Category", width=18),
+    column("current_stock", "On hand", width=10, align="right", kind="int"),
+    column("reorder_point", "Reorder at", width=11, align="right", kind="int"),
+    column("suggested_qty", "Suggested qty", width=13, align="right", kind="int"),
+    column("unit_cost", "Unit cost", width=14, align="right", kind="money"),
+    column("estimated_cost", "Estimated cost", width=16, align="right", kind="money"),
+)
+
+
+def build_low_stock_report(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    brand: Mapping[str, Any] | None = None,
+    branch_name: str = "",
+    generated_by: str = "",
+    filters_text: str = "",
+    currency_suffix: str = "$",
+    generated_at: Any = None,
+) -> dict[str, Any]:
+    """Reorder worksheet: what is at or below its reorder point and how much to buy."""
+    rows: list[dict[str, Any]] = []
+    out_of_stock = 0
+    for record in records:
+        current = int(round(number_value(record.get("current_stock"))))
+        suggested = int(round(number_value(record.get("suggested_reorder_qty"))))
+        unit_cost = round_money_value(record.get("unit_cost"))
+        supplied = record.get("estimated_cost")
+        estimated = (round_money_value(supplied) if supplied is not None
+                     else round_money_value(suggested * unit_cost))
+        if current <= 0:
+            out_of_stock += 1
+        rows.append({
+            "product_name": str(record.get("name") or record.get("product_name") or "Unknown"),
+            "barcode": record.get("barcode"),
+            "category": record.get("category"),
+            "current_stock": current,
+            "reorder_point": int(round(number_value(record.get("reorder_point")))),
+            "suggested_qty": suggested,
+            "unit_cost": unit_cost,
+            "estimated_cost": estimated,
+        })
+
+    units = sum(row["suggested_qty"] for row in rows)
+    estimate = round_money_value(sum(row["estimated_cost"] for row in rows))
+    return _common_report_fields(
+        title="Low Stock Report",
+        subtitle="Products at or below their reorder point with suggested purchase quantities",
+        sheet_name="Low Stock",
+        file_stem="low_stock_report",
+        columns=LOW_STOCK_COLUMNS,
+        rows=rows,
+        totals={"suggested_qty": units, "estimated_cost": estimate},
+        summary=[
+            {"label": "Products to reorder", "value": f"{len(rows):,}"},
+            {"label": "Out of stock", "value": f"{out_of_stock:,}"},
+            {"label": "Units to order", "value": f"{units:,}"},
+            {
+                "label": "Estimated cost",
+                "value": format_report_cell(estimate, "money", currency_suffix),
+            },
+        ],
+        meta=_report_meta(branch_name, generated_by, filters_text, generated_at),
+        notes=[
+            "A product is listed when its stock is at or below its reorder point.",
+            "Estimated cost uses the current unit cost and the suggested quantity.",
+        ],
+        brand=brand,
+        currency_suffix=currency_suffix,
+    )
+
+
 def build_purchase_order_report(
     records: Iterable[Mapping[str, Any]],
     *,

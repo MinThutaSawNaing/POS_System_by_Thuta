@@ -170,6 +170,148 @@ class EmailAuthError(Exception):
         self.message, self.status = message, status
 
 
+DEFAULT_SMTP_HOST = 'smtp.resend.com'
+DEFAULT_SMTP_PORT = '465'
+DEFAULT_SMTP_USERNAME = 'resend'
+MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+MAX_RECIPIENTS = 20
+INSECURE_DEFAULT_SECRET = 'your_super_secret_key_here'
+
+
+def read_smtp_settings(get_setting):
+    """Saved SMTP values, falling back to the Resend environment defaults."""
+    values = []
+    for name, env, default in (
+            ('email_smtp_host', 'RESEND_SMTP_HOST', DEFAULT_SMTP_HOST),
+            ('email_smtp_port', 'RESEND_SMTP_PORT', DEFAULT_SMTP_PORT),
+            ('email_smtp_username', 'RESEND_SMTP_USERNAME', DEFAULT_SMTP_USERNAME)):
+        saved = get_setting(name, None) if get_setting else None
+        # An explicitly invalid saved/env value must fail closed, not silently
+        # fall back to a different endpoint or TLS mode.
+        values.append(os.environ.get(env, default) if saved is None else saved)
+    return values
+
+
+def mail_config(get_setting):
+    """Validated Resend credentials; ``valid`` is False when mail cannot be sent."""
+    key = (get_setting('resend_api_key', '') if get_setting else '') or os.environ.get('RESEND_API_KEY', '')
+    sender = (get_setting('email_from', '') if get_setting else '') or os.environ.get('RESEND_FROM_EMAIL', '')
+    host, port, username = read_smtp_settings(get_setting)
+    valid = True
+    try:
+        host, port, username = normalize_smtp(host, port, username)
+    except ValueError:
+        host, port, username, valid = '', 0, '', False
+    try:
+        key = normalize_smtp_password(key)
+    except ValueError:
+        key, valid = '', False
+    try:
+        sender = normalize_sender(sender)
+    except ValueError:
+        sender = ''
+    return SimpleNamespace(key=key, sender=sender, host=host, port=port, username=username,
+                           valid=valid and bool(key) and bool(sender))
+
+
+def is_secure_session_key(secret_key):
+    return bool(secret_key and secret_key != INSECURE_DEFAULT_SECRET)
+
+
+def normalize_attachments(attachments):
+    """Validate (filename, bytes, mime_type) triples and bound the total size."""
+    prepared = []
+    total = 0
+    for attachment in attachments or ():
+        try:
+            filename, payload, mime = attachment
+        except (TypeError, ValueError):
+            raise ValueError('Each attachment must be a (filename, bytes, mime_type) triple.') from None
+        name = str(filename or '').replace('\\', '/').split('/')[-1].strip()
+        if not name or any(character in name for character in '\r\n\x00'):
+            raise ValueError('Invalid attachment filename.')
+        if not isinstance(payload, (bytes, bytearray)):
+            raise ValueError('Attachment content must be bytes.')
+        mime = str(mime or 'application/octet-stream')
+        if '/' not in mime:
+            raise ValueError('Attachment mime type must look like type/subtype.')
+        maintype, subtype = mime.split('/', 1)
+        total += len(payload)
+        if total > MAX_ATTACHMENT_BYTES:
+            raise ValueError('Attachments exceed the email size limit.')
+        prepared.append((name, bytes(payload), maintype, subtype))
+    return prepared
+
+
+def send_mail(get_setting, secret_key, to, subject, text, html=None, attachments=(),
+              reply_to=None):
+    """Send one message, optionally with attachments, through the Resend SMTP relay.
+
+    Values are validated so an address cannot inject headers and an attachment
+    cannot exhaust memory; what the business chooses to send is the caller's
+    decision, not this transport's.
+    """
+    settings = mail_config(get_setting)
+    if not is_secure_session_key(secret_key) or not settings.valid:
+        raise EmailAuthError('Email is not configured. Save the Resend SMTP settings first.', 503)
+    values = [to] if isinstance(to, str) else list(to or [])
+    try:
+        recipients = [normalize_email(value) for value in values]
+    except ValueError:
+        raise EmailAuthError('Enter a valid recipient email address.', 400) from None
+    if not recipients:
+        raise EmailAuthError('At least one recipient email address is required.', 400)
+    if len(recipients) > MAX_RECIPIENTS:
+        raise EmailAuthError(f'At most {MAX_RECIPIENTS} recipients per message.', 400)
+    clean_subject = ' '.join(str(subject or '').split())
+    if not clean_subject:
+        raise EmailAuthError('An email subject is required.', 400)
+    try:
+        prepared = normalize_attachments(attachments)
+        reply_address = normalize_email(reply_to) if reply_to else None
+    except ValueError as failure:
+        raise EmailAuthError(str(failure), 400) from None
+
+    message = EmailMessage()
+    message['From'] = settings.sender
+    message['To'] = ', '.join(recipients)
+    message['Subject'] = clean_subject
+    message['Date'] = formatdate(localtime=True)
+    message['Auto-Submitted'] = 'auto-generated'
+    if reply_address:
+        message['Reply-To'] = reply_address
+    # Plain text first: clients without HTML support still read the content.
+    message.set_content(text or '')
+    if html:
+        message.add_alternative(html, subtype='html')
+    for name, payload, maintype, subtype in prepared:
+        message.add_attachment(payload, maintype=maintype, subtype=subtype, filename=name)
+
+    success = False
+    try:
+        context = ssl.create_default_context()
+        if settings.port in SMTP_SSL_PORTS:
+            transport = smtplib.SMTP_SSL(settings.host, settings.port, timeout=10, context=context)
+        else:
+            transport = smtplib.SMTP(settings.host, settings.port, timeout=10)
+        with transport as smtp:
+            smtp.ehlo()
+            if settings.port in SMTP_STARTTLS_PORTS:
+                # STARTTLS is mandatory; missing support or certificate failures
+                # abort before any credentials or message content are sent.
+                smtp.starttls(context=context)
+                smtp.ehlo()
+            smtp.login(settings.username, settings.key)
+            success = not smtp.send_message(message)
+    except Exception:
+        # Even a transport exception may contain credentials/provider content.
+        success = False
+    if not success:
+        raise EmailAuthError('Unable to send email. Please try again later.', 503)
+    return {'to': recipients, 'subject': clean_subject,
+            'attachments': [name for name, *_rest in prepared]}
+
+
 def register_email_auth(app, db, pos):
     class EmailChallenge(db.Model):
         __tablename__ = 'email_challenge'
@@ -220,77 +362,28 @@ def register_email_auth(app, db, pos):
         return digest('browser', session['email_browser'])
 
     def config():
-        key = pos['get_setting']('resend_api_key', '') or os.environ.get('RESEND_API_KEY', '')
-        sender = pos['get_setting']('email_from', '') or os.environ.get('RESEND_FROM_EMAIL', '')
-        host, port, username = smtp_settings()
-        valid = True
-        try:
-            host, port, username = normalize_smtp(host, port, username)
-        except ValueError:
-            host, port, username, valid = '', 0, '', False
-        try:
-            key = normalize_smtp_password(key)
-        except ValueError:
-            key, valid = '', False
-        try:
-            sender = normalize_sender(sender)
-        except ValueError:
-            sender = ''
-        return SimpleNamespace(key=key, sender=sender, host=host, port=port, username=username,
-                               valid=valid and bool(key) and bool(sender))
+        return mail_config(pos['get_setting'])
 
     def smtp_settings():
-        values = []
-        for name, env, default in (
-                ('email_smtp_host', 'RESEND_SMTP_HOST', 'smtp.resend.com'),
-                ('email_smtp_port', 'RESEND_SMTP_PORT', '465'),
-                ('email_smtp_username', 'RESEND_SMTP_USERNAME', 'resend')):
-            saved = pos['get_setting'](name, None)
-            # An explicitly invalid saved/env value must fail closed, not silently
-            # fall back to a different endpoint or TLS mode.
-            values.append(os.environ.get(env, default) if saved is None else saved)
-        return values
+        return read_smtp_settings(pos['get_setting'])
 
     def configured():
         return secure_session_key() and config().valid
 
     def secure_session_key():
-        return bool(app.secret_key and app.secret_key != 'your_super_secret_key_here')
+        return is_secure_session_key(app.secret_key)
 
     def send_code(email, code, purpose):
-        settings = config()
-        if not secure_session_key() or not settings.valid:
+        if not configured():
             raise EmailAuthError('Email authentication is not configured. Contact a manager.', 503)
+        subject, text, html = verification_email(code, purpose)
         try:
-            subject, text, html = verification_email(code, purpose)
-            message = EmailMessage()
-            message['From'] = settings.sender
-            message['To'] = email
-            message['Subject'] = subject
-            message['Date'] = formatdate(localtime=True)
-            message['Auto-Submitted'] = 'auto-generated'
-            # Plain text first: clients without HTML support still read the code.
-            message.set_content(text)
-            message.add_alternative(html, subtype='html')
-            context = ssl.create_default_context()
-            if settings.port in SMTP_SSL_PORTS:
-                transport = smtplib.SMTP_SSL(settings.host, settings.port, timeout=10, context=context)
-            else:
-                transport = smtplib.SMTP(settings.host, settings.port, timeout=10)
-            with transport as smtp:
-                smtp.ehlo()
-                if settings.port in SMTP_STARTTLS_PORTS:
-                    # STARTTLS is mandatory; missing support/certificate failures
-                    # abort before any credentials or OTP are sent.
-                    smtp.starttls(context=context)
-                    smtp.ehlo()
-                smtp.login(settings.username, settings.key)
-                success = not smtp.send_message(message)
-        except Exception:
-            # Even a transport exception may contain credentials/provider content.
-            success = False
-        if not success:
-            raise EmailAuthError('Unable to send verification email. Please try again later.', 503)
+            send_mail(pos['get_setting'], app.secret_key, email, subject, text, html=html)
+        except EmailAuthError as failure:
+            # Keep the verification-specific wording this flow has always used.
+            if failure.status == 503 and failure.message == 'Unable to send email. Please try again later.':
+                raise EmailAuthError('Unable to send verification email. Please try again later.', 503) from None
+            raise
 
     @contextmanager
     def locked():
