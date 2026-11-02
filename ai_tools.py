@@ -1124,6 +1124,64 @@ TOOL_SCHEMAS: Dict[str, Dict] = {
     for name, meta in TOOL_METADATA.items()
 }
 
+# ==============================================================================
+# TOOL_OUTPUT_HINTS -- result shapes for the tools a plan chains together.
+#
+# Plan steps pass earlier results forward with {"$from": "stepN.<path>"}, so the
+# planner has to know the real key names a tool returns. Without these hints it
+# guessed ("step1.products.0.id" for search_products, whose list is actually
+# "inventory" and whose row id is "product_id") and the reference died during
+# execution, taking the user's approved change with it. The planning catalog
+# prints one line per tool here, and the plan validator checks references
+# against it before anything runs.
+#
+# One short line per tool; keep in sync when a read tool's payload changes.
+# ==============================================================================
+TOOL_OUTPUT_HINTS: Dict[str, str] = {
+    "search_products":
+        "total_products, inventory[] {product_id, name, barcode, category, current_stock, price, cost, status}",
+    "get_inventory_status":
+        "total_products, inventory[] {product_id, name, barcode, current_stock, reorder_point, price, cost, status}",
+    "get_product_details":
+        "product_id, name, barcode, category, price, cost, stock, tax_rate, supplier_prices[] {supplier_id, agreed_price}",
+    "get_low_stock_items":
+        "summary {low_stock_count, out_of_stock_count}, items[] {product_id, name, barcode, current_stock, suggested_reorder_qty, unit_cost}",
+    "get_supplier_list":
+        "total_suppliers, suppliers[] {supplier_id, name, category, phone, quality_rating}",
+    "get_supplier_details":
+        "supplier_id, name, category, price_agreements[] {product_id, agreed_price}, recent_purchase_orders[] {po_id, po_number}",
+    "get_supplier_price_for_product":
+        "has_agreement, product_id, supplier_id, agreed_price, valid_from, valid_to",
+    "get_purchase_orders":
+        "total_orders, orders[] {po_id, po_number, supplier_id, status, total_amount, items[] {purchase_order_item_id, product_id, ordered_qty, received_qty}}",
+    "get_purchase_order_products":
+        "total_products, products[] {product_id, name, branch_id, cost}",
+    "get_warehouse_inventory":
+        "total_items, warehouse_items[] {warehouse_item_id, product_id, product_name, quantity, batch_number}",
+    "get_warehouse_transfer_history":
+        "total_transfers, transfers[] {id, target_branch_id, product_name, quantity, batch_number}",
+    "get_sales_trends":
+        "total_products_sold, top_selling_products[] {product_id, product_name, total_quantity, total_revenue, sale_count}",
+    "get_category_summary":
+        "total_categories, categories[] {id, name, path, product_count}",
+    "get_promotion_summary":
+        "total_promotions, promotions[] {id, product_id, discount_type, status}",
+    "get_customer_summary":
+        "total_customers, customers[] {id, name, phone, outstanding_balance}",
+    "get_debt_summary":
+        "totals_by_status, debts[] {id, customer_name, balance, status, due_date}",
+    "get_delivery_summary":
+        "stage_counts, deliveries[] {id, delivery_number, stage, priority}",
+    "get_return_exchange_summary":
+        "total_workflows, workflows[] {workflow_id, mode, refund_amount}",
+    "get_branch_list":
+        "total_branches, branches[] {branch_id, name, code}",
+    "get_current_branch_context":
+        "branch_id, name, code, is_default",
+    "list_scheduled_reports":
+        "count, tasks[] {task_id, report, format, send_time, frequency}",
+}
+
 
 class AITools:
     """Container for all AI tool functions with database access"""

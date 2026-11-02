@@ -23,6 +23,15 @@ try:
     from ai_tools import TOOL_METADATA as _TOOL_METADATA
 except (ImportError, KeyError, AttributeError):
     _TOOL_METADATA = {}
+
+# Result shapes for chained read tools. Without them the planner guesses key
+# names for its "$from" references (it wrote "step1.products.0.id" for a tool
+# that returns "inventory[].product_id"), and the guessed path fails at
+# execution time — after the user already approved the change.
+try:
+    from ai_tools import TOOL_OUTPUT_HINTS as _TOOL_OUTPUT_HINTS
+except (ImportError, KeyError, AttributeError):
+    _TOOL_OUTPUT_HINTS = {}
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -167,6 +176,17 @@ _WRITE_INTENT_KEYWORDS = (
     "cancel the report",
 )
 
+# Verb + field phrasing that the keyword list above cannot cover, because the
+# two words are separated ("change the SELL price", "raise the cost of Zeno").
+# A false positive only costs one planning call; a false negative leaves a
+# change request on the single-shot path, which offers no write tools at all —
+# the user is told the change is impossible. Match in that direction.
+_WRITE_INTENT_PATTERN = re.compile(
+    r"\b(?:change|update|set|edit|adjust|increase|decrease|raise|lower)\b"
+    r"[^.?!\n]{0,40}?\b(?:price|prices|cost|stock|quantity|name|barcode|"
+    r"reorder\s+point)\b",
+    re.IGNORECASE)
+
 
 # System prompt for the AI Agent
 SYSTEM_PROMPT = """You are Loli, the current-data assistant for Parrot POS, created by Min Thuta Saw Naing and owned by WinterArc Myanmar. You help with the active branch's inventory, categories, suppliers, purchase orders, warehouse activity, sales, promotions, customers, debts, deliveries, and returns/exchanges.
@@ -184,7 +204,7 @@ You own live database tools. Any question about stock, products, prices, sales, 
 - Greetings, identity, capability, and small-talk questions need no tool call.
 
 ## Safe operations
-Your registered read tools answer questions with live facts. Low-risk changes (for example registering a customer or supplier, or creating a category) may be executed automatically when autonomy is enabled for the current manager. Riskier changes — deletes, price or money changes, stock adjustments, approvals, cancellations, transfers — always require explicit human approval before they run. Never claim you created, approved, cancelled, transferred, or modified any business record unless a step result confirms it actually happened; otherwise say it is awaiting approval.
+Your registered read tools answer questions with live facts. Low-risk changes (for example registering a customer or supplier, or creating a category) may be executed automatically when autonomy is enabled for the current manager. Riskier changes — deletes, price or money changes, stock adjustments, approvals, cancellations, transfers — always require explicit human approval before they run. Ask for that approval through the plan itself: propose the change so the system records the exact proposal and shows the approval card. Never spend a turn asking for permission in prose and then plan the same change again, and never ask twice. When a proposal is already awaiting approval, a plain "yes" from the user approves and runs it. Never claim you created, approved, cancelled, transferred, or modified any business record unless a step result confirms it actually happened; otherwise say it is awaiting approval.
 Deleting a product is a manager (or owner) action. When the product is still used in other tabs (warehouse stock or transfers, promotions, purchase order lines, supplier price agreements), call delete_product once to surface exactly which records would go, then ask the user whether to delete the product everywhere and only re-call with cascade=true after they agree. When it also has sales history, ask "The product you selected have sale history. Are you sure you want to delete it?" and add confirm=true. Sales and return/exchange records are always kept, never deleted — they are only unlinked from the removed product.
 
 ## Changing records
@@ -213,6 +233,17 @@ MAX_PLAN_STEPS = 5
 # Exactly one corrective retry when the model invents a tool name or fills an
 # argument no tool accepts. The rejection text already lists the real tools.
 MAX_TOOL_REPAIR_ATTEMPTS = 1
+
+# A "$from" reference that cannot be resolved against real data used to abort
+# the whole plan (the user had already approved the change, so nothing ran).
+# Execution now retries the *argument mapping only* a bounded number of times:
+# the model sees the real result keys and rewrites the path. It never decides
+# whether a write runs — write steps still become approval proposals.
+MAX_PLAN_STEP_REPAIRS = 2
+
+
+class FromReferenceError(ValueError):
+    """A plan's "$from" argument reference does not match the real result data."""
 
 # Deterministic, LLM-free memory commands. A storage confirmation must never be
 # produced by a model that could hallucinate the write.
@@ -254,6 +285,25 @@ PLAN_TOOL_SCHEMA = {
                 "question": {"type": "string"},
             },
             "required": ["steps"],
+        },
+    },
+}
+
+# The single repair tool used when a step's "$from" reference cannot be
+# resolved. It may only rewrite that step's arguments: the executor keeps the
+# tool, the step order, and every approval rule unchanged.
+STEP_ARGS_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "supply_step_arguments",
+        "description": (
+            "Return corrected arguments for the one step whose argument "
+            "reference could not be resolved."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"args": {"type": "object"}},
+            "required": ["args"],
         },
     },
 }
@@ -1036,7 +1086,11 @@ class AgentOrchestrator:
                 if not tool_authorization_error(name, self.request_context)}
 
     def _build_planning_catalog(self, registry: Dict[str, Dict[str, Any]]) -> str:
-        """Compact one-line-per-tool catalog for the planning prompt."""
+        """Compact one-line-per-tool catalog for the planning prompt.
+
+        Each line ends with ``returns:`` when a known result shape exists, so a
+        plan writes ``$from`` paths with the keys the tool really produces.
+        """
         lines = []
         for name, meta in sorted(registry.items()):
             if meta["mutates"]:
@@ -1050,7 +1104,11 @@ class AgentOrchestrator:
             required = sorted(meta["params"].get("required") or ())
             if required:
                 arg_names += " | required: " + ", ".join(required)
-            lines.append(f"- {name}{flag}: {meta['one_line']} | args: {{{arg_names}}}")
+            line = f"- {name}{flag}: {meta['one_line']} | args: {{{arg_names}}}"
+            hint = _TOOL_OUTPUT_HINTS.get(name)
+            if hint and not meta["mutates"]:
+                line += f" | returns: {hint}"
+            lines.append(line)
         return "\n".join(lines)
 
     def _validate_plan(
@@ -1099,6 +1157,68 @@ class AgentOrchestrator:
             })
         return normalized, None, False
 
+    @classmethod
+    def _collect_from_refs(cls, value: Any, prefix: str = "") -> List[tuple]:
+        """Yield (argument name, $from path) pairs found inside one step's args."""
+        refs: List[tuple] = []
+        if isinstance(value, dict):
+            if "$from" in value:
+                refs.append((prefix or "args", str(value["$from"])))
+            else:
+                for key, item in value.items():
+                    label = f"{prefix}.{key}" if prefix else str(key)
+                    refs.extend(cls._collect_from_refs(item, label))
+        elif isinstance(value, list):
+            for position, item in enumerate(value):
+                refs.extend(cls._collect_from_refs(item, f"{prefix}[{position}]"))
+        return refs
+
+    @classmethod
+    def _hint_has_key(cls, hint: str, key: str) -> bool:
+        """True when ``key`` is one of the words in a tool's output hint."""
+        tokens = {cls._normalize_token(token)
+                  for token in re.split(r"[^A-Za-z0-9_]+", hint) if token}
+        wanted = cls._normalize_token(key)
+        if not wanted:
+            return False
+        singular = wanted[:-1] if wanted.endswith("s") else wanted
+        return bool({wanted, singular, singular + "s"} & tokens)
+
+    @classmethod
+    def _validate_from_references(cls, steps: List[Dict[str, Any]]) -> Optional[str]:
+        """Report a reference that no earlier step can satisfy (advisory).
+
+        The planner guesses result keys, so "step1.products.0.id" arrives for a
+        tool that returns "inventory[] {product_id, …}". Checking that here
+        lets the single planning retry fix the path using the real key names
+        instead of failing after the user already approved the change.
+        """
+        by_no = {step["step"]: step for step in steps}
+        for step in steps:
+            for arg_name, path in cls._collect_from_refs(step.get("args") or {}):
+                try:
+                    step_no, segments = cls._parse_from_path(path)
+                except FromReferenceError as exc:
+                    return (f"step {step['step']} ('{step['tool']}') argument "
+                            f"'{arg_name}' has an invalid reference: {exc}")
+                if step_no not in by_no or step_no >= step["step"]:
+                    return (f"step {step['step']} ('{step['tool']}') argument "
+                            f"'{arg_name}' references step {step_no}, but a step may "
+                            f"only read results from earlier steps of this plan")
+                hint = _TOOL_OUTPUT_HINTS.get(by_no[step_no]["tool"])
+                if not hint or not segments:
+                    continue
+                key = next((part for part in segments
+                            if cls._normalize_token(part) not in cls._TRANSPARENT_SEGMENTS
+                            and not re.fullmatch(r"-?\d+", part)), None)
+                if key is None or cls._hint_has_key(hint, key):
+                    continue
+                return (f"step {step['step']} ('{step['tool']}') reads '{arg_name}' "
+                        f"from '{path}', but step {step_no} "
+                        f"('{by_no[step_no]['tool']}') returns: {hint}. Use one of "
+                        f"those keys, e.g. \"$from\": \"step{step_no}.<key>\".")
+        return None
+
     def _should_plan(self, command: str) -> bool:
         """Conservative router: only task-shaped requests pay for planning.
 
@@ -1138,7 +1258,9 @@ class AgentOrchestrator:
         for keyword in _WRITE_INTENT_KEYWORDS:
             if re.search(r"\b" + re.escape(keyword) + r"\b", text_lower):
                 return True
-        return False
+        # "change the sell price", "raise the cost of Zeno": verb and field are
+        # separated, so a plain keyword scan misses the change request.
+        return bool(_WRITE_INTENT_PATTERN.search(text_lower or ""))
 
     def _planner_chat(self, message: str, tools: Optional[List[Dict]] = None,
                       temperature: float = 0.2, max_tokens: int = 900):
@@ -1232,8 +1354,10 @@ class AgentOrchestrator:
                     "never substitute the default rolling 30-day period. Best sellers "
                     "use get_sales_trends ranked by gross units sold.\n"
                     '- To use an earlier step\'s output as an argument value, use '
-                    '{"$from": "stepN.result.path"} with dotted segments for nested '
-                    'keys and list indexes, e.g. {"$from": "step1.products.0.id"}.\n'
+                    '{"$from": "stepN.<key>"} with dotted segments for nested keys '
+                    'and list indexes, e.g. {"$from": "step1.inventory.0.product_id"}. '
+                    'Copy key names exactly from the "returns:" list on that tool; '
+                    'a key the tool does not return makes the step fail.\n'
                     "- Write tools are allowed but execute only after explicit user "
                     "approval, so read steps may only gather the arguments a write step needs.\n"
                     "- A change request (create, update, delete, email, schedule) MUST "
@@ -1275,11 +1399,21 @@ class AgentOrchestrator:
                 continue
 
             steps, error, fatal = self._validate_plan(raw.get("steps"), registry)
-            if error is None and self._contains_write_intent(command) and not any(
-                    registry.get(step["tool"], {}).get("mutates") for step in steps):
-                # A read-only plan cannot fulfil "make me a new product".
-                error = ("the plan only reads data, but the user asked for a change; add "
-                         "the write tool that performs it as the final step")
+            reference_warning = None
+            if error is None:
+                if self._contains_write_intent(command) and not any(
+                        registry.get(step["tool"], {}).get("mutates") for step in steps):
+                    # A read-only plan cannot fulfil "make me a new product".
+                    error = ("the plan only reads data, but the user asked for a change; "
+                             "add the write tool that performs it as the final step")
+                else:
+                    reference_warning = self._validate_from_references(steps)
+            if error is None and reference_warning and attempt == 0:
+                # A reference to a key the earlier tool never returns: re-plan
+                # once with the real result keys. Never dead-end the request
+                # over it, because execution can still recover the path.
+                last_error = reference_warning
+                continue
             if error is None:
                 return {
                     "description": raw.get("description") or "",
@@ -1296,30 +1430,183 @@ class AgentOrchestrator:
         print(f"[AI Agent] Plan invalid after retry ({last_error}); falling back.")
         return None
 
+    # ---- "$from" reference resolution --------------------------------------
+    # A plan passes data forward only through references, so one guessed key
+    # name is a hard stop for the whole task. Resolution therefore accepts the
+    # spellings models actually write ("step1.products.0.id", "step_1.result…",
+    # "step1.inventory.0.id") instead of demanding one exact form, and its error
+    # text lists the keys that DO exist so the planner can repair itself.
+
+    _STEP_HEAD_RE = re.compile(r"^step[s]?[\s_-]*(\d+)$", re.IGNORECASE)
+    _STEP_PREFIX_RE = re.compile(r"^step[s]?[\s_-]*$", re.IGNORECASE)
+    # Segments a model inserts around a step result ("step1.result.…").
+    _TRANSPARENT_SEGMENTS = frozenset({
+        "result", "results", "output", "outputs", "data", "value", "values",
+        "toolresult", "toolresults", "response", "payload",
+    })
+    # Words used for "the collection in this result".
+    _COLLECTION_ALIASES = frozenset({
+        "items", "inventory", "rows", "list", "lists", "records", "entries",
+        "results", "products", "suppliers", "customers", "debts", "orders",
+        "promotions", "deliveries", "categories", "branches", "transfers",
+        "tasks", "workflows", "warehouseitems", "topsellingproducts",
+    })
+    _ID_SEGMENTS = frozenset({"id", "identifier", "pk", "primarykey"})
+
     @staticmethod
-    def _lookup_from_path(path: str, step_outputs: Dict[int, Any]) -> Any:
-        """Resolve a dotted '$from' path like 'step1.products.0.id'."""
-        parts = path.split(".")
-        match = re.match(r"^step(\d+)$", parts[0].strip())
-        if not match:
-            raise ValueError(f"invalid $from reference: '{path}'")
-        step_no = int(match.group(1))
-        if step_no not in step_outputs:
-            raise ValueError(f"$from reference '{path}' points at unavailable step {step_no}")
-        current = step_outputs[step_no]
-        for part in parts[1:]:
-            try:
-                if isinstance(current, list):
-                    current = current[int(part)]
-                elif isinstance(current, dict):
-                    current = current[part]
+    def _normalize_token(text: Any) -> str:
+        """Lowercase letters and digits only, so 'productId' == 'product_id'."""
+        return re.sub(r"[^a-z0-9]", "", str(text).lower())
+
+    @classmethod
+    def _match_key(cls, mapping: Any, part: str) -> Optional[str]:
+        """Return the key in ``mapping`` that ``part`` names, or None."""
+        if not isinstance(mapping, dict) or not isinstance(part, str):
+            return None
+        if part in mapping:
+            return part
+        wanted = cls._normalize_token(part)
+        if not wanted:
+            return None
+        normalized: Dict[str, str] = {}
+        for key in mapping:
+            normalized.setdefault(cls._normalize_token(key), key)
+        if wanted in normalized:
+            return normalized[wanted]
+        singular = wanted[:-1] if wanted.endswith("s") else wanted
+        for variant in (singular, singular + "s"):
+            if variant in normalized:
+                return normalized[variant]
+        return None
+
+    @classmethod
+    def _single_collection(cls, mapping: Dict[str, Any], part: str) -> Optional[str]:
+        """Key of the only list in ``mapping`` when ``part`` names a collection."""
+        token = cls._normalize_token(part)
+        if not token:
+            return None
+        looks_like_collection = token in cls._COLLECTION_ALIASES or (
+            token.endswith("s") and len(token) > 2)
+        if not looks_like_collection:
+            return None
+        lists = [key for key, value in mapping.items() if isinstance(value, list)]
+        return lists[0] if len(lists) == 1 else None
+
+    @staticmethod
+    def _unique_id_key(row: Dict[str, Any]) -> Optional[str]:
+        """The single '<x>_id' key of a row (what a model calls plain 'id')."""
+        candidates = [key for key, value in row.items()
+                      if isinstance(key, str)
+                      and re.fullmatch(r"[a-z0-9_]*_id", key)
+                      and isinstance(value, (int, str))
+                      and not isinstance(value, bool)]
+        return candidates[0] if len(candidates) == 1 else None
+
+    @classmethod
+    def _describe_shape(cls, value: Any, limit: int = 8) -> str:
+        """Human-readable key list for a result, used in resolution errors."""
+        if isinstance(value, dict):
+            bits = []
+            for key in list(value)[:limit]:
+                item = value[key]
+                if isinstance(item, list):
+                    if item and isinstance(item[0], dict):
+                        bits.append(f"{key}[] {{{', '.join(list(item[0])[:limit])}}}")
+                    else:
+                        bits.append(f"{key}[]")
+                elif isinstance(item, dict):
+                    bits.append(f"{key}{{...}}")
                 else:
-                    raise ValueError(
-                        f"cannot descend into {type(current).__name__} at '{path}'")
-            except (KeyError, IndexError, ValueError) as exc:
-                if isinstance(exc, ValueError) and "cannot descend" in str(exc):
-                    raise
-                raise ValueError(f"$from path '{path}' could not be resolved: {exc}")
+                    bits.append(str(key))
+            return ", ".join(bits) or "no keys"
+        if isinstance(value, list):
+            if value and isinstance(value[0], dict):
+                return f"list of {len(value)} item(s) {{{', '.join(list(value[0])[:limit])}}}"
+            return f"list of {len(value)} value(s)"
+        return f"{type(value).__name__} value"
+
+    @classmethod
+    def _parse_from_path(cls, path: Any) -> tuple:
+        """Split a reference into (step number, remaining segments)."""
+        parts = [part.strip() for part in str(path or "").split(".") if part.strip()]
+        if not parts:
+            raise FromReferenceError(
+                "empty $from reference; write e.g. 'step1.inventory.0.product_id'")
+        head = parts[0]
+        match = cls._STEP_HEAD_RE.match(head)
+        if match:
+            return int(match.group(1)), parts[1:]
+        if re.fullmatch(r"\d+", head):
+            return int(head), parts[1:]
+        if (cls._STEP_PREFIX_RE.match(head) and len(parts) > 1
+                and re.fullmatch(r"\d+", parts[1])):
+            return int(parts[1]), parts[2:]
+        raise FromReferenceError(
+            f"invalid $from reference '{path}': it must start with a step number, "
+            f"e.g. 'step1.inventory.0.product_id'")
+
+    @classmethod
+    def _lookup_from_path(cls, path: str, step_outputs: Dict[int, Any]) -> Any:
+        """Resolve a dotted '$from' path like 'step1.inventory.0.product_id'."""
+        step_no, segments = cls._parse_from_path(path)
+        if step_no not in step_outputs:
+            raise FromReferenceError(
+                f"$from reference '{path}' points at step {step_no}, which produced no "
+                f"result (steps with results: {sorted(step_outputs) or 'none'})")
+        current = step_outputs[step_no]
+        index = 0
+        while index < len(segments):
+            part = segments[index]
+            following = segments[index + 1] if index + 1 < len(segments) else None
+            if isinstance(current, list):
+                if not re.fullmatch(r"-?\d+", part):
+                    raise FromReferenceError(
+                        f"$from path '{path}' needs a list index at '{part}' (step "
+                        f"{step_no} result is a list of {len(current)} item(s)), e.g. "
+                        f"'{'.'.join(segments[:index] + ['0'] + segments[index:])}'")
+                position = int(part)
+                if not -len(current) <= position < len(current):
+                    raise FromReferenceError(
+                        f"$from path '{path}' points at item {position} of "
+                        f"{len(current)} item(s) in step {step_no}")
+                current = current[position]
+                index += 1
+                continue
+            if not isinstance(current, dict):
+                raise FromReferenceError(
+                    f"$from path '{path}' cannot descend into a "
+                    f"{type(current).__name__} value at '{part}'")
+            key = cls._match_key(current, part)
+            if key is not None:
+                current = current[key]
+                index += 1
+                continue
+            token = cls._normalize_token(part)
+            if token in cls._TRANSPARENT_SEGMENTS:
+                index += 1
+                continue
+            if token in cls._ID_SEGMENTS:
+                id_key = cls._unique_id_key(current)
+                if id_key is not None:
+                    current = current[id_key]
+                    index += 1
+                    continue
+            collection_key = cls._single_collection(current, part)
+            if collection_key is not None:
+                current = current[collection_key]
+                index += 1
+                continue
+            if following is not None and (
+                    cls._match_key(current, following) is not None
+                    or cls._normalize_token(following) in cls._TRANSPARENT_SEGMENTS
+                    or cls._normalize_token(following) in cls._ID_SEGMENTS):
+                # A wrapper name the model invented ("product", "details"):
+                # skip it and keep resolving against the same object.
+                index += 1
+                continue
+            raise FromReferenceError(
+                f"$from path '{path}' could not be resolved: step {step_no}'s result "
+                f"has no '{part}'. Available: {cls._describe_shape(current)}")
         return current
 
     def _resolve_from_refs(
@@ -1379,8 +1666,9 @@ class AgentOrchestrator:
     def _execute_plan(
         self, plan: Dict[str, Any],
         approved_steps: Optional[Set[int]] = None,
+        fallback_args: Optional[Dict[int, Dict[str, Any]]] = None,
     ) -> tuple:
-        """PHASE B: pure-Python sequential execution. Zero LLM calls.
+        """PHASE B: sequential execution with no model decisions.
 
         Fail-stop: the first failed step aborts all later ones (marked
         'skipped'). Read tools execute directly. Mutating tools execute ONLY
@@ -1391,13 +1679,21 @@ class AgentOrchestrator:
         via the approval flow (tagged 'executed_by': 'approved'). Every other
         mutating tool becomes an approval proposal and never touches the
         database here.
+
+        Argument resolution is the one place where a model may still speak: a
+        "$from" reference that does not match real data is repaired (bounded by
+        MAX_PLAN_STEP_REPAIRS) instead of destroying an already-approved task.
+        The repair may only rewrite that step's arguments — the tool, the step
+        order, and every approval rule stay exactly as planned.
         """
         registry = self._get_tool_registry()
+        parameters = {name: meta['params'] for name, meta in registry.items()}
         autonomy_ok = self._autonomy_allowed()  # once per plan, not per step
         approved = {int(n) for n in (approved_steps or ())}
         step_results: List[Dict[str, Any]] = []
         pending_approvals: List[Dict[str, Any]] = []
         step_outputs: Dict[int, Any] = {}
+        repairs_left = MAX_PLAN_STEP_REPAIRS
         aborted = False
 
         for step in plan["steps"]:
@@ -1410,17 +1706,17 @@ class AgentOrchestrator:
                 continue
 
             # Resolve $from references against earlier step outputs.
-            try:
-                resolved_args = self._resolve_from_refs(step.get("args") or {}, step_outputs)
-                guarded = guard_tool_call(tool, resolved_args, registry,
-                                          {name: meta['params'] for name, meta in registry.items()})
-                if not guarded.ok:
-                    raise ValueError(guarded.error)
-                resolved_args = guarded.arguments
-            except Exception as exc:
-                step_results.append({**base, "status": "failed", "error": str(exc)})
+            resolved_args, args_source, args_error = self._prepare_step_arguments(
+                plan, step, step_outputs, registry, parameters,
+                fallback_args=fallback_args, allow_repair=repairs_left > 0)
+            if args_error:
+                step_results.append({**base, "status": "failed", "error": args_error})
                 aborted = True
                 continue
+            if args_source == "repaired":
+                repairs_left -= 1
+                print(f"[AI Agent] Repaired $from arguments for step {step_no} ({tool})")
+            provenance = {"args_source": args_source} if args_source != "plan" else {}
 
             mutates = registry.get(tool, {}).get("mutates")
             auto_allowed = (
@@ -1440,8 +1736,11 @@ class AgentOrchestrator:
                     "args": resolved_args,
                     "reason": step.get("reason") or "",
                 }
+                if provenance:
+                    proposal.update(provenance)
                 pending_approvals.append(proposal)
-                step_results.append({**base, "status": "proposal", "result": proposal})
+                step_results.append({**base, "status": "proposal",
+                                     "result": proposal, **provenance})
                 continue
 
             if tool not in self.agent.tool_functions:
@@ -1465,13 +1764,14 @@ class AgentOrchestrator:
                     # Human provenance outranks the machine gate in the audit trail.
                     step_results.append({**base, "status": "ok",
                                          "result": result,
-                                         "executed_by": "approved"})
+                                         "executed_by": "approved", **provenance})
                 elif auto_allowed:
                     step_results.append({**base, "status": "ok",
                                          "result": result,
-                                         "executed_by": "agent-auto"})
+                                         "executed_by": "agent-auto", **provenance})
                 else:
-                    step_results.append({**base, "status": "ok", "result": result})
+                    step_results.append({**base, "status": "ok", "result": result,
+                                         **provenance})
                 self.session_context["last_tool_used"] = tool
                 self.session_context["last_results"] = result
             except Exception as exc:
@@ -1479,6 +1779,130 @@ class AgentOrchestrator:
                 aborted = True
 
         return step_results, pending_approvals
+
+    def _guarded_arguments(
+        self, tool: str, args: Dict[str, Any], step_outputs: Dict[int, Any],
+        registry: Dict[str, Dict[str, Any]], parameters: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Resolve references, then validate the result against the real schema."""
+        resolved = self._resolve_from_refs(args, step_outputs)
+        guarded = guard_tool_call(tool, resolved, registry, parameters)
+        if not guarded.ok:
+            raise ValueError(guarded.error)
+        return guarded.arguments
+
+    def _prepare_step_arguments(
+        self, plan: Dict[str, Any], step: Dict[str, Any],
+        step_outputs: Dict[int, Any], registry: Dict[str, Dict[str, Any]],
+        parameters: Dict[str, Any],
+        fallback_args: Optional[Dict[int, Dict[str, Any]]] = None,
+        allow_repair: bool = True,
+    ) -> tuple:
+        """Return ``(args, source, error)`` for one plan step.
+
+        Resolution order: the plan's own arguments, then the arguments the human
+        actually approved earlier (persisted fallback), then one bounded model
+        repair of the broken reference. Only argument values change; the tool,
+        the step order and every approval rule stay as planned.
+        """
+        declared = step.get("args") or {}
+        try:
+            return (self._guarded_arguments(step["tool"], declared, step_outputs,
+                                            registry, parameters), "plan", None)
+        except FromReferenceError as exc:
+            first_error = exc
+        except Exception as exc:
+            # A schema problem is not repairable here: report it as before.
+            return None, None, str(exc)
+
+        persisted = (fallback_args or {}).get(step["step"])
+        if persisted:
+            try:
+                return (self._guarded_arguments(step["tool"], persisted, step_outputs,
+                                                registry, parameters),
+                        "persisted-approval", None)
+            except Exception as exc:
+                print(f"[AI Agent] Persisted arguments for step {step['step']} "
+                      f"were rejected: {exc}")
+
+        if allow_repair:
+            repaired = self._repair_step_args(plan, step, step_outputs, str(first_error))
+            if repaired:
+                try:
+                    return (self._guarded_arguments(step["tool"], repaired, step_outputs,
+                                                    registry, parameters), "repaired", None)
+                except Exception as exc:
+                    return None, None, (f"{first_error} Repaired arguments were "
+                                        f"rejected too: {exc}")
+        return None, None, str(first_error)
+
+    def _repair_step_args(
+        self, plan: Dict[str, Any], step: Dict[str, Any],
+        step_outputs: Dict[int, Any], error: str,
+    ) -> Optional[Dict[str, Any]]:
+        """One bounded model call that rewrites a broken argument reference.
+
+        The model sees the real (compacted) results and may only answer for this
+        one step. No API key, a provider error, or an unusable answer simply
+        means "no repair", which falls back to the previous failure behaviour.
+        """
+        if not getattr(self.agent, "api_key", ""):
+            return None
+        evidence = {f"step{no}": self._compact_result(step_outputs[no], max_chars=1500)
+                    for no in sorted(step_outputs)}
+        prompt = (
+            "One step of a saved plan could not run because an argument reference "
+            "did not match the real data. Rewrite ONLY that step's arguments so "
+            "every {\"$from\": ...} path uses a key that exists in the results "
+            "below. Keep every value the user asked for; do not add new steps.\n\n"
+            f"Plan: {plan.get('description') or ''}\n"
+            f"Failing step: {json.dumps({'step': step.get('step'), 'tool': step.get('tool'), 'args': step.get('args') or {}}, default=str)}\n"
+            f"Error: {error}\n\n"
+            f"Real results so far (truncated):\n{json.dumps(evidence, default=str)}\n\n"
+            'Answer by calling supply_step_arguments with {"args": {...}}.'
+        )
+        try:
+            response = self._planner_chat(
+                message=prompt, tools=[STEP_ARGS_TOOL_SCHEMA],
+                temperature=0.1, max_tokens=600,
+            )
+        except Exception as exc:
+            print(f"[AI Agent] Step argument repair failed: {exc}")
+            return None
+        if response.error:
+            print(f"[AI Agent] Step argument repair error: {response.error}")
+            return None
+        call = next((tc for tc in response.tool_calls
+                     if tc.function_name == "supply_step_arguments"), None)
+        if call is None:
+            return None
+        args = call.arguments
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                return None
+        if isinstance(args, dict) and isinstance(args.get("args"), dict):
+            return args["args"]
+        return None
+
+    @staticmethod
+    def _persisted_step_args(persisted_results: Any) -> Dict[int, Dict[str, Any]]:
+        """Arguments a human actually approved, keyed by step number.
+
+        Used only when a re-run cannot rebuild a reference from fresh data: the
+        approved arguments are better evidence than failing the task again.
+        """
+        fallback: Dict[int, Dict[str, Any]] = {}
+        for entry in persisted_results or []:
+            if not isinstance(entry, dict):
+                continue
+            step_no = entry.get("step")
+            payload = entry.get("result")
+            args = payload.get("args") if isinstance(payload, dict) else None
+            if isinstance(step_no, int) and isinstance(args, dict):
+                fallback[step_no] = args
+        return fallback
 
     def _deterministic_status_message(self, step_results: List[Dict[str, Any]]) -> str:
         """Fallback human summary built only from real per-step statuses."""
@@ -1608,6 +2032,7 @@ class AgentOrchestrator:
     def run_approved_plan(
         self, command: str, plan: Dict[str, Any],
         approved_step_nos: Any,
+        persisted_results: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Execute a persisted plan, running ONLY the human-approved steps.
 
@@ -1615,8 +2040,12 @@ class AgentOrchestrator:
         specific proposal steps of a previously persisted AgentTask. The plan
         is re-run deterministically (read steps fetch fresh data, approved
         mutating steps execute, every other mutating step stays a proposal).
-        No LLM call participates in execution and the arguments come only from
-        the persisted plan — never from the caller.
+        Arguments come from the persisted plan, never from the caller.
+
+        ``persisted_results`` are the task's stored step results. When a re-run
+        cannot rebuild a "$from" reference from fresh data (the earlier tool
+        returned something different this time), the exact arguments the human
+        approved are used instead of failing the task they already approved.
         """
         steps = plan.get("steps") if isinstance(plan, dict) else None
         if not isinstance(steps, list) or not steps:
@@ -1657,7 +2086,8 @@ class AgentOrchestrator:
         approved_mutating = approved & mutating_nos
 
         step_results, pending_approvals = self._execute_plan(
-            plan, approved_steps=approved_mutating)
+            plan, approved_steps=approved_mutating,
+            fallback_args=self._persisted_step_args(persisted_results))
         failed = [sr for sr in step_results if sr["status"] in ("failed", "skipped")]
         executed = [sr for sr in step_results if sr.get("executed_by") == "approved"]
         awaiting = len(pending_approvals)

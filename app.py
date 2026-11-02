@@ -10505,6 +10505,15 @@ def agent_chat():
                 'error': 'Command cannot be empty'
             }), 400
 
+        # A plain "yes"/"no" answers the proposal already on the table. Running
+        # the approval deterministically (instead of planning again) is what
+        # makes "Ok I approve" reliable: the same stored plan runs, no second
+        # proposal is invented, and an approved change can never be lost.
+        if _is_approval_reply(command) or _is_rejection_reply(command):
+            answered = _answer_pending_approval(session.get('user_id'), command)
+            if answered is not None:
+                return jsonify(answered)
+
         # Process the command through the agent
         orchestrator = get_ai_orchestrator()
         result = orchestrator.process_command(command, session.get('user_id'))
@@ -10624,6 +10633,179 @@ def _agent_task_step_results(task):
     return results if isinstance(results, list) else []
 
 
+def _agent_task_plan(task):
+    """Load a task's persisted plan dict (never mutates)."""
+    try:
+        plan = json.loads(task.plan_json) if task.plan_json else None
+    except (ValueError, TypeError):
+        plan = None
+    return plan if isinstance(plan, dict) else None
+
+
+# A plain "yes"/"no" answers the proposal already on the table. Recognising it
+# here keeps approval deterministic (one stored plan, one execution) instead of
+# paying for another planning turn that could create a different proposal — the
+# bug where "Ok I approve" produced a fresh plan that failed and the change was
+# silently lost. Only short, unambiguous replies qualify.
+_APPROVAL_PHRASES = frozenset({
+    "yes", "y", "yeah", "yep", "yup", "ok", "okay", "sure", "fine",
+    "go ahead", "do it", "proceed", "please proceed", "approve", "approved",
+    "i approve", "confirm", "confirmed", "yes please", "ok do it",
+    "yes go ahead", "okay go ahead", "yes approve",
+    "ok i approve", "yes i approve", "i approve it", "ok approved",
+    "ဟုတ်ကဲ့", "အိုကေ", "ဟုတ်", "ဟုတ်ကဲ့ပါ",
+})
+_REJECTION_PHRASES = frozenset({
+    "no", "n", "nope", "cancel", "cancel it", "stop", "reject", "rejected",
+    "no thanks", "do not", "dont", "don t", "never mind", "nevermind",
+    "ဘူး", "မလုပ်ပါ", "တော်", "မလိုပါ",
+})
+
+
+def _normalized_reply(text):
+    """Lowercase reply with punctuation collapsed to single spaces."""
+    cleaned = re.sub(r"[^a-z\u1000-\u109f\s]", " ", (text or "").lower())
+    return " ".join(cleaned.split())
+
+
+def _is_approval_reply(text):
+    return _normalized_reply(text) in _APPROVAL_PHRASES
+
+
+def _is_rejection_reply(text):
+    return _normalized_reply(text) in _REJECTION_PHRASES
+
+
+def _pending_agent_task(user_id):
+    """Most recent task of this user that is still waiting on a decision."""
+    if user_id is None:
+        return None
+    return (AgentTask.query
+            .filter(AgentTask.user_id == user_id,
+                    AgentTask.status == 'pending_approval')
+            .order_by(AgentTask.created_at.desc(), AgentTask.id.desc())
+            .first())
+
+
+def _undecided_proposal_step_nos(task):
+    """Step numbers of proposals the user has neither approved nor rejected."""
+    return sorted({sr.get('step') for sr in _agent_task_step_results(task)
+                   if sr.get('status') == 'proposal' and not sr.get('approved')
+                   and not sr.get('rejected') and isinstance(sr.get('step'), int)})
+
+
+def _advance_agent_task(task, approved_nos):
+    """Execute the approved proposal steps of one task; returns (payload, status).
+
+    Shared by POST /api/agent/task/<id>/advance and the chat shortcut, so both
+    paths keep the same expiry, claim and provenance guards.
+    """
+    ttl_hours = _agent_approval_ttl_hours()
+    age_hours = (datetime.utcnow() - (task.created_at or datetime.utcnow())
+                 ).total_seconds() / 3600.0
+    if ttl_hours > 0 and age_hours > ttl_hours:
+        task.status = 'expired'
+        task.updated_at = datetime.utcnow()
+        db.session.commit()
+        return ({
+            'success': False,
+            'error': (f'This proposal expired after {int(ttl_hours)}h. '
+                      'Ask Loli again and approve the fresh plan.'),
+        }, 410)
+
+    plan = _agent_task_plan(task)
+    persisted = _agent_task_step_results(task)
+
+    # Atomic claim: only one concurrent request may flip this task into
+    # 'executing' — prevents double execution of approved writes.
+    claimed = AgentTask.query.filter(
+        AgentTask.id == task.id,
+        AgentTask.status != 'executing',
+    ).update({'status': 'executing', 'updated_at': datetime.utcnow()})
+    db.session.commit()
+    if not claimed:
+        return {'success': False, 'error': 'Task is already executing'}, 409
+
+    try:
+        orchestrator = get_ai_orchestrator()
+        result = orchestrator.run_approved_plan(
+            task.command, plan or {}, approved_nos, persisted_results=persisted)
+
+        if isinstance(result.get('step_results'), list):
+            task.step_results_json = json.dumps(result['step_results'])
+        still_pending = any(sr.get('status') == 'proposal'
+                            for sr in _agent_task_step_results(task))
+        if result.get('success') and not still_pending:
+            task.status = 'completed'
+        elif result.get('success'):
+            task.status = 'pending_approval'
+        else:
+            task.status = 'failed'
+        db.session.commit()
+    except Exception as exc:
+        app.logger.error(f"Agent task advance error: {exc}")
+        # Never leave the task bricked in 'executing'.
+        task.status = 'failed'
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        return {'success': False, 'error': str(exc)}, 500
+
+    result['task_id'] = task.id
+    return result, 200
+
+
+def _answer_pending_approval(user_id, command):
+    """Answer a plain yes/no against the proposal already awaiting approval.
+
+    Returns the chat payload, or None when there is nothing to answer (no
+    pending task for this user), so ordinary chat continues untouched.
+    """
+    task = _pending_agent_task(user_id)
+    if task is None:
+        return None
+    step_results = _agent_task_step_results(task)
+    if not _undecided_proposal_step_nos(task):
+        return None
+
+    if _is_rejection_reply(command):
+        for step in step_results:
+            if step.get('status') == 'proposal' and not step.get('approved'):
+                step['rejected'] = True
+        task.step_results_json = json.dumps(step_results)
+        task.status = 'rejected'
+        task.updated_at = datetime.utcnow()
+        db.session.commit()
+        return {
+            'success': True,
+            'message': 'Cancelled — nothing was changed.',
+            'plan': _agent_task_plan(task),
+            'step_results': step_results,
+            'pending_approvals': [],
+            'task_id': task.id,
+            'approval_reply': 'rejected',
+        }
+
+    approved_nos = []
+    for step in step_results:
+        if (step.get('status') == 'proposal' and not step.get('approved')
+                and not step.get('rejected') and isinstance(step.get('step'), int)):
+            step['approved'] = True
+            approved_nos.append(step['step'])
+    task.step_results_json = json.dumps(step_results)
+    task.updated_at = datetime.utcnow()
+    db.session.commit()
+
+    payload, status = _advance_agent_task(task, sorted(set(approved_nos)))
+    payload['task_id'] = task.id
+    payload['approval_reply'] = 'approved'
+    if status != 200:
+        payload.setdefault('message',
+                           payload.get('error') or 'The approved change did not run.')
+    return payload
+
+
 @app.route('/api/agent/approve/<int:task_id>/<int:step_no>', methods=['POST'])
 @login_required
 def api_agent_approve_step(task_id, step_no):
@@ -10715,8 +10897,9 @@ def api_agent_reject_step(task_id, step_no):
 def api_agent_advance_task(task_id):
     """Deterministically execute the approved proposal steps of a stored plan.
 
-    Zero LLM involvement: the persisted plan's own arguments are re-run with
-    fresh read data; only the human-approved mutating steps execute.
+    The persisted plan's own arguments are re-run with fresh read data; only
+    the human-approved mutating steps execute. Shared with the chat shortcut,
+    where a plain "yes" approves and advances the same task.
     """
     task = AgentTask.query.get_or_404(task_id)
     if task.user_id != session.get('user_id'):
@@ -10730,62 +10913,8 @@ def api_agent_advance_task(task_id):
     if not approved_nos:
         return jsonify({'success': False, 'error': 'No approved steps to advance'}), 409
 
-    # Safety rail: stale proposals must not run against changed data.
-    ttl_hours = _agent_approval_ttl_hours()
-    age_hours = (datetime.utcnow() - (task.created_at or datetime.utcnow())
-                 ).total_seconds() / 3600.0
-    if ttl_hours > 0 and age_hours > ttl_hours:
-        task.status = 'expired'
-        task.updated_at = datetime.utcnow()
-        db.session.commit()
-        return jsonify({
-            'success': False,
-            'error': (f'This proposal expired after {int(ttl_hours)}h. '
-                      'Ask Loli again and approve the fresh plan.'),
-        }), 410
-
-    try:
-        plan = json.loads(task.plan_json) if task.plan_json else None
-    except (ValueError, TypeError):
-        plan = None
-
-    # Atomic claim: only one concurrent request may flip this task into
-    # 'executing' — prevents double execution of approved writes.
-    claimed = AgentTask.query.filter(
-        AgentTask.id == task.id,
-        AgentTask.status != 'executing',
-    ).update({'status': 'executing', 'updated_at': datetime.utcnow()})
-    db.session.commit()
-    if not claimed:
-        return jsonify({'success': False, 'error': 'Task is already executing'}), 409
-
-    try:
-        orchestrator = get_ai_orchestrator()
-        result = orchestrator.run_approved_plan(task.command, plan or {}, approved_nos)
-
-        if isinstance(result.get('step_results'), list):
-            task.step_results_json = json.dumps(result['step_results'])
-        still_pending = any(sr.get('status') == 'proposal'
-                            for sr in _agent_task_step_results(task))
-        if result.get('success') and not still_pending:
-            task.status = 'completed'
-        elif result.get('success'):
-            task.status = 'pending_approval'
-        else:
-            task.status = 'failed'
-        db.session.commit()
-    except Exception as exc:
-        app.logger.error(f"Agent task advance error: {exc}")
-        # Never leave the task bricked in 'executing'.
-        task.status = 'failed'
-        try:
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-        return jsonify({'success': False, 'error': str(exc)}), 500
-
-    result['task_id'] = task.id
-    return jsonify(result)
+    payload, status = _advance_agent_task(task, approved_nos)
+    return jsonify(payload), status
 
 
 @app.route('/api/agent/task/<int:task_id>', methods=['GET'])

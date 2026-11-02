@@ -81,17 +81,26 @@ exact persisted step:
 1. `POST /api/agent/approve/<task_id>/<step_no>` records `approved: true` on
    the proposal inside the task's persisted `step_results_json`.
 2. `POST /api/agent/task/<task_id>/advance` calls
-   `AgentOrchestrator.run_approved_plan(command, plan, approved_step_nos)`:
-   the persisted plan is re-run deterministically (fresh read data, ZERO LLM
-   calls) and approved mutating steps execute tagged
+   `AgentOrchestrator.run_approved_plan(command, plan, approved_step_nos,
+   persisted_results=...)`: the persisted plan is re-run deterministically
+   (fresh read data) and approved mutating steps execute tagged
    `"executed_by": "approved"`. Arguments come only from the persisted plan —
-   never from the request.
+   never from the request. `persisted_results` only supplies a fallback when a
+   re-run cannot rebuild a `$from` reference from fresh data.
 3. Proposals expire: `/advance` refuses tasks older than
    `AI_APPROVAL_TTL_HOURS` (default 24; `<= 0` disables expiry) and marks
    them `expired`.
 4. `POST /api/agent/reject/<task_id>/<step_no>` records rejection; when every
    proposal is decided and none are approved, the task status becomes
    `rejected`. The widget's Reject button is wired to this endpoint.
+5. A plain chat reply to a pending proposal is deterministic:
+   `POST /api/agent/chat` with a short affirmative ("yes", "ok", "ok i
+   approve", "go ahead", "ဟုတ်ကဲ့", …) approves every undecided proposal of this
+   user's newest `pending_approval` task and advances it through the same
+   helper; a short negative ("no", "cancel", "never mind") rejects it with
+   "Cancelled — nothing was changed." No planning call happens, so "yes" can
+   never create a different plan. Anything longer ("yes, but make it 2700")
+   is treated as a normal instruction and reaches the agent.
 
 Contracts live in `test_agent_approval.py`.
 
@@ -168,10 +177,35 @@ Rules:
 - An invalid plan is retried once with the model; on second failure the
   orchestrator falls back to single-shot execution and still returns a
   success-shaped dict.
-- `$from`: `"stepN.path"` argument references are resolved from earlier
-  step outputs between steps (e.g. `{"supplier_id": {"$from":
-  "step1.suppliers.0.supplier_id"}}`). Raw `$from` markers must never
-  reach the tool layer.
+- `$from`: `"stepN.<key>"` argument references are resolved from earlier step
+  outputs between steps (e.g. `{"supplier_id": {"$from":
+  "step1.suppliers.0.supplier_id"}}`). Raw `$from` markers must never reach
+  the tool layer. Resolution is deliberately forgiving about *spelling*, because
+  the planner can only guess key names:
+  - `step1`, `step_1`, `steps.1`, `Step 1` and a bare `1` all address step 1;
+  - a `result` / `data` / `output` segment is skipped;
+  - keys match case-insensitively and ignore `_`/`-` (`productId` ==
+    `product_id`), and a singular/plural mismatch is accepted;
+  - when a collection word does not exist but the result holds exactly one
+    list, that list is used (`step1.products.0.id` finds `inventory`);
+  - a plain `id` falls back to the row's only `<x>_id` key (and refuses when
+    several could match, instead of guessing).
+  A reference that still cannot be resolved raises `FromReferenceError` whose
+  message lists the keys that DO exist.
+- `TOOL_OUTPUT_HINTS` (`ai_tools.py`) prints one `returns:` line per chained
+  read tool in the planning catalog, so plans copy real key names. Plan
+  validation (`_validate_from_references`) rejects a reference to a key the
+  earlier tool never returns and retries planning once with that shape; the
+  retry is advisory, so a stubborn plan still executes through the forgiving
+  resolver above rather than dead-ending a change request.
+- Broken references no longer destroy an approved task. `_execute_plan`
+  resolves arguments in this order: the plan's own arguments, then — when the
+  step is an approved step of a persisted task — the exact arguments the human
+  approved (`run_approved_plan(..., persisted_results=...)`), then one bounded
+  model repair (`MAX_PLAN_STEP_REPAIRS`) that may only rewrite that step's
+  arguments against the real result data. Repaired/persisted arguments are
+  re-validated by the guard and still require approval before any write, and
+  the step records `args_source: "repaired" | "persisted-approval"` for audit.
 - Fail-stop: when a step raises, its status is `"failed"` and every later
   step is `"skipped"`; later steps are never executed.
 - When any step fails, `success` is false and `message` must indicate the

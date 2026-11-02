@@ -136,9 +136,10 @@ class _FakeOrchestrator:
         self.result = result
         self.calls = []
 
-    def run_approved_plan(self, command, plan, approved_step_nos):
+    def run_approved_plan(self, command, plan, approved_step_nos, persisted_results=None):
         self.calls.append({"command": command, "plan": plan,
-                           "approved": list(approved_step_nos)})
+                           "approved": list(approved_step_nos),
+                           "persisted_results": persisted_results})
         return self.result
 
 
