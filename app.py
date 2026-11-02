@@ -10514,13 +10514,18 @@ def agent_chat():
             capture_low_risk_memory(command)
 
         # GOAL 1: persist plan-bearing results so proposals can be approved later.
-        if isinstance(result.get('plan'), list) and isinstance(result.get('step_results'), list):
+        # The orchestrator returns the plan as a dict ({"description", "steps"}),
+        # so accepting only a list here silently dropped task_id and made the
+        # Approve button call /approve/undefined/...
+        planned = result.get('plan')
+        plan_steps = planned.get('steps') if isinstance(planned, dict) else planned
+        if isinstance(plan_steps, list) and isinstance(result.get('step_results'), list):
             try:
                 has_proposals = any(sr.get('status') == 'proposal' for sr in result['step_results'])
                 task = AgentTask(
                     user_id=session.get('user_id'),
                     command=command,
-                    plan_json=json.dumps(result.get('plan')),
+                    plan_json=json.dumps(planned),
                     status='pending_approval' if has_proposals else (
                         'completed' if result.get('success') else 'failed'),
                     step_results_json=json.dumps(result.get('step_results')),

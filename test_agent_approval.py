@@ -209,6 +209,38 @@ class AgentApprovalEndpointTests(unittest.TestCase):
         response = self._client().post(f'/api/agent/task/{self.task_id}/advance')
         self.assertEqual(response.status_code, 409)
 
+    def test_chat_persists_a_dict_plan_so_the_approve_button_has_a_task_id(self):
+        """Regression: a dict plan used to be skipped, so /approve/undefined/1 -> 404."""
+        client = self._client()
+        fake = _FakeOrchestrator(self._fake_orchestrator_result())
+        fake.process_command = lambda command, user_id=None: {
+            "success": True,
+            "message": "Task incomplete: 1 change awaits approval.",
+            "plan": PLAN,
+            "step_results": [
+                {"step": 1, "tool": "get_category_summary", "status": "ok",
+                 "result": {"total_categories": 39}},
+                {"step": 2, "tool": "create_purchase_order", "status": "proposal",
+                 "result": {"step": 2, "tool": "create_purchase_order",
+                            "args": {"supplier_id": 8}, "reason": "restock"}},
+            ],
+            "pending_approvals": [{"step": 2}],
+        }
+        with mock.patch('app.get_ai_orchestrator', return_value=fake):
+            response = client.post('/api/agent/chat', json={'command': 'restock cola'})
+            data = response.get_json()
+            self.assertEqual(response.status_code, 200)
+            self.assertIsInstance(data.get('task_id'), int)
+            self._created_task_ids.append(data['task_id'])
+            with app.app_context():
+                task = AgentTask.query.get(data['task_id'])
+                self.assertEqual(task.status, 'pending_approval')
+                self.assertIsInstance(json.loads(task.plan_json), dict)
+            approved = client.post(f"/api/agent/approve/{data['task_id']}/1")
+
+        self.assertEqual(approved.status_code, 200)
+        self.assertTrue(approved.get_json()['success'])
+
     def test_approve_then_advance_executes_only_approved_steps(self):
         client = self._client()
         fake = _FakeOrchestrator(self._fake_orchestrator_result())
