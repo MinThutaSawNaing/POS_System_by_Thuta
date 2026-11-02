@@ -878,6 +878,13 @@ class AgentOrchestrator:
                 # Format results directly without a second API call so the numbers
                 # shown are exactly what the database returned.
                 final_message = self._format_tool_results_for_user(tool_results, command)
+                if (self._contains_write_intent(command)
+                        and not any(_TOOL_METADATA.get(r.get("function_name"), {}).get("mutates")
+                                    for r in tool_results)):
+                    # Never let a lookup look like a completed change.
+                    final_message += ("\n\nI only gathered the details above; nothing has been "
+                                      "changed yet. Say \"go ahead\" and I will prepare the "
+                                      "change for your approval.")
             
             if final_message is None:
                 # No real tool data yet - try keyword fallback intent detection.
@@ -1190,7 +1197,10 @@ class AgentOrchestrator:
                     '{"$from": "stepN.result.path"} with dotted segments for nested '
                     'keys and list indexes, e.g. {"$from": "step1.products.0.id"}.\n'
                     "- Write tools are allowed but execute only after explicit user "
-                    "approval, so prefer read tools that gather what the write needs.\n"
+                    "approval, so read steps may only gather the arguments a write step needs.\n"
+                    "- A change request (create, update, delete, email, schedule) MUST "
+                    "end with the write tool that performs it; a read-only plan cannot "
+                    "satisfy it. Read steps exist only to supply its arguments. "
                     "- If the request is ambiguous, set needs_clarification=true "
                     "and provide question."
                 )
@@ -1227,6 +1237,11 @@ class AgentOrchestrator:
                 continue
 
             steps, error, fatal = self._validate_plan(raw.get("steps"), registry)
+            if error is None and self._contains_write_intent(command) and not any(
+                    registry.get(step["tool"], {}).get("mutates") for step in steps):
+                # A read-only plan cannot fulfil "make me a new product".
+                error = ("the plan only reads data, but the user asked for a change; add "
+                         "the write tool that performs it as the final step")
             if error is None:
                 return {
                     "description": raw.get("description") or "",
@@ -1759,10 +1774,41 @@ class AgentOrchestrator:
                 summary_parts.append(f"Sales analysis: {result_data.get('total_products_sold', 0)} products sold in {result_data.get('period_days', 30)} days")
                 
             else:
-                # Generic summary
-                summary_parts.append(f"{func_name}: {json.dumps(result_data, default=str)[:200]}")
+                # Never dump raw JSON into a chat message: describe the payload.
+                summary_parts.append(self._readable_result(func_name, result_data))
                 
         return "\n".join(summary_parts)
+
+    @staticmethod
+    def _readable_result(func_name: str, result_data: Any, limit: int = 6) -> str:
+        """One human sentence for a tool result. Raw JSON is never returned."""
+        if isinstance(result_data, list):
+            return f"{len(result_data)} result(s) returned."
+        if not isinstance(result_data, dict):
+            text = str(result_data or "").strip()
+            return text[:200] or f"{func_name} finished."
+        message = result_data.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        task = result_data.get("task")
+        if isinstance(task, dict) and task.get("schedule"):
+            extra = f", next {task['next_run']}" if task.get("next_run") else ""
+            return f"Scheduled {task['schedule']}{extra}."
+        parts = []
+        for key, value in result_data.items():
+            if value in (None, "", [], {}) or key in {"success", "branch_id"}:
+                continue
+            label = str(key).replace("_", " ")
+            if isinstance(value, (list, tuple, dict)):
+                if len(value):
+                    parts.append(f"{len(value)} {label}")
+            elif isinstance(value, bool):
+                parts.append(f"{label}: {'yes' if value else 'no'}")
+            else:
+                parts.append(f"{label}: {value}")
+            if len(parts) >= limit:
+                break
+        return " · ".join(parts) if parts else f"{func_name} finished."
     
     def _format_tool_results_for_user(self, tool_results: List[Dict], original_command: str) -> str:
         """Format tool results directly for user display without second API call"""
@@ -2052,9 +2098,9 @@ class AgentOrchestrator:
                     lines.append(f"ℹ️ {result_data.get('message', 'No price agreement found.')}")
                         
             else:
-                # Generic formatting for unknown tools
-                lines.append(f"**{func_name}**")
-                lines.append(json.dumps(result_data, indent=2, default=str)[:500])
+                # Unknown/new tools: describe the payload. Never paste JSON into
+                # the chat, and never show internal tool names.
+                lines.append(self._readable_result(func_name, result_data))
         
         return "\n".join(lines)
         
