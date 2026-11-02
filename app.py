@@ -10585,6 +10585,22 @@ def agent_history():
 
 
 @app.route('/api/agent/clear', methods=['POST'])
+@login_required
+def agent_clear():
+    """Clear this user's conversation context (the widget keeps its own copy)."""
+    try:
+        orchestrator = get_ai_orchestrator()
+        orchestrator.clear_conversation()
+        return jsonify({
+            'success': True,
+            'message': 'Conversation history cleared'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 
 # ---------------------------------------------------------------------------
 # GOAL 1: Agent task persistence + approval flow
