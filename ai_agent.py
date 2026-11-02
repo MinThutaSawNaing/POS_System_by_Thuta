@@ -1,6 +1,6 @@
 """
 AI Agent Module for POS System
-Handles communication with APIFree.ai (DeepSeek V4 Pro by default;
+Handles communication with APIFree.ai (DeepSeek V3.2 by default;
 override with the AI_MODEL environment variable)
 """
 
@@ -14,7 +14,7 @@ from ai_tool_guard import guard_tool_call, schema_parameters
 
 
 APIFREE_BASE_URL = "https://api.apifree.ai/v1"
-DEFAULT_MODEL = "deepseek-ai/deepseek-v4-pro-stable"
+DEFAULT_MODEL = "deepseek-ai/deepseek-v3.2"
 
 
 @dataclass

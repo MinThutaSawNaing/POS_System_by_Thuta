@@ -8,7 +8,7 @@ Contracts under test:
     selection); pure chat keeps the default temperature.
   * The planner router sends multi-category and comparison requests through
     plan-then-execute while simple single-category questions stay single-shot.
-  * AIAgent defaults to DeepSeek V4 Flash and honours the AI_MODEL override.
+  * AIAgent defaults to DeepSeek V3.2 and honours the AI_MODEL override.
 
 No real API calls and no database access: chat is stubbed at the
 agent.chat boundary (style of test_ai_no_mock_data.py).
@@ -213,10 +213,10 @@ class AddProductEndToEndTests(SmartsTestBase):
 
 
 class ModelConfigTests(unittest.TestCase):
-    def test_default_model_is_deepseek_v4_pro_stable(self):
-        self.assertEqual(ai_agent.DEFAULT_MODEL, "deepseek-ai/deepseek-v4-pro-stable")
+    def test_default_model_is_deepseek_v3_2(self):
+        self.assertEqual(ai_agent.DEFAULT_MODEL, "deepseek-ai/deepseek-v3.2")
         agent = AIAgent(api_key="test-key")
-        self.assertEqual(agent.model, "deepseek-ai/deepseek-v4-pro-stable")
+        self.assertEqual(agent.model, "deepseek-ai/deepseek-v3.2")
 
     def test_ai_model_env_var_overrides_default(self):
         with mock.patch.dict("os.environ", {"AI_MODEL": "google/gemini-2.5-flash-lite"}):
