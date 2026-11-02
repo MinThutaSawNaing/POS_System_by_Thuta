@@ -843,6 +843,44 @@ def register_report_scheduler(app, db, pos):
                 'recipients': recipients}
 
 
+    def send_test(actor, to, note=''):
+        """Send one plain test message so a manager can verify delivery."""
+        try:
+            address = email_auth.normalize_email(to)
+        except ValueError:
+            raise ReportDeliveryError('Enter a valid email address to send the test to.') from None
+        brand = _brand()['name']
+        stamp = dt.datetime.now(BUSINESS_TIMEZONE).strftime('%Y-%m-%d %H:%M')
+        subject = f'{brand} email test'
+        lines = [f'{brand} email test', '',
+                 'This is a test message from Loli, the POS assistant.',
+                 f'Sent {stamp} ({BUSINESS_TIMEZONE.zone}).',
+                 'If you can read this, report emails will reach you.']
+        if note:
+            lines += ['', str(note).strip()]
+        text = '\n'.join(lines)
+        html = ('<!DOCTYPE html><html lang="en"><body style="margin:0;padding:0;background-color:#f4f4f4;">'
+                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                'style="padding:24px 12px;"><tr><td align="center">'
+                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                'style="max-width:520px;background-color:#ffffff;border:1px solid #e0e0e0;border-radius:8px;'
+                'font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif;">'
+                '<tr><td bgcolor="#111" style="background-color:#111;padding:18px 24px;color:#ffffff;'
+                'font-size:15px;font-weight:700;letter-spacing:.06em;">'
+                + _escape_html(brand) + '</td></tr><tr><td style="padding:24px;">'
+                '<h1 style="margin:0 0 12px;font-size:20px;color:#111;">Email test</h1>'
+                f'<p style="margin:0 0 8px;color:#333;font-size:14px;">{_escape_html(lines[2])}</p>'
+                f'<p style="margin:0;color:#555;font-size:13px;">{_escape_html(lines[3])}</p>'
+                '</td></tr></table></td></tr></table></body></html>')
+        try:
+            sent = email_auth.send_mail(pos['get_setting'], app.secret_key, address,
+                                        subject, text, html=html)
+        except email_auth.EmailAuthError as failure:
+            raise ReportDeliveryError(failure.message, failure.status) from None
+        return {'success': True, 'status': 'sent', 'recipients': sent['to'],
+                'subject': subject, 'attachments': [],
+                'message': f'Test email sent to {address}.'}
+
     def mail_status():
         """Whether the Resend relay is configured for outbound report mail."""
         settings = email_auth.mail_config(pos['get_setting'])
@@ -923,6 +961,7 @@ def register_report_scheduler(app, db, pos):
         update=update,
         cancel=cancel,
         mail_status=mail_status,
+        send_test=send_test,
         run_due=run_due,
         run_task=run_task,
         status=status,

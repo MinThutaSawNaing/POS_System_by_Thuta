@@ -288,3 +288,23 @@ def test_schedule_tables_exist_after_startup(world):
             "SELECT name FROM sqlite_master WHERE type='table'")}
     assert {'scheduled_report', 'scheduled_report_run'} <= names
 
+
+
+def test_send_test_email_reaches_the_given_address_without_attachments(world):
+    with world.app.app_context():
+        result = world.service.send_test(world.manager, 'qa@example.com', note='Check SMTP')
+    assert result['status'] == 'sent'
+    assert result['recipients'] == ['qa@example.com']
+    assert result['attachments'] == []
+    message = world.deliveries[0]['messages'][0]
+    assert message['To'] == 'qa@example.com'
+    assert 'Check SMTP' in message.get_body(preferencelist=('plain',)).get_content()
+    assert world.attachments() == []
+
+
+def test_send_test_email_rejects_an_invalid_address(world):
+    with world.app.app_context():
+        with pytest.raises(report_scheduler.ReportDeliveryError):
+            world.service.send_test(world.manager, 'not-an-address')
+    assert world.deliveries == []
+

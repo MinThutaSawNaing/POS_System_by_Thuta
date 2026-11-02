@@ -558,6 +558,18 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
             "required": ["task_id"]
         }
     },
+    "send_test_email": {
+        "name": "send_test_email",
+        "description": "Send a one-off test email to an address so a manager can confirm delivery works before scheduling reports.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "The email address to send the test to."},
+                "note": {"type": "string", "description": "Optional short line added to the test message."}
+            },
+            "required": ["to"]
+        }
+    },
     "register_customer": {
         "name": "register_customer",
         "description": "Register a new customer in the active branch with optional phone, email, and address.",
@@ -940,7 +952,7 @@ _AUTO_EXECUTE_TOOLS = {
     # Report delivery: these only read POS data, render a file and send it to an
     # address resolved by the server, so they run without a proposal step.
     "email_report", "schedule_report", "update_scheduled_report",
-    "cancel_scheduled_report",
+    "cancel_scheduled_report", "send_test_email",
 }
 
 # ==============================================================================
@@ -1012,6 +1024,7 @@ _TOOL_META = {
     "deactivate_branch":               ("system",      True,  'manager', "Deactivate a branch; refuses the default branch.", "small"),
     # --- report delivery (email + schedules) ---
     "get_email_delivery_status":       ("reports",     False, None,      "Whether report email is configured, plus available reports and recipient choices.", "small"),
+    "send_test_email":                 ("reports",     True,  None,      "Send a one-off test email to verify delivery before scheduling reports.", "small"),
     "email_report":                    ("reports",     True,  None,      "Email a report now as Excel and/or PDF to a server-resolved recipient.", "small"),
     "schedule_report":                 ("reports",     True,  None,      "Email a report every day or week at a chosen local time.", "small"),
     "list_scheduled_reports":          ("reports",     False, None,      "List scheduled report emails, their schedule and last delivery status.", "medium"),
@@ -2126,6 +2139,16 @@ class AITools:
             return error
         try:
             return service.cancel(self._report_scope(), task_id, reason=reason or '')
+        except Exception as exc:
+            return {"error": self._report_error(exc)}
+
+    def send_test_email(self, to: str, note: str = "") -> Dict[str, Any]:
+        """Send one test message so delivery can be checked end to end."""
+        service, error = self._report_service()
+        if error:
+            return error
+        try:
+            return service.send_test(self._report_scope(), to, note=note)
         except Exception as exc:
             return {"error": self._report_error(exc)}
 

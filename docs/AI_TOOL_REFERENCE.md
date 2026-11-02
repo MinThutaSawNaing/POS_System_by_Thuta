@@ -1672,6 +1672,36 @@ Search products in the active branch by name. Returns stock level, price, cost a
 }
 ```
 
+## `send_test_email`
+
+Send a one-off test email to an address so a manager can confirm delivery works before scheduling reports.
+
+- Category: `reports`
+- Mutates data: `True`
+- Required role metadata: `manager` (runtime policy also applies)
+- Autonomy: `auto`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "to": {
+      "type": "string",
+      "description": "The email address to send the test to."
+    },
+    "note": {
+      "type": "string",
+      "description": "Optional short line added to the test message."
+    }
+  },
+  "required": [
+    "to"
+  ]
+}
+```
+
 ## `set_default_branch`
 
 Make a branch the company-wide default branch.
