@@ -2054,6 +2054,10 @@ class AgentOrchestrator:
             "Never invent counts, prices, names, or totals that are not in the "
             "results. If any step failed or was skipped, you MUST say the task "
             "is incomplete — never claim success.\n\n"
+            "Keep the wording polite and concise. If this purchase-order request "
+            "is waiting for the user to select from the returned suppliers, say "
+            "'Please choose a supplier for your purchase order.' Do not imply "
+            "an order was created unless a tool result confirms it.\n\n"
             f"Original request: {command}\n\n"
             f"Step results (compacted):\n{json.dumps(compact_steps, default=str)}\n\n"
         )
@@ -2538,6 +2542,19 @@ class AgentOrchestrator:
                         lines.append(f"• **{s['name']}** - {phone} | {rating}")
                     if len(suppliers) > 10:
                         lines.append(f"\n... and {len(suppliers) - 10} more suppliers")
+                    # Presentation only: guide supplier selection without
+                    # changing the plan, tools, or purchase-order arguments.
+                    selection_context = original_command or ""
+                    if re.fullmatch(r"\s*(?:ok(?:ay)?[,!]?\s*)?(?:do it|go ahead|yes|proceed)(?:,?\s+please)?[.!]?\s*",
+                                    selection_context, re.I):
+                        previous_requests = [m.content for m in self.agent.conversation_history
+                                             if m.role == "user" and m.content
+                                             and m.content != original_command]
+                        if previous_requests:
+                            selection_context = previous_requests[-1]
+                    if re.search(r"\b(?:purchase\s+order|po|buy|restock)\b|\border\s+\d+\b",
+                                 selection_context, re.I):
+                        lines.append("\nPlease choose a supplier for your purchase order.")
                         
             elif func_name == "get_purchase_orders":
                 orders = result_data.get('orders', [])

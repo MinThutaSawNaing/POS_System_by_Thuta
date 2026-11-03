@@ -59,6 +59,36 @@ class FormatterTestCase(unittest.TestCase):
             [{"function_name": func_name, "result": result, "error": None}], command)
 
 
+class PoliteSupplierSelectionTests(FormatterTestCase):
+    SUPPLIERS = {"total_suppliers": 1, "suppliers": [
+        {"name": "C & K", "phone": "09251246518", "quality_rating": 5.0}]}
+
+    def test_purchase_order_supplier_list_invites_selection(self):
+        text = self.render("get_supplier_list", self.SUPPLIERS,
+                           "Please make a PO for 10 Motorcycle Batteries")
+        self.assertIn("Please choose a supplier for your purchase order.", text)
+        self.assertIn("C & K", text)
+        self.assertIn("09251246518", text)
+        self.assertIn("5.0/5", text)
+
+    def test_short_followup_uses_recent_po_context_for_wording(self):
+        self.orchestrator.agent.add_user_message("Can you make a PO for 10 batteries?")
+        self.orchestrator.agent.add_assistant_message("Motorcycle Battery: 2 units in stock.")
+        text = self.render("get_supplier_list", self.SUPPLIERS, "Ok do it")
+        self.assertIn("Please choose a supplier for your purchase order.", text)
+
+    def test_ordinary_supplier_directory_does_not_assume_order(self):
+        for command in ("Show suppliers", "List suppliers in alphabetical order"):
+            with self.subTest(command=command):
+                text = self.render("get_supplier_list", self.SUPPLIERS, command)
+                self.assertNotIn("Please choose", text)
+
+    def test_empty_supplier_list_does_not_ask_for_impossible_selection(self):
+        text = self.render("get_supplier_list", {"suppliers": []}, "Make a PO")
+        self.assertNotIn("Please choose", text)
+        self.assertIn("No suppliers found", text)
+
+
 class ProductIdentifierTests(FormatterTestCase):
     """A barcode question must be answered with the barcode."""
 
