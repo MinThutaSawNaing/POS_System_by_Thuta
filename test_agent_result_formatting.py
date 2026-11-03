@@ -89,6 +89,69 @@ class PoliteSupplierSelectionTests(FormatterTestCase):
         self.assertIn("No suppliers found", text)
 
 
+class ActionProgressPresentationTests(FormatterTestCase):
+    def reply(self, command, tool="get_product_details", payload=None, **extra):
+        result = {"success": True, "message": "Verified details", "plan": None,
+                  "step_results": [{"step": 1, "tool": tool, "status": "ok",
+                                    "result": PRODUCT_DETAILS if payload is None else payload}], **extra}
+        with mock.patch.object(self.orchestrator, "_process_command_locked", return_value=result):
+            return self.orchestrator.process_command(command)
+
+    def test_po_product_lookup_explains_progress_and_asks_supplier(self):
+        result = self.reply("Can make make PO for Motorcycle Battery? I want to order 10 units")
+        self.assertIn("No purchase order has been created yet.", result["message"])
+        self.assertIn("Which supplier would you like to order from?", result["message"])
+        self.assertIn("Verified details", result["message"])
+        self.assertEqual(result["step_results"][0]["tool"], "get_product_details")
+
+    def test_other_action_lookup_has_short_honest_progress_question(self):
+        result = self.reply("Change its barcode to 900099")
+        self.assertIn("hasn't been carried out yet", result["message"])
+        self.assertNotIn("How would you like to proceed?", result["message"])
+
+    def test_lookup_question_is_not_treated_as_pending_action(self):
+        self.assertEqual(self.reply("What is its barcode?")["message"], "Verified details")
+
+    def test_successful_action_is_not_followed_by_more_questions(self):
+        result = self.reply("Create a PO for 10 batteries", tool="create_purchase_order",
+                            payload={"success": True})
+        self.assertEqual(result["message"], "Verified details")
+
+    def test_failed_and_clarification_replies_are_preserved(self):
+        self.assertEqual(self.reply("Create a PO", success=False)["message"], "Verified details")
+        self.assertEqual(self.reply("Create a PO", plan={"needs_clarification": True})["message"],
+                         "Verified details")
+
+    def test_supplier_already_named_does_not_get_asked_again(self):
+        for command in ("Create a PO for 10 batteries from C & K",
+                        "Create a PO for 10 batteries with supplier C & K"):
+            result = self.reply(command)
+            self.assertNotIn("Which supplier", result["message"])
+
+    def test_existing_order_lookup_has_no_pending_action_footer(self):
+        result = self.reply("Show purchase order 123", tool="get_purchase_orders", payload=PURCHASE_ORDERS)
+        self.assertEqual(result["message"], "Verified details")
+
+    def test_existing_po_action_does_not_claim_creation_is_pending(self):
+        result = self.reply("Approve purchase order PO-123", tool="get_purchase_orders",
+                            payload=PURCHASE_ORDERS)
+        self.assertNotIn("No purchase order has been created", result["message"])
+        self.assertIn("hasn't been carried out yet", result["message"])
+
+    def test_explanation_question_does_not_get_pending_action_footer(self):
+        result = self.reply("How do I change a barcode?")
+        self.assertEqual(result["message"], "Verified details")
+
+    def test_single_shot_results_get_same_progress_wording(self):
+        result = self.reply("Please change its barcode", step_results=[], tool_results=[
+            {"function_name": "get_product_details", "result": PRODUCT_DETAILS, "error": None}])
+        self.assertIn("hasn't been carried out yet", result["message"])
+
+    def test_existing_question_is_not_duplicated(self):
+        result = self.reply("Make a PO", message="Which supplier would you like?")
+        self.assertEqual(result["message"], "Which supplier would you like?")
+
+
 class ProductIdentifierTests(FormatterTestCase):
     """A barcode question must be answered with the barcode."""
 

@@ -780,8 +780,72 @@ class AgentOrchestrator:
         # messages and corrupt the conversation sent to the upstream API.
         with self._conversation_lock:
             result = self._process_command_locked(command, user_id)
+            result = self._present_action_progress(command, result)
         self._remember_turn(result)
         return result
+
+    def _present_action_progress(self, command: str, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Add context to intermediate reads, without changing any action or status.
+
+        This is a final response decoration, shared by planned and single-shot
+        replies. Never infer completion or missing parameters from model prose.
+        """
+        message = result.get("message")
+        plan = result.get("plan") or {}
+        if (not result.get("success") or not isinstance(message, str)
+                or plan.get("needs_clarification") or command.lstrip().startswith("#")):
+            return result
+        evidence = result.get("step_results") or result.get("tool_results") or []
+        if not evidence or any(not isinstance(row, dict) for row in evidence):
+            return result
+        if any(row.get("error") or row.get("status") in {"failed", "skipped"}
+               or (isinstance(row.get("result"), dict)
+                   and (row["result"].get("error") or row["result"].get("success") is False))
+               for row in evidence):
+            return result
+        names = [row.get("tool") or row.get("function_name") for row in evidence]
+        # Unknown tools and any write result already have their own outcome.
+        if any(name not in _TOOL_METADATA or _TOOL_METADATA[name].get("mutates") for name in names):
+            return result
+        context = command
+        if re.fullmatch(r"\s*(?:ok(?:ay)?[,!]?\s*)?(?:do it|go ahead|yes|proceed)(?:,?\s+please)?[.!]?\s*",
+                        command, re.I):
+            previous = [m.content for m in self.agent.conversation_history
+                        if m.role == "user" and m.content and m.content != command]
+            if previous:
+                context = previous[-1]
+        # Presentation-only intent detection; never used to select or run tools.
+        action = self._contains_write_intent(context) or re.search(r"\b(?:create|make|add|change|update|edit|adjust|delete|remove|"
+                           r"send|email|schedule|transfer|receive|approve|cancel|restock|"
+                           r"increase|decrease|raise|lower|rename)\b|\border\s+\d+\b", context, re.I)
+        if not action:
+            return result
+        if re.search(r"^\s*(?:what|why|how|which|when|where)\b", context, re.I):
+            return result  # Explanatory questions are not pending actions.
+        if re.search(r"^\s*(?:show|list|find|check|view|display|search|get)\b", context, re.I):
+            return result
+        # Preserve existing explicit questions rather than asking twice.
+        if "?" in message or "Please choose" in message:
+            return result
+        is_purchase_order_creation = bool(re.search(r"\b(?:po|purchase\s+order)\b|\border\s+\d+\b", context, re.I)
+                  and not re.search(r"\b(?:approve|cancel|receive|delete|update|edit)\b", context, re.I))
+        if is_purchase_order_creation:
+            progress = "No purchase order has been created yet."
+            supplier_provided = bool(re.search(r"\bfrom\s+\S|\bsupplier\s+\S|\bwith\s+\S", context, re.I))
+            if supplier_provided:
+                question = ""
+            elif "get_supplier_list" in names:
+                suppliers = [row.get("result", {}).get("suppliers", []) for row in evidence
+                             if (row.get("tool") or row.get("function_name")) == "get_supplier_list"
+                             and isinstance(row.get("result"), dict)]
+                question = ("Please choose a supplier for your purchase order." if any(suppliers)
+                            else "Please check your supplier setup before continuing.")
+            else:
+                question = "Which supplier would you like to order from?"
+        else:
+            progress = "I've only retrieved the details; your requested action hasn't been carried out yet."
+            question = ""  # Do not invent missing inputs or an approval round-trip.
+        return {**result, "message": f"{message}\n\n{progress} {question}".rstrip()}
 
     def _remember_turn(self, result: Dict[str, Any]) -> None:
         """Keep Loli's own answer in history so the next turn has context.
@@ -983,13 +1047,6 @@ class AgentOrchestrator:
                 # Keep simple reports exact, but answer analytical questions
                 # using the evidence instead of dumping a generic tool report.
                 final_message = self._answer_tool_results(tool_results, command)
-                if (self._contains_write_intent(command)
-                        and not any(_TOOL_METADATA.get(r.get("function_name"), {}).get("mutates")
-                                    for r in tool_results)):
-                    # Never let a lookup look like a completed change.
-                    final_message += ("\n\nI only gathered the details above; nothing has been "
-                                      "changed yet. Say \"go ahead\" and I will prepare the "
-                                      "change.")
             
             if final_message is None:
                 # No real tool data yet - try keyword fallback intent detection.
@@ -2054,7 +2111,12 @@ class AgentOrchestrator:
             "Never invent counts, prices, names, or totals that are not in the "
             "results. If any step failed or was skipped, you MUST say the task "
             "is incomplete — never claim success.\n\n"
-            "Keep the wording polite and concise. If this purchase-order request "
+            "Keep the wording polite and concise. For any unfinished action, "
+            "briefly explain what was checked versus what was actually done, "
+            "then ask one short, relevant question only if user input is needed. "
+            "Never invent missing requirements or ask for information already supplied. "
+            "For a simple lookup, answer directly without an unnecessary question. "
+            "If this purchase-order request "
             "is waiting for the user to select from the returned suppliers, say "
             "'Please choose a supplier for your purchase order.' Do not imply "
             "an order was created unless a tool result confirms it.\n\n"
