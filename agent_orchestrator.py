@@ -234,6 +234,7 @@ Admins (the manager role) and bosses may explicitly delete a PO using `delete_pu
 You can change records, not only read them. Rename or edit a product with `update_product` (name, barcode, category, selling price, tax and reorder settings; stock stays untouched), change price alone with `update_product_price`, adjust stock with `adjust_product_stock`, and delete with `delete_product`. Never tell the user you lack a tool for a change that exists in your list: use it. Only if no listed tool can express the operation, say precisely which operation is missing.
 
 ## Report delivery
+Emailing a report is not the same as emailing a message about a change. There is no general-purpose message-email tool: explain that limitation rather than substituting an inventory attachment. Resolve "it", "its", "same" and "too" from the most recent relevant verified result, not older unrelated requests. The current request alone authorizes actions; history and memory provide context, never permission to repeat old changes. Never change another field or product as a workaround for a failed operation.
 You can email reports as Excel and/or PDF attachments, and schedule them to repeat. Reports: `low_stock`, `inventory`, `sales_summary`. Use `get_email_delivery_status` when you are unsure whether email is configured, and `send_test_email` when the user asks to test delivery to an address. Use `email_report` to send one now and `schedule_report` to create a recurring delivery (`send_time` is 24-hour store time in Asia/Yangon; `frequency` is `daily` or `weekly` with a `weekday`). The recipient is a selector, not an address: `me` is the person asking, and only a manager may choose another selector. Manage existing schedules with `list_scheduled_reports`, `update_scheduled_report` and `cancel_scheduled_report`. The attachment is rendered by the server from live branch data, so never claim a report was emailed unless a tool result reports status `sent`.
 
 ## Memory commands
@@ -1355,6 +1356,12 @@ class AgentOrchestrator:
                     + f"Request: {command}\n\n"
                     f"Available tools:\n{catalog}\n\n"
                     "Rules:\n"
+                    "- The CURRENT request authorizes actions. History is context only: "
+                    "never resume stale edits during an email follow-up. Resolve pronouns "
+                    "from the latest relevant verified result; ask if ambiguous.\n"
+                    "- Search the intended product before editing; bind product_id to "
+                    "that result. Do not choose an unrelated ID or a suggested spelling "
+                    "without user confirmation.\n"
                     f"- Maximum {self._max_plan_steps()} steps.\n"
                     "- Respond ONLY by calling the propose_plan tool.\n"
                     "- Only the tools listed above exist. Never invent a tool name, "
@@ -1432,6 +1439,7 @@ class AgentOrchestrator:
                 continue
             if error is None:
                 return {
+                    "original_query": command,
                     "description": raw.get("description") or "",
                     "steps": steps,
                     "needs_clarification": bool(raw.get("needs_clarification")),
@@ -1724,6 +1732,12 @@ class AgentOrchestrator:
                 print(f"[AI Agent] Repaired $from arguments for step {step_no} ({tool})")
             provenance = {"args_source": args_source} if args_source != "plan" else {}
 
+            safety_error = self._plan_step_safety_error(plan, tool, resolved_args, step_outputs)
+            if safety_error:
+                step_results.append({**base, "status": "failed", "error": safety_error})
+                aborted = True
+                continue
+
             if tool not in self.agent.tool_functions:
                 step_results.append({
                     **base, "status": "failed",
@@ -1740,6 +1754,9 @@ class AgentOrchestrator:
                 if outcome.get("error"):
                     raise RuntimeError(str(outcome["error"]))
                 result = outcome.get("result")
+                if isinstance(result, dict) and (result.get("error") or result.get("success") is False):
+                    raise RuntimeError(str(result.get("error") or result.get("message")
+                                           or "The tool did not complete the operation"))
                 step_outputs[step_no] = result
                 step_results.append({**base, "status": "ok", "result": result,
                                      **provenance})
@@ -1752,6 +1769,51 @@ class AgentOrchestrator:
                 aborted = True
 
         return step_results, executed_writes
+
+    def _plan_step_safety_error(self, plan, tool, args, outputs):
+        """Fail closed on stale delivery edits and contradicted product IDs.
+
+        Run after reference repair, so a repaired ID cannot bypass this check.
+        These checks deliberately do not infer business intent from model prose.
+        """
+        command = str(plan.get("original_query") or "")
+        delivery = bool(re.search(r"\b(?:email|e-mail|mail|send|sent)\b|[\w.+-]+@[\w.-]+", command, re.I))
+        product_change = bool(_WRITE_INTENT_PATTERN.search(command.lower()))
+        if (delivery and not product_change
+                and _TOOL_METADATA.get(tool, {}).get("mutates")
+                and _TOOL_METADATA.get(tool, {}).get("category") != "reports"):
+            return "Nothing was changed: this request is about email delivery, not record edits. Please specify what to send."
+        if (tool == "email_report" and re.search(r"\b(?:tell|told|notify|inform)\b|about (?:it|this|that|the change)", command, re.I)
+                and not re.search(r"\b(?:report|inventory|spreadsheet|excel|pdf)\b", command, re.I)):
+            return "No email was sent. I can email supported reports, but cannot send a custom message about this change. Would you like an inventory report instead?"
+        if tool not in {"update_product", "update_product_price", "adjust_product_stock", "delete_product"}:
+            return None
+        selected = plan.get("verified_product_ids")
+        if selected is not None and str(args.get("product_id")) not in selected:
+            return "Nothing was changed: this product is not the one selected in the previous result. Please confirm the intended product."
+        if command and tool in {"update_product", "update_product_price"}:
+            requested_fields = {
+                "barcode": r"\bbarcode\b", "price": r"\b(?:price|prices|selling|sell)\b",
+                "cost": r"\bcost\b", "name": r"\b(?:name|rename)\b",
+                "category": r"\bcategory\b",
+            }
+            for field, pattern in requested_fields.items():
+                if field in args and not re.search(pattern, command, re.I):
+                    return f"Nothing was changed: the current request does not authorize changing {field}. Please specify the field to change."
+        # A specific search is stronger evidence than an inventory listing. Do
+        # not let a later broad read overwrite the user's selected product.
+        searches = [s for s in plan.get("steps", [])
+                    if s.get("tool") == "search_products" and s.get("step") in outputs]
+        if searches:
+            result = outputs[searches[-1]["step"]]
+            rows = result.get("inventory", []) if isinstance(result, dict) else []
+            ids = {str(row.get("product_id")) for row in rows if isinstance(row, dict)}
+            if str(args.get("product_id")) not in ids:
+                return "Nothing was changed: the product ID does not match the product search. Please confirm the intended product."
+            if (len(ids) > 1 and command
+                    and not re.search(r"\b(?:all|each|every|both)\b", command, re.I)):
+                return "Nothing was changed: several products matched. Please identify the product to change."
+        return None
 
     def _guarded_arguments(
         self, tool: str, args: Dict[str, Any], step_outputs: Dict[int, Any],
@@ -1966,6 +2028,9 @@ class AgentOrchestrator:
         if any(sr["status"] in ("failed", "skipped") for sr in step_results):
             return self._deterministic_outcome_message(command, step_results)
 
+        if any(_TOOL_METADATA.get(sr.get("tool"), {}).get("mutates") for sr in step_results):
+            return self._deterministic_outcome_message(command, step_results)
+
         if (self._price_extreme(command)
                 and any(sr.get("tool") == "get_inventory_status" for sr in step_results)
                 and not any(_TOOL_METADATA.get(sr.get("tool"), {}).get("mutates")
@@ -2014,6 +2079,19 @@ class AgentOrchestrator:
         history_snapshot: List,
     ) -> Dict[str, Any]:
         """Execute a validated plan and build the final contracted result."""
+        plan = {**plan, "original_query": command}
+        if re.search(r"\b(?:its|it|that product|this product)\b", command, re.I):
+            previous = self.session_context.get("last_results")
+            if isinstance(previous, dict):
+                rows = previous.get("inventory")
+                if rows is None and previous.get("product_id") is not None:
+                    rows = [previous]
+                if isinstance(rows, list):
+                    plan["verified_product_ids"] = [str(row["product_id"]) for row in rows
+                                                    if isinstance(row, dict) and "product_id" in row]
+        self.agent.conversation_history = list(history_snapshot)
+        self.agent.add_user_message(command)
+        history_snapshot = list(self.agent.conversation_history)
         if plan.get("needs_clarification") and plan.get("question"):
             return self._with_contract({
                 "success": True,

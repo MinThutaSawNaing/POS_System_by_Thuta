@@ -62,6 +62,24 @@ What still protects the data:
   `delete_customer` with debt), independent of the agent.
 - **Fail-stop execution**: a failed step aborts the rest and the answer must
   say the task is incomplete.
+- **Turn safety**: the executor checks the original request after argument
+  repair. Email-only follow-ups cannot mutate non-report records. Product
+  changes cannot contradict the latest product search or the previous verified
+  product selection for pronoun follow-ups. Multiple matches require a bulk
+  request or clarification; an empty search cannot be repaired into a guessed ID.
+  Product field edits must be explicit in the current request (otherwise ask
+  the user to restate the field). These are conservative safeguards, not a
+  complete natural-language authorization system.
+- **Truthful outcomes**: nested tool errors and `success=false` fail the step.
+  Mutation summaries are formatted from actual results, never narrated by the
+  model. Planned user requests and replies both remain in conversation history.
+- **Email scope**: `email_report` sends supported report attachments, optionally
+  with a note. It is not a standalone custom-message sender; do not substitute
+  an inventory report for a request to tell someone about a change.
+
+Regression replays for these rules live in `test_agent_turn_safety.py`. Run them
+with `python run_tests.py -q test_agent_turn_safety.py` so application imports use
+disposable data rather than the local POS database.
 
 ### Removed endpoints
 

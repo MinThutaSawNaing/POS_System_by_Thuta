@@ -351,7 +351,7 @@ class ExecutionRecoveryTests(unittest.TestCase):
         self.assertIn("item 0", step_results[1]["error"])
         self.assertNotIn("update_product_price", [name for name, _ in self.calls])
 
-    def test_repaired_arguments_execute_the_planned_step(self):
+    def test_repaired_arguments_cannot_guess_id_after_empty_search(self):
         def fake_repair(plan, step, step_outputs, error):
             return {"product_id": 85, "price": 2600}
 
@@ -361,12 +361,12 @@ class ExecutionRecoveryTests(unittest.TestCase):
             step_results, executed = self.orchestrator._execute_plan(self._plan())
 
         repair.assert_called_once()
-        self.assertEqual(step_results[1]["status"], "ok")
-        self.assertEqual(step_results[1]["args_source"], "repaired")
-        self.assertEqual(executed, [2])
+        self.assertEqual(step_results[1]["status"], "failed")
+        self.assertIn("does not match", step_results[1]["error"])
+        self.assertEqual(executed, [])
         write_args = [args for name, args in self.calls
                       if name == "update_product_price"]
-        self.assertEqual(write_args[0]["product_id"], 85)
+        self.assertEqual(write_args, [])
 
     def test_repair_is_bounded_per_plan(self):
         def bad_repair(plan, step, step_outputs, error):
