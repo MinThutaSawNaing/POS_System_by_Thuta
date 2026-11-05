@@ -29,5 +29,13 @@ assert.equal(events[0].type, 'ai-records-changed');
 assert.deepEqual(events[0].detail.tools, ['update_purchase_order']);
 notifyRecordChanges({tool_results: [{function_name:'delete_sale_history',result:{success:true}}]});
 assert.deepEqual(events[1].detail.tools, ['delete_sale_history']);
+notifyRecordChanges({tool_results: [{function_name:'delete_delivery_record',result:{success:false,requires_confirmation:true}}]});
+notifyRecordChanges({tool_results: [{function_name:'get_delivery_details',result:{success:true}}]});
+assert.equal(events.length, 2);
+const deliveryWrites = ['create_delivery', 'update_delivery_stage', 'update_delivery_carrier',
+  'record_delivery_attempt', 'retry_delivery', 'record_delivery_collection',
+  'record_delivery_remittance', 'delete_delivery_record'];
+notifyRecordChanges({tool_results: deliveryWrites.map(function_name => ({function_name,result:{success:true}}))});
+assert.deepEqual(events[2].detail.tools, deliveryWrites);
 '''
     subprocess.run([NODE, '-e', script], check=True, capture_output=True, text=True)

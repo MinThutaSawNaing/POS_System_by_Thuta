@@ -27,8 +27,12 @@ WRITE_TOOLS = sorted(name for name, meta in TOOL_METADATA.items() if meta['mutat
 
 def test_registry_carries_no_permission_metadata():
     for name, meta in TOOL_METADATA.items():
-        assert 'requires_role' not in meta, name
-        assert 'autonomy' not in meta, name
+        if meta['category'] == 'deliveries':
+            assert meta['requires_role'] == ['manager', 'boss'], name
+            assert meta['autonomy'] == ('approval' if name == 'delete_delivery_record' else 'auto'), name
+        else:
+            assert 'requires_role' not in meta, name
+            assert 'autonomy' not in meta, name
 
 
 @pytest.mark.parametrize('executor', ['orchestrator', 'agent'])

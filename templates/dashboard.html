@@ -3639,8 +3639,20 @@
               <option value="paid">Already Paid</option>
             </select>
           </div>
-          <div class="col-6 col-sm-2"><button class="btn btn-outline-secondary w-100" onclick="loadDeliveries()"><i class="bi bi-search"></i> <span class="d-none d-sm-inline">Apply</span></button></div>
+          <div class="col-6 col-sm-2"><button class="btn btn-outline-secondary w-100" onclick="loadDeliveries(1)"><i class="bi bi-search"></i> <span class="d-none d-sm-inline">Apply</span></button></div>
+          <div class="col-sm-3"><label for="deliveries-courier-filter">Courier</label><input id="deliveries-courier-filter" class="form-control" /></div>
+          <div class="col-sm-3"><label for="deliveries-attention-filter">Needs attention</label><select id="deliveries-attention-filter" class="form-select"><option value="">All deliveries</option><option value="overdue">Overdue</option><option value="unassigned">Unassigned</option><option value="failed">Failed attempt</option></select></div>
         </div>
+        <div class="d-flex flex-wrap gap-3 mb-3" aria-live="polite">
+          <span>Overdue open: <strong id="delivery-overdue">0</strong></span><span>Unassigned open: <strong id="delivery-unassigned">0</strong></span><span>Failed open: <strong id="delivery-failed">0</strong></span><span>COD outstanding: <strong id="delivery-cod-outstanding">0</strong></span>
+        </div>
+        <form data-capability="deliveries.write" class="d-flex flex-wrap gap-2 mb-3" onsubmit="event.preventDefault(); bulkAssignDeliveries()">
+          <label><input type="checkbox" id="deliveries-select-page" onchange="selectDeliveryPage(this.checked)" /> Select current page</label>
+          <span id="deliveries-selected-count" aria-live="polite">0 selected</span>
+          <label for="deliveries-bulk-courier">Courier name</label><input id="deliveries-bulk-courier" required maxlength="120" class="form-control w-auto" />
+          <label for="deliveries-bulk-phone">Courier phone</label><input id="deliveries-bulk-phone" maxlength="50" class="form-control w-auto" />
+          <button id="deliveries-bulk-submit" class="btn btn-primary" type="submit">Assign selected</button>
+        </form>
 
         <div class="card">
           <div class="card-body">
@@ -3648,7 +3660,7 @@
               <table class="table table-striped table-hover">
                 <thead>
                   <tr>
-                    <th>Delivery #</th>
+                    <th aria-label="Select delivery"></th><th>Delivery #</th>
                     <th class="d-none d-md-table-cell">Sale Txn</th>
                     <th>Recipient</th>
                     <th>Stage</th>
@@ -4761,6 +4773,8 @@
             <input type="text" id="update-delivery-courier" class="form-control mb-2" placeholder="Courier Name" />
             <input type="text" id="update-delivery-courier-phone" class="form-control mb-2" placeholder="Courier Phone" />
             <input type="text" id="update-delivery-tracking" class="form-control mb-2" placeholder="Tracking Code" />
+            <label for="update-delivery-scheduled">Scheduled delivery (local time)</label>
+            <input type="datetime-local" id="update-delivery-scheduled" class="form-control mb-2" />
             <textarea id="update-delivery-proof-note" class="form-control" rows="2" placeholder="Proof Note"></textarea>
           </div>
           <div class="modal-footer">
@@ -4769,6 +4783,59 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <div class="modal fade" id="deliveryOperationsModal" tabindex="-1" aria-labelledby="delivery-operations-title" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-fullscreen-sm-down"><div class="modal-content">
+        <div class="modal-header"><h5 id="delivery-operations-title" class="modal-title">Delivery operations</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+        <div class="modal-body">
+          <pre id="delivery-operations-details" class="text-wrap"></pre>
+          <p id="delivery-operations-error" class="text-danger" role="alert"></p>
+          <div id="delivery-operations-writes" data-capability="deliveries.write">
+            <form data-delivery-operation="attempts" onsubmit="event.preventDefault(); submitDeliveryOperation('attempts')" class="border rounded p-2 mb-2">
+              <h6>Record attempt</h6><label for="delivery-attempt-outcome">Outcome</label><select id="delivery-attempt-outcome" class="form-select"><option value="failed">Failed</option><option value="delivered">Delivered</option></select>
+              <label for="delivery-attempt-reason">Failure reason</label><input id="delivery-attempt-reason" class="form-control" />
+              <label for="delivery-attempt-proof">Proof note</label><textarea id="delivery-attempt-proof" class="form-control"></textarea><button class="btn btn-primary mt-2">Record attempt</button>
+            </form>
+            <form data-delivery-operation="retry" onsubmit="event.preventDefault(); submitDeliveryOperation('retry')" class="border rounded p-2 mb-2"><h6>Schedule retry</h6>
+              <label for="delivery-retry-note">Retry note</label><input id="delivery-retry-note" class="form-control" />
+              <label for="delivery-retry-scheduled">Scheduled time (local)</label><input type="datetime-local" id="delivery-retry-scheduled" class="form-control" /><button class="btn btn-primary mt-2">Schedule retry</button>
+            </form>
+            <form data-delivery-operation="collection" onsubmit="event.preventDefault(); submitDeliveryOperation('collection')" class="border rounded p-2 mb-2"><h6>Record COD collection</h6>
+              <label for="delivery-collection-amount">Amount collected</label><input required type="number" min="0.01" step="0.01" id="delivery-collection-amount" class="form-control" />
+              <label for="delivery-collection-reference">Collection reference</label><input id="delivery-collection-reference" class="form-control" /><button class="btn btn-primary mt-2">Record collection</button>
+            </form>
+            <form data-delivery-operation="remittance" onsubmit="event.preventDefault(); submitDeliveryOperation('remittance')" class="border rounded p-2 mb-2"><h6>Record COD remittance</h6>
+              <label for="delivery-remittance-amount">Amount remitted</label><input required type="number" min="0.01" step="0.01" id="delivery-remittance-amount" class="form-control" />
+              <label for="delivery-remittance-reference">Remittance reference</label><input id="delivery-remittance-reference" class="form-control" /><button class="btn btn-primary mt-2">Record remittance</button>
+            </form>
+          </div>
+          <h6>Carrier (manual record)</h6><p id="delivery-carrier-summary"></p><div id="delivery-tracking-link"></div>
+          <form data-delivery-operation="carrier" onsubmit="event.preventDefault(); submitDeliveryOperation('carrier')" class="border rounded p-2 mb-2">
+            <p>No live booking or automatic carrier verification. Status and notes are entered manually.</p>
+            <label for="delivery-carrier-name">Carrier name</label><input required id="delivery-carrier-name" class="form-control" />
+            <label for="delivery-tracking-code">Tracking code</label><input id="delivery-tracking-code" class="form-control" />
+            <label for="delivery-tracking-url">Tracking URL (HTTPS only)</label><input type="url" id="delivery-tracking-url" class="form-control" />
+            <label for="delivery-carrier-status">Manual status</label><input id="delivery-carrier-status" class="form-control" />
+            <label for="delivery-carrier-note">Manual note</label><textarea id="delivery-carrier-note" class="form-control"></textarea><button class="btn btn-primary mt-2">Save manual carrier record</button>
+          </form>
+          <h6>Delivery evidence</h6><div id="delivery-proof-previews"></div>
+          <form data-delivery-operation="proofs" onsubmit="event.preventDefault(); submitDeliveryProof('photo')" class="border rounded p-2 mb-2">
+            <label for="delivery-photo">Photo (JPEG/PNG, maximum 5 MiB)</label><input required type="file" id="delivery-photo" accept="image/jpeg,image/png" capture="environment" class="form-control" /><button class="btn btn-primary mt-2">Upload photo</button>
+          </form>
+          <form data-delivery-operation="proofs" onsubmit="event.preventDefault(); submitDeliveryProof('signature')" class="border rounded p-2 mb-2">
+            <label for="delivery-signer">Signer name</label><input required id="delivery-signer" class="form-control" />
+            <p>Draw your signature below using a pointer or touch.</p><canvas id="delivery-signature" width="600" height="200" style="border:1px solid #666;max-width:100%;touch-action:none" aria-label="Signature drawing area"></canvas>
+            <div><button type="button" class="btn btn-outline-secondary" onclick="clearDeliverySignature()">Clear signature</button> <button class="btn btn-primary">Save signature</button></div>
+          </form>
+          <form data-delivery-operation="delete" onsubmit="event.preventDefault(); submitDeliveryOperation('delete')" class="border border-danger rounded p-2 mb-3" hidden>
+            <h6 class="text-danger">Delete delivery record</h6><p class="alert alert-danger">Manager/boss only. Terminal deliveries only; collected COD must be remitted first, and delivered COD cannot be pending. This removes the delivery from active operations, but retains ledger, history and evidence.</p>
+            <label for="delivery-delete-reason">Required reason</label><textarea required id="delivery-delete-reason" class="form-control"></textarea>
+            <label><input type="checkbox" required id="delivery-delete-confirm" /> I confirm deletion of this delivery record.</label><div><button class="btn btn-danger mt-2">Delete delivery record</button></div>
+          </form>
+          <h6>History</h6><div id="delivery-operations-history" aria-live="polite"></div>
+        </div>
+      </div></div>
     </div>
 
     <!-- Add Product Modal -->
@@ -11201,14 +11268,15 @@
 
       // Bootstrap supports one modal at a time. Wait for the previous dialog's
       // backdrop, focus trap and body scroll lock to finish cleaning up.
-      function showModalAfterHiding(modalId) {
+      function showModalAfterHiding(modalId, isCurrent) {
+        isCurrent = isCurrent || function() { return true; };
         const target = document.getElementById(modalId);
         const modal = bootstrap.Modal.getOrCreateInstance(target);
         const activeModals = Array.from(document.querySelectorAll(".modal.show"))
           .filter((element) => element !== target);
 
         if (activeModals.length === 0) {
-          modal.show();
+          if (isCurrent()) modal.show();
           return;
         }
 
@@ -11216,7 +11284,7 @@
         activeModals.forEach((element) => {
           element.addEventListener("hidden.bs.modal", () => {
             remaining -= 1;
-            if (remaining === 0) modal.show();
+            if (remaining === 0 && isCurrent()) modal.show();
           }, { once: true });
           bootstrap.Modal.getOrCreateInstance(element).hide();
         });
@@ -19667,6 +19735,12 @@
       }
 
       window.addEventListener("ai-records-changed", (event) => {
+        const deliveryTools = ["create_delivery", "update_delivery_stage", "update_delivery_carrier", "record_delivery_attempt", "retry_delivery", "record_delivery_collection", "record_delivery_remittance", "delete_delivery_record"];
+        if ((event.detail?.tools || []).some(tool => deliveryTools.includes(tool)) && !dashboardSessionStale && !dashboardBranchStale && hasCapability("section.deliveries")) {
+          loadDeliveries(); loadDeliveryStats();
+          const context = deliveryWorkbench.detail;
+          if (deliveryContextCurrent(context)) openDeliveryOperations(context.id);
+        }
         if (!hasManagerOrBossAccess()) return;
         const tools = event.detail?.tools || [];
         const purchase = tools.some(tool => ["update_purchase_order", "delete_purchase_order"].includes(tool));
@@ -20664,75 +20738,360 @@
         updateCartDisplay();
       }
 
-      function loadDeliveryStats() {
-        fetch("/api/deliveries/stats")
-          .then((r) => r.json())
-          .then((stats) => {
-            document.getElementById("delivery-total").textContent = stats.total || 0;
-            document.getElementById("delivery-ready").textContent = stats.ready_dispatch || 0;
-            document.getElementById("delivery-completed").textContent = (stats.by_stage && stats.by_stage.delivered) || 0;
-            document.getElementById("delivery-high-priority").textContent = stats.high_priority_open || 0;
-          })
-          .catch((e) => console.error("Error loading delivery stats", e));
+      // Delivery requests are scoped to the current user/branch and latest view.
+      const deliveryWorkbench = {identity: null, signature: null, page: 1, pages: 1, sequence: 0, statsSequence: 0, rows: [], selected: new Set(), writes: new Set(), detailSequence: 0, detail: null, update: null, create: null};
+
+      function deliveryId(value) {
+        const id = Number(value);
+        return Number.isSafeInteger(id) && id > 0 ? id : null;
       }
 
-      function loadDeliveries() {
+      function deliveryAssignable(delivery) {
+        return Boolean(deliveryId(delivery.id)) && !delivery.is_deleted && !["delivered", "cancelled"].includes(delivery.stage);
+      }
+
+      async function deliveryJson(url, options) {
+        const response = await fetch(url, options);
+        const data = await response.json();
+        if (!response.ok || data.success === false) throw new Error(data.message || "Delivery request failed");
+        return data;
+      }
+
+      async function loadDeliveryStats() {
+        const identity = inventoryIdentity(), sequence = ++deliveryWorkbench.statsSequence;
+        try {
+          const stats = await deliveryJson("/api/deliveries/stats");
+          if (inventoryIdentity() !== identity || sequence !== deliveryWorkbench.statsSequence) return;
+          const values = {total: stats.total, ready: stats.ready_dispatch, completed: stats.by_stage?.delivered,
+            "high-priority": stats.high_priority_open, overdue: stats.overdue_open, unassigned: stats.unassigned_open,
+            failed: stats.failed_open, "cod-outstanding": formatCurrency(stats.cod_outstanding || "0")};
+          Object.entries(values).forEach(([key, value]) => { document.getElementById("delivery-" + key).textContent = value ?? 0; });
+        } catch (error) { if (inventoryIdentity() === identity) console.error(error); }
+      }
+
+      async function loadDeliveries(page) {
         const table = document.getElementById("deliveries-table");
         if (!table) return;
-        table.innerHTML = '<tr><td colspan="8" class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></td></tr>';
-
-        const params = new URLSearchParams();
-        const q = (document.getElementById("deliveries-search")?.value || "").trim();
-        const stage = (document.getElementById("deliveries-stage-filter")?.value || "").trim();
-        const priority = (document.getElementById("deliveries-priority-filter")?.value || "").trim();
-        const paymentStatus = (document.getElementById("deliveries-payment-filter")?.value || "").trim();
-        if (q) params.set("q", q);
-        if (stage) params.set("stage", stage);
-        if (priority) params.set("priority", priority);
-        if (paymentStatus) params.set("payment_status", paymentStatus);
-
-        fetch(`/api/deliveries${params.toString() ? `?${params.toString()}` : ""}`)
-          .then((r) => r.json())
-          .then((rows) => {
-            table.innerHTML = "";
-            if (!Array.isArray(rows) || rows.length === 0) {
-              table.innerHTML = '<tr><td colspan="8" class="text-center py-4 text-muted">No deliveries found.</td></tr>';
-              renderPagination("deliveries", "deliveries-pagination", 1, loadDeliveries);
-              return;
-            }
-
-            const page = paginateArray(rows, "deliveries");
-            page.items.forEach((d) => {
-              const stageBadgeClass = d.stage === "delivered" ? "success" : d.stage === "cancelled" ? "secondary" : d.stage === "delivering" ? "info" : d.stage === "packaged" ? "primary" : "warning";
-              const priorityBadgeClass = d.priority === "urgent" ? "danger" : d.priority === "high" ? "warning" : d.priority === "low" ? "secondary" : "light text-dark";
-              const prepaid = d.payment_status === "paid";
-              const paymentBadgeClass = prepaid ? "success" : "primary";
-              const paymentLabel = d.payment_status_label || (prepaid ? "Already Paid" : "Cash on Delivery");
-              const row = document.createElement("tr");
-              row.innerHTML = `
-                <td>${d.delivery_number}</td>
-                <td>${d.sale_transaction_id || "-"}${d.sale_transaction_id ? `<button class="btn btn-sm btn-outline-info ms-1" onclick="viewSaleDetails('${d.sale_transaction_id}')" title="View Sale & Print Slip"><i class="bi bi-receipt"></i></button>` : ""}</td>
-                <td>${d.recipient_name || "-"}<br/><small class="text-muted">${d.recipient_phone || "-"}</small></td>
-                <td><span class="badge bg-${stageBadgeClass}">${d.stage_label}</span></td>
-                <td><span class="badge bg-${priorityBadgeClass}">${d.priority}</span></td>
-                <td><span class="badge bg-${paymentBadgeClass}" title="${paymentLabel}">${prepaid ? "Paid" : "COD"}</span></td>
-                <td>${formatCurrency(d.delivery_fee || 0)}</td>
-                <td class="${prepaid ? "text-success" : "fw-semibold"}">${formatCurrency(d.collect_total || 0)}</td>
-                <td>
-                  <button class="btn btn-sm btn-outline-secondary me-1" onclick="printDeliverySlip(${d.id})" title="Print Delivery Slip"><i class="bi bi-printer"></i></button>
-                  ${hasCapability("deliveries.write") ? `<button class="btn btn-sm btn-outline-primary me-1" onclick="openUpdateDeliveryModal(${d.id})"><i class="bi bi-pencil"></i></button>` : ""}
-                  ${hasCapability("deliveries.write") && d.can_transition_to && d.can_transition_to.length ? `<button class="btn btn-sm btn-outline-success" onclick="advanceDeliveryStage(${d.id}, '${d.can_transition_to[0]}')">Next</button>` : ""}
-                </td>
-              `;
-              table.appendChild(row);
-            });
-            renderPagination("deliveries", "deliveries-pagination", page.totalPages, loadDeliveries);
-          })
-          .catch((e) => {
-            console.error("Error loading deliveries", e);
-            table.innerHTML = '<tr><td colspan="8" class="text-center py-4 text-danger">Failed to load deliveries.</td></tr>';
-            renderPagination("deliveries", "deliveries-pagination", 1, loadDeliveries);
+        const identity = inventoryIdentity();
+        const params = new URLSearchParams({per_page: "25"});
+        const filters = {q: "search", stage: "stage-filter", priority: "priority-filter", payment_status: "payment-filter", courier: "courier-filter", attention: "attention-filter"};
+        Object.entries(filters).forEach(([key, suffix]) => {
+          const value = (document.getElementById("deliveries-" + suffix)?.value || "").trim();
+          if (value) params.set(key, value);
+        });
+        const signature = identity + params.toString();
+        if (signature !== deliveryWorkbench.signature) deliveryWorkbench.page = 1;
+        else if (Number.isInteger(page) && page > 0) deliveryWorkbench.page = page;
+        deliveryWorkbench.signature = signature;
+        deliveryWorkbench.identity = identity;
+        params.set("page", String(deliveryWorkbench.page));
+        const sequence = ++deliveryWorkbench.sequence;
+        const current = () => inventoryIdentity() === identity && sequence === deliveryWorkbench.sequence;
+        deliveryWorkbench.rows = []; deliveryWorkbench.selected.clear(); syncDeliverySelection();
+        table.innerHTML = '<tr><td colspan="10" class="text-center">Loading deliveries...</td></tr>';
+        document.getElementById("deliveries-pagination").replaceChildren();
+        try {
+          const data = await deliveryJson(`/api/deliveries?${params}`);
+          if (!current()) return;
+          if (!Array.isArray(data.items) || !Number.isInteger(data.page) || !Number.isInteger(data.pages)) throw new Error("Invalid delivery page");
+          deliveryWorkbench.page = data.page; deliveryWorkbench.pages = data.pages;
+          deliveryWorkbench.rows = data.items.filter(d => deliveryId(d.id));
+          table.innerHTML = "";
+          deliveryWorkbench.rows.forEach(d => {
+            const id = deliveryId(d.id), e = value => escapeHtml(String(value ?? "-"));
+            const row = document.createElement("tr");
+            // Only validated numeric IDs enter handlers. Every server string is escaped.
+            row.innerHTML = `<td>${hasCapability("deliveries.write") && deliveryAssignable(d) ? `<input type="checkbox" aria-label="Select delivery ${id}" data-delivery-select="${id}" onchange="toggleDeliverySelection(${id}, this.checked)" />` : ""}</td>
+              <td>${e(d.delivery_number)}${d.is_overdue ? '<span class="badge bg-danger ms-1">Overdue</span>' : ''}<br><small>${e(d.courier_name)}</small></td>
+              <td>${e(d.sale_transaction_id)}</td><td>${e(d.recipient_name)}<br><small>${e(d.recipient_phone)}</small></td>
+              <td>${e(d.stage_label || d.stage)}<br><small>${e(d.last_attempt?.outcome)}</small></td><td>${e(d.priority)}</td>
+              <td>${e(d.payment_status_label || d.payment_status)}<br><small>COD: ${e(d.cod?.status)}</small></td>
+              <td>${e(formatCurrency(d.delivery_fee || 0))}</td><td>${e(formatCurrency(d.collect_total || 0))}</td>
+              <td><button class="btn btn-sm btn-outline-secondary" onclick="printDeliverySlip(${id})" title="Print Delivery Slip">Print</button>
+              <button class="btn btn-sm btn-outline-info" onclick="openDeliveryOperations(${id})">Details / Operations</button>
+              ${hasCapability("deliveries.write") ? `<button class="btn btn-sm btn-outline-primary" onclick="openUpdateDeliveryModal(${id})">Edit</button>` : ""}</td>`;
+            table.appendChild(row);
           });
+          if (!deliveryWorkbench.rows.length) table.innerHTML = '<tr><td colspan="10" class="text-center">No deliveries found.</td></tr>';
+          syncDeliverySelection();
+          renderDeliveryPagination(data.total);
+        } catch (error) {
+          if (!current()) return;
+          table.innerHTML = '<tr><td colspan="10" class="text-danger">Failed to load deliveries. Apply filters to retry.</td></tr>';
+        }
+      }
+
+      function renderDeliveryPagination(total) {
+        const container = document.getElementById("deliveries-pagination"); container.replaceChildren();
+        const label = document.createElement("span");
+        label.textContent = `Page ${deliveryWorkbench.page} of ${Math.max(1, deliveryWorkbench.pages)} | ${total} deliveries`;
+        container.appendChild(label);
+        [["Previous", -1], ["Next", 1]].forEach(([text, delta]) => {
+          const button = document.createElement("button"); button.className = "btn btn-outline-secondary btn-sm ms-2"; button.textContent = text;
+          button.disabled = delta < 0 ? deliveryWorkbench.page <= 1 : deliveryWorkbench.page >= deliveryWorkbench.pages;
+          button.onclick = () => loadDeliveries(deliveryWorkbench.page + delta); container.appendChild(button);
+        });
+      }
+
+      function syncDeliverySelection() {
+        const allowed = hasCapability("deliveries.write");
+        const eligible = new Set(deliveryWorkbench.rows.filter(deliveryAssignable).map(d => deliveryId(d.id)));
+        deliveryWorkbench.selected.forEach(id => { if (!eligible.has(id)) deliveryWorkbench.selected.delete(id); });
+        document.getElementById("deliveries-selected-count").textContent = `${deliveryWorkbench.selected.size} selected`;
+        const all = document.getElementById("deliveries-select-page");
+        all.checked = eligible.size > 0 && deliveryWorkbench.selected.size === eligible.size;
+        all.indeterminate = deliveryWorkbench.selected.size > 0 && !all.checked;
+        all.disabled = !allowed || !eligible.size;
+        document.getElementById("deliveries-bulk-submit").disabled = !allowed || !deliveryWorkbench.selected.size || deliveryWorkbench.writes.has("bulk");
+        document.querySelectorAll("[data-delivery-select]").forEach(el => { el.checked = deliveryWorkbench.selected.has(Number(el.dataset.deliverySelect)); });
+      }
+
+      function toggleDeliverySelection(id, checked) {
+        if (!hasCapability("deliveries.write") || deliveryWorkbench.identity !== inventoryIdentity()) return;
+        if (!deliveryWorkbench.rows.some(d => deliveryId(d.id) === id && deliveryAssignable(d))) return;
+        if (checked) deliveryWorkbench.selected.add(id); else deliveryWorkbench.selected.delete(id);
+        syncDeliverySelection();
+      }
+
+      function selectDeliveryPage(checked) {
+        deliveryWorkbench.rows.filter(deliveryAssignable).forEach(d => toggleDeliverySelection(deliveryId(d.id), checked));
+      }
+
+      async function deliveryWrite(key, url, payload, method = "POST") {
+        if (!requireCapability("deliveries.write") || dashboardSessionStale || dashboardBranchStale || deliveryWorkbench.writes.has(key)) return false;
+        const identity = inventoryIdentity(); deliveryWorkbench.writes.add(key);
+        try {
+          await deliveryJson(url, {method, headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+          return inventoryIdentity() === identity;
+        } catch (error) {
+          if (inventoryIdentity() === identity) showToast(error.message || "Delivery request failed", "error");
+          return false;
+        } finally { deliveryWorkbench.writes.delete(key); }
+      }
+
+      function deliveryContextCurrent(context) {
+        return Boolean(context?.loaded) && deliveryWorkbench.detail === context && context.identity === inventoryIdentity() && !dashboardSessionStale && !dashboardBranchStale;
+      }
+
+      function deliveryDeleteAllowed(context) {
+        return ["manager", "boss"].includes(typeof CURRENT_USER_ROLE === "undefined" ? "" : String(CURRENT_USER_ROLE).toLowerCase()) && hasCapability("deliveries.write") && !context.is_deleted && ["delivered", "cancelled"].includes(context.stage) && context.cod?.status !== "collected" && !(context.stage === "delivered" && context.cod?.status === "pending");
+      }
+
+      function syncDeliveryOperationForms(context) {
+        document.getElementById("deliveryOperationsModal").querySelectorAll("form[data-delivery-operation]").forEach(form => {
+          const operation = form.dataset.deliveryOperation;
+          const allowed = deliveryContextCurrent(context) && hasCapability("deliveries.write") && !context.is_deleted && Boolean(context.applicable?.[operation]) && (operation !== "delete" || deliveryDeleteAllowed(context));
+          form.hidden = !allowed;
+          form.querySelectorAll("input, select, textarea, button").forEach(control => {control.disabled = !allowed || deliveryWorkbench.writes.has("delivery:" + context.id);});
+        });
+      }
+
+      function deliveryHttpsUrl(value) {
+        if (!value) return "";
+        try { const url = new URL(value); return url.protocol === "https:" && !url.username && !url.password ? url.href : ""; } catch (_) { return ""; }
+      }
+
+      function clearDeliverySignature() {
+        const canvas = document.getElementById("delivery-signature");
+        if (typeof canvas.getContext === "function") canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+        const context = deliveryWorkbench.detail;
+        if (context) {context.signatureDrawn = false; context.signaturePointer = null;}
+      }
+
+      function setupDeliverySignature(context) {
+        const canvas = document.getElementById("delivery-signature");
+        clearDeliverySignature();
+        if (typeof canvas.getContext !== "function") return;
+        const point = event => {const rect = canvas.getBoundingClientRect(); return [(event.clientX - rect.left) * canvas.width / rect.width, (event.clientY - rect.top) * canvas.height / rect.height];};
+        canvas.onpointerdown = event => {
+          if (!deliveryContextCurrent(context) || !hasCapability("deliveries.write") || !context.applicable?.proofs || deliveryWorkbench.writes.has("delivery:" + context.id) || (event.button != null && event.button !== 0)) return;
+          event.preventDefault(); context.signaturePointer = event.pointerId; context.signatureLast = point(event);
+          canvas.setPointerCapture(event.pointerId);
+        };
+        canvas.onpointermove = event => {
+          if (!deliveryContextCurrent(context) || context.signaturePointer !== event.pointerId || deliveryWorkbench.writes.has("delivery:" + context.id)) return;
+          event.preventDefault(); const next = point(event), last = context.signatureLast;
+          if (Math.hypot(next[0] - last[0], next[1] - last[1]) < 1) return;
+          const pen = canvas.getContext("2d"); pen.lineWidth = 2; pen.lineCap = "round"; pen.strokeStyle = "#000";
+          pen.beginPath(); pen.moveTo(...last); pen.lineTo(...next); pen.stroke();
+          context.signatureLast = next; context.signatureDrawn = true;
+        };
+        canvas.onpointerup = canvas.onpointercancel = event => {if (context.signaturePointer === event.pointerId) context.signaturePointer = null;};
+      }
+
+      function clearDeliveryProofPreviews(context) {
+        (context?.proofObjectUrls || []).forEach(url => URL.revokeObjectURL(url));
+        if (context) context.proofObjectUrls = [];
+        document.getElementById("delivery-proof-previews").replaceChildren();
+      }
+
+      async function renderDeliveryProofs(context, proofs) {
+        const container = document.getElementById("delivery-proof-previews");
+        context.proofObjectUrls = [];
+        for (const proof of proofs || []) {
+          if (!deliveryContextCurrent(context)) return;
+          const entry = document.createElement("div"), label = document.createElement("p");
+          label.textContent = [proof.kind, proof.signer_name, proof.created_at].filter(Boolean).join(" | "); entry.appendChild(label); container.appendChild(entry);
+          try {
+            const url = new URL(proof.url, window.location.origin);
+            if (url.origin !== window.location.origin || url.search || url.hash || url.username || url.password || !new RegExp(`^/api/deliveries/${context.id}/proofs/[1-9][0-9]*$`).test(url.pathname)) throw new Error("Invalid proof URL");
+            const response = await fetch(url.pathname, {credentials: "same-origin", cache: "no-store"});
+            if (!deliveryContextCurrent(context)) return;
+            if (!response.ok) throw new Error("Proof unavailable");
+            const blob = await response.blob();
+            if (!deliveryContextCurrent(context)) return;
+            if (!["image/jpeg", "image/png"].includes(blob.type) || blob.size > 5 * 1024 * 1024) throw new Error("Invalid proof image");
+            const objectUrl = URL.createObjectURL(blob); context.proofObjectUrls.push(objectUrl);
+            const image = document.createElement("img"); image.src = objectUrl; image.alt = proof.kind === "signature" ? "Delivery signature" : "Delivery photo"; image.style.maxWidth = "100%"; image.style.maxHeight = "240px"; entry.appendChild(image);
+          } catch (_) { if (deliveryContextCurrent(context)) label.textContent += " — Preview unavailable"; }
+        }
+      }
+
+      async function submitDeliveryProof(kind) {
+        const context = deliveryWorkbench.detail, key = "delivery:" + context?.id;
+        if (!deliveryContextCurrent(context) || !requireCapability("deliveries.write") || !context.applicable?.proofs || deliveryWorkbench.writes.has(key)) return;
+        const signer = document.getElementById("delivery-signer").value.trim();
+        const photo = document.getElementById("delivery-photo").files?.[0];
+        if (kind === "signature" ? (!signer || !context.signatureDrawn) : (kind !== "photo" || !photo || !["image/jpeg", "image/png"].includes(photo.type) || photo.size > 5 * 1024 * 1024 || photo.size === 0)) {
+          document.getElementById("delivery-operations-error").textContent = kind === "signature" ? "Draw a signature and enter the signer name." : "Choose a JPEG/PNG photo up to 5 MiB."; return;
+        }
+        deliveryWorkbench.writes.add(key); syncDeliveryOperationForms(context);
+        try {
+          const file = kind === "signature" ? await new Promise(resolve => document.getElementById("delivery-signature").toBlob(resolve, "image/png")) : photo;
+          if (!deliveryContextCurrent(context) || !hasCapability("deliveries.write") || !context.applicable?.proofs) return;
+          if (!file || !file.size || file.size > 5 * 1024 * 1024 || (kind === "signature" && (!context.signatureDrawn || file.type !== "image/png"))) throw new Error("Could not capture valid evidence");
+          const data = new FormData(); data.append("kind", kind); data.append("signer_name", kind === "signature" ? signer : ""); data.append("file", file, kind === "signature" ? "signature.png" : photo.name);
+          await deliveryJson(`/api/deliveries/${context.id}/proofs`, {method: "POST", credentials: "same-origin", body: data});
+          if (deliveryContextCurrent(context)) openDeliveryOperations(context.id);
+        } catch (error) {if (deliveryContextCurrent(context)) document.getElementById("delivery-operations-error").textContent = error.message;}
+        finally {deliveryWorkbench.writes.delete(key); if (deliveryContextCurrent(context)) syncDeliveryOperationForms(context);}
+      }
+
+      async function bulkAssignDeliveries() {
+        if (deliveryWorkbench.identity !== inventoryIdentity()) return;
+        const ids = [...deliveryWorkbench.selected].filter(id => deliveryWorkbench.rows.some(d => deliveryId(d.id) === id && deliveryAssignable(d)));
+        const courier_name = document.getElementById("deliveries-bulk-courier").value.trim();
+        if (!ids.length || !courier_name) return;
+        const request = deliveryWrite("bulk", "/api/deliveries/bulk-assign", {delivery_ids: ids, courier_name, courier_phone: document.getElementById("deliveries-bulk-phone").value.trim()});
+        syncDeliverySelection();
+        if (await request) { loadDeliveries(); loadDeliveryStats(); }
+        syncDeliverySelection();
+      }
+
+      function deliveryLocalDate(value) {
+        if (!value) return "";
+        const date = new Date(/(?:Z|[+-]\d\d:\d\d)$/i.test(value) ? value : value + "Z");
+        if (!Number.isFinite(date.getTime())) return "";
+        return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0,16);
+      }
+
+      function deliveryScheduledValue(id) {
+        const value = document.getElementById(id).value;
+        if (!value) return null;
+        const date = new Date(value);
+        if (!Number.isFinite(date.getTime())) throw new Error("Enter a valid scheduled time");
+        return date.toISOString();
+      }
+
+      async function openDeliveryOperations(value) {
+        const id = deliveryId(value); if (!id || dashboardSessionStale || dashboardBranchStale) return;
+        const identity = inventoryIdentity(), sequence = ++deliveryWorkbench.detailSequence;
+        clearDeliveryProofPreviews(deliveryWorkbench.detail);
+        const context = {id, identity, sequence}; deliveryWorkbench.detail = context;
+        const current = () => inventoryIdentity() === identity && deliveryWorkbench.detail === context;
+        document.getElementById("delivery-operations-details").textContent = "Loading delivery...";
+        document.getElementById("delivery-operations-history").replaceChildren();
+        document.getElementById("delivery-operations-error").textContent = "";
+        document.getElementById("delivery-operations-writes").hidden = true;
+        syncDeliveryOperationForms(context);
+        setupDeliverySignature(context);
+        document.getElementById("delivery-photo").value = "";
+        document.getElementById("delivery-signer").value = "";
+        document.getElementById("delivery-delete-reason").value = "";
+        document.getElementById("delivery-delete-confirm").checked = false;
+        document.getElementById("delivery-carrier-summary").textContent = "";
+        document.getElementById("delivery-tracking-link").replaceChildren();
+        ["carrier-name", "tracking-code", "tracking-url", "carrier-status", "carrier-note"].forEach(suffix => {document.getElementById("delivery-" + suffix).value = "";});
+        document.getElementById("delivery-operations-writes").querySelectorAll("button").forEach(button => { button.disabled = false; });
+        ["attempt-reason", "attempt-proof", "retry-note", "retry-scheduled", "collection-amount", "collection-reference", "remittance-amount", "remittance-reference"].forEach(suffix => {document.getElementById("delivery-" + suffix).value = "";});
+        showModalAfterHiding("deliveryOperationsModal", current);
+        const modal = document.getElementById("deliveryOperationsModal");
+        modal.addEventListener("hidden.bs.modal", () => { if (deliveryWorkbench.detail === context) {clearDeliverySignature(); clearDeliveryProofPreviews(context); deliveryWorkbench.detail = null; syncDeliveryOperationForms(context);} }, {once: true});
+        try {
+          const [d, history] = await Promise.all([deliveryJson(`/api/deliveries/${id}`), deliveryJson(`/api/deliveries/${id}/history`)]);
+          if (!current()) return;
+          context.loaded = true;
+          document.getElementById("delivery-operations-writes").hidden = !hasCapability("deliveries.write");
+          const cod = d.cod || {};
+          context.cod = cod;
+          context.stage = d.stage; context.is_deleted = Boolean(d.is_deleted);
+          const applicable = {attempts: d.stage === "delivering", retry: d.stage === "delivering" && Boolean(d.has_failed_attempt),
+            collection: d.stage === "delivered" && cod.status === "pending", remittance: d.stage === "delivered" && cod.status === "collected",
+            carrier: !d.is_deleted, proofs: !d.is_deleted, delete: deliveryDeleteAllowed(context)};
+          context.applicable = applicable;
+          document.getElementById("delivery-collection-amount").value = cod.expected_amount || "";
+          document.getElementById("delivery-remittance-amount").value = cod.collected_amount || "";
+          syncDeliveryOperationForms(context);
+          const carrier = d.carrier || {};
+          [ ["carrier-name", carrier.name], ["tracking-code", carrier.tracking_code], ["tracking-url", carrier.tracking_url], ["carrier-status", carrier.status], ["carrier-note", carrier.note] ].forEach(([suffix, value]) => {document.getElementById("delivery-" + suffix).value = value || "";});
+          document.getElementById("delivery-carrier-summary").textContent = ["Manual / not automatically verified", carrier.name, carrier.tracking_code, carrier.status, carrier.note].filter(Boolean).join(" | ");
+          const trackingUrl = deliveryHttpsUrl(carrier.tracking_url);
+          if (trackingUrl) {const link = document.createElement("a"); link.href = trackingUrl; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "Open carrier tracking (external)"; document.getElementById("delivery-tracking-link").appendChild(link);}
+          renderDeliveryProofs(context, d.proofs);
+          document.getElementById("delivery-operations-details").textContent = [d.delivery_number, `Recipient: ${d.recipient_name || "-"} | ${d.recipient_phone || "-"}`, `Address: ${d.delivery_address || "-"}`, `Courier: ${d.courier_name || "Unassigned"}`, `Stage: ${d.stage_label || d.stage}`, `Scheduled: ${d.scheduled_at || "-"}${d.is_overdue ? " (overdue)" : ""}`, `Last attempt: ${d.last_attempt?.outcome || "-"} | ${d.last_attempt?.reason || ""}`, `COD: ${cod.status || "-"} | Expected ${cod.expected_amount || "0"} | Collected ${cod.collected_amount || "0"} | Remitted ${cod.remitted_amount || "0"}`].join("\n");
+          const container = document.getElementById("delivery-operations-history");
+          (history.items || []).forEach(item => {
+            const entry = document.createElement("p");
+            entry.textContent = [item.created_at, item.actor_name || "-", item.action, item.outcome, item.note, item.reason, item.proof_note,
+              item.amount == null ? null : `Amount: ${item.amount}`, item.reference].filter(value => value != null && value !== "").join(" | ");
+            container.appendChild(entry);
+          });
+          if (!history.items?.length) container.textContent = "No history yet.";
+        } catch (error) { if (current()) document.getElementById("delivery-operations-error").textContent = error.message; }
+      }
+
+      async function submitDeliveryOperation(operation) {
+        const context = deliveryWorkbench.detail;
+        if (!deliveryContextCurrent(context) || !requireCapability("deliveries.write") || context.is_deleted || deliveryWorkbench.writes.has("delivery:" + context.id)) return;
+        if (context.applicable && !context.applicable[operation]) return;
+        const value = suffix => document.getElementById("delivery-" + suffix).value.trim();
+        let payload;
+        try {
+          if (operation === "attempts") {
+            payload = {outcome: value("attempt-outcome"), reason: value("attempt-reason"), proof_note: value("attempt-proof")};
+            if (!["failed", "delivered"].includes(payload.outcome) || (payload.outcome === "failed" && !payload.reason)) throw new Error("Enter a reason for a failed attempt");
+            if (payload.outcome === "delivered" && !payload.proof_note) throw new Error("Enter proof for a delivered attempt");
+          } else if (operation === "carrier") {
+            payload = {carrier_name: value("carrier-name"), tracking_code: value("tracking-code"), tracking_url: value("tracking-url"), status: value("carrier-status"), note: value("carrier-note")};
+            if (!payload.carrier_name) throw new Error("Enter a carrier name");
+            if (payload.tracking_url && !deliveryHttpsUrl(payload.tracking_url)) throw new Error("Tracking URL must use HTTPS without credentials");
+          } else if (operation === "delete") {
+            if (!deliveryDeleteAllowed(context)) return;
+            if (!document.getElementById("delivery-delete-confirm").checked || !value("delete-reason")) throw new Error("Confirm deletion and enter a reason");
+            payload = {confirm: true, reason: value("delete-reason")};
+          } else if (operation === "retry") payload = {note: value("retry-note"), scheduled_at: deliveryScheduledValue("delivery-retry-scheduled")};
+          else if (["collection", "remittance"].includes(operation)) {
+            const amount = value(operation + "-amount");
+            if (!/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0) throw new Error("Enter a positive amount with at most two decimal places");
+            payload = {amount, reference: value(operation + "-reference")};
+            if (!payload.reference) throw new Error("Enter a reference for the payment");
+            const expected = operation === "collection" ? context.cod?.expected_amount : context.cod?.collected_amount;
+            if (expected != null && Math.round(Number(amount) * 100) !== Math.round(Number(expected) * 100)) throw new Error("Amount must match the outstanding COD amount");
+          } else return;
+        } catch (error) { document.getElementById("delivery-operations-error").textContent = error.message; return; }
+        const controls = document.getElementById("deliveryOperationsModal").querySelectorAll("form[data-delivery-operation] button");
+        controls.forEach(button => {button.disabled = true;});
+        try {
+          if (await deliveryWrite("delivery:" + context.id, `/api/deliveries/${context.id}${operation === "delete" ? "" : "/" + operation}`, payload, operation === "delete" ? "DELETE" : "POST")) {
+            loadDeliveryStats(); loadDeliveries();
+            if (deliveryWorkbench.detail === context) {
+              if (operation === "delete") {context.is_deleted = true; syncDeliveryOperationForms(context); bootstrap.Modal.getInstance(document.getElementById("deliveryOperationsModal"))?.hide();}
+              else openDeliveryOperations(context.id);
+            }
+          }
+        } finally {
+          if (deliveryWorkbench.detail === context) syncDeliveryOperationForms(context);
+        }
       }
 
       function openCreateDeliveryModal() {
@@ -20746,11 +21105,17 @@
         document.getElementById("delivery-priority").value = "normal";
         document.getElementById("delivery-fee").value = "";
         document.getElementById("delivery-payment-status").value = "cash_on_delivery";
-        new bootstrap.Modal(document.getElementById("createDeliveryModal")).show();
+        const context = {identity: inventoryIdentity()}; deliveryWorkbench.create = context;
+        showModalAfterHiding("createDeliveryModal", () => deliveryWorkbench.create === context && context.identity === inventoryIdentity());
+        document.getElementById("createDeliveryModal").addEventListener("hidden.bs.modal", () => {
+          if (deliveryWorkbench.create === context) deliveryWorkbench.create = null;
+        }, {once: true});
       }
 
-      function saveDelivery() {
+      async function saveDelivery() {
         if (!requireCapability("deliveries.write")) return;
+        const context = deliveryWorkbench.create;
+        if (!context || context.identity !== inventoryIdentity()) return;
         const payload = {
           sale_transaction_id: document.getElementById("delivery-sale-transaction-id").value.trim(),
           recipient_name: document.getElementById("delivery-recipient-name").value.trim(),
@@ -20768,53 +21133,41 @@
           return;
         }
 
-        fetch("/api/deliveries", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        })
-          .then((r) => r.json())
-          .then((data) => {
-            if (!data.success) {
-              showToast(data.message || "Failed to create delivery", "error");
-              return;
-            }
-            showToast("Delivery created successfully", "success");
+        if (await deliveryWrite("create", "/api/deliveries", payload)) {
+          if (deliveryWorkbench.create === context) {
             if (typeof markBranchFormSaved === "function") markBranchFormSaved("createDeliveryModal");
-            bootstrap.Modal.getInstance(document.getElementById("createDeliveryModal")).hide();
-            loadDeliveryStats();
-            loadDeliveries();
-          })
-          .catch((e) => {
-            console.error("Error creating delivery", e);
-            showToast("Failed to create delivery", "error");
-          });
+            bootstrap.Modal.getInstance(document.getElementById("createDeliveryModal"))?.hide();
+          }
+          loadDeliveryStats(); loadDeliveries();
+        }
       }
 
-      function openUpdateDeliveryModal(deliveryId) {
+      async function openUpdateDeliveryModal(value) {
         if (!requireCapability("deliveries.write")) return;
-        fetch(`/api/deliveries/${deliveryId}`)
-          .then((r) => r.json())
-          .then((d) => {
-            document.getElementById("update-delivery-id").value = d.id;
-            document.getElementById("update-delivery-stage").value = d.stage;
-            document.getElementById("update-delivery-priority").value = d.priority;
-            document.getElementById("update-delivery-payment-status").value = d.payment_status || "cash_on_delivery";
-            document.getElementById("update-delivery-courier").value = d.courier_name || "";
-            document.getElementById("update-delivery-courier-phone").value = d.courier_phone || "";
-            document.getElementById("update-delivery-tracking").value = d.tracking_code || "";
-            document.getElementById("update-delivery-proof-note").value = d.proof_note || "";
-            new bootstrap.Modal(document.getElementById("updateDeliveryModal")).show();
-          })
-          .catch((e) => {
-            console.error("Error loading delivery", e);
-            showToast("Failed to load delivery", "error");
-          });
+        const id = deliveryId(value); if (!id) return;
+        const context = {id, identity: inventoryIdentity()}; deliveryWorkbench.update = context;
+        try {
+          const d = await deliveryJson(`/api/deliveries/${id}`);
+          if (context.identity !== inventoryIdentity() || deliveryWorkbench.update !== context) return;
+          const values = {id, stage: d.stage, priority: d.priority, "payment-status": d.payment_status || "cash_on_delivery", courier: d.courier_name,
+            "courier-phone": d.courier_phone, tracking: d.tracking_code, "proof-note": d.proof_note, scheduled: deliveryLocalDate(d.scheduled_at)};
+          Object.entries(values).forEach(([key, value]) => {document.getElementById("update-delivery-" + key).value = value ?? "";});
+          showModalAfterHiding("updateDeliveryModal", () => deliveryWorkbench.update === context && context.identity === inventoryIdentity());
+          document.getElementById("updateDeliveryModal").addEventListener("hidden.bs.modal", () => {
+            if (deliveryWorkbench.update === context) deliveryWorkbench.update = null;
+          }, {once: true});
+        } catch (error) { if (context.identity === inventoryIdentity()) showToast(error.message, "error"); }
       }
 
-      function updateDelivery() {
+      async function updateDelivery() {
         if (!requireCapability("deliveries.write")) return;
-        const id = document.getElementById("update-delivery-id").value;
+        const context = deliveryWorkbench.update;
+        if (!context || context.identity !== inventoryIdentity()) return;
+        const id = deliveryId(document.getElementById("update-delivery-id").value);
+        if (id !== context.id) return;
+        let scheduled_at;
+        try { scheduled_at = deliveryScheduledValue("update-delivery-scheduled"); }
+        catch (error) { showToast(error.message, "error"); return; }
         const payload = {
           stage: document.getElementById("update-delivery-stage").value,
           priority: document.getElementById("update-delivery-priority").value,
@@ -20823,50 +21176,22 @@
           courier_phone: document.getElementById("update-delivery-courier-phone").value.trim() || null,
           tracking_code: document.getElementById("update-delivery-tracking").value.trim() || null,
           proof_note: document.getElementById("update-delivery-proof-note").value.trim() || null,
+          scheduled_at,
         };
-
-        fetch(`/api/deliveries/${id}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        })
-          .then((r) => r.json())
-          .then((data) => {
-            if (!data.success) {
-              showToast(data.message || "Failed to update delivery", "error");
-              return;
-            }
-            showToast("Delivery updated", "success");
+        if (await deliveryWrite("delivery:" + id, `/api/deliveries/${id}`, payload, "PUT")) {
+          if (deliveryWorkbench.update === context) {
             if (typeof markBranchFormSaved === "function") markBranchFormSaved("updateDeliveryModal");
-            bootstrap.Modal.getInstance(document.getElementById("updateDeliveryModal")).hide();
-            loadDeliveryStats();
-            loadDeliveries();
-          })
-          .catch((e) => {
-            console.error("Error updating delivery", e);
-            showToast("Failed to update delivery", "error");
-          });
+            bootstrap.Modal.getInstance(document.getElementById("updateDeliveryModal"))?.hide();
+          }
+          loadDeliveryStats(); loadDeliveries();
+        }
       }
 
-      function advanceDeliveryStage(deliveryId, nextStage) {
+      async function advanceDeliveryStage(value, nextStage) {
         if (!requireCapability("deliveries.write")) return;
-        fetch(`/api/deliveries/${deliveryId}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ stage: nextStage }),
-        })
-          .then((r) => r.json())
-          .then((data) => {
-            if (!data.success) {
-              showToast(data.message || "Failed to update stage", "error");
-              return;
-            }
-            loadDeliveryStats();
-            loadDeliveries();
-          })
-          .catch((e) => {
-            console.error("Error advancing stage", e);
-          });
+        const id = deliveryId(value);
+        if (!id || !["to_deliver", "packaged", "delivering", "delivered", "cancelled"].includes(nextStage)) return;
+        if (await deliveryWrite("delivery:" + id, `/api/deliveries/${id}`, {stage: nextStage}, "PUT")) { loadDeliveryStats(); loadDeliveries(); }
       }
 
       function printDeliverySlip(deliveryId) {

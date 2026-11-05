@@ -1176,6 +1176,35 @@ def trusted_tool_context(context=None):
     return {}
 
 
+_DELIVERY_TOOL_SPECS = {
+    'get_delivery_details': (False, 'Read active-branch delivery carrier, proof metadata, history and COD ledger. No binary evidence; upload real photos/signatures through the secure delivery UI.', {}),
+    'update_delivery_carrier': (True, 'Manually record carrier details only. Does not book, call, contact or live-track a carrier.', {
+        'carrier_name': {'type': 'string'}, 'tracking_code': {'type': 'string'},
+        'tracking_url': {'type': 'string'}, 'status': {'type': 'string'}, 'note': {'type': 'string'}}),
+    'record_delivery_attempt': (True, 'Record an actual failed or delivered attempt. Never invent proof; proof_note is user-supplied text, not photo/signature evidence.', {
+        'outcome': {'type': 'string', 'enum': ['failed', 'delivered']},
+        'reason': {'type': 'string'}, 'proof_note': {'type': 'string'}}),
+    'retry_delivery': (True, 'Requeue the latest failed delivery attempt; no carrier booking or call.', {
+        'scheduled_at': {'type': 'string', 'description': 'ISO timestamp; empty clears schedule.'}, 'note': {'type': 'string'}}),
+    'record_delivery_collection': (True, 'Record actual COD collection with exact amount and reference. Does not charge a customer or change sale accounting.', {
+        'amount': {'type': 'number', 'minimum': 0.01}, 'reference': {'type': 'string'}}),
+    'record_delivery_remittance': (True, 'Record actual COD remittance after collection. No bank transfer or sale accounting change.', {
+        'amount': {'type': 'number', 'minimum': 0.01}, 'reference': {'type': 'string'}}),
+    'delete_delivery_record': (True, 'Soft-delete terminal delivery history only, no refund or restock. Unsettled COD blocks deletion. Preview with confirm=false; require a later explicit approval for this exact ID and reason even in automatic mode.', {
+        'confirm': {'type': 'boolean'}, 'reason': {'type': 'string'}}),
+}
+for _name, (_mutates, _description, _properties) in _DELIVERY_TOOL_SPECS.items():
+    _required = ['delivery_id']
+    if _name == 'record_delivery_attempt':
+        _required.append('outcome')
+    if _name in ('record_delivery_collection', 'record_delivery_remittance'):
+        _required.extend(['amount', 'reference'])
+    _BASE_TOOL_PARAMETER_SCHEMAS[_name] = {
+        'name': _name, 'description': _description,
+        'parameters': {'type': 'object', 'properties': {
+            'delivery_id': {'type': 'integer', 'minimum': 1}, **_properties}, 'required': _required}}
+    _TOOL_META[_name] = ('deliveries', _mutates, _description, 'medium' if not _mutates else 'small')
+
 TOOL_METADATA: Dict[str, Dict[str, Any]] = {}
 for _name, _schema in _BASE_TOOL_PARAMETER_SCHEMAS.items():
     _category, _mutates, _one_line, _size = _TOOL_META[_name]
@@ -1186,6 +1215,12 @@ for _name, _schema in _BASE_TOOL_PARAMETER_SCHEMAS.items():
         "description_one_line": _one_line,
         "result_size_hint": _size,
     }
+
+for _name, _meta in TOOL_METADATA.items():
+    if _meta['category'] == 'deliveries':
+        _meta['requires_role'] = ['manager', 'boss']
+        _meta['autonomy'] = 'approval' if _name == 'delete_delivery_record' else 'auto'
+        _meta['refresh_sections'] = ['deliveries'] if _meta['mutates'] else []
 
 # Backward-compatible legacy schema view, derived from the registry.
 TOOL_SCHEMAS: Dict[str, Dict] = {
@@ -2158,15 +2193,130 @@ class AITools:
         return self._scope({"totals_by_status": {key: money_str(value) for key, value in totals.items()}, "debts": rows})
 
     def get_delivery_summary(self, stage: str = None, priority: str = None, limit: int = 20) -> Dict[str, Any]:
+        error = self._delivery_access_error()
+        if error:
+            return error
         Delivery = self._get_model('Delivery')
-        deliveries = self._branch_filter(Delivery.query, Delivery)
+        deliveries = self._active_deliveries()
         if stage: deliveries = deliveries.filter_by(stage=stage)
         if priority: deliveries = deliveries.filter_by(priority=priority)
         items = deliveries.order_by(Delivery.created_at.desc()).limit(self._limit(limit)).all()
         stages = {}
-        for delivery in self._branch_filter(Delivery.query, Delivery).all(): stages[delivery.stage] = stages.get(delivery.stage, 0) + 1
+        for delivery in self._active_deliveries().all(): stages[delivery.stage] = stages.get(delivery.stage, 0) + 1
         rows = [{"id": d.id, "delivery_number": d.delivery_number, "customer_name": d.customer.name if d.customer else None, "stage": d.stage, "priority": d.priority, "scheduled_at": d.scheduled_at.isoformat() if d.scheduled_at else None} for d in items]
         return self._scope({"stage_counts": stages, "open_high_priority": sum(1 for d in items if d.priority in ('high', 'urgent') and d.stage not in ('delivered', 'cancelled')), "deliveries": rows})
+
+    def _delivery_operations(self):
+        if self.models.get('delivery_operations') is not None:
+            return self.models['delivery_operations']
+        from flask import current_app
+        return current_app.extensions['delivery_operations']
+
+    def _delivery_access_error(self):
+        scope = trusted_tool_context(self.context)
+        if scope.get('role') not in ('manager', 'boss') or not scope.get('user_id'):
+            return {'success': False, 'error': 'Manager or boss access required'}
+        if scope.get('branch_id') is None:
+            return {'success': False, 'error': 'An active branch is required'}
+        # Resolve persisted authorization as well as the trusted caller scope.
+        User = self._get_model('User')
+        if User is not None:
+            actor = self.db.session.get(User, scope['user_id'])
+            if not actor or actor.role not in ('manager', 'boss'):
+                return {'success': False, 'error': 'Manager or boss access required'}
+        return None
+
+    def _active_deliveries(self):
+        Delivery = self._get_model('Delivery')
+        return self._delivery_operations().active_query(self._branch_filter(Delivery.query, Delivery))
+
+    def get_delivery_details(self, delivery_id: int) -> Dict[str, Any]:
+        error = self._delivery_access_error()
+        if error:
+            return error
+        delivery = self._active_deliveries().filter_by(id=delivery_id).first()
+        if not delivery:
+            return {'success': False, 'error': 'Delivery not found in the active branch'}
+        operations = self._delivery_operations()
+        return self._scope({'delivery_id': delivery.id, 'delivery_number': delivery.delivery_number,
+            'stage': delivery.stage, **operations.details(delivery),
+            'recipient_name': delivery.recipient_name, 'recipient_phone': delivery.recipient_phone,
+            'delivery_address': delivery.delivery_address, 'priority': delivery.priority,
+            'courier_name': delivery.courier_name, 'courier_phone': delivery.courier_phone,
+            'scheduled_at': delivery.scheduled_at.isoformat() if delivery.scheduled_at else None,
+            'payment_status': delivery.payment_status,
+            'history': [operations.history_item(e) for e in sorted(delivery.events, key=lambda e: e.id)],
+            'integration_mode': 'manual_only',
+            'proof_upload': 'Upload real photos/signatures through the secure delivery UI; this tool reads metadata only.'})
+
+    def _delivery_action(self, delivery_id, action, data):
+        error = self._delivery_access_error()
+        if error:
+            return error
+        scope = trusted_tool_context(self.context)
+        try:
+            from sqlalchemy import text
+            if self.db.engine.dialect.name == 'sqlite':
+                connection = self.db.session.connection()
+                if not connection.connection.driver_connection.in_transaction:
+                    self.db.session.execute(text('BEGIN IMMEDIATE'))
+            delivery = self._active_deliveries().filter_by(id=delivery_id).with_for_update().populate_existing().first()
+            if not delivery:
+                self.db.session.rollback()
+                return {'success': False, 'error': 'Delivery not found in the active branch'}
+            previous_stage = delivery.stage
+            if action == 'delete' and data.get('confirm') is not True:
+                self.db.session.rollback()
+                return {'success': False, 'requires_confirmation': True,
+                    'delivery_id': delivery_id, 'reason': data.get('reason', ''),
+                    'error': 'Confirm delivery history deletion with a reason in a later reply. No refund, restock or sale deletion.'}
+            if action == 'delete':
+                approval = self.context.get('delivery_delete_approval') or {}
+                if approval != {'delivery_id': delivery_id, 'reason': data.get('reason')}:
+                    self.db.session.rollback()
+                    return {'success': False, 'requires_confirmation': True, 'error': 'Explicit approval for this delivery ID and reason is required'}
+            operations = self._delivery_operations()
+            if action == 'delete':
+                self.context.pop('delivery_delete_approval', None)
+            operations.execute_operation(delivery, action, data,
+                actor_id=scope['user_id'], branch_id=scope['branch_id'])
+            self.db.session.commit()
+            result = {'success': True, 'delivery_id': delivery_id, 'action': action,
+                'refresh_sections': ['deliveries'], 'integration_mode': 'manual_only'}
+            if action == 'stage':
+                result.update(previous_stage=previous_stage, new_stage=delivery.stage)
+            if action != 'delete':
+                result.update(operations.details(delivery))
+            return self._scope(result)
+        except (ValueError, PermissionError) as error:
+            self.db.session.rollback()
+            return {'success': False, 'error': str(error)}
+        except Exception:
+            self.db.session.rollback()
+            raise
+
+    def update_delivery_carrier(self, delivery_id: int, carrier_name: str = None,
+            tracking_code: str = None, tracking_url: str = None, status: str = None,
+            note: str = None) -> Dict[str, Any]:
+        return self._delivery_action(delivery_id, 'carrier', {key: value for key, value in
+            locals().items() if key not in ('self', 'delivery_id') and value is not None})
+
+    def record_delivery_attempt(self, delivery_id: int, outcome: str, reason: str = None,
+            proof_note: str = None) -> Dict[str, Any]:
+        return self._delivery_action(delivery_id, 'attempts', {'outcome': outcome,
+            'reason': reason, 'proof_note': proof_note})
+
+    def retry_delivery(self, delivery_id: int, scheduled_at: str = None, note: str = None) -> Dict[str, Any]:
+        return self._delivery_action(delivery_id, 'retry', {'scheduled_at': scheduled_at, 'note': note})
+
+    def record_delivery_collection(self, delivery_id: int, amount: float, reference: str) -> Dict[str, Any]:
+        return self._delivery_action(delivery_id, 'collection', {'amount': amount, 'reference': reference})
+
+    def record_delivery_remittance(self, delivery_id: int, amount: float, reference: str) -> Dict[str, Any]:
+        return self._delivery_action(delivery_id, 'remittance', {'amount': amount, 'reference': reference})
+
+    def delete_delivery_record(self, delivery_id: int, confirm: bool = False, reason: str = '') -> Dict[str, Any]:
+        return self._delivery_action(delivery_id, 'delete', {'confirm': confirm, 'reason': reason})
 
     def get_return_exchange_summary(self, mode: str = None, limit: int = 20) -> Dict[str, Any]:
         ReturnExchange, Sale = self._get_model('ReturnExchange'), self._get_model('Sale')
@@ -2759,38 +2909,8 @@ class AITools:
         }
 
     def update_delivery_stage(self, delivery_id: int, stage: str) -> Dict[str, Any]:
-        """Move a delivery to its next valid stage (any role)."""
-        Delivery = self._get_model('Delivery')
-        if stage not in DELIVERY_STAGES:
-            return {"error": f"Invalid stage '{stage}'. Valid stages: {sorted(DELIVERY_STAGES)}"}
-        delivery = self._branch_filter(Delivery.query.filter_by(id=delivery_id), Delivery).first()
-        if not delivery:
-            return {"error": f"Delivery with ID {delivery_id} not found in the active branch"}
-        current_stage = delivery.stage
-        if stage == current_stage:
-            return {"error": f"Delivery is already in stage '{current_stage}'"}
-        if stage not in DELIVERY_STAGE_FLOW.get(current_stage, []):
-            return {"error": f"Cannot move delivery from '{current_stage}' to '{stage}'. Allowed next stages: {DELIVERY_STAGE_FLOW.get(current_stage, [])}"}
-
-        now = datetime.utcnow()
-        delivery.stage = stage
-        if stage == 'packaged' and not delivery.packaged_at:
-            delivery.packaged_at = now
-        elif stage == 'delivering' and not delivery.out_for_delivery_at:
-            delivery.out_for_delivery_at = now
-        elif stage == 'delivered':
-            delivery.delivered_at = now
-        elif stage == 'cancelled':
-            delivery.cancelled_at = now
-        self.db.session.commit()
-        return {
-            "success": True,
-            "delivery_id": delivery.id,
-            "delivery_number": delivery.delivery_number,
-            "previous_stage": current_stage,
-            "new_stage": stage,
-            "updated_at": now.isoformat()
-        }
+        """Use the same authorized stage transition as the delivery UI."""
+        return self._delivery_action(delivery_id, 'stage', {'stage': stage})
     # ------------------------------------------------------------------
     # Additional write tools (Phase A)
     # ------------------------------------------------------------------
@@ -3693,6 +3813,9 @@ class AITools:
                         scheduled_at: str = None,
                         payment_status: str = 'cash_on_delivery') -> Dict[str, Any]:
         """Create a delivery record for an existing sale."""
+        error = self._delivery_access_error()
+        if error:
+            return error
         Sale = self._get_model('Sale')
         Delivery = self._get_model('Delivery')
 

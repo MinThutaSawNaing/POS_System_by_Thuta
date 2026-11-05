@@ -8,10 +8,23 @@ registered tool, required arguments, JSON types, enums and declared numeric
 bounds. Unknown arguments are rejected, not removed.
 
 Branch and user scope come from trusted request context, never model arguments.
-There is no per-tool permission or approval layer: every registered tool runs
-when the agent calls it. Access to the agent itself is manager/owner only
+Delivery tools additionally enforce trusted manager/boss and active-branch scope.
+Delivery deletion requires a preview with a reason and a later explicit user
+confirmation tied to that exact record, identity and branch; model-supplied
+confirm=true is never approval, even in automatic mode. Other tools retain
+their existing execution policies. Access to the agent itself is manager/owner only
 (`/api/agent/*`); cashier accounts are denied. Failed tools are not evidence
 for a successful answer, and failed writes must never be blindly retried.
+
+## Delivery workflow limitations
+
+- Carrier updates are manual records, not live booking, calls or tracking sync.
+- Delivery details expose proof metadata/history/COD, never image or signature bytes.
+- Upload real photo/signature evidence through the secure delivery UI; the agent
+  must not invent evidence, fetch arbitrary URLs or claim it uploaded a proof.
+- Collection/remittance record actual COD ledger facts only; no bank transfer,
+  customer charge, refund or sale-accounting mutation is performed.
+- Active lists, detail and mutations exclude soft-deleted delivery profiles.
 
 ## Sales query semantics
 
@@ -251,6 +264,10 @@ Create a delivery record for an existing sale with recipient, address, and optio
 
 - Category: `deliveries`
 - Mutates data: `True`
+
+- Trusted roles: `manager, boss`
+- Autonomy: `auto`
+- Refresh sections: `deliveries`
 
 ### Arguments
 
@@ -584,6 +601,40 @@ Permanently delete a customer from the active branch. Refuses if the customer st
 }
 ```
 
+## `delete_delivery_record`
+
+Soft-delete terminal delivery history only, no refund or restock. Unsettled COD blocks deletion. Preview with confirm=false; require a later explicit approval for this exact ID and reason even in automatic mode.
+
+- Category: `deliveries`
+- Mutates data: `True`
+
+- Trusted roles: `manager, boss`
+- Autonomy: `approval`
+- Refresh sections: `deliveries`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "delivery_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "confirm": {
+      "type": "boolean"
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "delivery_id"
+  ]
+}
+```
+
 ## `delete_product`
 
 Permanently delete a product from the active branch. Sales and return/exchange history are always kept (those lines are only unlinked). A product that is still used in other tabs (warehouse stock or transfers, promotions, purchase order lines, supplier price agreements) is only removed with cascade=true, which deletes those records too.
@@ -868,12 +919,44 @@ Summarize active-branch customer debts, overdue balances, and aging status.
 }
 ```
 
+## `get_delivery_details`
+
+Read active-branch delivery carrier, proof metadata, history and COD ledger. No binary evidence; upload real photos/signatures through the secure delivery UI.
+
+- Category: `deliveries`
+- Mutates data: `False`
+
+- Trusted roles: `manager, boss`
+- Autonomy: `auto`
+- Refresh sections: `none`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "delivery_id": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "required": [
+    "delivery_id"
+  ]
+}
+```
+
 ## `get_delivery_summary`
 
 Summarize active-branch deliveries by stage and show open delivery work.
 
 - Category: `deliveries`
 - Mutates data: `False`
+
+- Trusted roles: `manager, boss`
+- Autonomy: `auto`
+- Refresh sections: `none`
 
 ### Arguments
 
@@ -1476,6 +1559,122 @@ Record a payment against a customer debt. Uses exact decimal math; rejects amoun
 }
 ```
 
+## `record_delivery_attempt`
+
+Record an actual failed or delivered attempt. Never invent proof; proof_note is user-supplied text, not photo/signature evidence.
+
+- Category: `deliveries`
+- Mutates data: `True`
+
+- Trusted roles: `manager, boss`
+- Autonomy: `auto`
+- Refresh sections: `deliveries`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "delivery_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "failed",
+        "delivered"
+      ]
+    },
+    "reason": {
+      "type": "string"
+    },
+    "proof_note": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "delivery_id",
+    "outcome"
+  ]
+}
+```
+
+## `record_delivery_collection`
+
+Record actual COD collection with exact amount and reference. Does not charge a customer or change sale accounting.
+
+- Category: `deliveries`
+- Mutates data: `True`
+
+- Trusted roles: `manager, boss`
+- Autonomy: `auto`
+- Refresh sections: `deliveries`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "delivery_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "amount": {
+      "type": "number",
+      "minimum": 0.01
+    },
+    "reference": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "delivery_id",
+    "amount",
+    "reference"
+  ]
+}
+```
+
+## `record_delivery_remittance`
+
+Record actual COD remittance after collection. No bank transfer or sale accounting change.
+
+- Category: `deliveries`
+- Mutates data: `True`
+
+- Trusted roles: `manager, boss`
+- Autonomy: `auto`
+- Refresh sections: `deliveries`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "delivery_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "amount": {
+      "type": "number",
+      "minimum": 0.01
+    },
+    "reference": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "delivery_id",
+    "amount",
+    "reference"
+  ]
+}
+```
+
 ## `register_customer`
 
 Register a new customer in the active branch with optional phone, email, and address.
@@ -1508,6 +1707,41 @@ Register a new customer in the active branch with optional phone, email, and add
   },
   "required": [
     "name"
+  ]
+}
+```
+
+## `retry_delivery`
+
+Requeue the latest failed delivery attempt; no carrier booking or call.
+
+- Category: `deliveries`
+- Mutates data: `True`
+
+- Trusted roles: `manager, boss`
+- Autonomy: `auto`
+- Refresh sections: `deliveries`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "delivery_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "scheduled_at": {
+      "type": "string",
+      "description": "ISO timestamp; empty clears schedule."
+    },
+    "note": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "delivery_id"
   ]
 }
 ```
@@ -1837,12 +2071,59 @@ Partially update an existing customer in the active branch; only provided fields
 }
 ```
 
+## `update_delivery_carrier`
+
+Manually record carrier details only. Does not book, call, contact or live-track a carrier.
+
+- Category: `deliveries`
+- Mutates data: `True`
+
+- Trusted roles: `manager, boss`
+- Autonomy: `auto`
+- Refresh sections: `deliveries`
+
+### Arguments
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "delivery_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "carrier_name": {
+      "type": "string"
+    },
+    "tracking_code": {
+      "type": "string"
+    },
+    "tracking_url": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "note": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "delivery_id"
+  ]
+}
+```
+
 ## `update_delivery_stage`
 
 Move a delivery to its next valid stage: to_deliver -> packaged -> delivering -> delivered, with cancelled allowed until delivered.
 
 - Category: `deliveries`
 - Mutates data: `True`
+
+- Trusted roles: `manager, boss`
+- Autonomy: `auto`
+- Refresh sections: `deliveries`
 
 ### Arguments
 

@@ -23,6 +23,22 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 # Keep rejection text small enough to travel inside a tool-result message.
 MAX_LISTED_TOOLS = 25
 
+
+def delivery_tool_policy_error(name, arguments, context):
+    """Delivery-only policy; model arguments cannot grant identity or approval."""
+    from ai_tools import TOOL_METADATA, trusted_tool_context
+    meta = TOOL_METADATA.get(name, {})
+    if meta.get('category') != 'deliveries':
+        return None
+    scope = trusted_tool_context(context)
+    if scope.get('role') not in ('manager', 'boss') or not scope.get('user_id'):
+        return 'Manager or boss access required'
+    if scope.get('branch_id') is None:
+        return 'An active branch is required'
+    if name == 'delete_delivery_record' and arguments.get('confirm') is True:
+        return 'Explicit approval required: preview deletion with confirm=false and a reason, then obtain a later user confirmation.'
+    return None
+
 # Currency words and symbols a model copies from a tool result along with an
 # amount ("5,350,000 MMK"). They are stripped before a numeric string is
 # accepted for a number parameter.

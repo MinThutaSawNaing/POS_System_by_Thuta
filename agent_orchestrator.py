@@ -119,8 +119,10 @@ TOOL_CATEGORIES = {
         "keywords": ["debt", "debts", "overdue", "credit", "aging", "balance", "payment", "owe", "owes", "unpaid", "receivable"]
     },
     "delivery": {
-        "tools": ["get_delivery_summary", "update_delivery_stage", "create_delivery"],
-        "keywords": ["delivery", "deliveries", "courier", "dispatch", "tracking"]
+        "tools": ["get_delivery_summary", "get_delivery_details", "update_delivery_stage", "create_delivery",
+                  "update_delivery_carrier", "record_delivery_attempt", "retry_delivery",
+                  "record_delivery_collection", "record_delivery_remittance", "delete_delivery_record"],
+        "keywords": ["delivery", "deliveries", "courier", "carrier", "dispatch", "tracking", "cod", "remittance", "proof"]
     },
     "return_exchange": {
         "tools": ["get_return_exchange_summary", "process_return_exchange"],
@@ -223,7 +225,9 @@ You own live database tools. Any question about stock, products, prices, sales, 
 - Match the whole request, not a topic word. Mentioning inventory does not mean the user wants a stock report. For most/least expensive questions, retrieve the relevant inventory, compare selling prices across all returned products, and report every tie. Respect category/product filters and use recent conversation to resolve follow-up questions. If a criterion is ambiguous, ask rather than silently substituting a generic overview.
 
 ## Operations
-Your registered tools read and change live data. Low-risk and high-risk changes alike (new customers or suppliers, categories, deletes, price or money changes, stock adjustments, approvals, cancellations, transfers) execute immediately when you plan them — there is no approval round-trip, so plan a change only when the user's request is clear. If a required detail is missing (which record, which amount), ask one short question instead of guessing. Never claim you created, approved, cancelled, transferred, or modified any business record unless a step result confirms it actually happened.
+Your registered tools read and change live data. Most changes execute immediately when planned, so plan a change only when the user's request is clear. Delivery record deletion is an exception: always preview delete_delivery_record with confirm=false and the user's reason, explain history-only soft deletion (no refund or restock), then wait for a later explicit confirmation. Never include confirm=true in a model plan, even in automatic mode. If a required detail is missing (which record, which amount), ask one short question instead of guessing. Never claim you created, approved, cancelled, transferred, or modified any business record unless a step result confirms it actually happened.
+
+Delivery workflow: get_delivery_summary to resolve IDs, then get_delivery_details before changes. Carrier fields are manual records only: no live booking, carrier calls, tracking sync, bank transfers or customer charges are available. Record attempts and COD collection/remittance only from actual user-supplied facts; do not infer settlement from delivery stage. A proof_note is text, not photo/signature evidence. Proof tools read metadata only: direct users to the secure delivery UI to upload real photos/signatures. Never fabricate proof, fetch arbitrary URLs, claim an upload occurred, or claim a carrier integration ran. Failed attempts can be retried through retry_delivery; COD collection precedes remittance and requires exact amounts/references. Delete never reverses sales or accounting.
 Deleting a product is a manager (or owner) action. When the product is still used in other tabs (warehouse stock or transfers, promotions, purchase order lines, supplier price agreements), call delete_product once to surface exactly which records would go, then ask the user whether to delete the product everywhere and only re-call with cascade=true after they agree. When it also has sales history, ask "The product you selected have sale history. Are you sure you want to delete it?" and add confirm=true. Product deletion preserves sales and return/exchange records — they are only unlinked from the removed product.
 
 ## Purchase order edits and history deletion
@@ -779,7 +783,25 @@ class AgentOrchestrator:
         # Serialize a user's turns so concurrent requests cannot interleave tool-call
         # messages and corrupt the conversation sent to the upstream API.
         with self._conversation_lock:
-            result = self._process_command_locked(command, user_id)
+            pending = self.session_context.pop('delivery_delete_pending', None)
+            if pending and re.fullmatch(r'\s*(?:yes|confirm|confirm deletion|delete it|go ahead)[.!]?\s*', command, re.I):
+                from ai_tools import trusted_tool_context
+                scope = trusted_tool_context(self.request_context)
+                if pending['scope'] == {k: scope.get(k) for k in ('user_id', 'role', 'branch_id')}:
+                    approval = {'delivery_id': pending['delivery_id'], 'reason': pending['reason']}
+                    self.ai_tools.context['delivery_delete_approval'] = approval
+                    try:
+                        outcome = self.ai_tools.delete_delivery_record(**approval, confirm=True)
+                    finally:
+                        self.ai_tools.context.pop('delivery_delete_approval', None)
+                    result = self._with_contract({'success': outcome.get('success', False),
+                        'message': 'Delivery record deleted; no refund or restock.' if outcome.get('success') else outcome.get('error'),
+                        'tool_results': [{'function_name': 'delete_delivery_record', 'result': outcome}],
+                        'refresh_sections': ['deliveries'] if outcome.get('success') else []})
+                else:
+                    result = self._with_contract({'success': False, 'message': 'Delivery approval expired after identity or branch change. Preview deletion again.'})
+            else:
+                result = self._process_command_locked(command, user_id)
             result = self._present_action_progress(command, result)
         self._remember_turn(result)
         return result
@@ -1129,6 +1151,14 @@ class AgentOrchestrator:
         """Guarantee the process_command return contract on every path."""
         result.setdefault("plan", None)
         result.setdefault("step_results", [])
+        sections = set(result.get('refresh_sections') or [])
+        for row in result.get('step_results', []) + result.get('tool_results', []):
+            payload = row.get('result')
+            name = row.get('tool') or row.get('function_name')
+            if isinstance(payload, dict) and payload.get('success') is True:
+                sections.update(_TOOL_METADATA.get(name, {}).get('refresh_sections', []))
+        if sections:
+            result['refresh_sections'] = sorted(sections)
         return result
 
     def _get_tool_registry(self) -> Dict[str, Dict[str, Any]]:
@@ -2240,6 +2270,11 @@ class AgentOrchestrator:
                       f"{tc.function_name}: {guarded.dropped_arguments}")
             try:
                 func = self.agent.tool_functions[guarded.name]
+                from ai_tool_guard import delivery_tool_policy_error
+                policy_error = delivery_tool_policy_error(guarded.name, guarded.arguments, self.request_context)
+                if policy_error:
+                    reject(tc, policy_error)
+                    continue
                 
                 # Execute within Flask app context if available
                 if self.app:
@@ -2247,6 +2282,14 @@ class AgentOrchestrator:
                         result = func(**guarded.arguments)
                 else:
                     result = func(**guarded.arguments)
+                if guarded.name == 'delete_delivery_record' and isinstance(result, dict) and result.get('requires_confirmation') and guarded.arguments.get('confirm') is not True:
+                    from ai_tools import trusted_tool_context
+                    scope = trusted_tool_context(self.request_context)
+                    reason = guarded.arguments.get('reason', '')
+                    if isinstance(reason, str) and reason.strip():
+                        self.session_context['delivery_delete_pending'] = {
+                            'delivery_id': guarded.arguments['delivery_id'], 'reason': reason,
+                            'scope': {k: scope.get(k) for k in ('user_id', 'role', 'branch_id')}}
                     
                 results.append({
                     "tool_call_id": tc.id,

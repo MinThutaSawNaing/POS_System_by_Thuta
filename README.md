@@ -60,6 +60,7 @@ See [setup, security controls, and recovery notes](docs/email-two-factor.md) bef
   - Stores redacted before/after details as compact compressed payloads to reduce long-term disk growth
 
 - **Business Modules**
+  - Delivery dispatch, manual carrier tracking, private photo/signature proof, attempt history, retries, manager/owner soft deletion, and separate COD reconciliation; see [delivery operations](docs/delivery-operations.md)
   - Promotions (fixed and percentage discounts)
   - Customer management
   - Debt & payment tracking with aging analysis
@@ -162,6 +163,7 @@ The AI assistant can help with:
   - Find customers and outstanding balances
   - Review overdue debt and aging status
   - Check delivery stages, priorities, and open delivery work
+  - Update manual carrier details, record attempts/retries and COD reconciliation, inspect proof metadata, and confirm safe delivery deletion; actual photos/signatures are captured through the delivery dialog
 
 - **Promotions, Categories & Returns**
   - Review active, upcoming, and expired promotions

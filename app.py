@@ -1151,7 +1151,8 @@ CASHIER_API_METHODS = {
     'api_returns_exchanges': {'GET', 'POST'}, 'api_single_return_exchange': {'GET'},
     'print_return_exchange_receipt': {'GET'}, 'export_returns_exchanges': {'GET'},
     'api_deliveries': {'GET'}, 'api_single_delivery': {'GET'},
-    'api_delivery_stats': {'GET'}, 'print_delivery_slip': {'GET'},
+    'api_delivery_history': {'GET'}, 'api_delivery_stats': {'GET'}, 'print_delivery_slip': {'GET'},
+    'api_delivery_proof': {'GET'},
     'api_delivery_report': {'GET'}, 'api_pos_customers': {'GET'},
     'mmpay_config': {'GET'}, 'mmpay_intents': {'GET', 'POST'},
     'mmpay_intent': {'GET'}, 'mmpay_refresh': {'POST'},
@@ -1257,10 +1258,12 @@ def cashier_can_access_sale(sale):
 
 def operational_delivery_query():
     if session.get('role') == 'cashier':
-        return Delivery.query.join(Sale, Delivery.sale_id == Sale.id).filter(
+        query = Delivery.query.join(Sale, Delivery.sale_id == Sale.id).filter(
             Delivery.branch_id == session.get('branch_id'),
             Sale.branch_id == session.get('branch_id'), Sale.user_id == session.get('user_id'))
-    return Delivery.query.filter_by(branch_id=get_current_branch_id())
+    else:
+        query = Delivery.query.filter_by(branch_id=get_current_branch_id())
+    return delivery_operations.active_query(query)
 
 def resolve_report_scope():
     """Resolve report scope and branch filtering based on role and query params."""
@@ -2180,6 +2183,12 @@ class Delivery(db.Model):
     creator = db.relationship('User', backref='created_deliveries')
 
 
+from delivery_operations import DeliveryOperations, utc_naive
+delivery_operations = DeliveryOperations(globals())
+DeliveryEvent = delivery_operations.Event
+app.extensions['delivery_operations'] = delivery_operations
+
+
 class AuditLog(db.Model):
     """Immutable history of committed business-data changes."""
     __tablename__ = 'audit_log'
@@ -2223,7 +2232,9 @@ AUDIT_CATEGORY_BY_ENTITY = {
     'Supplier': 'Purchasing', 'SupplierCommunication': 'Purchasing',
     'SupplierPriceAgreement': 'Purchasing',
     'Customer': 'Customers', 'Debt': 'Customers', 'DebtPayment': 'Customers',
-    'Delivery': 'Deliveries', 'Promotion': 'Promotions',
+    'Delivery': 'Deliveries', 'DeliveryEvent': 'Deliveries',
+    'DeliveryProfile': 'Deliveries', 'DeliveryProof': 'Deliveries',
+    'Promotion': 'Promotions',
     'User': 'Users', 'Branch': 'Settings', 'AppSetting': 'Settings',
     'MemoryRegistry': 'AI Assistant', 'MemoryAudit': 'AI Assistant',
 }
@@ -2232,7 +2243,7 @@ AUDIT_SENSITIVE_FIELDS = {
     'bank_account', 'tax_id',
     'payment_breakdown', 'phone', 'email', 'address', 'delivery_address',
     'recipient_phone', 'courier_phone', 'notes', 'communication_notes',
-    'instructions',
+    'instructions', 'blob', 'signer_name', 'tracking_url', 'carrier_note', 'delete_reason',
 }
 AUDIT_LABEL_FIELDS = (
     'transaction_id', 'workflow_id', 'po_number', 'delivery_number', 'name',
@@ -2665,6 +2676,7 @@ def serialize_delivery(delivery):
         'created_by_name': delivery.creator.username if delivery.creator else None,
         'created_at': delivery.created_at.isoformat() if delivery.created_at else None,
         'updated_at': delivery.updated_at.isoformat() if delivery.updated_at else None,
+        **delivery_operations.details(delivery),
         'can_transition_to': DELIVERY_STAGE_FLOW.get(delivery.stage, [])
     }
 
@@ -3994,8 +4006,14 @@ def api_settings_database_restore():
         try:
             db.session.execute(text('SELECT 1'))
             db.session.commit()
+            # Old backups lack event, carrier/profile and private proof tables.
+            # Initialize only additive tables; never infer historical payments.
+            for table in delivery_operations.tables():
+                table.create(bind=db.engine, checkfirst=True)
         except Exception as verify_error:
             # Restore failed, revert to the backup
+            db.session.remove()
+            db.engine.dispose()
             if os.path.exists(backup_path):
                 shutil.copy2(backup_path, db_file_path)
             return jsonify({'success': False, 'message': f'Restored database is corrupted. Rolled back to previous state. Error: {str(verify_error)}'}), 500
@@ -6394,7 +6412,8 @@ def api_single_sale(transaction_id):
         'payment_breakdown': get_sale_payment_breakdown(sale),
         'user_id' : sale.user_id,
         'username' : sale.user.username if sale.user else 'Unknown',
-        'delivery': serialize_delivery(sale.delivery) if getattr(sale, 'delivery', None) else None,
+        'delivery': (serialize_delivery(sale.delivery) if getattr(sale, 'delivery', None)
+                     and not (sale.delivery.profile and sale.delivery.profile.deleted_at) else None),
         'items': [],
         'return_exchange_history': [{
             'workflow_id': r.workflow_id,
@@ -6935,24 +6954,68 @@ def api_deliveries():
         if payment_status:
             query = query.filter(Delivery.payment_status == payment_status)
 
-        deliveries = query.order_by(Delivery.created_at.desc()).all()
+        from sqlalchemy import or_, and_, func, select
+        from sqlalchemy.orm import selectinload
         if q:
-            deliveries = [
-                d for d in deliveries
-                if q in (d.delivery_number or '').lower()
-                or q in (d.sale.transaction_id if d.sale else '').lower()
-                or q in (d.recipient_name or '').lower()
-                or q in (d.recipient_phone or '').lower()
-                or q in (d.delivery_address or '').lower()
-                or q in (d.tracking_code or '').lower()
-            ]
+            pattern = '%' + q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
+            query = query.filter(or_(
+                Delivery.delivery_number.ilike(pattern, escape='\\'),
+                Delivery.sale.has(Sale.transaction_id.ilike(pattern, escape='\\')),
+                *[getattr(Delivery, field).ilike(pattern, escape='\\') for field in
+                  ('recipient_name', 'recipient_phone', 'delivery_address', 'tracking_code')]))
+        courier = (request.args.get('courier') or '').strip().lower()
+        if courier:
+            query = query.filter(func.instr(func.lower(func.coalesce(Delivery.courier_name, '')), courier) > 0)
+        attention = request.args.get('attention')
+        if attention:
+            if attention not in ('overdue', 'unassigned', 'failed'):
+                return jsonify(success=False, message='Invalid attention filter'), 400
+            query = query.filter(Delivery.stage.notin_(['delivered', 'cancelled']))
+            if attention == 'overdue':
+                now = datetime.utcnow()
+                query = query.filter(or_(Delivery.scheduled_at < now,
+                    and_(Delivery.scheduled_at.is_(None), Delivery.created_at < now - timedelta(hours=48))))
+            elif attention == 'unassigned':
+                query = query.filter(func.trim(func.coalesce(Delivery.courier_name, '')) == '')
+            else:
+                latest = select(func.max(DeliveryEvent.id)).where(
+                    DeliveryEvent.delivery_id == Delivery.id,
+                    DeliveryEvent.action.in_(['attempt', 'retry'])).correlate(Delivery).scalar_subquery()
+                query = query.filter(DeliveryEvent.query.filter(
+                    DeliveryEvent.id == latest, DeliveryEvent.action == 'attempt',
+                    DeliveryEvent.outcome == 'failed').exists())
+        query = query.options(selectinload(Delivery.events), selectinload(Delivery.sale),
+                              selectinload(Delivery.customer), selectinload(Delivery.creator),
+                              selectinload(Delivery.profile), selectinload(Delivery.proofs))
+        query = query.order_by(Delivery.created_at.desc(), Delivery.id.desc())
+        if 'page' in request.args:
+            try:
+                page = int(request.args['page'])
+                per_page = int(request.args.get('per_page', 25))
+                if page < 1 or not 1 <= per_page <= 100:
+                    raise ValueError()
+            except ValueError:
+                return jsonify(success=False, message='Invalid page or per_page'), 400
+            total = query.count()
+            deliveries = query.offset((page-1)*per_page).limit(per_page).all()
+            return jsonify(items=[serialize_delivery(d) for d in deliveries],
+                           total=total, page=page, pages=(total+per_page-1)//per_page, per_page=per_page)
+        return jsonify([serialize_delivery(d) for d in query.all()])
 
-        return jsonify([serialize_delivery(d) for d in deliveries])
-
-    if session.get('role') != 'manager':
+    if session.get('role') not in ('manager', 'boss'):
         return jsonify({'success': False, 'message': 'Manager access required'}), 403
 
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(success=False, message='A JSON object is required'), 400
+    for key in ('sale_transaction_id', 'recipient_name', 'recipient_phone', 'delivery_address', 'township', 'instructions', 'courier_name', 'courier_phone', 'tracking_code', 'priority', 'payment_status'):
+        if key in data and data[key] is not None and not isinstance(data[key], str):
+            return jsonify(success=False, message=f'Invalid {key}'), 400
+    if 'scheduled_at' in data and data['scheduled_at'] not in (None, ''):
+        try:
+            data['scheduled_at'] = utc_naive(data['scheduled_at']).isoformat()
+        except (ValueError, TypeError, AttributeError):
+            return jsonify(success=False, message='Invalid scheduled_at'), 400
     sale_transaction_id = (data.get('sale_transaction_id') or '').strip()
     if not sale_transaction_id:
         return jsonify({'success': False, 'message': 'Sale transaction ID is required'}), 400
@@ -7009,14 +7072,39 @@ def api_single_delivery(delivery_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    delivery = operational_delivery_query().filter(Delivery.id == delivery_id).first()
+    if request.method == 'PUT' and db.engine.dialect.name == 'sqlite':
+        db.session.execute(text('BEGIN IMMEDIATE'))
+    delivery = operational_delivery_query().filter(Delivery.id == delivery_id).with_for_update().first()
     if not delivery:
         return jsonify({'success': False, 'message': 'Delivery not found'}), 404
 
     if request.method == 'GET':
         return jsonify(serialize_delivery(delivery))
 
-    data = request.get_json() or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(success=False, message='A JSON object is required'), 400
+    if session.get('role') not in ('manager', 'boss'):
+        return jsonify(success=False, message='Manager access required'), 403
+    if delivery_operations.details(delivery)['cod']['status'] in ('collected', 'remitted'):
+        try:
+            financial_change = ('delivery_fee' in data and Decimal(str(data['delivery_fee'])) != Decimal(str(delivery.delivery_fee or 0))) or ('payment_status' in data and data['payment_status'] != delivery.payment_status)
+        except (ValueError, ArithmeticError):
+            return jsonify(success=False, message='Invalid delivery fee'), 400
+        if financial_change or data.get('stage') == 'cancelled':
+            return jsonify(success=False, message='Collected COD financial fields are immutable'), 400
+    if 'scheduled_at' in data and data['scheduled_at'] not in (None, ''):
+        try:
+            data['scheduled_at'] = utc_naive(data['scheduled_at']).isoformat()
+        except (ValueError, TypeError, AttributeError):
+            return jsonify(success=False, message='Invalid scheduled_at'), 400
+    if 'stage' in data and not isinstance(data['stage'], str):
+        return jsonify(success=False, message='Invalid stage'), 400
+    if 'stage' in data and not normalize_delivery_stage(data['stage']):
+        return jsonify(success=False, message='Invalid stage'), 400
+    for key in ('recipient_name', 'recipient_phone', 'delivery_address', 'township', 'instructions', 'courier_name', 'courier_phone', 'tracking_code', 'proof_note', 'priority', 'payment_status'):
+        if key in data and data[key] is not None and not isinstance(data[key], str):
+            return jsonify(success=False, message=f'Invalid {key}'), 400
 
     next_stage = normalize_delivery_stage(data.get('stage')) if 'stage' in data else None
     if next_stage and next_stage != delivery.stage:
@@ -7072,7 +7160,9 @@ def api_delivery_stats():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    deliveries = operational_delivery_query().all()
+    from sqlalchemy.orm import selectinload
+    deliveries = operational_delivery_query().options(selectinload(Delivery.events), selectinload(Delivery.sale),
+                                                     selectinload(Delivery.profile), selectinload(Delivery.proofs)).all()
     stage_counts = {key: 0 for key in DELIVERY_STAGE_FLOW.keys()}
     for d in deliveries:
         if d.stage in stage_counts:
@@ -7082,8 +7172,14 @@ def api_delivery_stats():
         'total': len(deliveries),
         'by_stage': stage_counts,
         'high_priority_open': sum(1 for d in deliveries if d.priority in ('high', 'urgent') and d.stage not in ('delivered', 'cancelled')),
+        'overdue_open': sum(delivery_operations.details(d)['is_overdue'] for d in deliveries),
+        'unassigned_open': sum(d.stage not in ('delivered', 'cancelled') and not (d.courier_name or '').strip() for d in deliveries),
+        'failed_open': sum(delivery_operations.details(d)['has_failed_attempt'] for d in deliveries),
+        'cod_outstanding': format(sum((Decimal(delivery_operations.details(d)['cod']['expected_amount']) - Decimal(delivery_operations.details(d)['cod']['remitted_amount']) for d in deliveries if d.stage != 'cancelled'), Decimal('0')), '.2f'),
         'ready_dispatch': stage_counts.get('packaged', 0)
     })
+
+delivery_operations.register()
 
 # --- Delivery Slip (driver copy) ---
 @app.route('/api/deliveries/<int:delivery_id>/print', methods=['GET'])
@@ -7201,6 +7297,7 @@ def delivery_report_records(date_from=None, date_to=None, branch_id=None):
     if branch_id is None:
         branch_id = get_current_branch_id()
     query = operational_delivery_query() if session.get('role') == 'cashier' else Delivery.query.filter_by(branch_id=branch_id)
+    query = delivery_operations.active_query(query)
     start = parse_delivery_report_date(date_from)
     end = parse_delivery_report_date(date_to, end_of_day=True)
     if start:
@@ -10239,6 +10336,7 @@ AI_MODELS = {
     'Debt': Debt,
     'DebtPayment': DebtPayment,
     'Delivery': Delivery,
+    'delivery_operations': delivery_operations,
     'ReturnExchange': ReturnExchange,
     'ReturnExchangeItem': ReturnExchangeItem,
     'ScheduledReport': report_scheduler.models['ScheduledReport'],

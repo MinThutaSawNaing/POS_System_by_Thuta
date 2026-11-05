@@ -176,7 +176,10 @@
     return view;
   }
   function notifyRecordChanges(data) {
-    const writes = new Set(['update_purchase_order', 'delete_purchase_order', 'delete_sale_history']);
+    const writes = new Set(['update_purchase_order', 'delete_purchase_order', 'delete_sale_history',
+      'create_delivery', 'update_delivery_stage', 'update_delivery_carrier',
+      'record_delivery_attempt', 'retry_delivery', 'record_delivery_collection',
+      'record_delivery_remittance', 'delete_delivery_record']);
     const steps = Array.isArray(data.step_results) ? data.step_results : [];
     const results = Array.isArray(data.tool_results) ? data.tool_results : [];
     const tools = [...new Set([

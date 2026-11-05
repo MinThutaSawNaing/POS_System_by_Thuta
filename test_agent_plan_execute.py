@@ -477,9 +477,13 @@ class RegistryCompletenessTests(unittest.TestCase):
             with self.subTest(tool=name):
                 missing = required - set(meta)
                 self.assertFalse(missing, f"missing keys: {missing}")
-                # The removed permission model must not creep back in.
-                self.assertNotIn("requires_role", meta)
-                self.assertNotIn("autonomy", meta)
+                if meta['category'] == 'deliveries':
+                    self.assertEqual(meta['requires_role'], ['manager', 'boss'])
+                    self.assertEqual(meta['autonomy'], 'approval' if name == 'delete_delivery_record' else 'auto')
+                else:
+                    # Existing non-delivery execution policies remain unchanged.
+                    self.assertNotIn("requires_role", meta)
+                    self.assertNotIn("autonomy", meta)
 
     def test_registry_and_schemas_stay_consistent(self):
         for name in ai_tools.TOOL_METADATA:

@@ -347,6 +347,10 @@ class AIAgent:
                 continue
 
             try:
+                from ai_tool_guard import delivery_tool_policy_error
+                policy_error = delivery_tool_policy_error(guarded.name, guarded.arguments, self.request_context)
+                if policy_error:
+                    raise PermissionError(policy_error)
                 func = self.tool_functions[guarded.name]
                 result = func(**guarded.arguments)
                 results.append({
