@@ -31,6 +31,32 @@
       .operational-workspace [data-capability="debts"] { display: none !important; }
       .workspace-scope-note { border-left: 3px solid var(--primary-color); }
 
+      /* Delivery workbench: one entry point, one task visible at a time. */
+      .delivery-manage-button { white-space: nowrap; min-height: 36px; }
+      #deliveryOperationsModal .delivery-summary {
+        font-family: inherit;
+        font-size: 0.875rem;
+        line-height: 1.7;
+        padding: 1rem;
+        background: var(--gray-10);
+        border-left: 3px solid var(--accent);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .delivery-action-picker { padding: 1rem; border: 1px solid var(--surface-border); margin-bottom: 1rem; }
+      .delivery-action-picker label { font-weight: 600; }
+      .delivery-action-picker .form-text { color: var(--gray-70); }
+      #deliveryOperationsModal [data-delivery-panel] { margin-bottom: 1rem; }
+      #deliveryOperationsModal form label { margin-top: 0.65rem; }
+      #deliveryOperationsModal form .form-control,
+      #deliveryOperationsModal form .form-select { margin-top: 0.25rem; }
+      .delivery-reference { border-top: 1px solid var(--surface-border); padding: 0.85rem 0; }
+      .delivery-reference summary { font-weight: 600; cursor: pointer; }
+      .delivery-reference > div { padding-top: 0.75rem; overflow-wrap: anywhere; }
+      #deliveryOperationsModal :is(button, select, summary):focus-visible {
+        outline: 2px solid var(--accent); outline-offset: 3px;
+      }
+
       :root {
         --sidebar-width: 250px;
         --sidebar-min-width: 220px;
@@ -3672,7 +3698,7 @@
                   </tr>
                 </thead>
                 <tbody id="deliveries-table">
-                  <tr><td colspan="8" class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></td></tr>
+                  <tr><td colspan="10" class="text-center py-4"><div class="spinner-border text-primary" role="status"></div></td></tr>
                 </tbody>
               </table>
             </div>
@@ -4786,32 +4812,43 @@
     </div>
 
     <div class="modal fade" id="deliveryOperationsModal" tabindex="-1" aria-labelledby="delivery-operations-title" aria-hidden="true">
-      <div class="modal-dialog modal-lg modal-fullscreen-sm-down"><div class="modal-content">
-        <div class="modal-header"><h5 id="delivery-operations-title" class="modal-title">Delivery operations</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+      <div class="modal-dialog modal-lg modal-dialog-scrollable modal-fullscreen-sm-down"><div class="modal-content">
+        <div class="modal-header"><h5 id="delivery-operations-title" class="modal-title">Manage delivery</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
         <div class="modal-body">
-          <pre id="delivery-operations-details" class="text-wrap"></pre>
+          <pre id="delivery-operations-details" class="delivery-summary"></pre>
+          <div class="delivery-action-picker">
+            <label for="delivery-action" class="form-label">What would you like to do?</label>
+            <select id="delivery-action" class="form-select" aria-describedby="delivery-action-help" onchange="selectDeliveryAction(this.value)" disabled></select>
+            <p id="delivery-action-help" class="form-text mb-0" aria-live="polite">Loading available actions…</p>
+          </div>
           <p id="delivery-operations-error" class="text-danger" role="alert"></p>
+          <div data-delivery-panel="overview" hidden><p class="text-muted">Review the delivery details above, or choose an action. Carrier tracking, saved evidence and history are available below.</p></div>
+          <div data-delivery-panel="edit" hidden><p>Change the stage, courier, schedule, priority, payment instructions or proof note.</p><button type="button" class="btn btn-primary" onclick="runDeliveryAction('edit')">Edit delivery details</button></div>
+          <div data-delivery-panel="print" hidden><p>Open a printable delivery slip with the recipient, address and collection details.</p><button type="button" class="btn btn-primary" onclick="runDeliveryAction('print')"><i class="bi bi-printer" aria-hidden="true"></i> Print delivery slip</button></div>
           <div id="delivery-operations-writes" data-capability="deliveries.write">
-            <form data-delivery-operation="attempts" onsubmit="event.preventDefault(); submitDeliveryOperation('attempts')" class="border rounded p-2 mb-2">
+            <form data-delivery-operation="progress" data-delivery-panel="progress" onsubmit="event.preventDefault(); runDeliveryAction('progress')" class="border rounded p-3" hidden>
+              <h6 id="delivery-progress-title">Next delivery stage</h6><p id="delivery-progress-help"></p><button id="delivery-progress-submit" class="btn btn-primary">Update stage</button>
+            </form>
+            <form data-delivery-operation="attempts" data-delivery-panel="attempts" onsubmit="event.preventDefault(); submitDeliveryOperation('attempts')" class="border rounded p-3" hidden>
               <h6>Record attempt</h6><label for="delivery-attempt-outcome">Outcome</label><select id="delivery-attempt-outcome" class="form-select"><option value="failed">Failed</option><option value="delivered">Delivered</option></select>
               <label for="delivery-attempt-reason">Failure reason</label><input id="delivery-attempt-reason" class="form-control" />
               <label for="delivery-attempt-proof">Proof note</label><textarea id="delivery-attempt-proof" class="form-control"></textarea><button class="btn btn-primary mt-2">Record attempt</button>
             </form>
-            <form data-delivery-operation="retry" onsubmit="event.preventDefault(); submitDeliveryOperation('retry')" class="border rounded p-2 mb-2"><h6>Schedule retry</h6>
+            <form data-delivery-operation="retry" data-delivery-panel="retry" onsubmit="event.preventDefault(); submitDeliveryOperation('retry')" class="border rounded p-3" hidden><h6>Schedule retry</h6>
               <label for="delivery-retry-note">Retry note</label><input id="delivery-retry-note" class="form-control" />
               <label for="delivery-retry-scheduled">Scheduled time (local)</label><input type="datetime-local" id="delivery-retry-scheduled" class="form-control" /><button class="btn btn-primary mt-2">Schedule retry</button>
             </form>
-            <form data-delivery-operation="collection" onsubmit="event.preventDefault(); submitDeliveryOperation('collection')" class="border rounded p-2 mb-2"><h6>Record COD collection</h6>
+            <form data-delivery-operation="collection" data-delivery-panel="collection" onsubmit="event.preventDefault(); submitDeliveryOperation('collection')" class="border rounded p-3" hidden><h6>Record COD collection</h6>
               <label for="delivery-collection-amount">Amount collected</label><input required type="number" min="0.01" step="0.01" id="delivery-collection-amount" class="form-control" />
               <label for="delivery-collection-reference">Collection reference</label><input id="delivery-collection-reference" class="form-control" /><button class="btn btn-primary mt-2">Record collection</button>
             </form>
-            <form data-delivery-operation="remittance" onsubmit="event.preventDefault(); submitDeliveryOperation('remittance')" class="border rounded p-2 mb-2"><h6>Record COD remittance</h6>
+            <form data-delivery-operation="remittance" data-delivery-panel="remittance" onsubmit="event.preventDefault(); submitDeliveryOperation('remittance')" class="border rounded p-3" hidden><h6>Record COD remittance</h6>
               <label for="delivery-remittance-amount">Amount remitted</label><input required type="number" min="0.01" step="0.01" id="delivery-remittance-amount" class="form-control" />
               <label for="delivery-remittance-reference">Remittance reference</label><input id="delivery-remittance-reference" class="form-control" /><button class="btn btn-primary mt-2">Record remittance</button>
             </form>
           </div>
-          <h6>Carrier (manual record)</h6><p id="delivery-carrier-summary"></p><div id="delivery-tracking-link"></div>
-          <form data-delivery-operation="carrier" onsubmit="event.preventDefault(); submitDeliveryOperation('carrier')" class="border rounded p-2 mb-2">
+          <form data-delivery-operation="carrier" data-delivery-panel="carrier" onsubmit="event.preventDefault(); submitDeliveryOperation('carrier')" class="border rounded p-3" hidden>
+            <h6>Carrier (manual record)</h6>
             <p>No live booking or automatic carrier verification. Status and notes are entered manually.</p>
             <label for="delivery-carrier-name">Carrier name</label><input required id="delivery-carrier-name" class="form-control" />
             <label for="delivery-tracking-code">Tracking code</label><input id="delivery-tracking-code" class="form-control" />
@@ -4819,22 +4856,24 @@
             <label for="delivery-carrier-status">Manual status</label><input id="delivery-carrier-status" class="form-control" />
             <label for="delivery-carrier-note">Manual note</label><textarea id="delivery-carrier-note" class="form-control"></textarea><button class="btn btn-primary mt-2">Save manual carrier record</button>
           </form>
-          <h6>Delivery evidence</h6><div id="delivery-proof-previews"></div>
-          <form data-delivery-operation="proofs" onsubmit="event.preventDefault(); submitDeliveryProof('photo')" class="border rounded p-2 mb-2">
+          <form data-delivery-operation="proofs" data-delivery-panel="photo" onsubmit="event.preventDefault(); submitDeliveryProof('photo')" class="border rounded p-3" hidden>
             <label for="delivery-photo">Photo (JPEG/PNG, maximum 5 MiB)</label><input required type="file" id="delivery-photo" accept="image/jpeg,image/png" capture="environment" class="form-control" /><button class="btn btn-primary mt-2">Upload photo</button>
           </form>
-          <form data-delivery-operation="proofs" onsubmit="event.preventDefault(); submitDeliveryProof('signature')" class="border rounded p-2 mb-2">
+          <form data-delivery-operation="proofs" data-delivery-panel="signature" onsubmit="event.preventDefault(); submitDeliveryProof('signature')" class="border rounded p-3" hidden>
             <label for="delivery-signer">Signer name</label><input required id="delivery-signer" class="form-control" />
             <p>Draw your signature below using a pointer or touch.</p><canvas id="delivery-signature" width="600" height="200" style="border:1px solid #666;max-width:100%;touch-action:none" aria-label="Signature drawing area"></canvas>
             <div><button type="button" class="btn btn-outline-secondary" onclick="clearDeliverySignature()">Clear signature</button> <button class="btn btn-primary">Save signature</button></div>
           </form>
-          <form data-delivery-operation="delete" onsubmit="event.preventDefault(); submitDeliveryOperation('delete')" class="border border-danger rounded p-2 mb-3" hidden>
+          <form data-delivery-operation="delete" data-delivery-panel="delete" onsubmit="event.preventDefault(); submitDeliveryOperation('delete')" class="border border-danger rounded p-3" hidden>
             <h6 class="text-danger">Delete delivery record</h6><p class="alert alert-danger">Manager/boss only. Terminal deliveries only; collected COD must be remitted first, and delivered COD cannot be pending. This removes the delivery from active operations, but retains ledger, history and evidence.</p>
             <label for="delivery-delete-reason">Required reason</label><textarea required id="delivery-delete-reason" class="form-control"></textarea>
             <label><input type="checkbox" required id="delivery-delete-confirm" /> I confirm deletion of this delivery record.</label><div><button class="btn btn-danger mt-2">Delete delivery record</button></div>
           </form>
-          <h6>History</h6><div id="delivery-operations-history" aria-live="polite"></div>
+          <details class="delivery-reference"><summary>Carrier &amp; tracking</summary><div><p id="delivery-carrier-summary"></p><div id="delivery-tracking-link"></div></div></details>
+          <details class="delivery-reference"><summary>Saved delivery evidence</summary><div id="delivery-proof-previews"></div></details>
+          <details class="delivery-reference"><summary>Delivery history</summary><div id="delivery-operations-history" aria-live="polite"></div></details>
         </div>
+        <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button></div>
       </div></div>
     </div>
 
@@ -20803,13 +20842,11 @@
             // Only validated numeric IDs enter handlers. Every server string is escaped.
             row.innerHTML = `<td>${hasCapability("deliveries.write") && deliveryAssignable(d) ? `<input type="checkbox" aria-label="Select delivery ${id}" data-delivery-select="${id}" onchange="toggleDeliverySelection(${id}, this.checked)" />` : ""}</td>
               <td>${e(d.delivery_number)}${d.is_overdue ? '<span class="badge bg-danger ms-1">Overdue</span>' : ''}<br><small>${e(d.courier_name)}</small></td>
-              <td>${e(d.sale_transaction_id)}</td><td>${e(d.recipient_name)}<br><small>${e(d.recipient_phone)}</small></td>
-              <td>${e(d.stage_label || d.stage)}<br><small>${e(d.last_attempt?.outcome)}</small></td><td>${e(d.priority)}</td>
+              <td class="d-none d-md-table-cell">${e(d.sale_transaction_id)}</td><td>${e(d.recipient_name)}<br><small>${e(d.recipient_phone)}</small></td>
+              <td>${e(d.stage_label || d.stage)}<br><small>${e(d.last_attempt?.outcome)}</small></td><td class="d-none d-sm-table-cell">${e(d.priority)}</td>
               <td>${e(d.payment_status_label || d.payment_status)}<br><small>COD: ${e(d.cod?.status)}</small></td>
-              <td>${e(formatCurrency(d.delivery_fee || 0))}</td><td>${e(formatCurrency(d.collect_total || 0))}</td>
-              <td><button class="btn btn-sm btn-outline-secondary" onclick="printDeliverySlip(${id})" title="Print Delivery Slip">Print</button>
-              <button class="btn btn-sm btn-outline-info" onclick="openDeliveryOperations(${id})">Details / Operations</button>
-              ${hasCapability("deliveries.write") ? `<button class="btn btn-sm btn-outline-primary" onclick="openUpdateDeliveryModal(${id})">Edit</button>` : ""}</td>`;
+              <td class="d-none d-lg-table-cell">${e(formatCurrency(d.delivery_fee || 0))}</td><td class="d-none d-lg-table-cell">${e(formatCurrency(d.collect_total || 0))}</td>
+              <td><button type="button" class="btn btn-sm btn-outline-primary delivery-manage-button" onclick="openDeliveryOperations(${id})" aria-label="${e((hasCapability("deliveries.write") ? "Manage delivery " : "View delivery ") + (d.delivery_number || id))}">${hasCapability("deliveries.write") ? "Manage delivery" : "View delivery"} <i class="bi bi-arrow-right" aria-hidden="true"></i></button></td>`;
             table.appendChild(row);
           });
           if (!deliveryWorkbench.rows.length) table.innerHTML = '<tr><td colspan="10" class="text-center">No deliveries found.</td></tr>';
@@ -20877,11 +20914,80 @@
         return ["manager", "boss"].includes(typeof CURRENT_USER_ROLE === "undefined" ? "" : String(CURRENT_USER_ROLE).toLowerCase()) && hasCapability("deliveries.write") && !context.is_deleted && ["delivered", "cancelled"].includes(context.stage) && context.cod?.status !== "collected" && !(context.stage === "delivered" && context.cod?.status === "pending");
       }
 
+      function deliveryActions(context) {
+        if (!deliveryContextCurrent(context)) return [];
+        const actions = [];
+        const add = (id, label, help) => actions.push({id, label, help});
+        if (hasCapability("deliveries.write") && !context.is_deleted) {
+          if (context.applicable?.retry) add("retry", "Schedule retry", "The last attempt failed. Arrange another delivery attempt.");
+          if (context.applicable?.progress) add("progress", context.nextStage === "packaged" ? "Mark as packaged" : "Start delivery", "Update the delivery stage when the parcel is ready for its next step.");
+          if (context.applicable?.attempts) add("attempts", "Record delivery attempt", "Record a successful delivery with proof, or a failed attempt with a reason.");
+          if (context.applicable?.collection) add("collection", "Record COD collection", "Record the amount collected from the recipient. This does not change the sale payment.");
+          if (context.applicable?.remittance) add("remittance", "Record COD remittance", "Confirm the courier handed over the collected cash.");
+          add("edit", "Edit delivery details", "Update the courier, schedule, stage, priority, payment instructions or proof note.");
+          if (context.applicable?.carrier) add("carrier", "Update manual carrier record", "Save tracking details reported by the carrier. This does not book or verify a shipment.");
+          if (context.applicable?.proofs) {
+            add("photo", "Upload delivery photo", "Attach a JPEG or PNG photo, up to 5 MiB.");
+            add("signature", "Capture recipient signature", "Enter the signer name and draw a signature using touch or a pointer.");
+          }
+        }
+        add("print", "Print delivery slip", "Print recipient, address and collection instructions.");
+        add("overview", "Review delivery details", "Expand carrier tracking, saved evidence or delivery history below.");
+        if (deliveryDeleteAllowed(context) && context.applicable?.delete) add("delete", "Delete delivery record…", "Requires a reason and explicit confirmation. Ledger, history and evidence are retained.");
+        return actions;
+      }
+
+      function syncDeliveryActions(context) {
+        const actions = deliveryActions(context), picker = document.getElementById("delivery-action");
+        const busy = deliveryWorkbench.writes.has("delivery:" + context?.id);
+        if (!actions.some(action => action.id === context.action)) {
+          context.action = actions.length ? actions.find(action => ["retry", "progress", "attempts", "collection", "remittance"].includes(action.id))?.id || "overview" : null;
+        }
+        picker.replaceChildren();
+        actions.forEach((action, index) => {
+          const option = document.createElement("option"); option.value = action.id;
+          option.textContent = action.label + (index === 0 && ["retry", "progress", "attempts", "collection", "remittance"].includes(action.id) ? " — suggested" : "");
+          picker.appendChild(option);
+        });
+        picker.value = context.action || "";
+        picker.disabled = !actions.length || busy;
+        document.getElementById("delivery-action-help").textContent = busy ? "Saving changes…" : actions.find(action => action.id === context.action)?.help || "Delivery actions are unavailable until details finish loading.";
+        document.getElementById("deliveryOperationsModal").querySelectorAll("[data-delivery-panel]").forEach(panel => {
+          panel.hidden = !actions.some(action => action.id === panel.dataset.deliveryPanel && action.id === context.action);
+          panel.querySelectorAll("button").forEach(button => {button.disabled = busy;});
+        });
+      }
+
+      function selectDeliveryAction(action) {
+        const context = deliveryWorkbench.detail;
+        if (!deliveryContextCurrent(context) || deliveryWorkbench.writes.has("delivery:" + context.id) || !deliveryActions(context).some(item => item.id === action)) return;
+        context.action = action;
+        document.getElementById("delivery-operations-error").textContent = "";
+        syncDeliveryOperationForms(context);
+      }
+
+      async function runDeliveryAction(action) {
+        const context = deliveryWorkbench.detail;
+        if (!deliveryContextCurrent(context) || context.action !== action || deliveryWorkbench.writes.has("delivery:" + context.id) || !deliveryActions(context).some(item => item.id === action)) return;
+        if (action === "print") { printDeliverySlip(context.id); return; }
+        if (action === "edit") { await openUpdateDeliveryModal(context.id, context); return; }
+        if (action !== "progress" || !context.applicable?.progress || !["packaged", "delivering"].includes(context.nextStage)) return;
+        const request = deliveryWrite("delivery:" + context.id, `/api/deliveries/${context.id}`, {stage: context.nextStage}, "PUT");
+        syncDeliveryOperationForms(context);
+        try {
+          if (await request) {
+            loadDeliveryStats(); loadDeliveries();
+            if (deliveryContextCurrent(context)) await openDeliveryOperations(context.id);
+          }
+        } finally { if (deliveryContextCurrent(context)) syncDeliveryOperationForms(context); }
+      }
+
       function syncDeliveryOperationForms(context) {
+        syncDeliveryActions(context);
         document.getElementById("deliveryOperationsModal").querySelectorAll("form[data-delivery-operation]").forEach(form => {
           const operation = form.dataset.deliveryOperation;
           const allowed = deliveryContextCurrent(context) && hasCapability("deliveries.write") && !context.is_deleted && Boolean(context.applicable?.[operation]) && (operation !== "delete" || deliveryDeleteAllowed(context));
-          form.hidden = !allowed;
+          form.hidden = !allowed || form.dataset.deliveryPanel !== context.action;
           form.querySelectorAll("input, select, textarea, button").forEach(control => {control.disabled = !allowed || deliveryWorkbench.writes.has("delivery:" + context.id);});
         });
       }
@@ -21025,10 +21131,14 @@
           const cod = d.cod || {};
           context.cod = cod;
           context.stage = d.stage; context.is_deleted = Boolean(d.is_deleted);
-          const applicable = {attempts: d.stage === "delivering", retry: d.stage === "delivering" && Boolean(d.has_failed_attempt),
+          context.nextStage = {to_deliver: "packaged", packaged: "delivering"}[d.stage] || null;
+          const applicable = {progress: Boolean(context.nextStage), attempts: d.stage === "delivering", retry: d.stage === "delivering" && Boolean(d.has_failed_attempt),
             collection: d.stage === "delivered" && cod.status === "pending", remittance: d.stage === "delivered" && cod.status === "collected",
             carrier: !d.is_deleted, proofs: !d.is_deleted, delete: deliveryDeleteAllowed(context)};
           context.applicable = applicable;
+          document.getElementById("delivery-progress-title").textContent = context.nextStage === "packaged" ? "Mark as packaged" : "Start delivery";
+          document.getElementById("delivery-progress-submit").textContent = context.nextStage === "packaged" ? "Mark as packaged" : "Start delivery";
+          document.getElementById("delivery-progress-help").textContent = context.nextStage === "packaged" ? "Confirm the parcel is packed and ready to dispatch." : "Confirm the parcel has been handed to the courier.";
           document.getElementById("delivery-collection-amount").value = cod.expected_amount || "";
           document.getElementById("delivery-remittance-amount").value = cod.collected_amount || "";
           syncDeliveryOperationForms(context);
@@ -21038,7 +21148,7 @@
           const trackingUrl = deliveryHttpsUrl(carrier.tracking_url);
           if (trackingUrl) {const link = document.createElement("a"); link.href = trackingUrl; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = "Open carrier tracking (external)"; document.getElementById("delivery-tracking-link").appendChild(link);}
           renderDeliveryProofs(context, d.proofs);
-          document.getElementById("delivery-operations-details").textContent = [d.delivery_number, `Recipient: ${d.recipient_name || "-"} | ${d.recipient_phone || "-"}`, `Address: ${d.delivery_address || "-"}`, `Courier: ${d.courier_name || "Unassigned"}`, `Stage: ${d.stage_label || d.stage}`, `Scheduled: ${d.scheduled_at || "-"}${d.is_overdue ? " (overdue)" : ""}`, `Last attempt: ${d.last_attempt?.outcome || "-"} | ${d.last_attempt?.reason || ""}`, `COD: ${cod.status || "-"} | Expected ${cod.expected_amount || "0"} | Collected ${cod.collected_amount || "0"} | Remitted ${cod.remitted_amount || "0"}`].join("\n");
+          document.getElementById("delivery-operations-details").textContent = [d.delivery_number, `Recipient: ${d.recipient_name || "-"} | ${d.recipient_phone || "-"}`, `Address: ${d.delivery_address || "-"}`, d.township ? `Township: ${d.township}` : null, d.instructions ? `Instructions: ${d.instructions}` : null, `Courier: ${d.courier_name || "Unassigned"}`, `Stage: ${d.stage_label || d.stage}`, `Scheduled: ${d.scheduled_at ? deliveryLocalDate(d.scheduled_at).replace("T", " ") + " (local time)" : "-"}${d.is_overdue ? " (overdue)" : ""}`, `Last attempt: ${d.last_attempt?.outcome || "-"} | ${d.last_attempt?.reason || ""}`, `COD: ${cod.status || "-"} | Expected ${formatCurrency(cod.expected_amount || "0")} | Collected ${formatCurrency(cod.collected_amount || "0")} | Remitted ${formatCurrency(cod.remitted_amount || "0")}`].filter(Boolean).join("\n");
           const container = document.getElementById("delivery-operations-history");
           (history.items || []).forEach(item => {
             const entry = document.createElement("p");
@@ -21047,6 +21157,7 @@
             container.appendChild(entry);
           });
           if (!history.items?.length) container.textContent = "No history yet.";
+          if (!d.proofs?.length) document.getElementById("delivery-proof-previews").textContent = hasCapability("deliveries.write") && !d.is_deleted ? "No delivery evidence saved. Choose Upload delivery photo or Capture recipient signature to add evidence." : "No delivery evidence saved.";
         } catch (error) { if (current()) document.getElementById("delivery-operations-error").textContent = error.message; }
       }
 
@@ -21082,7 +21193,9 @@
         const controls = document.getElementById("deliveryOperationsModal").querySelectorAll("form[data-delivery-operation] button");
         controls.forEach(button => {button.disabled = true;});
         try {
-          if (await deliveryWrite("delivery:" + context.id, `/api/deliveries/${context.id}${operation === "delete" ? "" : "/" + operation}`, payload, operation === "delete" ? "DELETE" : "POST")) {
+          const request = deliveryWrite("delivery:" + context.id, `/api/deliveries/${context.id}${operation === "delete" ? "" : "/" + operation}`, payload, operation === "delete" ? "DELETE" : "POST");
+          syncDeliveryOperationForms(context);
+          if (await request) {
             loadDeliveryStats(); loadDeliveries();
             if (deliveryWorkbench.detail === context) {
               if (operation === "delete") {context.is_deleted = true; syncDeliveryOperationForms(context); bootstrap.Modal.getInstance(document.getElementById("deliveryOperationsModal"))?.hide();}
@@ -21142,13 +21255,16 @@
         }
       }
 
-      async function openUpdateDeliveryModal(value) {
+      async function openUpdateDeliveryModal(value, origin = null) {
         if (!requireCapability("deliveries.write")) return;
         const id = deliveryId(value); if (!id) return;
         const context = {id, identity: inventoryIdentity()}; deliveryWorkbench.update = context;
         try {
           const d = await deliveryJson(`/api/deliveries/${id}`);
           if (context.identity !== inventoryIdentity() || deliveryWorkbench.update !== context) return;
+          // A dismissed/replaced workspace must not open its editor after a slow read.
+          // Check before the intentional modal handoff clears the originating detail.
+          if (origin && !deliveryContextCurrent(origin)) { deliveryWorkbench.update = null; return; }
           const values = {id, stage: d.stage, priority: d.priority, "payment-status": d.payment_status || "cash_on_delivery", courier: d.courier_name,
             "courier-phone": d.courier_phone, tracking: d.tracking_code, "proof-note": d.proof_note, scheduled: deliveryLocalDate(d.scheduled_at)};
           Object.entries(values).forEach(([key, value]) => {document.getElementById("update-delivery-" + key).value = value ?? "";});

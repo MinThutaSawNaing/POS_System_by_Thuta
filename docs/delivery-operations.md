@@ -6,6 +6,17 @@ payment, and recording a collection does **not** change the original sale total.
 
 ## Dispatch workbench
 
+- Each row has one **Manage delivery** control (**View delivery** for read-only
+  users). It opens a workspace with a **What would you like to do?** selector;
+  only the selected task's form is shown. Switching tasks keeps unsaved fields
+  within that workspace; closing or reloading it clears those drafts.
+- The workspace suggests the next task: package, start delivery, record an
+  attempt, retry a failed attempt, collect COD, or remit collected COD. Completed
+  workflows open in review mode. Selecting a task never writes a change by
+  itself; use its explicitly labelled button to save or confirm the action.
+- Editing, printing, manual carrier updates, photo/signature capture and eligible
+  deletion remain in the same selector. Expand **Carrier & tracking**, **Saved
+  delivery evidence**, or **Delivery history** to review supporting records.
 - Search and filter deliveries by stage, priority, payment state, courier, and
   operational attention. Results are paginated on the server.
 - An open delivery is overdue after its scheduled time, or after 48 hours when
@@ -114,5 +125,9 @@ Run tests through the disposable-checkout runner, never directly against the
 local business database:
 
 ```powershell
-python run_tests.py -q --tb=short test_delivery_operations.py test_delivery_extensions.py test_delivery_operations_javascript.py test_delivery_extensions_javascript.py test_ai_delivery_tools.py test_delivery_restore.py test_delivery_fee_charge.py test_delivery_slip.py test_delivery_report.py
+python run_tests.py -q --tb=short test_delivery_operations.py test_delivery_extensions.py test_delivery_operations_javascript.py test_delivery_extensions_javascript.py test_delivery_actions_javascript.py test_delivery_actions_browser.py test_ai_delivery_tools.py test_delivery_restore.py test_delivery_fee_charge.py test_delivery_slip.py test_delivery_report.py
 ```
+
+The browser checks use a locally installed Chrome, Chromium, or Edge (otherwise
+they skip). They exercise the actual dialog, Bootstrap and delivery JavaScript
+at desktop and mobile widths using fixture responses, without accessing POS data.
