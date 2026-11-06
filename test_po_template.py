@@ -6,6 +6,8 @@ Run only this module: python run_tests.py test_po_template.py -q --tb=short
 import io
 import json
 import os
+import re
+import shutil
 import unittest
 from pathlib import Path
 
@@ -357,7 +359,7 @@ class PoTemplateDashboardTests(unittest.TestCase):
     def test_settings_nav_and_canvas_markup(self):
         self.assertIn('data-group="po-template"', DASHBOARD)
         self.assertIn('onclick="showSettingsGroup(\'po-template\')"', DASHBOARD)
-        self.assertIn('id="settings-group-po"', DASHBOARD)
+        self.assertIn('id="settings-group-po-template"', DASHBOARD)
         self.assertIn('id="po-template-canvas"', DASHBOARD)
         self.assertIn('width="794" height="1123"', DASHBOARD)
         self.assertIn('id="save-po-template-btn"', DASHBOARD)
@@ -367,6 +369,51 @@ class PoTemplateDashboardTests(unittest.TestCase):
         self.assertIn('accept="image/png,image/jpeg"', DASHBOARD)
         self.assertIn('id="po-element-text"', DASHBOARD)
         self.assertIn('id="po-element-x"', DASHBOARD)
+
+    def test_every_settings_nav_group_has_a_matching_pane(self):
+        """showSettingsGroup() reveals `settings-group-<data-group>`; ids must line up."""
+        groups = set(re.findall(r'data-group="([^"]+)"', DASHBOARD))
+        panes = set(re.findall(r'id="settings-group-([^"]+)"', DASHBOARD))
+        self.assertEqual(groups - panes, set(), "nav groups without a pane")
+        self.assertEqual(panes - groups, set(), "panes without a nav group")
+        for group in groups:
+            self.assertIn(f'aria-controls="settings-group-{group}"', DASHBOARD)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_opening_po_template_reveals_pane_and_initializes_editor(self):
+        from test_offline_sync_javascript import _function, _run_node_script
+
+        panes = re.findall(r'id="(settings-group-[^"]+)"', DASHBOARD)
+        groups = re.findall(r'data-group="([^"]+)"', DASHBOARD)
+        result = _run_node_script(f"""
+const panes = {json.dumps(panes)}.map(id => ({{id, style: {{display: 'none'}}}}));
+const items = {json.dumps(groups)}.map(group => {{
+  const item = {{dataset: {{group}}, active: false, attrs: {{}}}};
+  item.classList = {{toggle: (_name, active) => {{item.active = active;}}}};
+  item.setAttribute = (key, value) => {{item.attrs[key] = value;}};
+  item.removeAttribute = key => {{delete item.attrs[key];}};
+  return item;
+}});
+globalThis.document = {{querySelectorAll: selector =>
+  selector === '#settings-section .settings-group' ? panes : items}};
+const calls = [];
+function bindPoTemplateEditor() {{calls.push('bind');}}
+function loadPoTemplateLogo() {{calls.push('logo');}}
+function renderPoTemplateCanvas() {{calls.push('render');}}
+{_function(DASHBOARD, 'showSettingsGroup')}
+showSettingsGroup('po-template');
+console.log(JSON.stringify({{
+  visible: panes.filter(pane => pane.style.display === '').map(pane => pane.id),
+  active: items.filter(item => item.active).map(item => item.dataset.group),
+  current: items.filter(item => item.attrs['aria-current'] === 'true')
+    .map(item => item.dataset.group),
+  calls,
+}}));
+""")
+        self.assertEqual(result["visible"], ["settings-group-po-template"])
+        self.assertEqual(result["active"], ["po-template"])
+        self.assertEqual(result["current"], ["po-template"])
+        self.assertEqual(result["calls"], ["bind", "logo", "render"])
 
     def test_canvas_edits_a_draft_and_only_save_posts(self):
         self.assertIn("function renderPoTemplateCanvas()", DASHBOARD)

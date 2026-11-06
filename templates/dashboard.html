@@ -4092,7 +4092,7 @@
                 <i class="bi bi-receipt"></i>
                 <span>Receipt &amp; branding<small>Logo, contacts, MMQR</small></span>
               </button>
-              <button type="button" class="settings-nav-item" data-group="po-template" aria-controls="settings-group-po" onclick="showSettingsGroup('po-template')">
+              <button type="button" class="settings-nav-item" data-group="po-template" aria-controls="settings-group-po-template" onclick="showSettingsGroup('po-template')">
                 <i class="bi bi-file-earmark-richtext"></i>
                 <span>PO template<small>Canvas header, logo &amp; footer</small></span>
               </button>
@@ -4399,7 +4399,7 @@
         </div><!-- /settings-group-receipt -->
 
         <!-- Purchase order document template (canvas editor) -->
-        <div id="settings-group-po" class="settings-group" role="group" aria-label="Purchase order template" style="display: none">
+        <div id="settings-group-po-template" class="settings-group" role="group" aria-label="Purchase order template" style="display: none">
         <div class="alert alert-info mb-0">
           The purchase order letterhead for <strong class="settings-active-branch-name">the active branch</strong>. Each client (branch) keeps its own logo and header.
         </div>
@@ -4524,7 +4524,7 @@
             </div>
           </div>
         </div>
-        </div><!-- /settings-group-po -->
+        </div><!-- /settings-group-po-template -->
 
         <!-- Mobile payments group: one global MyanMyanPay account for every branch -->
         <div id="settings-group-payments" class="settings-group" role="group" aria-label="Mobile payments" style="display: none">
@@ -9162,7 +9162,7 @@
       }
 
       function applyPoTemplateUI() {
-        const group = document.getElementById("settings-group-po");
+        const group = document.getElementById("settings-group-po-template");
         if (!group) return;
         if (!poTemplateDraft) {
           const saved = APP_SETTINGS.poTemplate;
