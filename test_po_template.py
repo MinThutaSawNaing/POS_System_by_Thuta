@@ -25,7 +25,7 @@ class PoTemplateLayoutTests(unittest.TestCase):
 
         template = normalize_po_template(None)
         self.assertEqual(template, default_po_template())
-        self.assertEqual(template["page_margin_mm"], 15.0)
+        self.assertEqual(template["page_inset_mm"], 15.0)
         self.assertEqual(template["header_height_mm"], 46.0)
         kinds = [element["kind"] for element in template["elements"]]
         self.assertIn("logo", kinds)
@@ -37,7 +37,7 @@ class PoTemplateLayoutTests(unittest.TestCase):
         from po_template import normalize_po_template
 
         template = normalize_po_template({
-            "page_margin_mm": 999,
+            "page_inset_mm": 999,
             "header_height_mm": -5,
             "elements": [
                 {"kind": "text", "text": "ACME {{po_number}}", "x_pct": 500, "y_mm": -20,
@@ -47,7 +47,7 @@ class PoTemplateLayoutTests(unittest.TestCase):
             ],
             "footer": {"text": "x" * 500, "font_size": 99, "show_page_number": "yes"},
         })
-        self.assertEqual(template["page_margin_mm"], 30.0)
+        self.assertEqual(template["page_inset_mm"], 30.0)
         self.assertEqual(template["header_height_mm"], 20.0)
         text, mislabelled, logo = template["elements"]
         self.assertEqual(text["kind"], "text")
@@ -137,7 +137,7 @@ class PoTemplateApiTests(unittest.TestCase):
 
     def payload(self, **overrides):
         payload = {
-            "page_margin_mm": 12,
+            "page_inset_mm": 12,
             "header_height_mm": 50,
             "elements": [
                 {"id": "logo", "kind": "logo", "x_pct": 0, "y_mm": 0,
@@ -188,16 +188,16 @@ class PoTemplateApiTests(unittest.TestCase):
     def test_template_round_trip_is_normalized_and_branch_scoped(self):
         from po_template import PO_TEMPLATE_SETTING
 
-        response = self.save_template(page_margin_mm=12, header_height_mm=50,
+        response = self.save_template(page_inset_mm=12, header_height_mm=50,
                                       elements=[{"kind": "text",
                                                  "text": "ACME {{po_number}}",
                                                  "color": "#123456", "font_size": 15}])
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(response.json["po_template"]["page_margin_mm"], 12.0)
+        self.assertEqual(response.json["po_template"]["page_inset_mm"], 12.0)
         self.assertEqual(response.json["po_template"]["elements"][0]["color"], "#123456")
 
         saved = self.settings()
-        self.assertEqual(saved["page_margin_mm"], 12.0)
+        self.assertEqual(saved["page_inset_mm"], 12.0)
         self.assertEqual(saved["header_height_mm"], 50.0)
         self.assertEqual(saved["elements"][0]["text"], "ACME {{po_number}}")
 
@@ -208,11 +208,11 @@ class PoTemplateApiTests(unittest.TestCase):
             self.assertEqual(json.loads(stored.value)["header_height_mm"], 50.0)
 
         # A second branch starts from the default letterhead and keeps its own.
-        self.assertEqual(self.settings(self.client(branch=self.b))["page_margin_mm"], 15.0)
-        other = self.save_template(self.client(branch=self.b), page_margin_mm=20)
+        self.assertEqual(self.settings(self.client(branch=self.b))["page_inset_mm"], 15.0)
+        other = self.save_template(self.client(branch=self.b), page_inset_mm=20)
         self.assertEqual(other.status_code, 200)
-        self.assertEqual(self.settings(self.client(branch=self.b))["page_margin_mm"], 20.0)
-        self.assertEqual(self.settings()["page_margin_mm"], 12.0)
+        self.assertEqual(self.settings(self.client(branch=self.b))["page_inset_mm"], 20.0)
+        self.assertEqual(self.settings()["page_inset_mm"], 12.0)
 
     def test_rejects_missing_layout_branch_switch_and_too_many_blocks(self):
         client = self.client()
@@ -222,18 +222,33 @@ class PoTemplateApiTests(unittest.TestCase):
         switched = client.put("/api/settings/po-template",
                               json={"branch_id": self.b, "template": self.payload()})
         self.assertEqual(switched.status_code, 409)
-        self.assertEqual(self.settings()["page_margin_mm"], 15.0)
+        self.assertEqual(self.settings()["page_inset_mm"], 15.0)
         too_many = client.put("/api/settings/po-template", json={"template": {
             "elements": [{"kind": "text", "text": str(index)} for index in range(15)],
         }})
         self.assertEqual(too_many.status_code, 400)
+
+    def test_cashier_settings_payload_stays_free_of_commercial_terms(self):
+        """The settings payload a cashier can read must not leak cost/profit keys."""
+        payload = self.settings(self.client(role="cashier"))
+        banned = ("cost", "profit", "supplier", "agreed_price", "margin")
+        stack = [payload]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    self.assertFalse(any(term in key.lower() for term in banned),
+                                     f"banned term in settings key {key!r}")
+                    stack.append(value)
+            elif isinstance(node, list):
+                stack.extend(node)
 
     def test_corrupt_stored_layout_falls_back_to_defaults(self):
         from po_template import PO_TEMPLATE_SETTING
 
         with self.app.app_context():
             self.module.set_branch_setting(PO_TEMPLATE_SETTING, "not-json{", self.a)
-        self.assertEqual(self.settings()["page_margin_mm"], 15.0)
+        self.assertEqual(self.settings()["page_inset_mm"], 15.0)
 
     def test_logo_upload_is_private_and_removable(self):
         client = self.client()

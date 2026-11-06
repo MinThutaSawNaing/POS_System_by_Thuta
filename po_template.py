@@ -54,7 +54,7 @@ PO_TEMPLATE_TOKENS = (
 # record-keeping footer) so an untouched install prints what it always printed.
 DEFAULT_PO_TEMPLATE = {
     "version": PO_TEMPLATE_VERSION,
-    "page_margin_mm": 15.0,
+    "page_inset_mm": 15.0,
     "header_height_mm": 46.0,
     "elements": [
         {"id": "logo", "kind": "logo", "x_pct": 0.0, "y_mm": 0.0,
@@ -183,7 +183,7 @@ def normalize_po_template(
 
     template: dict[str, Any] = {
         "version": PO_TEMPLATE_VERSION,
-        "page_margin_mm": _number(payload.get("page_margin_mm", base.get("page_margin_mm", 15)), 15, 8, 30),
+        "page_inset_mm": _number(payload.get("page_inset_mm", base.get("page_inset_mm", 15)), 15, 8, 30),
         "header_height_mm": _number(
             payload.get("header_height_mm", base.get("header_height_mm", 46)), 46, 20, PO_HEADER_MAX_MM),
     }
@@ -374,7 +374,7 @@ def draw_po_template_footer(
         return
 
     page_width, _ = document.pagesize
-    margin = layout["page_margin_mm"] * mm
+    margin = layout["page_inset_mm"] * mm
     canvas.saveState()
     try:
         canvas.setFillColor(colors.HexColor(footer["color"]))

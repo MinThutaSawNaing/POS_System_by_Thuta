@@ -8969,7 +8969,7 @@ def api_print_purchase_order(po_id):
     logo_filename = get_branch_setting(PO_TEMPLATE_LOGO_SETTING, '', po.branch_id)
     logo_path = os.path.join(app.config['PO_LOGO_FOLDER'], logo_filename) if logo_filename else None
     letterhead = purchase_order_letterhead_context(po)
-    margin = template['page_margin_mm'] * mm
+    margin = template['page_inset_mm'] * mm
 
     doc = SimpleDocTemplate(buffer, pagesize=(page_width, page_height),
                            rightMargin=margin, leftMargin=margin,

@@ -7669,7 +7669,7 @@
         },
         poTemplate: {
           version: 1,
-          page_margin_mm: 15,
+          page_inset_mm: 15,
           header_height_mm: 46,
           elements: [],
           footer: {
@@ -7974,7 +7974,9 @@
               ...APP_SETTINGS.receiptCustomization,
               ...(data.receipt_customization || {}),
             };
-            setPoTemplateFromSettings(data.po_template);
+            if (typeof setPoTemplateFromSettings === "function") {
+              setPoTemplateFromSettings(data.po_template);
+            }
             applySettingsUI();
             offlineCacheSet(settingsCacheKey(data.branch_id), data);
             if (hasCapability("admin")) {
@@ -8004,7 +8006,9 @@
                 ...APP_SETTINGS.receiptCustomization,
                 ...(data.receipt_customization || {}),
               };
-              setPoTemplateFromSettings(data.po_template);
+              if (typeof setPoTemplateFromSettings === "function") {
+                setPoTemplateFromSettings(data.po_template);
+              }
               showToast("Offline — using cached settings", "warning");
             }
             applySettingsUI();
@@ -8259,9 +8263,10 @@
       const PO_CANVAS_WIDTH = 794;   // 210 mm at 96 dpi
       const PO_CANVAS_HEIGHT = 1123; // 297 mm at 96 dpi
       const PO_CANVAS_MM = PO_CANVAS_WIDTH / 210;
+      {% raw %}
       const PO_TEMPLATE_DEFAULT = {
         version: 1,
-        page_margin_mm: 15,
+        page_inset_mm: 15,
         header_height_mm: 46,
         elements: [
           { id: "logo", kind: "logo", x_pct: 0, y_mm: 0, width_mm: 32, height_mm: 16 },
@@ -8295,6 +8300,7 @@
         { token: "{{supplier_phone}}", label: "Supplier phone", sample: "+95 9 123 456 789" },
         { token: "{{total}}", label: "Order total", sample: "1,240.00 $" },
       ];
+      {% endraw %}
       let poTemplateDraft = null;
       let poTemplateSelectedId = "";
       let poTemplateHitBoxes = [];
@@ -8365,7 +8371,7 @@
       }
 
       function poTemplateMarginPx() {
-        return Math.max(Number(poTemplateDraft?.page_margin_mm) || 0, 0) * PO_CANVAS_MM;
+        return Math.max(Number(poTemplateDraft?.page_inset_mm) || 0, 0) * PO_CANVAS_MM;
       }
 
       function poTemplateContentWidth() {
@@ -8814,7 +8820,7 @@
           renderPoTemplateCanvas();
         });
         bindPoTemplateField("po-page-margin", (value) => {
-          if (poTemplateDraft) poTemplateDraft.page_margin_mm = roundPoNumber(clampPoNumber(value, 8, 30, 15));
+          if (poTemplateDraft) poTemplateDraft.page_inset_mm = roundPoNumber(clampPoNumber(value, 8, 30, 15));
         });
         bindPoTemplateField("po-header-height", (value) => {
           if (!poTemplateDraft) return;
@@ -8963,7 +8969,7 @@
 
       function syncPoTemplatePageFields() {
         if (!poTemplateDraft) return;
-        setPoTemplateFieldValue("po-page-margin", poTemplateDraft.page_margin_mm ?? 15);
+        setPoTemplateFieldValue("po-page-margin", poTemplateDraft.page_inset_mm ?? 15);
         setPoTemplateFieldValue("po-header-height", poTemplateDraft.header_height_mm ?? 46);
         setPoTemplateFieldValue("po-footer-text", poTemplateDraft.footer?.text || "");
       }
