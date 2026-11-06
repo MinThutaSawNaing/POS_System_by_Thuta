@@ -497,6 +497,88 @@
         .receipt-preview-column { max-width: 260px; margin: 0 auto; width: 100%; }
       }
 
+      /* ===== Purchase order letterhead canvas ===== */
+      .po-template-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 300px;
+        gap: 1.25rem;
+        align-items: start;
+      }
+      .po-canvas-panel {
+        padding: 1rem;
+        border: 1px solid #d8dee7;
+        border-radius: 0.65rem;
+        background: #eef1f5;
+        overflow: auto;
+      }
+      .po-canvas-stage {
+        display: flex;
+        justify-content: center;
+      }
+      #po-template-canvas {
+        width: 100%;
+        max-width: 430px;
+        height: auto;
+        border: 1px solid #cbd3dd;
+        border-radius: 2px;
+        background: #fff;
+        box-shadow: 0 10px 28px rgba(16, 24, 40, 0.16);
+        touch-action: none;
+      }
+      #po-template-canvas:focus-visible {
+        outline: 2px solid var(--set-accent);
+        outline-offset: 2px;
+      }
+      #po-template-canvas.is-dragging { cursor: grabbing; }
+      .po-inspector {
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+      }
+      .po-element-list,
+      .po-token-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+      .po-element-chip {
+        max-width: 100%;
+        padding: 0.2rem 0.65rem;
+        border: 1px solid #d6dce5;
+        border-radius: 999px;
+        background: #fff;
+        color: #3f4854;
+        font-size: 0.78rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .po-element-chip.active {
+        border-color: var(--set-accent);
+        background: var(--set-accent-soft);
+        color: var(--set-accent-ink);
+        font-weight: 600;
+      }
+      .po-token-chip {
+        padding: 0.1rem 0.4rem;
+        border: 1px dashed #b8c2cf;
+        border-radius: 0.4rem;
+        background: #f8fafc;
+        color: #334155;
+        font: 0.72rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        cursor: pointer;
+      }
+      .po-token-chip:hover { background: var(--set-accent-soft); }
+      .po-canvas-hint {
+        font-size: 0.75rem;
+        color: var(--set-muted);
+      }
+      @media (max-width: 991.98px) {
+        .po-template-layout { grid-template-columns: 1fr; }
+        #po-template-canvas { max-width: 340px; }
+      }
+
       /* ===== Settings console =====
          One calm admin-console look: a sticky group rail on the left, one
          settings group visible at a time on the right, uniform white cards
@@ -4010,6 +4092,10 @@
                 <i class="bi bi-receipt"></i>
                 <span>Receipt &amp; branding<small>Logo, contacts, MMQR</small></span>
               </button>
+              <button type="button" class="settings-nav-item" data-group="po-template" aria-controls="settings-group-po" onclick="showSettingsGroup('po-template')">
+                <i class="bi bi-file-earmark-richtext"></i>
+                <span>PO template<small>Canvas header, logo &amp; footer</small></span>
+              </button>
               <button type="button" class="settings-nav-item" data-group="payments" aria-controls="settings-group-payments" onclick="showSettingsGroup('payments')">
                 <i class="bi bi-phone"></i>
                 <span>Payments<small>MyanMyanPay keys</small></span>
@@ -4311,6 +4397,134 @@
           </div>
         </div>
         </div><!-- /settings-group-receipt -->
+
+        <!-- Purchase order document template (canvas editor) -->
+        <div id="settings-group-po" class="settings-group" role="group" aria-label="Purchase order template" style="display: none">
+        <div class="alert alert-info mb-0">
+          The purchase order letterhead for <strong class="settings-active-branch-name">the active branch</strong>. Each client (branch) keeps its own logo and header.
+        </div>
+        <div class="card settings-card">
+          <div class="card-header">
+            <span class="settings-icon-chip"><i class="bi bi-file-earmark-richtext"></i></span>
+            <div class="settings-card-header-title">
+              <h5>Purchase order canvas</h5>
+              <span class="settings-card-subtitle">Drag blocks on the A4 sheet to match this client's letterhead</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+              <label class="btn btn-outline-primary btn-sm mb-0" for="po-logo-file">
+                <i class="bi bi-image me-1"></i>Client logo
+              </label>
+              <input type="file" id="po-logo-file" class="visually-hidden" accept="image/png,image/jpeg" />
+              <button type="button" class="btn btn-outline-danger btn-sm" id="remove-po-logo-btn" onclick="removePurchaseOrderLogo()">
+                <i class="bi bi-trash me-1"></i>Remove logo
+              </button>
+              <button type="button" class="btn btn-outline-secondary btn-sm" onclick="addPurchaseOrderTextBlock()">
+                <i class="bi bi-plus-lg me-1"></i>Add text block
+              </button>
+              <span class="po-canvas-hint">PNG or JPG up to 1 MB.</span>
+            </div>
+
+            <div class="po-template-layout">
+              <div>
+                <div class="po-canvas-panel">
+                  <div class="po-canvas-stage">
+                    <canvas id="po-template-canvas" width="794" height="1123" tabindex="0"
+                      aria-label="Purchase order template canvas. Drag the blocks, or use the position fields, to arrange the client letterhead."></canvas>
+                  </div>
+                </div>
+                <div class="row g-2 mt-2">
+                  <div class="col-6 col-md-3">
+                    <label class="form-label small mb-1" for="po-page-margin">Page margin (mm)</label>
+                    <input type="number" class="form-control form-control-sm" id="po-page-margin" min="8" max="30" step="1" value="15" />
+                  </div>
+                  <div class="col-6 col-md-3">
+                    <label class="form-label small mb-1" for="po-header-height">Header height (mm)</label>
+                    <input type="number" class="form-control form-control-sm" id="po-header-height" min="20" max="110" step="1" value="46" />
+                  </div>
+                  <div class="col-12 col-md-6">
+                    <label class="form-label small mb-1" for="po-footer-text">Footer note</label>
+                    <input type="text" class="form-control form-control-sm" id="po-footer-text" maxlength="200" />
+                  </div>
+                </div>
+                <button type="button" class="btn btn-primary mt-3" id="save-po-template-btn" onclick="savePurchaseOrderTemplate()">
+                  <i class="bi bi-save me-1"></i>Save PO template
+                </button>
+                <div class="alert alert-light border mt-3 mb-0 py-2" id="po-template-access-note" style="display: none;">
+                  Manager access is required to change the purchase order template.
+                </div>
+              </div>
+              <aside class="po-inspector" aria-label="Purchase order template blocks">
+                <div>
+                  <div class="small fw-semibold mb-1">Blocks</div>
+                  <div class="po-element-list" id="po-template-element-list"></div>
+                </div>
+                <div class="border rounded p-2" id="po-element-editor" hidden>
+                  <div class="small fw-semibold mb-2">Selected block</div>
+                  <div class="mb-2" id="po-element-text-group">
+                    <label class="form-label small mb-1" for="po-element-text">Text</label>
+                    <textarea class="form-control form-control-sm" id="po-element-text" rows="3" maxlength="200"></textarea>
+                  </div>
+                  <div class="row g-2">
+                    <div class="col-6" id="po-element-size-group">
+                      <label class="form-label small mb-1" for="po-element-size">Size (pt)</label>
+                      <input type="number" class="form-control form-control-sm" id="po-element-size" min="6" max="40" step="0.5" />
+                    </div>
+                    <div class="col-6" id="po-element-align-group">
+                      <label class="form-label small mb-1" for="po-element-align">Align</label>
+                      <select class="form-select form-select-sm" id="po-element-align">
+                        <option value="left">Left</option>
+                        <option value="center">Centre</option>
+                        <option value="right">Right</option>
+                      </select>
+                    </div>
+                    <div class="col-6">
+                      <label class="form-label small mb-1" for="po-element-x">X (%)</label>
+                      <input type="number" class="form-control form-control-sm" id="po-element-x" min="0" max="100" step="0.5" />
+                    </div>
+                    <div class="col-6">
+                      <label class="form-label small mb-1" for="po-element-y">Y (mm)</label>
+                      <input type="number" class="form-control form-control-sm" id="po-element-y" min="0" max="110" step="0.5" />
+                    </div>
+                    <div class="col-6">
+                      <label class="form-label small mb-1" for="po-element-width" id="po-element-width-label">Width (%)</label>
+                      <input type="number" class="form-control form-control-sm" id="po-element-width" min="5" max="100" step="0.5" />
+                    </div>
+                    <div class="col-6">
+                      <label class="form-label small mb-1" for="po-element-height" id="po-element-height-label">Height (mm)</label>
+                      <input type="number" class="form-control form-control-sm" id="po-element-height" min="5" max="80" step="0.5" />
+                    </div>
+                    <div class="col-6" id="po-element-thickness-group">
+                      <label class="form-label small mb-1" for="po-element-thickness">Thickness</label>
+                      <input type="number" class="form-control form-control-sm" id="po-element-thickness" min="0.25" max="3" step="0.25" />
+                    </div>
+                    <div class="col-6">
+                      <label class="form-label small mb-1" for="po-element-color">Colour</label>
+                      <input type="color" class="form-control form-control-color form-control-sm" id="po-element-color" />
+                    </div>
+                  </div>
+                  <div class="form-check mt-2" id="po-element-bold-group">
+                    <input class="form-check-input" type="checkbox" id="po-element-bold" />
+                    <label class="form-check-label small" for="po-element-bold">Bold</label>
+                  </div>
+                  <button type="button" class="btn btn-outline-danger btn-sm mt-2 w-100" onclick="deletePurchaseOrderTemplateBlock()">
+                    <i class="bi bi-trash me-1"></i>Delete block
+                  </button>
+                </div>
+                <div class="po-canvas-hint" id="po-element-empty">
+                  Select a block on the canvas to edit its text and position.
+                </div>
+                <div>
+                  <div class="small fw-semibold mb-1">Insert order data</div>
+                  <div class="po-token-bar" id="po-template-token-bar"></div>
+                  <div class="po-canvas-hint mt-1">Tokens print real values; the canvas shows sample data. PDF output uses the standard Latin font set.</div>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </div>
+        </div><!-- /settings-group-po -->
 
         <!-- Mobile payments group: one global MyanMyanPay account for every branch -->
         <div id="settings-group-payments" class="settings-group" role="group" aria-label="Mobile payments" style="display: none">
@@ -7453,6 +7667,21 @@
           effective_phone: "",
           effective_address: "",
         },
+        poTemplate: {
+          version: 1,
+          page_margin_mm: 15,
+          header_height_mm: 46,
+          elements: [],
+          footer: {
+            text: "This is an internal document for record keeping purposes.",
+            font_size: 8,
+            color: "#6b7280",
+            show_page_number: true,
+          },
+          logo_filename: "",
+          logo_url: null,
+          tokens: [],
+        },
       };
       let pendingReceiptLogoFile = null;
       let pendingReceiptLogoObjectUrl = null;
@@ -7719,6 +7948,7 @@
         if (mmqrAccessNote) mmqrAccessNote.style.display = hasManagerAccess() ? "none" : "block";
         renderMMQRPreview();
         renderReceiptCustomizationPreview();
+        applyPoTemplateUI();
 
         normalizeCurrencyDisplay();
       }
@@ -7744,6 +7974,7 @@
               ...APP_SETTINGS.receiptCustomization,
               ...(data.receipt_customization || {}),
             };
+            setPoTemplateFromSettings(data.po_template);
             applySettingsUI();
             offlineCacheSet(settingsCacheKey(data.branch_id), data);
             if (hasCapability("admin")) {
@@ -7773,6 +8004,7 @@
                 ...APP_SETTINGS.receiptCustomization,
                 ...(data.receipt_customization || {}),
               };
+              setPoTemplateFromSettings(data.po_template);
               showToast("Offline — using cached settings", "warning");
             }
             applySettingsUI();
@@ -8019,6 +8251,934 @@
         } catch (error) {
           showToast(error.message || "Failed to remove receipt logo", "error");
         }
+      }
+
+      // ===== Purchase order letterhead canvas =====
+      // Managers arrange the client's logo, header blocks and footer on an A4
+      // sheet; the PO PDF draws the same geometry, so the canvas is the print.
+      const PO_CANVAS_WIDTH = 794;   // 210 mm at 96 dpi
+      const PO_CANVAS_HEIGHT = 1123; // 297 mm at 96 dpi
+      const PO_CANVAS_MM = PO_CANVAS_WIDTH / 210;
+      const PO_TEMPLATE_DEFAULT = {
+        version: 1,
+        page_margin_mm: 15,
+        header_height_mm: 46,
+        elements: [
+          { id: "logo", kind: "logo", x_pct: 0, y_mm: 0, width_mm: 32, height_mm: 16 },
+          { id: "brand", kind: "text", text: "{{brand_name}}", x_pct: 36, y_mm: 0, width_pct: 64, font_size: 17, bold: true, align: "left", color: "#111827" },
+          { id: "contact", kind: "text", text: "{{branch_address}}\n{{branch_phone}}  ·  {{branch_email}}", x_pct: 36, y_mm: 9.5, width_pct: 64, font_size: 8.5, bold: false, align: "left", color: "#4b5563" },
+          { id: "title", kind: "text", text: "PURCHASE ORDER", x_pct: 0, y_mm: 26, width_pct: 60, font_size: 20, bold: true, align: "left", color: "#111827" },
+          { id: "reference", kind: "text", text: "PO {{po_number}}  ·  {{po_date}}", x_pct: 0, y_mm: 36, width_pct: 100, font_size: 9, bold: false, align: "left", color: "#4b5563" },
+          { id: "rule", kind: "rule", x_pct: 0, y_mm: 41, width_pct: 100, thickness: 1.4, color: "#0f172a" },
+        ],
+        footer: {
+          text: "This is an internal document for record keeping purposes.",
+          font_size: 8,
+          color: "#6b7280",
+          show_page_number: true,
+        },
+        logo_filename: "",
+        logo_url: null,
+      };
+      const PO_TEMPLATE_FALLBACK_TOKENS = [
+        { token: "{{brand_name}}", label: "Client / brand name", sample: "Parrot Trading Co., Ltd." },
+        { token: "{{branch_name}}", label: "Branch name", sample: "Downtown Branch" },
+        { token: "{{branch_address}}", label: "Branch address", sample: "No. 12, Market Road, Yangon" },
+        { token: "{{branch_phone}}", label: "Branch phone", sample: "+95 9 111 222 333" },
+        { token: "{{branch_email}}", label: "Branch email", sample: "orders@parrot.example" },
+        { token: "{{po_number}}", label: "PO number", sample: "PO-2026-0142" },
+        { token: "{{po_date}}", label: "Order date", sample: "2026-11-06" },
+        { token: "{{po_status}}", label: "Status", sample: "DRAFT" },
+        { token: "{{expected_delivery}}", label: "Expected delivery", sample: "2026-11-20" },
+        { token: "{{supplier_name}}", label: "Supplier name", sample: "Golden Rice Wholesale" },
+        { token: "{{supplier_contact}}", label: "Supplier contact", sample: "Daw Mya" },
+        { token: "{{supplier_phone}}", label: "Supplier phone", sample: "+95 9 123 456 789" },
+        { token: "{{total}}", label: "Order total", sample: "1,240.00 $" },
+      ];
+      let poTemplateDraft = null;
+      let poTemplateSelectedId = "";
+      let poTemplateHitBoxes = [];
+      let poTemplateDrag = null;
+      let poTemplateBound = false;
+      let poTemplateLogoImage = null;
+      let poTemplateLogoSrc = "";
+      let pendingPoLogoFile = null;
+      let pendingPoLogoObjectUrl = null;
+      let pendingPoLogoRemoval = false;
+      const poTemplateMeasure = document.createElement("canvas");
+
+      function clonePoTemplate(value) {
+        try {
+          return JSON.parse(JSON.stringify(value || {}));
+        } catch (error) {
+          return {};
+        }
+      }
+
+      function poTemplateTokens() {
+        const live = APP_SETTINGS.poTemplate?.tokens;
+        return Array.isArray(live) && live.length ? live : PO_TEMPLATE_FALLBACK_TOKENS;
+      }
+
+      function setPoTemplateFromSettings(settings) {
+        if (!settings || typeof settings !== "object") return;
+        const tokens = Array.isArray(settings.tokens) && settings.tokens.length
+          ? settings.tokens
+          : poTemplateTokens();
+        APP_SETTINGS.poTemplate = { ...clonePoTemplate(settings), tokens };
+        poTemplateDraft = clonePoTemplate(APP_SETTINGS.poTemplate);
+        if (!Array.isArray(poTemplateDraft.elements)) poTemplateDraft.elements = [];
+        if (!poTemplateDraft.elements.some((element) => element.id === poTemplateSelectedId)) {
+          poTemplateSelectedId = poTemplateDraft.elements[0]?.id || "";
+        }
+        pendingPoLogoFile = null;
+        pendingPoLogoRemoval = false;
+        if (pendingPoLogoObjectUrl) URL.revokeObjectURL(pendingPoLogoObjectUrl);
+        pendingPoLogoObjectUrl = null;
+        const input = document.getElementById("po-logo-file");
+        if (input) input.value = "";
+      }
+
+      function poTemplateSelectedElement() {
+        if (!poTemplateDraft) return null;
+        return poTemplateDraft.elements.find((element) => element.id === poTemplateSelectedId) || null;
+      }
+
+      function poTemplateLogoUrl() {
+        if (pendingPoLogoRemoval) return "";
+        return pendingPoLogoObjectUrl || APP_SETTINGS.poTemplate?.logo_url || "";
+      }
+
+      function clampPoNumber(value, low, high, fallback) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return fallback;
+        return Math.min(Math.max(number, low), high);
+      }
+
+      function roundPoNumber(value, decimals = 1) {
+        const factor = 10 ** decimals;
+        return Math.round(Number(value) * factor) / factor;
+      }
+
+      function poTemplateMm() {
+        return PO_CANVAS_MM;
+      }
+
+      function poTemplateMarginPx() {
+        return Math.max(Number(poTemplateDraft?.page_margin_mm) || 0, 0) * PO_CANVAS_MM;
+      }
+
+      function poTemplateContentWidth() {
+        return Math.max(PO_CANVAS_WIDTH - poTemplateMarginPx() * 2, 40);
+      }
+
+      function poTemplateHeaderHeight() {
+        return Math.max(Number(poTemplateDraft?.header_height_mm) || 20, 20) * PO_CANVAS_MM;
+      }
+
+      function poTemplateFontPx(element) {
+        return Math.max(Number(element?.font_size) || 10, 6) * 4 / 3;
+      }
+
+      function poTemplateCanvasFont(element) {
+        return `${element?.bold ? "700" : "400"} ${poTemplateFontPx(element)}px Helvetica, Arial, sans-serif`;
+      }
+
+      function poTemplateRenderText(text) {
+        const samples = new Map(
+          poTemplateTokens().map((token) => [String(token.token || "").replace(/[{}]/g, "").trim(), token.sample])
+        );
+        return String(text ?? "").replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) =>
+          samples.has(key) ? String(samples.get(key)) : match
+        );
+      }
+
+      function poTemplateWrappedLines(element, width) {
+        const ctx = poTemplateMeasure.getContext("2d");
+        if (!ctx) return [poTemplateRenderText(element?.text)];
+        ctx.font = poTemplateCanvasFont(element);
+        const maxWidth = Math.max(width, 12);
+        const lines = [];
+        poTemplateRenderText(element?.text).split("\n").forEach((paragraph) => {
+          if (!paragraph.trim()) {
+            lines.push("");
+            return;
+          }
+          let current = "";
+          paragraph.split(/\s+/).forEach((word) => {
+            const candidate = current ? `${current} ${word}` : word;
+            if (!current || ctx.measureText(candidate).width <= maxWidth) {
+              current = candidate;
+            } else {
+              lines.push(current);
+              current = word;
+            }
+          });
+          lines.push(current);
+        });
+        return lines.length ? lines : [""];
+      }
+
+      function poTemplateElementBox(element) {
+        const margin = poTemplateMarginPx();
+        const contentWidth = poTemplateContentWidth();
+        const x = margin + (Number(element.x_pct) || 0) / 100 * contentWidth;
+        const y = margin + (Number(element.y_mm) || 0) * PO_CANVAS_MM;
+        if (element.kind === "logo") {
+          return {
+            x,
+            y,
+            width: Math.max((Number(element.width_mm) || 0) * PO_CANVAS_MM, 8),
+            height: Math.max((Number(element.height_mm) || 0) * PO_CANVAS_MM, 8),
+          };
+        }
+        const width = Math.max((Number(element.width_pct) || 100) / 100 * contentWidth, 24);
+        if (element.kind === "rule") {
+          return { x, y, width, height: 10 };
+        }
+        const lineHeight = poTemplateFontPx(element) * 1.25;
+        const lines = poTemplateWrappedLines(element, width);
+        return { x, y, width, height: Math.max(lines.length * lineHeight, lineHeight) };
+      }
+
+      function drawPoTemplateBodyPreview(ctx, top, margin, contentWidth) {
+        const lineHeight = 5 * PO_CANVAS_MM;
+        ctx.save();
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "600 11px Helvetica, Arial, sans-serif";
+        ctx.fillText("PO DETAILS (FIXED)", margin, top);
+        ctx.fillStyle = "#dbe2ea";
+        for (let index = 0; index < 3; index += 1) {
+          const width = contentWidth * (index === 2 ? 0.55 : 0.8);
+          ctx.fillRect(margin, top + (3 + index * 2) * PO_CANVAS_MM, width, 1.5);
+        }
+        const tableTop = top + 14 * PO_CANVAS_MM;
+        ctx.fillStyle = "#1f2937";
+        ctx.fillRect(margin, tableTop, contentWidth, 7 * PO_CANVAS_MM);
+        ctx.fillStyle = "#e2e8f0";
+        for (let index = 0; index < 4; index += 1) {
+          ctx.fillRect(margin, tableTop + 11 * PO_CANVAS_MM + index * lineHeight, contentWidth, 1.25);
+        }
+        ctx.fillStyle = "#94a3b8";
+        ctx.fillRect(margin + contentWidth * 0.68, tableTop + 11 * PO_CANVAS_MM + 4 * lineHeight, contentWidth * 0.32, 1.5);
+        ctx.restore();
+      }
+
+      function drawPoTemplateFooterPreview(ctx, margin, contentWidth) {
+        const footer = poTemplateDraft.footer || {};
+        const sizePx = Math.max(Number(footer.font_size) || 8, 6) * 4 / 3;
+        const baseline = PO_CANVAS_HEIGHT - 10 * PO_CANVAS_MM;
+        ctx.save();
+        ctx.fillStyle = footer.color || "#6b7280";
+        ctx.font = `400 ${sizePx}px Helvetica, Arial, sans-serif`;
+        ctx.textAlign = "left";
+        ctx.fillText(poTemplateRenderText(footer.text || "").slice(0, 90), margin, baseline);
+        if (footer.show_page_number !== false) {
+          ctx.textAlign = "right";
+          ctx.fillText("Page 1", margin + contentWidth, baseline);
+        }
+        ctx.restore();
+      }
+
+      function drawPoTemplateElement(ctx, element, box) {
+        ctx.save();
+        if (element.kind === "rule") {
+          ctx.strokeStyle = element.color || "#111827";
+          ctx.lineWidth = Math.max(Number(element.thickness) || 1, 0.5) * 4 / 3;
+          ctx.beginPath();
+          ctx.moveTo(box.x, box.y);
+          ctx.lineTo(box.x + box.width, box.y);
+          ctx.stroke();
+          ctx.restore();
+          return;
+        }
+        if (element.kind === "logo") {
+          if (poTemplateLogoImage) {
+            const scale = Math.min(
+              box.width / poTemplateLogoImage.width,
+              box.height / poTemplateLogoImage.height
+            );
+            ctx.drawImage(
+              poTemplateLogoImage,
+              box.x,
+              box.y,
+              poTemplateLogoImage.width * scale,
+              poTemplateLogoImage.height * scale
+            );
+          } else {
+            ctx.setLineDash([5, 4]);
+            ctx.strokeStyle = "#cbd5e1";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(box.x, box.y, box.width, box.height);
+            ctx.setLineDash([]);
+            ctx.fillStyle = "#9aa3af";
+            ctx.font = "600 10px Helvetica, Arial, sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText(
+              poTemplateLogoUrl() ? "LOGO" : "CLIENT LOGO",
+              box.x + box.width / 2,
+              box.y + box.height / 2 + 3
+            );
+          }
+          ctx.restore();
+          return;
+        }
+        const lines = poTemplateWrappedLines(element, box.width);
+        const lineHeight = poTemplateFontPx(element) * 1.25;
+        ctx.fillStyle = element.color || "#111827";
+        ctx.font = poTemplateCanvasFont(element);
+        ctx.textAlign = element.align === "right" ? "right" : element.align === "center" ? "center" : "left";
+        const anchorX = element.align === "right"
+          ? box.x + box.width
+          : element.align === "center" ? box.x + box.width / 2 : box.x;
+        lines.forEach((line, index) => {
+          ctx.fillText(line, anchorX, box.y + poTemplateFontPx(element) * 0.9 + index * lineHeight);
+        });
+        ctx.restore();
+      }
+
+      function drawPoTemplateSelection(ctx, box) {
+        ctx.save();
+        ctx.strokeStyle = "#2563eb";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 3]);
+        ctx.strokeRect(box.x - 2, box.y - 2, box.width + 4, box.height + 4);
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#2563eb";
+        const handle = 8;
+        ctx.fillRect(box.x + box.width - handle / 2, box.y + box.height - handle / 2, handle, handle);
+        ctx.restore();
+      }
+
+      function renderPoTemplateCanvas() {
+        const canvas = document.getElementById("po-template-canvas");
+        if (!canvas || !poTemplateDraft) return;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        const margin = poTemplateMarginPx();
+        const contentWidth = poTemplateContentWidth();
+        ctx.clearRect(0, 0, PO_CANVAS_WIDTH, PO_CANVAS_HEIGHT);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, PO_CANVAS_WIDTH, PO_CANVAS_HEIGHT);
+
+        ctx.save();
+        ctx.fillStyle = "#f8fafc";
+        ctx.fillRect(margin, margin, contentWidth, poTemplateHeaderHeight());
+        ctx.setLineDash([6, 4]);
+        ctx.strokeStyle = "#dbe2ea";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(margin, margin, contentWidth, poTemplateHeaderHeight());
+        ctx.restore();
+
+        drawPoTemplateBodyPreview(ctx, margin + poTemplateHeaderHeight() + 12 * PO_CANVAS_MM, margin, contentWidth);
+        drawPoTemplateFooterPreview(ctx, margin, contentWidth);
+
+        poTemplateHitBoxes = [];
+        poTemplateDraft.elements.forEach((element) => {
+          const box = poTemplateElementBox(element);
+          drawPoTemplateElement(ctx, element, box);
+          poTemplateHitBoxes.push({ id: element.id, box });
+        });
+        const selected = poTemplateSelectedElement();
+        if (selected) drawPoTemplateSelection(ctx, poTemplateElementBox(selected));
+      }
+
+      function loadPoTemplateLogo() {
+        const url = poTemplateLogoUrl();
+        if (!url) {
+          poTemplateLogoImage = null;
+          poTemplateLogoSrc = "";
+          renderPoTemplateCanvas();
+          return;
+        }
+        if (poTemplateLogoSrc === url && poTemplateLogoImage) return;
+        poTemplateLogoSrc = url;
+        const image = new Image();
+        image.onload = () => {
+          if (poTemplateLogoSrc !== url) return;
+          poTemplateLogoImage = image;
+          renderPoTemplateCanvas();
+        };
+        image.onerror = () => {
+          if (poTemplateLogoSrc !== url) return;
+          poTemplateLogoImage = null;
+          renderPoTemplateCanvas();
+        };
+        image.src = url;
+        renderPoTemplateCanvas();
+      }
+
+      function poTemplateCanvasPoint(event) {
+        const canvas = document.getElementById("po-template-canvas");
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = PO_CANVAS_WIDTH / Math.max(rect.width, 1);
+        const scaleY = PO_CANVAS_HEIGHT / Math.max(rect.height, 1);
+        return {
+          x: (event.clientX - rect.left) * scaleX,
+          y: (event.clientY - rect.top) * scaleY,
+        };
+      }
+
+      function poTemplateHitTest(point) {
+        const handleReach = 12;
+        for (let index = poTemplateHitBoxes.length - 1; index >= 0; index -= 1) {
+          const entry = poTemplateHitBoxes[index];
+          const { box } = entry;
+          if (Math.abs(point.x - (box.x + box.width)) <= handleReach &&
+              Math.abs(point.y - (box.y + box.height)) <= handleReach) {
+            return { id: entry.id, handle: true };
+          }
+          if (point.x >= box.x - 3 && point.x <= box.x + box.width + 3 &&
+              point.y >= box.y - 3 && point.y <= box.y + box.height + 3) {
+            return { id: entry.id, handle: false };
+          }
+        }
+        return null;
+      }
+
+      function poTemplateHeaderLimitMm() {
+        return Math.max((Number(poTemplateDraft?.header_height_mm) || 46) - 4, 0);
+      }
+
+      function movePoTemplateElement(point, drag) {
+        const element = poTemplateDraft?.elements.find((entry) => entry.id === drag.id);
+        if (!element) return;
+        const contentWidth = poTemplateContentWidth();
+        const dx = point.x - drag.startX;
+        const dy = point.y - drag.startY;
+        if (drag.mode === "resize") {
+          if (element.kind === "logo") {
+            const nextWidth = Math.min(Math.max(drag.startWidthMm + dx / PO_CANVAS_MM, 6), 90);
+            const ratio = drag.startHeightMm / Math.max(drag.startWidthMm, 0.1);
+            element.width_mm = roundPoNumber(nextWidth);
+            element.height_mm = roundPoNumber(Math.min(Math.max(nextWidth * ratio, 5), 80));
+          } else {
+            const nextWidth = Math.min(Math.max(drag.startWidthPct + dx / contentWidth * 100, 5), 100);
+            element.width_pct = roundPoNumber(nextWidth);
+          }
+        } else {
+          element.x_pct = roundPoNumber(clampPoNumber(
+            drag.startXPct + dx / contentWidth * 100, 0, 100, drag.startXPct));
+          element.y_mm = roundPoNumber(clampPoNumber(
+            drag.startYMm + dy / PO_CANVAS_MM, 0, poTemplateHeaderLimitMm(), drag.startYMm));
+        }
+      }
+
+      function endPoTemplateDrag() {
+        if (!poTemplateDrag) return;
+        poTemplateDrag = null;
+        document.getElementById("po-template-canvas")?.classList.remove("is-dragging");
+        syncPoTemplateInspector();
+        renderPoTemplateCanvas();
+      }
+
+      function bindPoTemplateField(id, apply) {
+        const field = document.getElementById(id);
+        if (!field) return;
+        field.addEventListener("input", () => {
+          if (!poTemplateDraft) return;
+          apply(field.value, field);
+          renderPoTemplateCanvas();
+          renderPoTemplateElementList();
+        });
+      }
+
+      function bindPoTemplateEditor() {
+        if (poTemplateBound) return;
+        const canvas = document.getElementById("po-template-canvas");
+        if (!canvas) return;
+        poTemplateBound = true;
+
+        canvas.addEventListener("pointerdown", (event) => {
+          if (!hasManagerAccess() || !poTemplateDraft) return;
+          const point = poTemplateCanvasPoint(event);
+          const hit = poTemplateHitTest(point);
+          if (!hit) {
+            poTemplateSelectedId = "";
+            syncPoTemplateInspector();
+            renderPoTemplateCanvas();
+            return;
+          }
+          poTemplateSelectedId = hit.id;
+          const element = poTemplateSelectedElement();
+          if (!element) return;
+          poTemplateDrag = {
+            id: element.id,
+            mode: hit.handle ? "resize" : "move",
+            startX: point.x,
+            startY: point.y,
+            startXPct: Number(element.x_pct) || 0,
+            startYMm: Number(element.y_mm) || 0,
+            startWidthPct: Number(element.width_pct) || 100,
+            startWidthMm: Number(element.width_mm) || 20,
+            startHeightMm: Number(element.height_mm) || 10,
+          };
+          if (canvas.setPointerCapture) canvas.setPointerCapture(event.pointerId);
+          canvas.classList.add("is-dragging");
+          canvas.focus({ preventScroll: true });
+          syncPoTemplateInspector();
+          renderPoTemplateCanvas();
+          event.preventDefault();
+        });
+
+        canvas.addEventListener("pointermove", (event) => {
+          if (!poTemplateDrag) return;
+          movePoTemplateElement(poTemplateCanvasPoint(event), poTemplateDrag);
+          syncPoTemplateInspector();
+          renderPoTemplateCanvas();
+          event.preventDefault();
+        });
+
+        canvas.addEventListener("pointerup", endPoTemplateDrag);
+        canvas.addEventListener("pointercancel", endPoTemplateDrag);
+
+        canvas.addEventListener("keydown", (event) => {
+          const element = poTemplateSelectedElement();
+          if (!element || !hasManagerAccess()) return;
+          const step = event.shiftKey ? 5 : 1;
+          if (event.key === "Delete" || event.key === "Backspace") {
+            event.preventDefault();
+            deletePurchaseOrderTemplateBlock();
+            return;
+          }
+          if (event.key === "ArrowLeft") {
+            element.x_pct = roundPoNumber(clampPoNumber(Number(element.x_pct) - step, 0, 100, 0));
+          } else if (event.key === "ArrowRight") {
+            element.x_pct = roundPoNumber(clampPoNumber(Number(element.x_pct) + step, 0, 100, 0));
+          } else if (event.key === "ArrowUp") {
+            element.y_mm = roundPoNumber(clampPoNumber(Number(element.y_mm) - step, 0, poTemplateHeaderLimitMm(), 0));
+          } else if (event.key === "ArrowDown") {
+            element.y_mm = roundPoNumber(clampPoNumber(Number(element.y_mm) + step, 0, poTemplateHeaderLimitMm(), 0));
+          } else {
+            return;
+          }
+          event.preventDefault();
+          syncPoTemplateInspector();
+          renderPoTemplateCanvas();
+        });
+
+        canvas.addEventListener("dblclick", (event) => {
+          const hit = poTemplateHitTest(poTemplateCanvasPoint(event));
+          if (!hit || !hasManagerAccess()) return;
+          poTemplateSelectedId = hit.id;
+          syncPoTemplateInspector();
+          const element = poTemplateSelectedElement();
+          if (element?.kind === "text") document.getElementById("po-element-text")?.focus();
+          renderPoTemplateCanvas();
+        });
+
+        bindPoTemplateField("po-element-text", (value) => {
+          const element = poTemplateSelectedElement();
+          if (element?.kind === "text") element.text = String(value).slice(0, 200);
+        });
+        bindPoTemplateField("po-element-size", (value) => {
+          const element = poTemplateSelectedElement();
+          if (element && element.kind !== "logo") {
+            element.font_size = roundPoNumber(clampPoNumber(value, 6, 40, 10));
+          }
+        });
+        bindPoTemplateField("po-element-x", (value) => {
+          const element = poTemplateSelectedElement();
+          if (element) element.x_pct = roundPoNumber(clampPoNumber(value, 0, 100, 0));
+        });
+        bindPoTemplateField("po-element-y", (value) => {
+          const element = poTemplateSelectedElement();
+          if (element) element.y_mm = roundPoNumber(clampPoNumber(value, 0, poTemplateHeaderLimitMm(), 0));
+        });
+        bindPoTemplateField("po-element-width", (value) => {
+          const element = poTemplateSelectedElement();
+          if (!element) return;
+          if (element.kind === "logo") element.width_mm = roundPoNumber(clampPoNumber(value, 6, 90, 32));
+          else element.width_pct = roundPoNumber(clampPoNumber(value, 5, 100, 100));
+        });
+        bindPoTemplateField("po-element-height", (value) => {
+          const element = poTemplateSelectedElement();
+          if (element?.kind === "logo") element.height_mm = roundPoNumber(clampPoNumber(value, 5, 80, 16));
+        });
+        bindPoTemplateField("po-element-thickness", (value) => {
+          const element = poTemplateSelectedElement();
+          if (element?.kind === "rule") element.thickness = roundPoNumber(clampPoNumber(value, 0.25, 3, 1), 2);
+        });
+        bindPoTemplateField("po-element-color", (value) => {
+          const element = poTemplateSelectedElement();
+          if (element && /^#[0-9a-f]{6}$/i.test(value)) element.color = value.toLowerCase();
+        });
+        document.getElementById("po-element-align")?.addEventListener("change", (event) => {
+          const element = poTemplateSelectedElement();
+          if (element) element.align = event.target.value;
+          renderPoTemplateCanvas();
+        });
+        document.getElementById("po-element-bold")?.addEventListener("change", (event) => {
+          const element = poTemplateSelectedElement();
+          if (element) element.bold = !!event.target.checked;
+          renderPoTemplateCanvas();
+        });
+        bindPoTemplateField("po-page-margin", (value) => {
+          if (poTemplateDraft) poTemplateDraft.page_margin_mm = roundPoNumber(clampPoNumber(value, 8, 30, 15));
+        });
+        bindPoTemplateField("po-header-height", (value) => {
+          if (!poTemplateDraft) return;
+          poTemplateDraft.header_height_mm = roundPoNumber(clampPoNumber(value, 20, 110, 46));
+          const limit = poTemplateHeaderLimitMm();
+          poTemplateDraft.elements.forEach((element) => {
+            if (Number(element.y_mm) > limit) element.y_mm = roundPoNumber(limit);
+          });
+        });
+        bindPoTemplateField("po-footer-text", (value) => {
+          if (!poTemplateDraft) return;
+          poTemplateDraft.footer = { ...(poTemplateDraft.footer || {}), text: String(value).slice(0, 200) };
+        });
+        document.getElementById("po-logo-file")?.addEventListener("change", (event) => {
+          stagePoTemplateLogo(event.target.files?.[0]);
+        });
+      }
+
+      function setPoTemplateFieldValue(id, value) {
+        const field = document.getElementById(id);
+        if (!field || document.activeElement === field) return;
+        field.value = value === null || value === undefined ? "" : value;
+      }
+
+      function togglePoTemplateGroup(id, hidden) {
+        const group = document.getElementById(id);
+        if (group) group.hidden = hidden;
+      }
+
+      function syncPoTemplateInspector() {
+        const editor = document.getElementById("po-element-editor");
+        const empty = document.getElementById("po-element-empty");
+        const element = poTemplateSelectedElement();
+        if (!editor || !empty) return;
+        editor.hidden = !element;
+        empty.hidden = !!element;
+        renderPoTemplateElementList();
+        if (!element) return;
+        const isLogo = element.kind === "logo";
+        const isRule = element.kind === "rule";
+        setPoTemplateFieldValue("po-element-text", element.text ?? "");
+        setPoTemplateFieldValue("po-element-size", element.font_size ?? 10);
+        setPoTemplateFieldValue("po-element-align", element.align || "left");
+        setPoTemplateFieldValue("po-element-x", element.x_pct ?? 0);
+        setPoTemplateFieldValue("po-element-y", element.y_mm ?? 0);
+        setPoTemplateFieldValue("po-element-width",
+          isLogo ? (element.width_mm ?? 32) : (element.width_pct ?? 100));
+        setPoTemplateFieldValue("po-element-height", element.height_mm ?? 16);
+        setPoTemplateFieldValue("po-element-thickness", element.thickness ?? 1);
+        setPoTemplateFieldValue("po-element-color", element.color || "#111827");
+        const bold = document.getElementById("po-element-bold");
+        if (bold) bold.checked = !!element.bold;
+        togglePoTemplateGroup("po-element-text-group", isLogo || isRule);
+        togglePoTemplateGroup("po-element-size-group", isLogo);
+        togglePoTemplateGroup("po-element-align-group", isLogo);
+        togglePoTemplateGroup("po-element-thickness-group", !isRule);
+        togglePoTemplateGroup("po-element-bold-group", isLogo || isRule);
+        const widthLabel = document.getElementById("po-element-width-label");
+        if (widthLabel) widthLabel.textContent = isLogo ? "Width (mm)" : "Width (%)";
+        const widthField = document.getElementById("po-element-width");
+        if (widthField) {
+          widthField.min = isLogo ? 6 : 5;
+          widthField.max = isLogo ? 90 : 100;
+        }
+        const heightField = document.getElementById("po-element-height");
+        if (heightField) {
+          heightField.disabled = !isLogo || !hasManagerAccess();
+          heightField.title = isLogo ? "Logo height" : "Text height follows the wrapped lines";
+        }
+      }
+
+      function poTemplateElementLabel(element) {
+        if (element.kind === "logo") return "Logo";
+        if (element.kind === "rule") return "Divider";
+        const text = String(element.text || "").replace(/\s+/g, " ").trim();
+        if (!text) return "Empty text";
+        return text.length > 26 ? `${text.slice(0, 26)}…` : text;
+      }
+
+      function selectPoTemplateElement(id) {
+        poTemplateSelectedId = id;
+        syncPoTemplateInspector();
+        renderPoTemplateCanvas();
+      }
+
+      function renderPoTemplateElementList() {
+        const list = document.getElementById("po-template-element-list");
+        if (!list || !poTemplateDraft) return;
+        list.textContent = "";
+        poTemplateDraft.elements.forEach((element) => {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = `po-element-chip${element.id === poTemplateSelectedId ? " active" : ""}`;
+          chip.textContent = poTemplateElementLabel(element);
+          chip.title = `${poTemplateElementLabel(element)} — click to edit`;
+          chip.disabled = !hasManagerAccess();
+          chip.addEventListener("click", () => selectPoTemplateElement(element.id));
+          list.appendChild(chip);
+        });
+        if (!poTemplateDraft.elements.length) {
+          const hint = document.createElement("span");
+          hint.className = "po-canvas-hint";
+          hint.textContent = "No blocks yet. Use “Add text block”.";
+          list.appendChild(hint);
+        }
+      }
+
+      function renderPoTemplateTokenBar() {
+        const bar = document.getElementById("po-template-token-bar");
+        if (!bar) return;
+        const tokens = poTemplateTokens();
+        const signature = tokens.map((token) => token.token).join("|");
+        if (bar.dataset.signature === signature) return;
+        bar.dataset.signature = signature;
+        bar.textContent = "";
+        tokens.forEach((token) => {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "po-token-chip";
+          chip.textContent = token.token;
+          chip.title = `Insert ${token.label}`;
+          chip.disabled = !hasManagerAccess();
+          chip.addEventListener("click", () => insertPoTemplateToken(token.token));
+          bar.appendChild(chip);
+        });
+      }
+
+      function insertPoTemplateToken(token) {
+        const element = poTemplateSelectedElement();
+        if (!element || element.kind !== "text") {
+          showToast("Select a text block on the canvas first", "warning");
+          return;
+        }
+        const field = document.getElementById("po-element-text");
+        if (!field) return;
+        const start = field.selectionStart ?? field.value.length;
+        const end = field.selectionEnd ?? field.value.length;
+        field.value = `${field.value.slice(0, start)}${token}${field.value.slice(end)}`;
+        field.focus();
+        field.selectionStart = start + token.length;
+        field.selectionEnd = start + token.length;
+        element.text = field.value.slice(0, 200);
+        renderPoTemplateCanvas();
+        renderPoTemplateElementList();
+      }
+
+      function syncPoTemplatePageFields() {
+        if (!poTemplateDraft) return;
+        setPoTemplateFieldValue("po-page-margin", poTemplateDraft.page_margin_mm ?? 15);
+        setPoTemplateFieldValue("po-header-height", poTemplateDraft.header_height_mm ?? 46);
+        setPoTemplateFieldValue("po-footer-text", poTemplateDraft.footer?.text || "");
+      }
+
+      function updatePoTemplateLogoControls() {
+        const remove = document.getElementById("remove-po-logo-btn");
+        if (remove) {
+          remove.disabled = !hasManagerAccess() ||
+            (!pendingPoLogoFile && !APP_SETTINGS.poTemplate?.logo_url);
+        }
+        const input = document.getElementById("po-logo-file");
+        if (input) input.disabled = !hasManagerAccess();
+      }
+
+      function stagePoTemplateLogo(file) {
+        if (!hasManagerAccess() || !file) return;
+        if (!["image/png", "image/jpeg"].includes(file.type)) {
+          showToast("Use a PNG or JPG logo", "warning");
+          return;
+        }
+        if (file.size > 1024 * 1024) {
+          showToast("Purchase order logo must be 1 MB or smaller", "warning");
+          return;
+        }
+        pendingPoLogoFile = file;
+        pendingPoLogoRemoval = false;
+        if (pendingPoLogoObjectUrl) URL.revokeObjectURL(pendingPoLogoObjectUrl);
+        pendingPoLogoObjectUrl = URL.createObjectURL(file);
+        poTemplateLogoSrc = "";
+        poTemplateLogoImage = null;
+        loadPoTemplateLogo();
+        updatePoTemplateLogoControls();
+        showToast("Logo staged. Save the template to apply it.", "info");
+      }
+
+      function removePurchaseOrderLogo() {
+        if (!hasManagerAccess()) return;
+        if (pendingPoLogoFile) {
+          pendingPoLogoFile = null;
+          if (pendingPoLogoObjectUrl) URL.revokeObjectURL(pendingPoLogoObjectUrl);
+          pendingPoLogoObjectUrl = null;
+          poTemplateLogoSrc = "";
+          poTemplateLogoImage = null;
+          const input = document.getElementById("po-logo-file");
+          if (input) input.value = "";
+          loadPoTemplateLogo();
+          updatePoTemplateLogoControls();
+          showToast("Staged logo discarded", "info");
+          return;
+        }
+        if (!APP_SETTINGS.poTemplate?.logo_url) return;
+        showConfirmDialog(
+          "Remove purchase order logo",
+          "Remove the client logo from the purchase order letterhead?",
+          performPurchaseOrderLogoRemoval
+        );
+      }
+
+      async function performPurchaseOrderLogoRemoval() {
+        try {
+          const response = await fetch(
+            `/api/settings/po-template-logo?branch_id=${encodeURIComponent(currentBranch?.id || "")}`,
+            { method: "DELETE" }
+          );
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            throw new Error(data.message || "Failed to remove purchase order logo");
+          }
+          if (currentBranch?.id && String(data.branch_id) !== String(currentBranch.id)) return;
+          APP_SETTINGS.poTemplate.logo_filename = "";
+          APP_SETTINGS.poTemplate.logo_url = null;
+          poTemplateLogoSrc = "";
+          poTemplateLogoImage = null;
+          offlineCacheSet(settingsCacheKey(), {
+            ...(offlineCacheGet(settingsCacheKey())?.data || {}),
+            po_template: APP_SETTINGS.poTemplate,
+          });
+          renderPoTemplateCanvas();
+          updatePoTemplateLogoControls();
+          showToast("Purchase order logo removed", "success");
+        } catch (error) {
+          showToast(error.message || "Failed to remove purchase order logo", "error");
+        }
+      }
+
+      async function uploadPendingPoTemplateLogo() {
+        const formData = new FormData();
+        formData.append("logo", pendingPoLogoFile);
+        formData.append("branch_id", String(currentBranch?.id || ""));
+        const response = await fetch("/api/settings/po-template-logo", { method: "POST", body: formData });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          throw new Error(data.message || "Failed to upload purchase order logo");
+        }
+        pendingPoLogoFile = null;
+        if (pendingPoLogoObjectUrl) URL.revokeObjectURL(pendingPoLogoObjectUrl);
+        pendingPoLogoObjectUrl = null;
+        APP_SETTINGS.poTemplate.logo_filename = data.logo_filename || "";
+        APP_SETTINGS.poTemplate.logo_url = data.logo_url || null;
+        return data;
+      }
+
+      function addPurchaseOrderTextBlock() {
+        if (!hasManagerAccess() || !poTemplateDraft) return;
+        if (poTemplateDraft.elements.length >= 14) {
+          showToast("A purchase order template may hold at most 14 blocks", "warning");
+          return;
+        }
+        const id = `text-${Date.now().toString(36)}`;
+        poTemplateDraft.elements.push({
+          id,
+          kind: "text",
+          text: "New header text",
+          x_pct: 0,
+          y_mm: 4,
+          width_pct: 60,
+          font_size: 11,
+          bold: false,
+          align: "left",
+          color: "#111827",
+        });
+        poTemplateSelectedId = id;
+        syncPoTemplateInspector();
+        renderPoTemplateCanvas();
+        document.getElementById("po-element-text")?.focus();
+      }
+
+      function deletePurchaseOrderTemplateBlock() {
+        const element = poTemplateSelectedElement();
+        if (!element || !hasManagerAccess()) return;
+        poTemplateDraft.elements = poTemplateDraft.elements.filter((entry) => entry.id !== element.id);
+        poTemplateSelectedId = poTemplateDraft.elements[0]?.id || "";
+        syncPoTemplateInspector();
+        renderPoTemplateCanvas();
+      }
+
+      function resetPurchaseOrderTemplate() {
+        if (!hasManagerAccess()) return;
+        showConfirmDialog(
+          "Reset purchase order template",
+          "Replace the canvas with the default letterhead? The client logo is kept. Save the template to apply the reset.",
+          performResetPurchaseOrderTemplate
+        );
+      }
+
+      function performResetPurchaseOrderTemplate() {
+        poTemplateDraft = clonePoTemplate(PO_TEMPLATE_DEFAULT);
+        poTemplateDraft.logo_filename = APP_SETTINGS.poTemplate?.logo_filename || "";
+        poTemplateDraft.logo_url = APP_SETTINGS.poTemplate?.logo_url || null;
+        poTemplateSelectedId = poTemplateDraft.elements[0]?.id || "";
+        applyPoTemplateUI();
+        showToast("Default template restored on the canvas — save to apply", "info");
+      }
+
+      async function savePurchaseOrderTemplate() {
+        if (!hasManagerAccess() || !poTemplateDraft) return;
+        const button = document.getElementById("save-po-template-btn");
+        const original = button?.innerHTML || "";
+        if (button) {
+          button.disabled = true;
+          button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
+        }
+        try {
+          if (pendingPoLogoFile) await uploadPendingPoTemplateLogo();
+          const response = await fetch("/api/settings/po-template", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ branch_id: currentBranch?.id, template: poTemplateDraft }),
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            throw new Error(data.message || "Failed to save purchase order template");
+          }
+          if (currentBranch?.id && String(data.branch_id) !== String(currentBranch.id)) return;
+          setPoTemplateFromSettings(data.po_template);
+          offlineCacheSet(settingsCacheKey(), {
+            ...(offlineCacheGet(settingsCacheKey())?.data || {}),
+            po_template: data.po_template,
+          });
+          applyPoTemplateUI();
+          showToast("Purchase order template saved", "success");
+        } catch (error) {
+          showToast(error.message || "Failed to save purchase order template", "error");
+        } finally {
+          if (button) {
+            button.disabled = !hasManagerAccess();
+            button.innerHTML = original;
+          }
+        }
+      }
+
+      function applyPoTemplateUI() {
+        const group = document.getElementById("settings-group-po");
+        if (!group) return;
+        if (!poTemplateDraft) {
+          const saved = APP_SETTINGS.poTemplate;
+          const initial = Array.isArray(saved?.elements) && saved.elements.length ? saved : PO_TEMPLATE_DEFAULT;
+          poTemplateDraft = clonePoTemplate(initial);
+          if (!Array.isArray(poTemplateDraft.elements)) poTemplateDraft.elements = [];
+          if (!poTemplateDraft.footer) poTemplateDraft.footer = clonePoTemplate(PO_TEMPLATE_DEFAULT.footer);
+          poTemplateSelectedId = poTemplateDraft.elements[0]?.id || "";
+        }
+        group.querySelectorAll("input, select, textarea, button").forEach((control) => {
+          control.disabled = !hasManagerAccess();
+        });
+        const note = document.getElementById("po-template-access-note");
+        if (note) note.style.display = hasManagerAccess() ? "none" : "block";
+        bindPoTemplateEditor();
+        syncPoTemplatePageFields();
+        syncPoTemplateInspector();
+        renderPoTemplateTokenBar();
+        renderPoTemplateElementList();
+        updatePoTemplateLogoControls();
+        loadPoTemplateLogo();
+        renderPoTemplateCanvas();
       }
 
       // AI Agent Settings Functions
@@ -15556,6 +16716,11 @@
         // value saved on another device is visible without a reload.
         if (groupId === "payments" && typeof loadPaymentSettings === "function") loadPaymentSettings();
         if (groupId === "email" && window.EmailSecurity) EmailSecurity.loadSettings();
+        if (groupId === "po-template") {
+          bindPoTemplateEditor();
+          loadPoTemplateLogo();
+          renderPoTemplateCanvas();
+        }
         document.querySelectorAll("#settings-section .settings-nav-item").forEach((item) => {
           const isActive = item.dataset.group === groupId;
           item.classList.toggle("active", isActive);

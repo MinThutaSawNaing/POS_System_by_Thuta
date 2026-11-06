@@ -45,6 +45,17 @@ from receipt import (
     normalize_receipt_identity,
     normalize_receipt_paper_size,
 )
+from po_template import (
+    PO_MAX_ELEMENTS,
+    PO_PAGE_HEIGHT_MM,
+    PO_PAGE_WIDTH_MM,
+    PO_TEMPLATE_LOGO_SETTING,
+    PO_TEMPLATE_SETTING,
+    PO_TEMPLATE_TOKENS,
+    PurchaseOrderTemplateHeader,
+    draw_po_template_footer,
+    normalize_po_template,
+)
 from reports import (
     LOW_STOCK_THRESHOLD,
     build_delivery_performance_report,
@@ -125,6 +136,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = os.path.join(app.root_path, 'uploads', 'products')
 app.config['RECEIPT_LOGO_FOLDER'] = os.path.join(app.root_path, 'uploads', 'receipts')
 app.config['MMQR_FOLDER'] = os.path.join(app.root_path, 'uploads', 'mmqr')
+app.config['PO_LOGO_FOLDER'] = os.path.join(app.root_path, 'uploads', 'po_logos')
 app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20 MB per request; product imports carry product photos
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=365)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -140,6 +152,7 @@ def inventory_query_error(error):
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['RECEIPT_LOGO_FOLDER'], exist_ok=True)
 os.makedirs(app.config['MMQR_FOLDER'], exist_ok=True)
+os.makedirs(app.config['PO_LOGO_FOLDER'], exist_ok=True)
 
 MONEY_QUANT = Decimal('0.01')
 ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
@@ -766,6 +779,60 @@ def receipt_logo_url(filename):
 
 def mmqr_url(filename):
     return url_for('mmqr_image', filename=filename) if filename else None
+
+def po_template_logo_url(filename):
+    return url_for('po_template_logo', filename=filename) if filename else None
+
+def get_po_template(branch=None):
+    """The active branch's purchase-order letterhead, always fully normalized."""
+    branch_id = branch.id if branch else None
+    raw = get_branch_setting(PO_TEMPLATE_SETTING, '', branch_id)
+    payload = None
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            payload = None
+    return normalize_po_template(payload)
+
+def get_po_template_settings(branch=None):
+    """Canvas payload: the saved layout plus its logo URL and token samples."""
+    branch_id = branch.id if branch else None
+    template = get_po_template(branch)
+    logo_filename = get_branch_setting(PO_TEMPLATE_LOGO_SETTING, '', branch_id)
+    return {
+        **template,
+        'logo_filename': logo_filename,
+        'logo_url': po_template_logo_url(logo_filename),
+        'tokens': [dict(token) for token in PO_TEMPLATE_TOKENS],
+        'page': {'width_mm': PO_PAGE_WIDTH_MM, 'height_mm': PO_PAGE_HEIGHT_MM},
+    }
+
+def is_embeddable_pdf_image(file_path):
+    """Reject files ReportLab cannot draw, so a saved logo never breaks printing."""
+    try:
+        from reportlab.lib.utils import ImageReader
+        with open(file_path, 'rb') as image_file:
+            reader = ImageReader(io.BytesIO(image_file.read()))
+        reader.getSize()
+        return True
+    except Exception:
+        return False
+
+def delete_po_template_logo(filename):
+    """Delete a PO logo only after no branch setting refers to it."""
+    if not filename or os.path.basename(filename) != filename:
+        return
+    if AppSetting.query.filter_by(value=filename).first():
+        return
+    file_path = os.path.join(app.config['PO_LOGO_FOLDER'], filename)
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except OSError:
+        # Windows can keep an uploaded image locked for a moment; the stale file
+        # is unreferenced and harmless, so never fail the settings save over it.
+        app.logger.warning('Could not delete purchase order logo %s', filename)
 
 def is_valid_mmqr_image(file_path, extension):
     """Reject truncated files that merely start with an image signature."""
@@ -3726,6 +3793,7 @@ def api_settings():
             'receipt_paper_size': get_receipt_paper_size(branch),
             'label_geometry': get_label_geometry(branch),
             'receipt_customization': get_receipt_customization_settings(branch),
+            'po_template': get_po_template_settings(branch),
             'mmqr_url': mmqr_url(get_branch_setting('mmqr_filename', '', branch_id)),
             'ai_api_key_configured': bool(ai_api_key and len(ai_api_key) > 10)
         })
@@ -4322,6 +4390,92 @@ def api_receipt_logo():
         'message': 'Receipt logo updated',
         'logo_filename': filename,
         'logo_url': receipt_logo_url(filename)
+    })
+
+@app.route('/uploads/po-logos/<path:filename>')
+@login_required
+def po_template_logo(filename):
+    """Private client logo used by the purchase-order letterhead."""
+    response = make_response(send_from_directory(app.config['PO_LOGO_FOLDER'], filename))
+    response.headers['Cache-Control'] = 'private, max-age=86400'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+@app.route('/api/settings/po-template', methods=['PUT'])
+@manager_required
+def api_po_template():
+    """Save the active branch's purchase-order letterhead layout."""
+    branch_id = get_current_branch_id()
+    branch = db.session.get(Branch, branch_id) if branch_id else None
+    data = request.get_json(silent=True) or {}
+    if not branch or (data.get('branch_id') is not None and str(data['branch_id']) != str(branch_id)):
+        return jsonify({'success': False, 'message': 'Active branch changed. Reload settings and try again'}), 409
+
+    payload = data.get('template')
+    if not isinstance(payload, dict):
+        return jsonify({'success': False, 'message': 'A purchase order template layout is required'}), 400
+    elements = payload.get('elements')
+    if isinstance(elements, list) and len(elements) > PO_MAX_ELEMENTS:
+        return jsonify({
+            'success': False,
+            'message': f'A purchase order template may hold at most {PO_MAX_ELEMENTS} blocks'
+        }), 400
+
+    template = normalize_po_template(payload)
+    set_branch_setting(PO_TEMPLATE_SETTING, json.dumps(template, ensure_ascii=False, sort_keys=True), branch_id)
+    return jsonify({
+        'success': True,
+        'message': 'Purchase order template saved',
+        'branch_id': branch_id,
+        'po_template': get_po_template_settings(branch),
+    })
+
+@app.route('/api/settings/po-template-logo', methods=['POST', 'DELETE'])
+@manager_required
+def api_po_template_logo():
+    """Upload or clear the client logo printed on purchase orders."""
+    branch_id = get_current_branch_id()
+    expected_branch = request.values.get('branch_id')
+    if not branch_id or (expected_branch and str(expected_branch) != str(branch_id)):
+        return jsonify({'success': False, 'message': 'Active branch changed. Reload settings and try again'}), 409
+
+    if request.method == 'DELETE':
+        previous = get_branch_setting(PO_TEMPLATE_LOGO_SETTING, '', branch_id)
+        set_branch_setting(PO_TEMPLATE_LOGO_SETTING, '', branch_id)
+        delete_po_template_logo(previous)
+        return jsonify({'success': True, 'branch_id': branch_id,
+                        'message': 'Purchase order logo removed', 'logo_url': None})
+
+    logo = request.files.get('logo')
+    if not logo or not logo.filename:
+        return jsonify({'success': False, 'message': 'Select a logo image'}), 400
+    if request.content_length and request.content_length > 1024 * 1024:
+        return jsonify({'success': False, 'message': 'Purchase order logo must be 1 MB or smaller'}), 413
+    header = logo.stream.read(16)
+    logo.stream.seek(0)
+    extension = detect_receipt_logo_extension(header)
+    if extension not in {'png', 'jpg'}:
+        return jsonify({'success': False, 'message': 'Use a valid PNG or JPG logo'}), 400
+
+    filename = f"{uuid.uuid4().hex}.{extension}"
+    destination = os.path.join(app.config['PO_LOGO_FOLDER'], filename)
+    logo.save(destination)
+    if os.path.getsize(destination) > 1024 * 1024:
+        os.remove(destination)
+        return jsonify({'success': False, 'message': 'Purchase order logo must be 1 MB or smaller'}), 413
+    if not is_embeddable_pdf_image(destination):
+        os.remove(destination)
+        return jsonify({'success': False, 'message': 'The uploaded logo is not a readable PNG or JPG image'}), 400
+
+    previous = get_branch_setting(PO_TEMPLATE_LOGO_SETTING, '', branch_id)
+    set_branch_setting(PO_TEMPLATE_LOGO_SETTING, filename, branch_id)
+    delete_po_template_logo(previous)
+    return jsonify({
+        'success': True,
+        'branch_id': branch_id,
+        'message': 'Purchase order logo updated',
+        'logo_filename': filename,
+        'logo_url': po_template_logo_url(filename),
     })
 
 @app.route('/api/settings/mmqr', methods=['POST', 'DELETE'])
@@ -8386,6 +8540,34 @@ def purchase_order_product_branch_label(po, items=None):
     return branch.name if branch else 'Unassigned'
 
 
+def purchase_order_letterhead_context(po):
+    """Token values for the branch's purchase-order letterhead.
+
+    Client details stay on the branch record (plus the receipt brand override),
+    so the saved template holds only layout and wording, never copied company
+    data that could drift out of date.
+    """
+    branch = db.session.get(Branch, po.branch_id) if po.branch_id else None
+    brand_name = (get_branch_setting('receipt_brand_name', '', po.branch_id) or '').strip()
+    supplier = po.supplier
+    return {
+        'brand_name': brand_name or (branch.name if branch else 'Parrot POS'),
+        'branch_name': branch.name if branch else 'Unassigned',
+        'branch_address': (branch.address or '') if branch else '',
+        'branch_phone': (branch.phone or '') if branch else '',
+        'branch_email': (branch.email or '') if branch else '',
+        'po_number': po.po_number or '',
+        'po_date': po.created_at.strftime('%Y-%m-%d') if po.created_at else '',
+        'po_status': (po.status or '').upper(),
+        'expected_delivery': (po.expected_delivery_date.strftime('%Y-%m-%d')
+                              if po.expected_delivery_date else ''),
+        'supplier_name': supplier.name if supplier else '',
+        'supplier_contact': (supplier.contact_person or '') if supplier else '',
+        'supplier_phone': (supplier.phone or '') if supplier else '',
+        'total': format_currency(po.total_amount),
+    }
+
+
 def serialize_purchase_order(po, include_items=False):
     """Purchase order payload shared by the list API and the exports."""
     items = list(po.items)
@@ -8781,16 +8963,22 @@ def api_print_purchase_order(po_id):
     buffer = io.BytesIO()
     page_width = 210 * mm
     page_height = 297 * mm
-    
+
+    branch = db.session.get(Branch, po.branch_id) if po.branch_id else None
+    template = get_po_template(branch)
+    logo_filename = get_branch_setting(PO_TEMPLATE_LOGO_SETTING, '', po.branch_id)
+    logo_path = os.path.join(app.config['PO_LOGO_FOLDER'], logo_filename) if logo_filename else None
+    letterhead = purchase_order_letterhead_context(po)
+    margin = template['page_margin_mm'] * mm
+
     doc = SimpleDocTemplate(buffer, pagesize=(page_width, page_height),
-                           rightMargin=20*mm, leftMargin=20*mm,
-                           topMargin=20*mm, bottomMargin=20*mm)
+                           rightMargin=margin, leftMargin=margin,
+                           topMargin=margin, bottomMargin=20*mm)
     styles = getSampleStyleSheet()
-    elements = []
-    
-    # Title
-    elements.append(Paragraph("PURCHASE ORDER", styles['Heading1']))
-    elements.append(Spacer(1, 10))
+    elements = [
+        PurchaseOrderTemplateHeader(template, letterhead, logo_path=logo_path),
+        Spacer(1, 6 * mm),
+    ]
     
     # PO Info
     info_data = [
@@ -8865,11 +9053,12 @@ def api_print_purchase_order(po_id):
         elements.append(Paragraph("Notes", styles['Heading2']))
         elements.append(Paragraph(po.notes, styles['Normal']))
     
-    # Footer
-    elements.append(Spacer(1, 30))
-    elements.append(Paragraph("This is an internal document for record keeping purposes.", styles['Normal']))
-    
-    doc.build(elements)
+    # Footer: the saved template stamps the client's note and page numbers on
+    # every page, so multi-page orders keep the same letterhead identity.
+    def stamp_footer(canvas, document):
+        draw_po_template_footer(canvas, document, template, letterhead)
+
+    doc.build(elements, onFirstPage=stamp_footer, onLaterPages=stamp_footer)
     buffer.seek(0)
     
     response = make_response(buffer.getvalue())
