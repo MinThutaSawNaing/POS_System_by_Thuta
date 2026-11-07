@@ -155,6 +155,8 @@ def build_receipt_snapshot(
     tax: Any,
     total: Any,
     delivery_fee: Any = 0,
+    coupon_code: Any = None,
+    coupon_discount: Any = 0,
     receipt_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     snapshot_items = []
@@ -209,6 +211,8 @@ def build_receipt_snapshot(
         "subtotal": _money(subtotal),
         "tax": _money(tax),
         "delivery_fee": _money(delivery_fee),
+        "coupon_code": str(coupon_code) if coupon_code else None,
+        "coupon_discount": _money(coupon_discount),
         "total": _money(total),
     }
 
@@ -394,6 +398,10 @@ def build_receipt_view(snapshot: Mapping[str, Any], paper_size: Any) -> dict[str
         "delivery_fee": _money(snapshot.get("delivery_fee")),
         "delivery_fee_display": format_receipt_money(snapshot.get("delivery_fee"), suffix),
         "has_delivery_fee": _money(snapshot.get("delivery_fee")) > 0,
+        "coupon_code": snapshot.get("coupon_code"),
+        "coupon_discount": _money(snapshot.get("coupon_discount")),
+        "coupon_discount_display": format_receipt_money(snapshot.get("coupon_discount"), suffix),
+        "has_coupon_discount": _money(snapshot.get("coupon_discount")) > 0,
         "total_display": format_receipt_money(snapshot.get("total"), suffix),
         "cash_received_display": format_receipt_money(payment.get("cash_received"), suffix),
         "change_display": format_receipt_money(payment.get("change_given"), suffix),

@@ -1214,6 +1214,9 @@ CASHIER_API_METHODS = {
     'api_products': {'GET'}, 'export_product_catalog': {'GET'},
     'api_single_product': {'GET'}, 'api_search_products': {'GET'},
     'api_create_sale': {'POST'}, 'api_sales': {'GET'}, 'api_single_sale': {'GET'},
+    # Coupons are managed by managers, but cashiers must be able to validate one
+    # at checkout (the sale itself re-validates and consumes the use atomically).
+    'api_validate_coupon': {'POST'},
     'print_receipt': {'GET'}, 'api_report_sales': {'GET'},
     'api_returns_exchanges': {'GET', 'POST'}, 'api_single_return_exchange': {'GET'},
     'print_return_exchange_receipt': {'GET'}, 'export_returns_exchanges': {'GET'},
@@ -6506,6 +6509,8 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
                 tax=tax_total,
                 total=total_rounded,
                 delivery_fee=delivery_fee_amount if delivery_fee_included else Decimal('0.00'),
+                coupon_code=applied_coupon.code if applied_coupon else None,
+                coupon_discount=coupon_discount,
                 receipt_identity=get_receipt_identity(receipt_branch)
             ),
             ensure_ascii=False,
@@ -11172,6 +11177,7 @@ def api_validate_coupon():
         discount = to_decimal(coupon.discount_value or 0).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
     if discount > subtotal: discount = subtotal
     return jsonify({'success': True, 'code': coupon.code, 'discount_type': coupon.discount_type,
-                   'discount_value': coupon.discount_value, 'discount': str(discount)})
+                   'discount_value': coupon.discount_value, 'discount': str(discount),
+                   'min_subtotal': coupon.min_subtotal or 0.0})
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8888, debug=os.environ.get('FLASK_DEBUG') == '1')

@@ -2259,6 +2259,23 @@
                   <p class="text-muted text-center py-3 small">No items added</p>
                 </div>
                 <hr />
+                <div class="mb-2 border rounded p-2 small">
+                  <label class="form-label small fw-semibold mb-1" for="pos-coupon-code">Coupon code</label>
+                  <div class="input-group input-group-sm">
+                    <input
+                      type="text"
+                      class="form-control text-uppercase"
+                      id="pos-coupon-code"
+                      placeholder="Enter coupon code"
+                      maxlength="40"
+                      autocomplete="off"
+                      onkeydown="handleCouponKeydown(event)"
+                    />
+                    <button class="btn btn-outline-primary" type="button" id="pos-coupon-apply" onclick="applyCouponCode()">Apply</button>
+                    <button class="btn btn-outline-secondary d-none" type="button" id="pos-coupon-remove" onclick="removeCouponCode()">Remove</button>
+                  </div>
+                  <div class="mt-1 text-muted" id="pos-coupon-feedback" role="status"></div>
+                </div>
                 <div class="d-flex justify-content-between small mb-1">
                   <span>Subtotal</span>
                   <span id="subtotal">$0.00</span>
@@ -2266,6 +2283,10 @@
                 <div class="d-flex justify-content-between small mb-1">
                   <span>Tax</span>
                   <span id="tax">$0.00</span>
+                </div>
+                <div class="d-flex justify-content-between small mb-1 text-success" id="pos-coupon-discount-row" style="display: none">
+                  <span>Coupon discount <span class="text-muted" id="pos-coupon-applied-code"></span></span>
+                  <span id="pos-coupon-discount">$0.00</span>
                 </div>
                 <div class="d-flex justify-content-between small mb-1" id="pos-delivery-fee-row" style="display: none">
                   <span id="pos-delivery-fee-label">Delivery fee</span>
@@ -2945,6 +2966,60 @@
               </table>
             </div>
             <div id="promotions-pagination" class="d-flex justify-content-start mt-3"></div>
+          </div>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mb-3 mt-4 flex-wrap gap-2">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
+            <h4 class="mb-0"><i class="bi bi-ticket-perforated"></i> Coupons</h4>
+            <small class="text-muted">One-time, time-based and limited-use checkout codes</small>
+          </div>
+          <button
+            class="btn btn-primary"
+            data-bs-toggle="modal"
+            data-bs-target="#addCouponModal"
+            onclick="prepareNewCoupon()"
+          >
+            <i class="bi bi-plus-circle"></i> <span class="d-none d-sm-inline">Add Coupon</span><span class="d-sm-none">Add</span>
+          </button>
+        </div>
+        <div class="row mb-3">
+          <div class="col-12 col-md-5">
+            <input
+              type="text"
+              id="coupons-search"
+              class="form-control"
+              placeholder="Search by code, name or discount type"
+            />
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <div class="table-responsive">
+              <table class="table table-striped table-hover">
+                <thead>
+                  <tr>
+                    <th>Code</th>
+                    <th>Discount</th>
+                    <th class="d-none d-md-table-cell">Kind</th>
+                    <th class="d-none d-lg-table-cell">Valid Until</th>
+                    <th>Usage</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="coupons-table">
+                  <tr>
+                    <td colspan="7" class="text-center py-4">
+                      <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div id="coupons-pagination" class="d-flex justify-content-start mt-3"></div>
           </div>
         </div>
       </div>
@@ -5521,6 +5596,154 @@
       </div>
     </div>
 
+    <!-- Add / Edit Coupon Modal -->
+    <div
+      class="modal fade"
+      id="addCouponModal"
+      tabindex="-1"
+      aria-hidden="true"
+    >
+      <div class="modal-dialog modal-fullscreen-sm-down">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Create Coupon</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+              aria-label="Close"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <form id="add-coupon-form">
+              <input type="hidden" id="coupon-id" value="" />
+              <div class="row">
+                <div class="col-12 col-sm-6 mb-3">
+                  <label class="form-label"
+                    >Coupon Code <span class="text-danger">*</span></label
+                  >
+                  <input
+                    type="text"
+                    class="form-control text-uppercase"
+                    id="coupon-code"
+                    placeholder="e.g. SAVE10"
+                    maxlength="40"
+                    autocomplete="off"
+                    required
+                  />
+                </div>
+                <div class="col-12 col-sm-6 mb-3">
+                  <label class="form-label">Coupon Name</label>
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="coupon-name"
+                    placeholder="Optional label"
+                    maxlength="120"
+                  />
+                </div>
+              </div>
+              <div class="row">
+                <div class="col-12 col-sm-6 mb-3">
+                  <label class="form-label">Discount Type</label>
+                  <select class="form-select" id="coupon-discount-type">
+                    <option value="percent">Percentage Off</option>
+                    <option value="fixed">Fixed Amount Off</option>
+                  </select>
+                </div>
+                <div class="col-12 col-sm-6 mb-3">
+                  <label class="form-label"
+                    >Discount Value <span class="text-danger">*</span></label
+                  >
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    class="form-control"
+                    id="coupon-discount-value"
+                    required
+                  />
+                </div>
+              </div>
+              <div class="row">
+                <div class="col-12 col-sm-6 mb-3">
+                  <label class="form-label">Coupon Kind</label>
+                  <select class="form-select" id="coupon-kind" onchange="handleCouponKindChange()">
+                    <option value="time_based">Time-based (valid inside its date window)</option>
+                    <option value="one_time">One-time (single use)</option>
+                    <option value="limited">Limited uses (custom cap)</option>
+                  </select>
+                </div>
+                <div class="col-12 col-sm-6 mb-3">
+                  <label class="form-label">Usage Limit</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    class="form-control"
+                    id="coupon-usage-limit"
+                    placeholder="Unlimited"
+                  />
+                  <div class="form-text" id="coupon-usage-limit-hint"></div>
+                </div>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Minimum Subtotal</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  class="form-control"
+                  id="coupon-min-subtotal"
+                  placeholder="0.00"
+                />
+                <div class="form-text">Coupon applies only when the cart subtotal reaches this amount.</div>
+              </div>
+              <div class="row">
+                <div class="col-12 col-sm-6 mb-3">
+                  <label class="form-label">Start Date</label>
+                  <input
+                    type="datetime-local"
+                    class="form-control"
+                    id="coupon-start-date"
+                  />
+                </div>
+                <div class="col-12 col-sm-6 mb-3">
+                  <label class="form-label">End Date</label>
+                  <input
+                    type="datetime-local"
+                    class="form-control"
+                    id="coupon-end-date"
+                  />
+                </div>
+              </div>
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="coupon-is-active" checked />
+                <label class="form-check-label" for="coupon-is-active">Active</label>
+              </div>
+            </form>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              id="coupon-save-btn"
+              onclick="saveCoupon()"
+            >
+              Save Coupon
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Barcode Label Modal -->
     <div
       class="modal fade"
@@ -7641,7 +7864,7 @@
       // workspace deliberate and prevents stale navigation from invoking admin loaders.
       const CASHIER_SECTIONS = new Set(["pos", "products", "categories", "sales", "returns", "deliveries", "reports"]);
       const MANAGER_CAPABILITIES = new Set(["catalog.write", "deliveries.write", "labels", "debts", "branches.switch", "admin"]);
-      const MANAGER_MODAL_IDS = new Set(["addProductModal", "editProductModal", "importProductsModal", "addCategoryModal", "editCategoryModal", "barcodeLabelModal", "addDebtModal", "makePaymentModal", "debtDetailsModal", "addCommunicationModal", "createDeliveryModal", "updateDeliveryModal"]);
+      const MANAGER_MODAL_IDS = new Set(["addProductModal", "editProductModal", "importProductsModal", "addCategoryModal", "editCategoryModal", "barcodeLabelModal", "addDebtModal", "makePaymentModal", "debtDetailsModal", "addCommunicationModal", "createDeliveryModal", "updateDeliveryModal", "addCouponModal"]);
 
       function hasCapability(capability) {
         if (capability.startsWith("section.")) {
@@ -10032,6 +10255,9 @@
       }
 
       let cart = [];
+      // Coupon applied to the current sale: { code, discountType, discountValue, minSubtotalCents }.
+      // Recomputed on every cart change so the displayed total always matches checkout.
+      let appliedCoupon = null;
       let currentSection = "dashboard";
       const ACTIVE_SECTION_STORAGE_KEY = "pos_active_section";
       const BRANCH_SWITCH_RETURN_SECTION_KEY = "pos_branch_switch_return_section";
@@ -10046,6 +10272,7 @@
         sales: 1,
         users: 1,
         promotions: 1,
+        coupons: 1,
         customers: 1,
         debts: 1,
         suppliers: 1,
@@ -10060,6 +10287,7 @@
         sales: 10,
         users: 10,
         promotions: 10,
+        coupons: 10,
         customers: 10,
         debts: 10,
         suppliers: 10,
@@ -10223,6 +10451,7 @@
         ["/api/deliveries", "deliveries"],
         ["/api/deliveries/stats", "deliveries"],
         ["/api/promotions", "promotions"],
+        ["/api/coupons", "promotions"],
         ["/api/purchase_orders", "purchases"],
         ["/api/purchase_orders/summary", "purchases"],
         ["/api/reports/sales", "reports"],
@@ -10262,6 +10491,7 @@
         ["/api/debts", ["debts", "customers"]],
         ["/api/suppliers", ["suppliers", "purchases"]],
         ["/api/promotions", ["promotions", "pos", "products", "sales", "dashboard", "reports"]],
+        ["/api/coupons", ["promotions", "pos"]],
         ["/api/deliveries", ["deliveries", "sales", "pos"]],
         ["/api/users", ["users"]],
         ["/api/settings", ["settings", "dashboard"]],
@@ -10671,7 +10901,7 @@
         sales: () => loadSales(),
         returns: () => loadReturns(),
         reports: () => { toggleReportScopeControls(); generateReport(); },
-        promotions: () => { loadPromotions(); loadProductsForPromotionModal(); },
+        promotions: () => { loadPromotions(); loadProductsForPromotionModal(); loadCoupons(); },
         customers: () => loadCustomers(),
         debts: () => { loadDebts(); loadCustomersForDebtModal(); },
         suppliers: () => { loadSupplierCategoryFilter(); loadSuppliers(); },
@@ -11641,6 +11871,7 @@
         bindReload("sales-search", loadSales, "sales");
         bindReload("users-search", loadUsers, "users");
         bindReload("promotions-search", loadPromotions, "promotions");
+        bindReload("coupons-search", loadCoupons, "coupons");
         bindReload("customers-search", loadCustomers, "customers");
         bindReload("debts-search", loadDebts, "debts");
         bindReload("purchase-orders-search", loadPurchaseOrders, "purchases");
@@ -12707,7 +12938,8 @@
               ${itemRows}<hr>
               <div class="row"><span>Subtotal</span><span>${money(receipt.subtotal)}</span></div>
               <div class="row"><span>Tax</span><span>${money(receipt.tax)}</span></div>${Number(receipt.deliveryFee) ? `
-              <div class="row"><span>Delivery fee</span><span>${money(receipt.deliveryFee)}</span></div>` : ""}<hr>
+              <div class="row"><span>Delivery fee</span><span>${money(receipt.deliveryFee)}</span></div>` : ""}${Number(receipt.couponDiscount) ? `
+              <div class="row"><span>Coupon${receipt.couponCode ? " (" + escape(receipt.couponCode) + ")" : ""}</span><span>-${money(receipt.couponDiscount)}</span></div>` : ""}<hr>
               <div class="row grand"><span>TOTAL</span><span>${money(receipt.total)}</span></div>${cashRows}${splitRows}
               <hr><footer class="center">Thank you for your purchase.<br>Please keep your receipt.</footer>
             </main>
@@ -14385,11 +14617,13 @@
         if (cart.length === 0) {
           cartItems.innerHTML =
             '<p class="text-muted text-center py-3">No items added</p>';
+          if (typeof appliedCoupon !== "undefined" && appliedCoupon) resetAppliedCoupon();
           document.getElementById("subtotal").textContent = formatCurrency(0);
           document.getElementById("tax").textContent = formatCurrency(0);
           document.getElementById("total").textContent = formatCurrency(0);
           const emptyFeeRow = document.getElementById("pos-delivery-fee-row");
           if (emptyFeeRow) emptyFeeRow.style.display = "none";
+          if (typeof updateCouponUi === "function") updateCouponUi();
           bootstrap.Modal.getInstance(document.getElementById("mmqrPaymentModal"))?.hide();
           if (typeof CustomerDisplay !== "undefined") CustomerDisplay.publishCart();
           return;
@@ -14436,9 +14670,24 @@
               `;
           cartItems.appendChild(itemElement);
         });
-        const totalCents = subtotalCents + taxCents + deliveryPreview.chargeCents;
+        if (typeof appliedCoupon !== "undefined" && appliedCoupon
+            && appliedCoupon.minSubtotalCents > 0
+            && subtotalCents < appliedCoupon.minSubtotalCents) {
+          const minimum = formatCurrency(appliedCoupon.minSubtotalCents / 100);
+          resetAppliedCoupon();
+          setCouponFeedback(`Coupon removed: a minimum subtotal of ${minimum} is required.`, "warning");
+        }
+        const couponDiscountCents =
+          typeof computeCouponDiscountCents === "function"
+            ? computeCouponDiscountCents(subtotalCents)
+            : 0;
+        const totalCents = Math.max(
+          0,
+          subtotalCents + taxCents + deliveryPreview.chargeCents - couponDiscountCents
+        );
         document.getElementById("subtotal").textContent = formatCurrency(subtotalCents / 100);
         document.getElementById("tax").textContent = formatCurrency(taxCents / 100);
+        if (typeof updateCouponUi === "function") updateCouponUi();
         document.getElementById("total").textContent = formatCurrency(totalCents / 100);
         updateCashRefundDisplay();
         // Customer-facing screen: mirror the same totals the cashier can see.
@@ -14452,16 +14701,20 @@
       function getCurrentCartTotal() {
         // Must match updateCartDisplay() and the backend (app.py create_sale):
         // per-item tax = ROUND_HALF_UP(item_total_cents * tax_rate / 100), plus
-        // the delivery fee only when it is charged with the sale (already paid).
-        const itemsTotalCents = cart.reduce((sum, item) => {
-            const itemTotalCents = mulMoney(item.price, item.quantity);
-            const itemTaxCents = Math.round(
-              (itemTotalCents * Number(item.tax_rate || 0)) / 100
-            );
-            // Both values are already integer cents; converting them again would
-            // inflate the cart total by 100 and break the cash-change calculation.
-            return sum + itemTotalCents + itemTaxCents;
-          }, 0);
+        // the delivery fee only when it is charged with the sale (already paid),
+        // minus the coupon discount (computed on the pre-tax subtotal).
+        let itemsSubtotalCents = 0;
+        let itemsTotalCents = 0;
+        cart.forEach((item) => {
+          const itemTotalCents = mulMoney(item.price, item.quantity);
+          const itemTaxCents = Math.round(
+            (itemTotalCents * Number(item.tax_rate || 0)) / 100
+          );
+          itemsSubtotalCents += itemTotalCents;
+          // Both values are already integer cents; converting them again would
+          // inflate the cart total by 100 and break the cash-change calculation.
+          itemsTotalCents += itemTotalCents + itemTaxCents;
+        });
         let deliveryChargeCents = 0;
         // Guarded so money helpers can run outside a browser (unit tests).
         if (typeof document !== "undefined") {
@@ -14474,7 +14727,20 @@
             );
           }
         }
-        return (itemsTotalCents + deliveryChargeCents) / 100;
+        // This function is extracted on its own by money unit tests, where the
+        // coupon state does not exist; treat a missing coupon as no discount.
+        let couponDiscountCents = 0;
+        if (typeof appliedCoupon !== "undefined" && appliedCoupon) {
+          if (appliedCoupon.discountType === "percent") {
+            couponDiscountCents = Math.round(
+              (itemsSubtotalCents * Number(appliedCoupon.discountValue || 0)) / 100
+            );
+          } else {
+            couponDiscountCents = Math.round(Number(appliedCoupon.discountValue || 0) * 100);
+          }
+          couponDiscountCents = Math.max(0, Math.min(couponDiscountCents, itemsSubtotalCents));
+        }
+        return Math.max(0, itemsTotalCents + deliveryChargeCents - couponDiscountCents) / 100;
       }
 
       function toggleCashPaymentFields() {
@@ -14765,6 +15031,134 @@
       }
 
       // ============================================
+      // Checkout coupons
+      // ============================================
+      function getCartSubtotalCents() {
+        return cart.reduce(
+          (sum, item) => sum + mulMoney(item.price, item.quantity),
+          0
+        );
+      }
+
+      function computeCouponDiscountCents(subtotalCents) {
+        if (!appliedCoupon) return 0;
+        let discountCents;
+        if (appliedCoupon.discountType === "percent") {
+          discountCents = Math.round(
+            (subtotalCents * Number(appliedCoupon.discountValue || 0)) / 100
+          );
+        } else {
+          discountCents = Math.round(Number(appliedCoupon.discountValue || 0) * 100);
+        }
+        return Math.max(0, Math.min(discountCents, subtotalCents));
+      }
+
+      function setCouponFeedback(message, kind) {
+        if (typeof document === "undefined") return;
+        const element = document.getElementById("pos-coupon-feedback");
+        if (!element) return;
+        element.textContent = message || "";
+        element.className = "mt-1 " + (kind ? "text-" + kind : "text-muted");
+      }
+
+      function updateCouponUi() {
+        if (typeof document === "undefined") return;
+        const row = document.getElementById("pos-coupon-discount-row");
+        const amount = document.getElementById("pos-coupon-discount");
+        const codeLabel = document.getElementById("pos-coupon-applied-code");
+        const applyButton = document.getElementById("pos-coupon-apply");
+        const removeButton = document.getElementById("pos-coupon-remove");
+        const input = document.getElementById("pos-coupon-code");
+        const discountCents = computeCouponDiscountCents(getCartSubtotalCents());
+        if (row) row.style.display = appliedCoupon ? "flex" : "none";
+        if (amount) amount.textContent = formatCurrency(discountCents / 100);
+        if (codeLabel) codeLabel.textContent = appliedCoupon ? "(" + appliedCoupon.code + ")" : "";
+        if (applyButton) applyButton.classList.toggle("d-none", Boolean(appliedCoupon));
+        if (removeButton) removeButton.classList.toggle("d-none", !appliedCoupon);
+        if (input) {
+          input.disabled = Boolean(appliedCoupon);
+          if (appliedCoupon) input.value = appliedCoupon.code;
+        }
+      }
+
+      function resetAppliedCoupon() {
+        appliedCoupon = null;
+        if (typeof document === "undefined") return;
+        const input = document.getElementById("pos-coupon-code");
+        if (input) {
+          input.value = "";
+          input.disabled = false;
+        }
+        const row = document.getElementById("pos-coupon-discount-row");
+        if (row) row.style.display = "none";
+        const applyButton = document.getElementById("pos-coupon-apply");
+        const removeButton = document.getElementById("pos-coupon-remove");
+        if (applyButton) applyButton.classList.remove("d-none");
+        if (removeButton) removeButton.classList.add("d-none");
+        setCouponFeedback("", "");
+      }
+
+      function removeCouponCode() {
+        resetAppliedCoupon();
+        setCouponFeedback("Coupon removed.", "muted");
+        updateCartDisplay();
+      }
+
+      function handleCouponKeydown(event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          applyCouponCode();
+        }
+      }
+
+      function applyCouponCode() {
+        const input = document.getElementById("pos-coupon-code");
+        const code = (input?.value || "").trim().toUpperCase();
+        if (!code) {
+          setCouponFeedback("Enter a coupon code.", "warning");
+          return;
+        }
+        const subtotalCents = getCartSubtotalCents();
+        if (subtotalCents <= 0) {
+          setCouponFeedback("Add items before applying a coupon.", "warning");
+          return;
+        }
+        const applyButton = document.getElementById("pos-coupon-apply");
+        if (applyButton) applyButton.disabled = true;
+        fetch("/api/coupons/validate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: code, subtotal: subtotalCents / 100 }),
+        })
+          .then(async (response) => {
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.success) {
+              throw new Error(data.message || "Coupon could not be applied");
+            }
+            return data;
+          })
+          .then((data) => {
+            appliedCoupon = {
+              code: data.code,
+              discountType: data.discount_type,
+              discountValue: Number(data.discount_value || 0),
+              minSubtotalCents: Math.round(Number(data.min_subtotal || 0) * 100),
+            };
+            if (input) input.value = appliedCoupon.code;
+            setCouponFeedback("Coupon applied.", "success");
+            updateCartDisplay();
+          })
+          .catch((error) => {
+            appliedCoupon = null;
+            setCouponFeedback(error.message || "Coupon could not be applied", "danger");
+            updateCartDisplay();
+          })
+          .finally(() => {
+            if (applyButton) applyButton.disabled = false;
+          });
+      }
+
+      // ============================================
       // Offline Sale Support
       // ============================================
       let isSyncingPendingSales = false;
@@ -14862,7 +15256,23 @@
         const delivery = saleData.delivery && saleData.delivery.enabled ? saleData.delivery : null;
         const deliveryFeeCents = delivery ? Math.max(0, toCents(delivery.delivery_fee || 0)) : 0;
         const deliveryFeeCharged = Boolean(delivery && delivery.payment_status === "paid");
-        const grandTotalCents = totalCents + (deliveryFeeCharged ? deliveryFeeCents : 0);
+        let couponDiscountCents = 0;
+        if (typeof appliedCoupon !== "undefined" && appliedCoupon && saleData.coupon_code) {
+          // The server applies the discount against the pre-tax subtotal; mirror it
+          // so the offline receipt shows the amount that will actually be charged.
+          if (appliedCoupon.discountType === "percent") {
+            couponDiscountCents = Math.round(
+              (subtotalCents * Number(appliedCoupon.discountValue || 0)) / 100
+            );
+          } else {
+            couponDiscountCents = Math.round(Number(appliedCoupon.discountValue || 0) * 100);
+          }
+          couponDiscountCents = Math.max(0, Math.min(couponDiscountCents, subtotalCents));
+        }
+        const grandTotalCents = Math.max(
+          0,
+          totalCents + (deliveryFeeCharged ? deliveryFeeCents : 0) - couponDiscountCents
+        );
         const paymentMethod = saleData.payment_method || "cash";
         const paymentBreakdown = saleData.payment_breakdown || null;
         const cashReceived = paymentMethod === "cash"
@@ -14890,6 +15300,8 @@
           tax: centsToNumber(taxCents),
           deliveryFee: centsToNumber(deliveryFeeCharged ? deliveryFeeCents : 0),
           deliveryPaymentStatus: delivery ? (delivery.payment_status || "cash_on_delivery") : null,
+          couponCode: saleData.coupon_code || null,
+          couponDiscount: centsToNumber(couponDiscountCents),
           total: centsToNumber(grandTotalCents),
         };
       }
@@ -15240,6 +15652,12 @@
           })),
           payment_method: paymentMethod,
         };
+
+        const couponCode =
+          typeof appliedCoupon !== "undefined" && appliedCoupon ? appliedCoupon.code : "";
+        if (couponCode) {
+          saleData.coupon_code = couponCode;
+        }
 
         const deliveryEnabled = document.getElementById("pos-enable-delivery")?.checked;
         if (deliveryEnabled) {
@@ -18843,6 +19261,284 @@
                 } else {
                   showToast("Error: " + data.message, "error");
                 }
+              });
+          }
+        );
+      }
+
+      // ===== Coupons (managed from the Promotions tab) =====
+      const COUPON_KIND_LABELS = {
+        time_based: "Time-based",
+        one_time: "One-time",
+        limited: "Limited",
+      };
+
+      function couponLocalDate(value) {
+        if (!value) return "";
+        const date = new Date(/[+-]\d\d:\d\d$|Z$/i.test(value) ? value : value + "Z");
+        if (!Number.isFinite(date.getTime())) return "";
+        return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      }
+
+      function handleCouponKindChange() {
+        const kind = document.getElementById("coupon-kind")?.value;
+        const limitInput = document.getElementById("coupon-usage-limit");
+        const hint = document.getElementById("coupon-usage-limit-hint");
+        if (!limitInput) return;
+        if (kind === "one_time") {
+          limitInput.value = "1";
+          limitInput.disabled = true;
+          if (hint) hint.textContent = "One-time coupons are always limited to a single use.";
+        } else if (kind === "limited") {
+          limitInput.disabled = false;
+          if (hint) hint.textContent = "Required: how many times this coupon may be used.";
+        } else {
+          limitInput.disabled = false;
+          if (hint) hint.textContent = "Leave empty for unlimited uses.";
+        }
+      }
+
+      function loadCoupons() {
+        const table = document.getElementById("coupons-table");
+        if (!table) return;
+        table.innerHTML = `
+          <tr>
+            <td colspan="7" class="text-center py-4">
+              <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+              </div>
+            </td>
+          </tr>
+        `;
+
+        fetch("/api/coupons")
+          .then((response) => {
+            if (!response.ok) throw new Error("Could not load coupons");
+            return response.json();
+          })
+          .then((data) => {
+            table.innerHTML = "";
+            const query = (document.getElementById("coupons-search")?.value || "")
+              .trim()
+              .toLowerCase();
+            const filtered = (Array.isArray(data) ? data : []).filter((coupon) => {
+              if (!query) return true;
+              return (
+                String(coupon.code || "").toLowerCase().includes(query) ||
+                String(coupon.name || "").toLowerCase().includes(query) ||
+                String(coupon.discount_type || "").toLowerCase().includes(query) ||
+                String(COUPON_KIND_LABELS[coupon.coupon_kind] || coupon.coupon_kind || "")
+                  .toLowerCase()
+                  .includes(query)
+              );
+            });
+
+            if (filtered.length === 0) {
+              table.innerHTML = `
+                <tr><td colspan="7" class="text-center py-4 text-muted">No coupons found.</td></tr>
+              `;
+              renderPagination("coupons", "coupons-pagination", 1, loadCoupons);
+              return;
+            }
+
+            const page = paginateArray(filtered, "coupons");
+            page.items.forEach((coupon) => {
+              const validUntil = coupon.end_date
+                ? new Date(coupon.end_date).toLocaleString()
+                : "No end date";
+              const usage =
+                coupon.usage_limit === null || coupon.usage_limit === undefined
+                  ? `${coupon.used_count || 0} / unlimited`
+                  : `${coupon.used_count || 0} / ${coupon.usage_limit}`;
+              let badge;
+              if (!coupon.is_active) {
+                badge = '<span class="badge bg-secondary">Inactive</span>';
+              } else if (coupon.is_active_now) {
+                badge = '<span class="badge bg-success">Active</span>';
+              } else {
+                badge = '<span class="badge bg-warning text-dark">Not valid now</span>';
+              }
+              const discount =
+                coupon.discount_type === "percent"
+                  ? `${escapeHtml(String(coupon.discount_value))}%`
+                  : formatCurrency(Number(coupon.discount_value || 0));
+              const kindLabel =
+                COUPON_KIND_LABELS[coupon.coupon_kind] || coupon.coupon_kind || "-";
+              const row = document.createElement("tr");
+              row.innerHTML = `
+                <td>
+                  <span class="fw-semibold">${escapeHtml(coupon.code)}</span>
+                  ${coupon.name ? `<br><small class="text-muted">${escapeHtml(coupon.name)}</small>` : ""}
+                </td>
+                <td>${discount} off</td>
+                <td class="d-none d-md-table-cell">${escapeHtml(kindLabel)}</td>
+                <td class="d-none d-lg-table-cell">${escapeHtml(validUntil)}</td>
+                <td>${escapeHtml(usage)}</td>
+                <td>${badge}</td>
+                <td>
+                  <button class="btn btn-sm btn-warning me-1" onclick="editCoupon(${Number(coupon.id)})">
+                    <i class="bi bi-pencil"></i>
+                  </button>
+                  <button class="btn btn-sm btn-danger" onclick="deleteCoupon(${Number(coupon.id)})">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </td>
+              `;
+              table.appendChild(row);
+            });
+            renderPagination("coupons", "coupons-pagination", page.totalPages, loadCoupons);
+          })
+          .catch((error) => {
+            table.innerHTML = `<tr><td colspan="7" class="text-center py-4 text-danger">Failed to load coupons.</td></tr>`;
+            renderPagination("coupons", "coupons-pagination", 1, loadCoupons);
+            console.error(error);
+          });
+      }
+
+      function prepareNewCoupon() {
+        const form = document.getElementById("add-coupon-form");
+        if (form) form.reset();
+        document.getElementById("coupon-id").value = "";
+        document.getElementById("coupon-is-active").checked = true;
+        document.getElementById("coupon-usage-limit").disabled = false;
+        handleCouponKindChange();
+        const modal = document.getElementById("addCouponModal");
+        modal.querySelector(".modal-title").textContent = "Create Coupon";
+        document.getElementById("coupon-save-btn").textContent = "Save Coupon";
+      }
+
+      function saveCoupon() {
+        const couponId = document.getElementById("coupon-id").value;
+        const code = (document.getElementById("coupon-code").value || "").trim().toUpperCase();
+        const name = (document.getElementById("coupon-name").value || "").trim();
+        const discountType = document.getElementById("coupon-discount-type").value;
+        const discountValue = parseFloat(document.getElementById("coupon-discount-value").value);
+        const couponKind = document.getElementById("coupon-kind").value;
+        const usageLimitRaw = document.getElementById("coupon-usage-limit").value;
+        const minSubtotalRaw = document.getElementById("coupon-min-subtotal").value;
+        const startDate = document.getElementById("coupon-start-date").value;
+        const endDate = document.getElementById("coupon-end-date").value;
+        const isActive = document.getElementById("coupon-is-active").checked;
+
+        if (!code || Number.isNaN(discountValue) || discountValue < 0) {
+          showToast("Enter a coupon code and a valid discount value", "warning");
+          return;
+        }
+        if (startDate && endDate && new Date(endDate) <= new Date(startDate)) {
+          showToast("End date must be after start date", "warning");
+          return;
+        }
+
+        let usageLimit = null;
+        if (couponKind === "one_time") {
+          usageLimit = 1;
+        } else if (usageLimitRaw !== "") {
+          usageLimit = parseInt(usageLimitRaw, 10);
+          if (!Number.isFinite(usageLimit) || usageLimit < 1) {
+            showToast("Usage limit must be a whole number of at least 1", "warning");
+            return;
+          }
+        }
+        const minSubtotal = minSubtotalRaw === "" ? 0 : parseFloat(minSubtotalRaw);
+        if (!Number.isFinite(minSubtotal) || minSubtotal < 0) {
+          showToast("Minimum subtotal must be zero or more", "warning");
+          return;
+        }
+
+        const payload = {
+          code: code,
+          name: name,
+          discount_type: discountType,
+          discount_value: discountValue,
+          coupon_kind: couponKind,
+          usage_limit: usageLimit,
+          min_subtotal: minSubtotal,
+          start_date: startDate || null,
+          end_date: endDate || null,
+          is_active: isActive,
+        };
+        const url = couponId ? `/api/coupons/${couponId}` : "/api/coupons";
+        const method = couponId ? "PUT" : "POST";
+
+        fetch(url, {
+          method: method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+          .then(async (response) => {
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.success) {
+              throw new Error(data.message || "Could not save coupon");
+            }
+            return data;
+          })
+          .then(() => {
+            showToast(couponId ? "Coupon updated!" : "Coupon created!", "success");
+            const modal = bootstrap.Modal.getInstance(document.getElementById("addCouponModal"));
+            if (modal) modal.hide();
+            loadCoupons();
+          })
+          .catch((error) => {
+            showToast("Error: " + (error.message || "Could not save coupon"), "error");
+          });
+      }
+
+      function editCoupon(couponId) {
+        fetch(`/api/coupons/${couponId}`)
+          .then((response) => {
+            if (!response.ok) throw new Error("Coupon not found");
+            return response.json();
+          })
+          .then((coupon) => {
+            document.getElementById("coupon-id").value = coupon.id;
+            document.getElementById("coupon-code").value = coupon.code || "";
+            document.getElementById("coupon-name").value = coupon.name || "";
+            document.getElementById("coupon-discount-type").value =
+              coupon.discount_type || "percent";
+            document.getElementById("coupon-discount-value").value =
+              coupon.discount_value === null || coupon.discount_value === undefined
+                ? ""
+                : coupon.discount_value;
+            document.getElementById("coupon-kind").value = coupon.coupon_kind || "time_based";
+            document.getElementById("coupon-is-active").checked = Boolean(coupon.is_active);
+            document.getElementById("coupon-min-subtotal").value = coupon.min_subtotal || 0;
+            document.getElementById("coupon-start-date").value = couponLocalDate(coupon.start_date);
+            document.getElementById("coupon-end-date").value = couponLocalDate(coupon.end_date);
+            handleCouponKindChange();
+            const usageLimitInput = document.getElementById("coupon-usage-limit");
+            usageLimitInput.value =
+              coupon.usage_limit === null || coupon.usage_limit === undefined
+                ? ""
+                : coupon.usage_limit;
+            if (coupon.coupon_kind === "one_time") usageLimitInput.value = "1";
+
+            const modal = document.getElementById("addCouponModal");
+            modal.querySelector(".modal-title").textContent = "Edit Coupon";
+            document.getElementById("coupon-save-btn").textContent = "Update Coupon";
+            bootstrap.Modal.getOrCreateInstance(modal).show();
+          })
+          .catch((error) => {
+            showToast("Error: " + (error.message || "Could not load coupon"), "error");
+          });
+      }
+
+      function deleteCoupon(couponId) {
+        showConfirmDialog(
+          "Delete Coupon",
+          "Are you sure you want to delete this coupon? Past sales keep their recorded coupon code.",
+          () => {
+            fetch(`/api/coupons/${couponId}`, { method: "DELETE" })
+              .then((response) => response.json().catch(() => ({})))
+              .then((data) => {
+                if (data.success) {
+                  showToast("Coupon deleted!", "success");
+                  loadCoupons();
+                } else {
+                  showToast("Error: " + (data.message || "Could not delete coupon"), "error");
+                }
+              })
+              .catch((error) => {
+                showToast("Error: " + (error.message || "Could not delete coupon"), "error");
               });
           }
         );

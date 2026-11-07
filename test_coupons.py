@@ -1,5 +1,6 @@
 """Backend contract tests for the Coupons feature (CRUD, validate, checkout)."""
 
+import json
 import unittest
 import uuid
 from datetime import datetime, timedelta
@@ -7,6 +8,7 @@ from datetime import datetime, timedelta
 import pytz
 
 from app import Branch, Coupon, Product, Sale, SaleItem, User, app, db
+from receipt import build_receipt_view
 
 
 class CouponsTests(unittest.TestCase):
@@ -72,6 +74,16 @@ class CouponsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         response = self.client(role='cashier').post('/api/coupons', json={'code': 'X'})
         self.assertEqual(response.status_code, 403)
+
+    def test_cashier_can_validate_a_coupon_at_checkout(self):
+        self.create_coupon(code='DISCOUNT10', discount_type='percent', discount_value=10)
+        cashier = self.client(role='cashier')
+        response = cashier.post('/api/coupons/validate',
+                                json={'code': 'DISCOUNT10', 'subtotal': 10000})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()['discount'], '1000.00')
+        # Validation must never expose management reads to a cashier.
+        self.assertEqual(cashier.get('/api/coupons').status_code, 403)
 
     def test_create_list_and_fetch_single(self):
         response = self.create_coupon()
@@ -144,6 +156,12 @@ class CouponsTests(unittest.TestCase):
         sale = Sale.query.filter_by(transaction_id=transaction_id).first()
         self.assertEqual(sale.total, 9000.0)
         self.assertEqual(sale.coupon_code, 'DISCOUNT10')
+        snapshot = json.loads(sale.receipt_snapshot)
+        self.assertEqual(snapshot['coupon_code'], 'DISCOUNT10')
+        self.assertEqual(round(float(snapshot['coupon_discount']), 2), 1000.0)
+        view = build_receipt_view(snapshot, 'THERMAL_80MM')
+        self.assertTrue(view['has_coupon_discount'])
+        self.assertEqual(view['coupon_code'], 'DISCOUNT10')
         coupon = Coupon.query.filter_by(code='DISCOUNT10').first()
         self.assertEqual(coupon.used_count, 1)
         # one_time coupon must now reject a second checkout
