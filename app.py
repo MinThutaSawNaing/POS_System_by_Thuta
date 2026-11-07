@@ -2061,6 +2061,7 @@ class Sale(db.Model):
     customer_id = db.Column(db.Integer, db.ForeignKey('customer.id'))
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
+    coupon_code = db.Column(db.String(40))
     user = db.relationship('User', backref='sales')
 
 # Database Model for Promotions
@@ -2072,7 +2073,22 @@ class Promotion(db.Model):
     start_date = db.Column(db.DateTime, nullable=False)
     end_date = db.Column(db.DateTime, nullable=False)
     
-    product = db.relationship('Product', backref='promotions')
+# Database Model for Coupons (managed in the Promotions tab)
+class Coupon(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(40), nullable=False, unique=True, index=True)
+    name = db.Column(db.String(120))
+    discount_type = db.Column(db.String(10), nullable=False, default='percent')
+    discount_value = db.Column(db.Float, nullable=False, default=0.0)
+    coupon_kind = db.Column(db.String(20), nullable=False, default='time_based')
+    start_date = db.Column(db.DateTime)
+    end_date = db.Column(db.DateTime)
+    usage_limit = db.Column(db.Integer)
+    used_count = db.Column(db.Integer, nullable=False, default=0)
+    min_subtotal = db.Column(db.Float, default=0.0)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    branch_id = db.Column(db.Integer, db.ForeignKey('branch.id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 def active_promotion_prices(product, now=None):
@@ -3042,6 +3058,10 @@ with app.app_context():
         # added in place, and the index keeps a customer's timeline cheap.
         if 'customer_id' not in sale_columns:
             db.session.execute(text('ALTER TABLE sale ADD COLUMN customer_id INTEGER REFERENCES customer (id)'))
+            db.session.commit()
+        # Coupon usage tracking (added with Coupons feature).
+        if 'coupon_code' not in sale_columns:
+            db.session.execute(text('ALTER TABLE sale ADD COLUMN coupon_code VARCHAR(40)'))
             db.session.commit()
         db.session.execute(text(
             'CREATE INDEX IF NOT EXISTS idx_sale_customer_date ON sale (customer_id, date)'
@@ -6249,6 +6269,38 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
         if delivery_fee_included:
             # Already-paid delivery: the fee is charged now and stored in sale.total.
             total += delivery_fee_amount
+
+        coupon_code = str(data.get('coupon_code') or '').strip().upper()
+        coupon_discount = Decimal('0.00')
+        applied_coupon = None
+        if coupon_code:
+            applied_coupon = Coupon.query.filter_by(code=coupon_code, branch_id=branch_id).first()
+            if not applied_coupon:
+                return jsonify({'success': False, 'message': 'Invalid coupon code'}), 400
+            myanmar_tz2 = pytz.timezone('Asia/Yangon')
+            now2 = datetime.now(myanmar_tz2)
+            if not applied_coupon.is_active:
+                return jsonify({'success': False, 'message': 'Coupon is inactive'}), 400
+            if applied_coupon.start_date:
+                sd = applied_coupon.start_date if applied_coupon.start_date.tzinfo else myanmar_tz2.localize(applied_coupon.start_date)
+                if now2 < sd:
+                    return jsonify({'success': False, 'message': 'Coupon not yet valid'}), 400
+            if applied_coupon.end_date:
+                ed = applied_coupon.end_date if applied_coupon.end_date.tzinfo else myanmar_tz2.localize(applied_coupon.end_date)
+                if now2 > ed:
+                    return jsonify({'success': False, 'message': 'Coupon expired'}), 400
+            if applied_coupon.usage_limit is not None and (applied_coupon.used_count or 0) >= applied_coupon.usage_limit:
+                return jsonify({'success': False, 'message': 'Coupon usage limit reached'}), 400
+            if applied_coupon.min_subtotal and subtotal < to_decimal(applied_coupon.min_subtotal):
+                return jsonify({'success': False, 'message': 'Minimum subtotal not met'}), 400
+            if applied_coupon.discount_type == 'percent':
+                coupon_discount = (total * to_decimal(applied_coupon.discount_value or 0) / Decimal('100')).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+            else:
+                coupon_discount = to_decimal(applied_coupon.discount_value or 0).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+            if coupon_discount > total:
+                coupon_discount = total
+            total = total - coupon_discount
+
         total_rounded = round_money(total)
 
         allowed_payment_methods = {'cash', 'credit_card', 'debit_card', 'mobile_payment', 'debt', 'split_payment'}
@@ -6325,10 +6377,13 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             payment_breakdown=json.dumps(payment_breakdown, ensure_ascii=False) if payment_breakdown else None,
             customer_id=customer.id if customer_id else None,
             user_id=session['user_id'],
-            branch_id=get_current_branch_id()
+            branch_id=get_current_branch_id(),
+            coupon_code=applied_coupon.code if applied_coupon else None
         )
         db.session.add(sale)
         db.session.flush()  # To get the sale.id before commit
+        if applied_coupon is not None:
+            applied_coupon.used_count = (applied_coupon.used_count or 0) + 1
 
         # Create sale items
         for item in items:
@@ -10917,5 +10972,183 @@ register_product_import(app, db, globals())
 report_scheduler.start()
 
 
+@app.route('/api/coupons', methods=['GET', 'POST'])
+@manager_required
+def api_coupons():
+    branch_id = get_current_branch_id()
+    myanmar_tz = pytz.timezone('Asia/Yangon')
+    if request.method == 'GET':
+        coupons = Coupon.query.filter_by(branch_id=branch_id).order_by(Coupon.created_at.desc()).all()
+        now = datetime.now(myanmar_tz)
+        out = []
+        for c in coupons:
+            is_active_now = bool(c.is_active)
+            if c.start_date:
+                sd = c.start_date if c.start_date.tzinfo else myanmar_tz.localize(c.start_date)
+                if now < sd: is_active_now = False
+            if c.end_date:
+                ed = c.end_date if c.end_date.tzinfo else myanmar_tz.localize(c.end_date)
+                if now > ed: is_active_now = False
+            if c.usage_limit is not None and (c.used_count or 0) >= c.usage_limit:
+                is_active_now = False
+            out.append({'id': c.id, 'code': c.code, 'name': c.name,
+                'discount_type': c.discount_type, 'discount_value': c.discount_value,
+                'coupon_kind': c.coupon_kind,
+                'start_date': (c.start_date.astimezone(myanmar_tz).isoformat() if c.start_date and c.start_date.tzinfo else (myanmar_tz.localize(c.start_date).isoformat() if c.start_date else None)),
+                'end_date': (c.end_date.astimezone(myanmar_tz).isoformat() if c.end_date and c.end_date.tzinfo else (myanmar_tz.localize(c.end_date).isoformat() if c.end_date else None)),
+                'usage_limit': c.usage_limit, 'used_count': c.used_count or 0,
+                'min_subtotal': c.min_subtotal or 0.0, 'is_active': bool(c.is_active),
+                'is_active_now': is_active_now})
+        return jsonify(out)
+    data = request.get_json() or {}
+    code = str(data.get('code') or '').strip().upper()
+    if not code:
+        return jsonify({'success': False, 'message': 'Coupon code is required'}), 400
+    if Coupon.query.filter_by(code=code).first():
+        return jsonify({'success': False, 'message': 'Coupon code already exists'}), 400
+    discount_type = data.get('discount_type', 'percent')
+    if discount_type not in ('percent', 'fixed'):
+        return jsonify({'success': False, 'message': 'Invalid discount type'}), 400
+    try:
+        discount_value = float(data.get('discount_value', 0))
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'Invalid discount value'}), 400
+    if discount_value < 0:
+        return jsonify({'success': False, 'message': 'Discount value cannot be negative'}), 400
+    coupon_kind = data.get('coupon_kind', 'time_based')
+    if coupon_kind not in ('one_time', 'time_based', 'limited'):
+        return jsonify({'success': False, 'message': 'Invalid coupon kind'}), 400
+    usage_limit = data.get('usage_limit')
+    if usage_limit in ('', None):
+        usage_limit = None
+    else:
+        try:
+            usage_limit = int(usage_limit)
+            if usage_limit < 1: raise ValueError()
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': 'Invalid usage limit'}), 400
+    if coupon_kind == 'one_time':
+        usage_limit = 1
+    min_subtotal = data.get('min_subtotal', 0) or 0
+    try:
+        min_subtotal = float(min_subtotal)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'Invalid minimum subtotal'}), 400
+    start_date = None; end_date = None
+    if data.get('start_date'):
+        try:
+            sd = datetime.fromisoformat(str(data['start_date']).replace('Z', '+00:00'))
+            start_date = sd.astimezone(myanmar_tz) if sd.tzinfo else myanmar_tz.localize(sd)
+        except Exception:
+            return jsonify({'success': False, 'message': 'Invalid start date'}), 400
+    if data.get('end_date'):
+        try:
+            ed = datetime.fromisoformat(str(data['end_date']).replace('Z', '+00:00'))
+            end_date = ed.astimezone(myanmar_tz) if ed.tzinfo else myanmar_tz.localize(ed)
+        except Exception:
+            return jsonify({'success': False, 'message': 'Invalid end date'}), 400
+    if start_date and end_date and end_date <= start_date:
+        return jsonify({'success': False, 'message': 'End date must be after start date'}), 400
+    coupon = Coupon(code=code, name=(data.get('name') or '').strip() or None,
+                    discount_type=discount_type, discount_value=discount_value,
+                    coupon_kind=coupon_kind, start_date=start_date, end_date=end_date,
+                    usage_limit=usage_limit, min_subtotal=min_subtotal,
+                    is_active=bool(data.get('is_active', True)), branch_id=branch_id)
+    db.session.add(coupon); db.session.commit()
+    return jsonify({'success': True, 'message': 'Coupon created!', 'id': coupon.id}), 201
+
+@app.route('/api/coupons/<int:coupon_id>', methods=['GET', 'PUT', 'DELETE'])
+@manager_required
+def api_single_coupon(coupon_id):
+    branch_id = get_current_branch_id()
+    coupon = Coupon.query.filter_by(id=coupon_id, branch_id=branch_id).first_or_404()
+    myanmar_tz = pytz.timezone('Asia/Yangon')
+    if request.method == 'GET':
+        return jsonify({'id': coupon.id, 'code': coupon.code, 'name': coupon.name,
+            'discount_type': coupon.discount_type, 'discount_value': coupon.discount_value,
+            'coupon_kind': coupon.coupon_kind,
+            'start_date': (coupon.start_date.astimezone(myanmar_tz).isoformat() if coupon.start_date and coupon.start_date.tzinfo else (myanmar_tz.localize(coupon.start_date).isoformat() if coupon.start_date else None)),
+            'end_date': (coupon.end_date.astimezone(myanmar_tz).isoformat() if coupon.end_date and coupon.end_date.tzinfo else (myanmar_tz.localize(coupon.end_date).isoformat() if coupon.end_date else None)),
+            'usage_limit': coupon.usage_limit, 'used_count': coupon.used_count or 0,
+            'min_subtotal': coupon.min_subtotal or 0.0, 'is_active': bool(coupon.is_active)})
+    if request.method == 'DELETE':
+        db.session.delete(coupon); db.session.commit()
+        return jsonify({'success': True, 'message': 'Coupon deleted'})
+    data = request.get_json() or {}
+    if 'code' in data:
+        new_code = str(data['code']).strip().upper()
+        if new_code and new_code != coupon.code:
+            if Coupon.query.filter(Coupon.code == new_code, Coupon.id != coupon.id).first():
+                return jsonify({'success': False, 'message': 'Coupon code already exists'}), 400
+            coupon.code = new_code
+    if 'name' in data: coupon.name = (data.get('name') or '').strip() or None
+    if 'discount_type' in data and data['discount_type'] in ('percent', 'fixed'):
+        coupon.discount_type = data['discount_type']
+    if 'discount_value' in data:
+        try: coupon.discount_value = float(data['discount_value'])
+        except (TypeError, ValueError): return jsonify({'success': False, 'message': 'Invalid discount value'}), 400
+    if 'coupon_kind' in data and data['coupon_kind'] in ('one_time', 'time_based', 'limited'):
+        coupon.coupon_kind = data['coupon_kind']
+        if coupon.coupon_kind == 'one_time': coupon.usage_limit = 1
+    if 'usage_limit' in data:
+        ul = data.get('usage_limit')
+        if ul in ('', None): coupon.usage_limit = None
+        else:
+            try: coupon.usage_limit = int(ul)
+            except (TypeError, ValueError): return jsonify({'success': False, 'message': 'Invalid usage limit'}), 400
+    if 'min_subtotal' in data:
+        try: coupon.min_subtotal = float(data['min_subtotal'] or 0)
+        except (TypeError, ValueError): return jsonify({'success': False, 'message': 'Invalid minimum subtotal'}), 400
+    if 'is_active' in data: coupon.is_active = bool(data['is_active'])
+    if 'start_date' in data:
+        if data['start_date'] in ('', None): coupon.start_date = None
+        else:
+            try:
+                sd = datetime.fromisoformat(str(data['start_date']).replace('Z', '+00:00'))
+                coupon.start_date = sd.astimezone(myanmar_tz) if sd.tzinfo else myanmar_tz.localize(sd)
+            except Exception: return jsonify({'success': False, 'message': 'Invalid start date'}), 400
+    if 'end_date' in data:
+        if data['end_date'] in ('', None): coupon.end_date = None
+        else:
+            try:
+                ed = datetime.fromisoformat(str(data['end_date']).replace('Z', '+00:00'))
+                coupon.end_date = ed.astimezone(myanmar_tz) if ed.tzinfo else myanmar_tz.localize(ed)
+            except Exception: return jsonify({'success': False, 'message': 'Invalid end date'}), 400
+    if coupon.start_date and coupon.end_date and coupon.end_date <= coupon.start_date:
+        return jsonify({'success': False, 'message': 'End date must be after start date'}), 400
+    db.session.commit()
+    return jsonify({'success': True, 'message': 'Coupon updated'})
+
+@app.route('/api/coupons/validate', methods=['POST'])
+@login_required
+def api_validate_coupon():
+    data = request.get_json() or {}
+    code = str(data.get('code') or '').strip().upper()
+    if not code: return jsonify({'success': False, 'message': 'Coupon code required'}), 400
+    branch_id = get_current_branch_id()
+    coupon = Coupon.query.filter_by(code=code, branch_id=branch_id).first()
+    if not coupon: return jsonify({'success': False, 'message': 'Invalid coupon code'}), 404
+    myanmar_tz = pytz.timezone('Asia/Yangon')
+    now = datetime.now(myanmar_tz)
+    if not coupon.is_active: return jsonify({'success': False, 'message': 'Coupon is inactive'}), 400
+    if coupon.start_date:
+        sd = coupon.start_date if coupon.start_date.tzinfo else myanmar_tz.localize(coupon.start_date)
+        if now < sd: return jsonify({'success': False, 'message': 'Coupon not yet valid'}), 400
+    if coupon.end_date:
+        ed = coupon.end_date if coupon.end_date.tzinfo else myanmar_tz.localize(coupon.end_date)
+        if now > ed: return jsonify({'success': False, 'message': 'Coupon expired'}), 400
+    if coupon.usage_limit is not None and (coupon.used_count or 0) >= coupon.usage_limit:
+        return jsonify({'success': False, 'message': 'Coupon usage limit reached'}), 400
+    try: subtotal = to_decimal(data.get('subtotal', 0))
+    except Exception: subtotal = Decimal('0')
+    if coupon.min_subtotal and subtotal < to_decimal(coupon.min_subtotal):
+        return jsonify({'success': False, 'message': 'Minimum subtotal not met'}), 400
+    if coupon.discount_type == 'percent':
+        discount = (subtotal * to_decimal(coupon.discount_value or 0) / Decimal('100')).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+    else:
+        discount = to_decimal(coupon.discount_value or 0).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+    if discount > subtotal: discount = subtotal
+    return jsonify({'success': True, 'code': coupon.code, 'discount_type': coupon.discount_type,
+                   'discount_value': coupon.discount_value, 'discount': str(discount)})
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8888, debug=os.environ.get('FLASK_DEBUG') == '1')
