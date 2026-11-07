@@ -2072,7 +2072,8 @@ class Promotion(db.Model):
     discount_value = db.Column(db.Float, nullable=False)     # e.g., 10 for 10%, or $2 off
     start_date = db.Column(db.DateTime, nullable=False)
     end_date = db.Column(db.DateTime, nullable=False)
-    
+    product = db.relationship('Product', backref='promotions')
+
 # Database Model for Coupons (managed in the Promotions tab)
 class Coupon(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -6294,7 +6295,7 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             if applied_coupon.min_subtotal and subtotal < to_decimal(applied_coupon.min_subtotal):
                 return jsonify({'success': False, 'message': 'Minimum subtotal not met'}), 400
             if applied_coupon.discount_type == 'percent':
-                coupon_discount = (total * to_decimal(applied_coupon.discount_value or 0) / Decimal('100')).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+                coupon_discount = (subtotal * to_decimal(applied_coupon.discount_value or 0) / Decimal('100')).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
             else:
                 coupon_discount = to_decimal(applied_coupon.discount_value or 0).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
             if coupon_discount > total:
@@ -6383,7 +6384,19 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
         db.session.add(sale)
         db.session.flush()  # To get the sale.id before commit
         if applied_coupon is not None:
-            applied_coupon.used_count = (applied_coupon.used_count or 0) + 1
+            if applied_coupon.usage_limit is not None:
+                # Atomic claim: only one checkout can consume the last remaining
+                # use, even when several requests pass the pre-check concurrently.
+                claimed = Coupon.query.filter(
+                    Coupon.id == applied_coupon.id,
+                    Coupon.used_count < applied_coupon.usage_limit
+                ).update({Coupon.used_count: Coupon.used_count + 1},
+                         synchronize_session=False)
+                if claimed != 1:
+                    db.session.rollback()
+                    return jsonify({'success': False, 'message': 'Coupon usage limit reached'}), 400
+            else:
+                applied_coupon.used_count = (applied_coupon.used_count or 0) + 1
 
         # Create sale items
         for item in items:
@@ -11013,6 +11026,8 @@ def api_coupons():
         discount_value = float(data.get('discount_value', 0))
     except (TypeError, ValueError):
         return jsonify({'success': False, 'message': 'Invalid discount value'}), 400
+    if math.isnan(discount_value) or math.isinf(discount_value):
+        return jsonify({'success': False, 'message': 'Invalid discount value'}), 400
     if discount_value < 0:
         return jsonify({'success': False, 'message': 'Discount value cannot be negative'}), 400
     coupon_kind = data.get('coupon_kind', 'time_based')
@@ -11033,6 +11048,8 @@ def api_coupons():
     try:
         min_subtotal = float(min_subtotal)
     except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'Invalid minimum subtotal'}), 400
+    if math.isnan(min_subtotal) or math.isinf(min_subtotal) or min_subtotal < 0:
         return jsonify({'success': False, 'message': 'Invalid minimum subtotal'}), 400
     start_date = None; end_date = None
     if data.get('start_date'):
@@ -11087,6 +11104,8 @@ def api_single_coupon(coupon_id):
     if 'discount_value' in data:
         try: coupon.discount_value = float(data['discount_value'])
         except (TypeError, ValueError): return jsonify({'success': False, 'message': 'Invalid discount value'}), 400
+        if math.isnan(coupon.discount_value) or math.isinf(coupon.discount_value) or coupon.discount_value < 0:
+            return jsonify({'success': False, 'message': 'Invalid discount value'}), 400
     if 'coupon_kind' in data and data['coupon_kind'] in ('one_time', 'time_based', 'limited'):
         coupon.coupon_kind = data['coupon_kind']
         if coupon.coupon_kind == 'one_time': coupon.usage_limit = 1
@@ -11099,6 +11118,8 @@ def api_single_coupon(coupon_id):
     if 'min_subtotal' in data:
         try: coupon.min_subtotal = float(data['min_subtotal'] or 0)
         except (TypeError, ValueError): return jsonify({'success': False, 'message': 'Invalid minimum subtotal'}), 400
+        if math.isnan(coupon.min_subtotal) or math.isinf(coupon.min_subtotal) or coupon.min_subtotal < 0:
+            return jsonify({'success': False, 'message': 'Invalid minimum subtotal'}), 400
     if 'is_active' in data: coupon.is_active = bool(data['is_active'])
     if 'start_date' in data:
         if data['start_date'] in ('', None): coupon.start_date = None
@@ -11116,6 +11137,8 @@ def api_single_coupon(coupon_id):
             except Exception: return jsonify({'success': False, 'message': 'Invalid end date'}), 400
     if coupon.start_date and coupon.end_date and coupon.end_date <= coupon.start_date:
         return jsonify({'success': False, 'message': 'End date must be after start date'}), 400
+    if coupon.coupon_kind == 'one_time':
+        coupon.usage_limit = 1
     db.session.commit()
     return jsonify({'success': True, 'message': 'Coupon updated'})
 
