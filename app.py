@@ -47,14 +47,13 @@ from receipt import (
 )
 from po_template import (
     PO_MAX_ELEMENTS,
-    PO_PAGE_HEIGHT_MM,
-    PO_PAGE_WIDTH_MM,
     PO_TEMPLATE_LOGO_SETTING,
     PO_TEMPLATE_SETTING,
     PO_TEMPLATE_TOKENS,
     PurchaseOrderTemplateHeader,
     draw_po_template_footer,
     normalize_po_template,
+    po_template_page_size,
 )
 from reports import (
     LOW_STOCK_THRESHOLD,
@@ -796,7 +795,7 @@ def get_po_template(branch=None):
     return normalize_po_template(payload)
 
 def get_po_template_settings(branch=None):
-    """Canvas payload: the saved layout plus its logo URL and token samples."""
+    """Fixed letterhead settings plus logo URL and preview samples."""
     branch_id = branch.id if branch else None
     template = get_po_template(branch)
     logo_filename = get_branch_setting(PO_TEMPLATE_LOGO_SETTING, '', branch_id)
@@ -805,7 +804,7 @@ def get_po_template_settings(branch=None):
         'logo_filename': logo_filename,
         'logo_url': po_template_logo_url(logo_filename),
         'tokens': [dict(token) for token in PO_TEMPLATE_TOKENS],
-        'page': {'width_mm': PO_PAGE_WIDTH_MM, 'height_mm': PO_PAGE_HEIGHT_MM},
+        'page': dict(zip(('width_mm', 'height_mm'), po_template_page_size(template))),
     }
 
 def is_embeddable_pdf_image(file_path):
@@ -8961,12 +8960,10 @@ def api_print_purchase_order(po_id):
         PurchaseOrderItem.product)).filter_by(id=po_id).first()
     
     buffer = io.BytesIO()
-    page_width = 210 * mm
-    page_height = 297 * mm
-
     branch = db.session.get(Branch, po.branch_id) if po.branch_id else None
     template = get_po_template(branch)
     logo_filename = get_branch_setting(PO_TEMPLATE_LOGO_SETTING, '', po.branch_id)
+    page_width, page_height = (dimension * mm for dimension in po_template_page_size(template))
     logo_path = os.path.join(app.config['PO_LOGO_FOLDER'], logo_filename) if logo_filename else None
     letterhead = purchase_order_letterhead_context(po)
     margin = template['page_inset_mm'] * mm

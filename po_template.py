@@ -1,11 +1,7 @@
-"""Purchase order letterhead template: validation, tokens and PDF drawing.
+"""Fixed purchase-order letterhead: header text, logo, fonts and paper size.
 
-Every branch (client) can print purchase orders on its own letterhead: logo,
-company name, contact block, document title, rules and a footer note. The
-Settings tab renders an A4 canvas editor that posts this dictionary back
-(``PUT /api/settings/po-template``), and the purchase-order PDF endpoint draws
-the very same layout, so what a manager arranges on screen is what the supplier
-receives.
+Clients can update header information without changing document structure.
+Legacy canvas layouts are normalized to the same fixed print layout.
 
 Presentation only: the normalizer takes plain dictionaries and the drawing
 helper takes a ReportLab canvas, so both stay unit-testable without a database.
@@ -15,7 +11,6 @@ from __future__ import annotations
 
 import copy
 import os
-import re
 from typing import Any, Mapping
 
 from reportlab.lib import colors
@@ -24,16 +19,15 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.platypus import Flowable
 
 
-PO_TEMPLATE_VERSION = 1
-PO_PAGE_WIDTH_MM = 210
-PO_PAGE_HEIGHT_MM = 297
+PO_TEMPLATE_VERSION = 2
 PO_TEMPLATE_SETTING = "po_template_json"
 PO_TEMPLATE_LOGO_SETTING = "po_template_logo_filename"
 PO_MAX_ELEMENTS = 14
-PO_HEADER_MAX_MM = 110
 PO_TEXT_LIMIT = 200
+PO_PAGE_SIZES = {"A4": (210, 297), "Letter": (215.9, 279.4)}
+PO_HEADER_FONT_LIMITS = {"brand": (10, 20), "contact": (6, 10), "title": (12, 22)}
 
-# Tokens the editor offers; ``sample`` values only feed the on-screen preview.
+# Legacy header tokens; ``sample`` values only feed the on-screen preview.
 PO_TEMPLATE_TOKENS = (
     {"token": "{{brand_name}}", "label": "Client / brand name", "sample": "Parrot Trading Co., Ltd."},
     {"token": "{{branch_name}}", "label": "Branch name", "sample": "Downtown Branch"},
@@ -54,6 +48,7 @@ PO_TEMPLATE_TOKENS = (
 # record-keeping footer) so an untouched install prints what it always printed.
 DEFAULT_PO_TEMPLATE = {
     "version": PO_TEMPLATE_VERSION,
+    "page_size": "A4",
     "page_inset_mm": 15.0,
     "header_height_mm": 46.0,
     "elements": [
@@ -84,11 +79,6 @@ DEFAULT_PO_TEMPLATE = {
     },
 }
 
-_HEX_COLOUR = re.compile(r"^#[0-9a-fA-F]{6}$")
-_ALIGNMENTS = {"left", "center", "right"}
-_KINDS = {"text", "logo", "rule"}
-
-
 
 def default_po_template() -> dict[str, Any]:
     """A fresh copy of the shipped letterhead."""
@@ -105,123 +95,47 @@ def _number(value: Any, default: float, low: float, high: float) -> float:
     return round(min(max(number, low), high), 1)
 
 
-def _bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return default
-
-
-def _colour(value: Any, default: str) -> str:
-    text = str(value or "").strip()
-    return text.lower() if _HEX_COLOUR.match(text) else default
-
-
 def _text(value: Any, limit: int = PO_TEXT_LIMIT) -> str:
     text = str(value if value is not None else "").replace("\r\n", "\n").replace("\r", "\n")
     return text.strip("\n")[:limit]
-
-
-def normalize_po_element(
-    raw: Any,
-    index: int = 0,
-    fallback: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Validate one canvas block, clamping positions and ignoring junk."""
-    previous = fallback if isinstance(fallback, Mapping) else {}
-    source = raw if isinstance(raw, Mapping) else {}
-
-    kind = str(source.get("kind") or previous.get("kind") or "text").strip().lower()
-    if kind not in _KINDS:
-        kind = "text"
-
-    identifier = re.sub(r"[^a-zA-Z0-9_-]", "", str(source.get("id") or previous.get("id") or ""))[:32]
-    element: dict[str, Any] = {
-        "id": identifier or f"block-{index + 1}",
-        "kind": kind,
-    }
-
-    if kind == "logo":
-        element["width_mm"] = _number(source.get("width_mm", previous.get("width_mm", 32)), 32, 6, 90)
-        element["height_mm"] = _number(source.get("height_mm", previous.get("height_mm", 16)), 16, 5, 80)
-    else:
-        element["text"] = _text(source.get("text", previous.get("text", "")))
-        element["font_size"] = _number(source.get("font_size", previous.get("font_size", 10)), 10, 6, 40)
-        element["bold"] = _bool(source.get("bold", previous.get("bold", False)))
-        align = str(source.get("align") or previous.get("align") or "left").strip().lower()
-        element["align"] = align if align in _ALIGNMENTS else "left"
-        if kind == "rule":
-            element["thickness"] = _number(
-                source.get("thickness", previous.get("thickness", 1)), 1, 0.25, 3)
-
-    element["x_pct"] = _number(source.get("x_pct", previous.get("x_pct", 0)), 0, 0, 100)
-    element["y_mm"] = _number(
-        source.get("y_mm", previous.get("y_mm", 0)), 0, 0, PO_HEADER_MAX_MM)
-    element["width_pct"] = _number(
-        source.get("width_pct", previous.get("width_pct", 100)), 100, 5, 100)
-    element["color"] = _colour(source.get("color", previous.get("color", "#111827")), "#111827")
-    return element
-
 
 
 def normalize_po_template(
     payload: Any,
     fallback: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return a safe letterhead layout for storage or drawing.
+    """Allow header text, font sizes and standard paper sizes only.
 
-    Unknown keys are dropped, numbers are clamped to printable ranges and text
-    is trimmed, so an older editor, a stale tab or a hand-written request can
-    never corrupt a saved template.
+    Rebuild geometry from shipped defaults on every read and write. This also
+    migrates legacy canvas layouts without letting stale clients restore them.
+    Header values with known IDs and the separately stored logo are preserved.
     """
-    base = copy.deepcopy(fallback) if isinstance(fallback, Mapping) else default_po_template()
-    if not isinstance(payload, Mapping):
-        return base
-
-    template: dict[str, Any] = {
-        "version": PO_TEMPLATE_VERSION,
-        "page_inset_mm": _number(payload.get("page_inset_mm", base.get("page_inset_mm", 15)), 15, 8, 30),
-        "header_height_mm": _number(
-            payload.get("header_height_mm", base.get("header_height_mm", 46)), 46, 20, PO_HEADER_MAX_MM),
-    }
-
-    raw_elements = payload.get("elements")
-    base_elements = base.get("elements") if isinstance(base.get("elements"), list) else []
-    if isinstance(raw_elements, list):
-        elements: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for index, raw in enumerate(raw_elements[:PO_MAX_ELEMENTS]):
-            previous = base_elements[index] if index < len(base_elements) else None
-            element = normalize_po_element(raw, index, previous)
-            if element["id"] in seen:
-                element["id"] = f"{element['id'][:26]}-{index + 1}"
-            seen.add(element["id"])
-            elements.append(element)
-        template["elements"] = elements
-    else:
-        template["elements"] = [
-            normalize_po_element(item, index)
-            for index, item in enumerate(base_elements[:PO_MAX_ELEMENTS])
-        ]
-
-    footer = payload.get("footer") if isinstance(payload.get("footer"), Mapping) else {}
-    base_footer = base.get("footer") if isinstance(base.get("footer"), Mapping) else DEFAULT_PO_TEMPLATE["footer"]
-    template["footer"] = {
-        "text": _text(footer.get("text", base_footer.get("text", ""))),
-        "font_size": _number(footer.get("font_size", base_footer.get("font_size", 8)), 8, 6, 14),
-        "color": _colour(footer.get("color", base_footer.get("color", "#6b7280")), "#6b7280"),
-        "show_page_number": _bool(
-            footer.get("show_page_number", base_footer.get("show_page_number", True)), True),
-    }
-    # Blocks stay inside the band they were arranged in, so a stale tab can
-    # never print a header over the supplier details.
-    limit = max(template["header_height_mm"] - 2, 0)
-    for element in template["elements"]:
-        element["y_mm"] = min(element["y_mm"], limit)
+    template = default_po_template()
+    for source in (fallback, payload):
+        if not isinstance(source, Mapping):
+            continue
+        page_size = source.get("page_size", template["page_size"])
+        template["page_size"] = page_size if isinstance(page_size, str) and page_size in PO_PAGE_SIZES else "A4"
+        raw_elements = source.get("elements")
+        if not isinstance(raw_elements, list):
+            continue
+        by_id = {}
+        for raw in raw_elements[:PO_MAX_ELEMENTS]:
+            if isinstance(raw, Mapping) and isinstance(raw.get("id"), str):
+                by_id.setdefault(raw["id"], raw)
+        for element in template["elements"]:
+            limits = PO_HEADER_FONT_LIMITS.get(element["id"])
+            raw = by_id.get(element["id"])
+            if not limits or not raw or raw.get("kind", "text") != "text":
+                continue
+            element["text"] = _text(raw.get("text", element["text"]))
+            element["font_size"] = _number(raw.get("font_size", element["font_size"]), element["font_size"], *limits)
     return template
+
+
+def po_template_page_size(template: Mapping[str, Any]) -> tuple[float, float]:
+    """Return the selected standard paper dimensions in millimetres."""
+    return PO_PAGE_SIZES[normalize_po_template(template)["page_size"]]
 
 
 def render_po_template_text(text: Any, context: Mapping[str, Any] | None = None) -> str:
@@ -344,11 +258,17 @@ class PurchaseOrderTemplateHeader(Flowable):
 
         canvas.saveState()
         try:
+            # Long client text must never cover another fixed header field.
+            next_top_mm = {"brand": 9.5, "contact": 26, "title": 36, "reference": 41}.get(element["id"], 46)
+            clip = canvas.beginPath()
+            clip.rect(x, self._height - next_top_mm * mm, width,
+                      max(next_top_mm - element["y_mm"], 0) * mm)
+            canvas.clipPath(clip, stroke=0, fill=0)
             canvas.setFillColor(colors.HexColor(element["color"]))
             canvas.setFont(font_name, font_size)
             for index, line in enumerate(lines):
                 baseline = top - font_size * 0.8 - index * leading
-                if baseline < -leading:
+                if baseline - font_size * 0.2 < self._height - next_top_mm * mm:
                     break
                 if element["align"] == "right":
                     canvas.drawRightString(x + width, baseline, line)

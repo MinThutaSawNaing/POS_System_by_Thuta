@@ -1,4 +1,4 @@
-"""Purchase order letterhead canvas regressions: layout, logo, print, Settings UI.
+"""Fixed purchase order letterhead regressions: layout, logo, print, Settings UI.
 
 Run only this module: python run_tests.py test_po_template.py -q --tb=short
 """
@@ -35,35 +35,35 @@ class PoTemplateLayoutTests(unittest.TestCase):
         self.assertIn("rule", kinds)
         self.assertTrue(template["footer"]["show_page_number"])
 
-    def test_normalizer_clamps_and_rejects_junk(self):
+    def test_normalizer_locks_layout_and_clamps_header_fonts(self):
         from po_template import normalize_po_template
 
         template = normalize_po_template({
             "page_inset_mm": 999,
             "header_height_mm": -5,
             "elements": [
-                {"kind": "text", "text": "ACME {{po_number}}", "x_pct": 500, "y_mm": -20,
+                {"id": "brand", "kind": "text", "text": "ACME {{po_number}}", "x_pct": 500, "y_mm": -20,
                  "width_pct": 0, "font_size": 99, "align": "sideways", "color": "red"},
                 {"kind": "totally-wrong", "text": "kept as text"},
                 {"kind": "logo", "width_mm": 500, "height_mm": 1},
             ],
             "footer": {"text": "x" * 500, "font_size": 99, "show_page_number": "yes"},
         })
-        self.assertEqual(template["page_inset_mm"], 30.0)
-        self.assertEqual(template["header_height_mm"], 20.0)
-        text, mislabelled, logo = template["elements"]
+        self.assertEqual(template["page_inset_mm"], 15.0)
+        self.assertEqual(template["header_height_mm"], 46.0)
+        logo, text = template["elements"][:2]
         self.assertEqual(text["kind"], "text")
-        self.assertEqual(text["x_pct"], 100.0)
+        self.assertEqual(text["x_pct"], 36.0)
         self.assertEqual(text["y_mm"], 0.0)
-        self.assertEqual(text["width_pct"], 5.0)
-        self.assertEqual(text["font_size"], 40.0)
+        self.assertEqual(text["width_pct"], 64.0)
+        self.assertEqual(text["font_size"], 20.0)
         self.assertEqual(text["align"], "left")
         self.assertEqual(text["color"], "#111827")
-        self.assertEqual(mislabelled["kind"], "text")
-        self.assertEqual(logo["width_mm"], 90.0)
-        self.assertEqual(logo["height_mm"], 5.0)
-        self.assertEqual(len(template["footer"]["text"]), 200)
-        self.assertEqual(template["footer"]["font_size"], 14.0)
+        self.assertEqual(len(template["elements"]), 6)
+        self.assertEqual(logo["width_mm"], 32.0)
+        self.assertEqual(logo["height_mm"], 16.0)
+        self.assertEqual(template["footer"]["text"], "This is an internal document for record keeping purposes.")
+        self.assertEqual(template["footer"]["font_size"], 8.0)
         self.assertTrue(template["footer"]["show_page_number"])
 
     def test_blocks_stay_inside_the_header_band(self):
@@ -73,7 +73,8 @@ class PoTemplateLayoutTests(unittest.TestCase):
             "header_height_mm": 40,
             "elements": [{"kind": "text", "text": "Deep", "y_mm": 100}],
         })
-        self.assertEqual(template["elements"][0]["y_mm"], 38.0)
+        self.assertEqual(template["header_height_mm"], 46.0)
+        self.assertEqual(template["elements"][0]["y_mm"], 0.0)
 
     def test_element_ids_stay_unique(self):
         from po_template import normalize_po_template
@@ -81,7 +82,28 @@ class PoTemplateLayoutTests(unittest.TestCase):
         template = normalize_po_template({
             "elements": [{"id": "same", "kind": "text"}, {"id": "same", "kind": "text"}],
         })
-        self.assertEqual([element["id"] for element in template["elements"]], ["same", "same-2"])
+        self.assertEqual([element["id"] for element in template["elements"]],
+                         ["logo", "brand", "contact", "title", "reference", "rule"])
+
+    def test_standard_page_sizes_and_invalid_values(self):
+        from po_template import normalize_po_template, po_template_page_size
+
+        self.assertEqual(po_template_page_size({"page_size": "Letter"}), (215.9, 279.4))
+        for value in ("custom", None, [], {}):
+            self.assertEqual(normalize_po_template({"page_size": value})["page_size"], "A4")
+
+    def test_legacy_header_values_survive_without_legacy_geometry(self):
+        from po_template import normalize_po_template
+
+        template = normalize_po_template({"elements": [
+            {"id": "contact", "kind": "text", "text": "Address\nPhone", "font_size": 9,
+             "x_pct": 90, "color": "#ff0000"},
+            {"id": "reference", "text": "Hidden order number"},
+        ]})
+        self.assertEqual(template["elements"][2]["text"], "Address\nPhone")
+        self.assertEqual(template["elements"][2]["x_pct"], 36)
+        self.assertIn("{{po_number}}", template["elements"][4]["text"])
+        self.assertEqual(normalize_po_template(template), template)
 
     def test_tokens_render_real_values_and_keep_unknown_ones(self):
         from po_template import render_po_template_text
@@ -108,13 +130,30 @@ class PoTemplateLayoutTests(unittest.TestCase):
         )
         self.assertTrue(buffer.getvalue().startswith(b"%PDF-"))
 
+    def test_header_overflow_does_not_draw_partial_lines(self):
+        from unittest.mock import MagicMock
+
+        from reportlab.lib.units import mm
+
+        from po_template import PurchaseOrderTemplateHeader, normalize_po_template
+
+        template = normalize_po_template({"elements": [
+            {"id": "brand", "text": "First line\nSecond line", "font_size": 17},
+        ]})
+        header = PurchaseOrderTemplateHeader(template)
+        header.wrap(180 * mm, 250 * mm)
+        canvas = MagicMock()
+        header._draw_text(canvas, template["elements"][1])
+        self.assertEqual(canvas.drawString.call_count, 1)
+        self.assertEqual(canvas.drawString.call_args.args[-1], "First line")
+
     def test_foreign_glyphs_do_not_break_the_pdf(self):
         from reportlab.platypus import SimpleDocTemplate
 
         from po_template import PurchaseOrderTemplateHeader, normalize_po_template
 
         template = normalize_po_template({"elements": [
-            {"kind": "text", "text": "Client \u1010\u1014\u103a header", "font_size": 12},
+            {"id": "brand", "kind": "text", "text": "Client \u1010\u1014\u103a header", "font_size": 12},
         ]})
         buffer = io.BytesIO()
         document = SimpleDocTemplate(buffer)
@@ -191,30 +230,30 @@ class PoTemplateApiTests(unittest.TestCase):
         from po_template import PO_TEMPLATE_SETTING
 
         response = self.save_template(page_inset_mm=12, header_height_mm=50,
-                                      elements=[{"kind": "text",
+                                      elements=[{"id": "brand", "kind": "text",
                                                  "text": "ACME {{po_number}}",
                                                  "color": "#123456", "font_size": 15}])
         self.assertEqual(response.status_code, 200, response.json)
-        self.assertEqual(response.json["po_template"]["page_inset_mm"], 12.0)
-        self.assertEqual(response.json["po_template"]["elements"][0]["color"], "#123456")
+        self.assertEqual(response.json["po_template"]["page_inset_mm"], 15.0)
+        self.assertEqual(response.json["po_template"]["elements"][1]["color"], "#111827")
 
         saved = self.settings()
-        self.assertEqual(saved["page_inset_mm"], 12.0)
-        self.assertEqual(saved["header_height_mm"], 50.0)
-        self.assertEqual(saved["elements"][0]["text"], "ACME {{po_number}}")
+        self.assertEqual(saved["page_inset_mm"], 15.0)
+        self.assertEqual(saved["header_height_mm"], 46.0)
+        self.assertEqual(saved["elements"][1]["text"], "ACME {{po_number}}")
 
         with self.app.app_context():
             stored = self.module.AppSetting.query.filter_by(
                 key=self.module.branch_setting_key(self.a, PO_TEMPLATE_SETTING)).first()
             self.assertIsNotNone(stored)
-            self.assertEqual(json.loads(stored.value)["header_height_mm"], 50.0)
+            self.assertEqual(json.loads(stored.value)["header_height_mm"], 46.0)
 
         # A second branch starts from the default letterhead and keeps its own.
         self.assertEqual(self.settings(self.client(branch=self.b))["page_inset_mm"], 15.0)
-        other = self.save_template(self.client(branch=self.b), page_inset_mm=20)
+        other = self.save_template(self.client(branch=self.b), page_size="Letter")
         self.assertEqual(other.status_code, 200)
-        self.assertEqual(self.settings(self.client(branch=self.b))["page_inset_mm"], 20.0)
-        self.assertEqual(self.settings()["page_inset_mm"], 12.0)
+        self.assertEqual(self.settings(self.client(branch=self.b))["page_size"], "Letter")
+        self.assertEqual(self.settings()["page_size"], "A4")
 
     def test_rejects_missing_layout_branch_switch_and_too_many_blocks(self):
         client = self.client()
@@ -338,13 +377,32 @@ class PoTemplateApiTests(unittest.TestCase):
         self.assertEqual(again.status_code, 200)
         self.assertTrue(again.data.startswith(b"%PDF-"))
 
+    def test_letter_selection_changes_settings_and_printed_paper(self):
+        from reportlab.lib.units import mm
+
+        client = self.client()
+        po_id = self.printed_order_id()
+        response = self.save_template(client, page_size="Letter", elements=[
+            {"id": "brand", "text": "Long header " * 30, "font_size": 20},
+            {"id": "contact", "text": "Contact information\n" * 20, "font_size": 10},
+        ])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.settings()["page"], {"width_mm": 215.9, "height_mm": 279.4})
+        pdf = client.get(f"/api/purchase_orders/{po_id}/print")
+        self.assertEqual(pdf.status_code, 200)
+        media_box = re.search(rb"/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)", pdf.data)
+        self.assertIsNotNone(media_box)
+        self.assertAlmostEqual(float(media_box[1]), 215.9 * mm, places=2)
+        self.assertAlmostEqual(float(media_box[2]), 279.4 * mm, places=2)
+
     def test_dashboard_renders_the_canvas_for_a_manager(self):
         response = self.client().get("/")
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
         self.assertIn('id="po-template-canvas"', html)
         self.assertIn('onclick="savePurchaseOrderTemplate()"', html)
-        self.assertIn('id="po-template-token-bar"', html)
+        self.assertIn('id="po-page-size"', html)
+        self.assertNotIn('id="po-template-token-bar"', html)
 
     def test_cashier_cannot_print_the_letterhead(self):
         po_id = self.printed_order_id()
@@ -367,8 +425,13 @@ class PoTemplateDashboardTests(unittest.TestCase):
         self.assertIn('id="po-template-access-note"', DASHBOARD)
         self.assertIn('id="po-logo-file"', DASHBOARD)
         self.assertIn('accept="image/png,image/jpeg"', DASHBOARD)
-        self.assertIn('id="po-element-text"', DASHBOARD)
-        self.assertIn('id="po-element-x"', DASHBOARD)
+        for field in ("brand", "contact", "title"):
+            self.assertIn(f'id="po-{field}-text"', DASHBOARD)
+            self.assertIn(f'id="po-{field}-font-size"', DASHBOARD)
+        self.assertIn('id="po-page-size"', DASHBOARD)
+        for removed in ("po-element-x", "po-element-y", "po-footer-text", "po-page-margin",
+                        "po-header-height", "po-element-color", "po-element-align"):
+            self.assertNotIn(f'id="{removed}"', DASHBOARD)
 
     def test_every_settings_nav_group_has_a_matching_pane(self):
         """showSettingsGroup() reveals `settings-group-<data-group>`; ids must line up."""
@@ -378,6 +441,89 @@ class PoTemplateDashboardTests(unittest.TestCase):
         self.assertEqual(panes - groups, set(), "panes without a nav group")
         for group in groups:
             self.assertIn(f'aria-controls="settings-group-{group}"', DASHBOARD)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_preview_uses_selected_paper_dimensions_and_whole_header_lines(self):
+        from test_offline_sync_javascript import _function, _run_node_script
+
+        result = _run_node_script(f"""
+const PO_CANVAS_WIDTH=794, PO_CANVAS_HEIGHT=1123, PO_CANVAS_MM=794/210;
+let poTemplateDraft={{page_size:'Letter',elements:[]}};
+const calls=[];
+const ctx=new Proxy({{canvas:null}}, {{get:(target,key) => key in target ? target[key] : (...args) => {{if(key==='fillText') calls.push(args[0]);}}}});
+const canvas={{width:0,height:0,getContext:() => ctx}}; ctx.canvas=canvas;
+globalThis.document={{getElementById:() => canvas}};
+function poTemplateMarginPx() {{return 15*PO_CANVAS_MM;}}
+function poTemplateHeaderHeight() {{return 46*PO_CANVAS_MM;}}
+function drawPoTemplateBodyPreview() {{}}
+function drawPoTemplateFooterPreview() {{}}
+function poTemplateFontPx(element) {{return element.font_size*4/3;}}
+function poTemplateCanvasFont() {{return '17px Helvetica';}}
+function poTemplateWrappedLines() {{return ['First line','Second line'];}}
+{_function(DASHBOARD, 'poTemplateContentWidth')}
+{_function(DASHBOARD, 'drawPoTemplateElement')}
+{_function(DASHBOARD, 'renderPoTemplateCanvas')}
+renderPoTemplateCanvas();
+const letter={{width:canvas.width,height:canvas.height,content:poTemplateContentWidth()}};
+drawPoTemplateElement(ctx,{{id:'brand',kind:'text',font_size:17,y_mm:0}},{{x:0,y:0,width:400}});
+poTemplateDraft.page_size='A4'; renderPoTemplateCanvas();
+console.log(JSON.stringify({{letter,a4:{{width:canvas.width,height:canvas.height}},calls}}));
+""")
+        self.assertEqual(result["letter"]["width"], round(215.9 * 794 / 210))
+        self.assertEqual(result["letter"]["height"], round(279.4 * 794 / 210))
+        self.assertAlmostEqual(result["letter"]["content"], (215.9 - 30) * 794 / 210)
+        self.assertEqual(result["a4"], {"width": 794, "height": 1123})
+        self.assertEqual(result["calls"], ["First line"])
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_fixed_form_events_and_legacy_normalization(self):
+        from test_offline_sync_javascript import _function, _run_node_script
+
+        from po_template import default_po_template
+
+        result = _run_node_script(f"""
+const PO_TEMPLATE_DEFAULT = {json.dumps(default_po_template())};
+const PO_TEMPLATE_FONT_LIMITS = {{brand: [10,20], contact: [6,10], title: [12,22]}};
+const APP_SETTINGS = {{poTemplate: {{}}}};
+const PO_TEMPLATE_FALLBACK_TOKENS = [];
+{_function(DASHBOARD, 'clonePoTemplate')}
+{_function(DASHBOARD, 'poTemplateTokens')}
+{_function(DASHBOARD, 'clampPoNumber')}
+{_function(DASHBOARD, 'normalizePoTemplate')}
+let poTemplateDraft = normalizePoTemplate({{page_size:'Letter', page_inset_mm:30,
+  elements:[{{id:'brand',text:'ACME',font_size:99,x_pct:90,color:'#ff0000'}},
+            {{id:'extra',kind:'text',text:'Unwanted'}}]}});
+let poTemplateBound = false;
+let manager = true;
+let renders = 0;
+function hasManagerAccess() {{return manager;}}
+function renderPoTemplateCanvas() {{renders++;}}
+function stagePoTemplateLogo() {{}}
+const fields = new Map();
+for (const id of ['po-template-canvas','po-page-size','po-logo-file',
+  ...['brand','contact','title'].flatMap(id => [`po-${{id}}-text`,`po-${{id}}-font-size`])]) {{
+  fields.set(id, {{value:'',events:{{}},addEventListener(name,fn) {{this.events[name]=fn;}}}});
+}}
+globalThis.document = {{getElementById:id => fields.get(id)}};
+{_function(DASHBOARD, 'bindPoTemplateEditor')}
+bindPoTemplateEditor();
+const brand = fields.get('po-brand-text');
+brand.value = 'Updated'; brand.events.input();
+const font = fields.get('po-brand-font-size');
+font.value = '100'; font.events.change();
+manager = false; brand.value = 'Unauthorized'; brand.events.input();
+console.log(JSON.stringify({{draft:poTemplateDraft, renders,
+  canvasEvents:Object.keys(fields.get('po-template-canvas').events)}}));
+""")
+        draft = result["draft"]
+        self.assertEqual(draft["page_size"], "Letter")
+        self.assertEqual(draft["page_inset_mm"], 15)
+        self.assertEqual(len(draft["elements"]), 6)
+        self.assertEqual(draft["elements"][1]["text"], "Updated")
+        self.assertEqual(draft["elements"][1]["font_size"], 20)
+        self.assertEqual(draft["elements"][1]["x_pct"], 36)
+        self.assertEqual(result["canvasEvents"], [])
+        self.assertEqual(result["renders"], 2)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required")
     def test_opening_po_template_reveals_pane_and_initializes_editor(self):
@@ -417,7 +563,7 @@ console.log(JSON.stringify({{
 
     def test_canvas_edits_a_draft_and_only_save_posts(self):
         self.assertIn("function renderPoTemplateCanvas()", DASHBOARD)
-        self.assertIn("function renderPoTemplateElementList()", DASHBOARD)
+        self.assertIn("function syncPoTemplateForm()", DASHBOARD)
         self.assertIn("function stagePoTemplateLogo(", DASHBOARD)
         self.assertIn("/api/settings/po-template", DASHBOARD)
         self.assertIn("/api/settings/po-template-logo", DASHBOARD)
@@ -427,13 +573,13 @@ console.log(JSON.stringify({{
         self.assertIn('method: "PUT"', save_block)
         self.assertIn("uploadPendingPoTemplateLogo", save_block)
 
-        drag_block = DASHBOARD.split("function movePoTemplateElement(", 1)[1].split(
-            "function endPoTemplateDrag()", 1)[0]
-        self.assertNotIn("fetch(", drag_block)
+        for removed in ("movePoTemplateElement", "endPoTemplateDrag", "addPurchaseOrderTextBlock",
+                        "deletePurchaseOrderTemplateBlock", "insertPoTemplateToken"):
+            self.assertNotIn(f"function {removed}(", DASHBOARD)
 
     def test_tokens_and_branch_scope_are_visible_to_the_editor(self):
         self.assertIn("PO_TEMPLATE_FALLBACK_TOKENS", DASHBOARD)
-        self.assertIn('id="po-template-token-bar"', DASHBOARD)
+        self.assertNotIn('id="po-template-token-bar"', DASHBOARD)
         for token in ("{{brand_name}}", "{{po_number}}", "{{total}}"):
             self.assertIn(token, DASHBOARD)
         self.assertIn("setPoTemplateFromSettings(data.po_template)", DASHBOARD)
