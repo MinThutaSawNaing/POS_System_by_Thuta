@@ -4387,7 +4387,8 @@
                 <div class="po-canvas-panel">
                   <div class="po-canvas-stage">
                     <canvas id="po-template-canvas" width="794" height="1123" role="img"
-                      aria-label="Read-only purchase order preview"></canvas>
+                      tabindex="0" aria-describedby="po-logo-help"
+                      aria-label="Purchase order preview. Managers can move the logo with arrow keys; hold Shift for larger steps."></canvas>
                   </div>
                 </div>
                 <button type="button" class="btn btn-primary mt-3" id="save-po-template-btn" onclick="savePurchaseOrderTemplate()">
@@ -4423,7 +4424,17 @@
                   <label class="form-label small mt-2 mb-1" for="po-title-font-size">Document title font size (pt)</label>
                   <input type="number" class="form-control form-control-sm" id="po-title-font-size" min="12" max="22" step="0.5" value="20" />
                 </div>
-                <div class="po-canvas-hint">The preview shows sample order data. Header positions and the rest of the document layout are fixed. PDF output uses the standard Latin font set.</div>
+                <div>
+                  <label class="form-label small mb-1" for="po-logo-x">Logo X (%)</label>
+                  <input type="number" class="form-control form-control-sm" id="po-logo-x" step="any" />
+                  <label class="form-label small mt-2 mb-1" for="po-logo-y">Logo Y (mm)</label>
+                  <input type="number" class="form-control form-control-sm" id="po-logo-y" step="any" />
+                  <label class="form-label small mt-2 mb-1" for="po-logo-width">Logo width (mm)</label>
+                  <input type="number" class="form-control form-control-sm" id="po-logo-width" min="5" step="any" />
+                  <label class="form-label small mt-2 mb-1" for="po-logo-height">Logo height (mm)</label>
+                  <input type="number" class="form-control form-control-sm" id="po-logo-height" min="5" step="any" />
+                </div>
+                <div class="po-canvas-hint" id="po-logo-help">Drag the logo to move it anywhere on the page, including margins. Drag its bottom-right handle to change width and height independently. With the preview focused, arrow keys move it 1 mm (Shift: 5 mm). X is relative to content width; Y is relative to the top margin. All other positions are fixed. PDF output uses the standard Latin font set.</div>
                 <button type="button" class="btn btn-outline-secondary btn-sm" onclick="resetPurchaseOrderTemplate()">
                   <i class="bi bi-arrow-counterclockwise me-1"></i>Reset to defaults
                 </button>
@@ -8165,13 +8176,13 @@
       }
 
       // ===== Purchase order letterhead canvas =====
-      // Fixed letterhead geometry; only header text, font sizes and paper size are editable.
+      // Text positions stay fixed; only the logo has editable geometry.
       const PO_CANVAS_WIDTH = 794;   // 210 mm at 96 dpi
       const PO_CANVAS_HEIGHT = 1123; // 297 mm at 96 dpi
       const PO_CANVAS_MM = PO_CANVAS_WIDTH / 210;
       {% raw %}
       const PO_TEMPLATE_DEFAULT = {
-        version: 1,
+        version: 3,
         page_size: "A4",
         page_inset_mm: 15,
         header_height_mm: 46,
@@ -8212,6 +8223,7 @@
       let poTemplateBound = false;
       let poTemplateLogoImage = null;
       let poTemplateLogoSrc = "";
+      let poTemplateLogoGesture = null;
       let pendingPoLogoFile = null;
       let pendingPoLogoObjectUrl = null;
       let pendingPoLogoRemoval = false;
@@ -8241,6 +8253,14 @@
         template.tokens = Array.isArray(source.tokens) && source.tokens.length
           ? clonePoTemplate(source.tokens) : clonePoTemplate(poTemplateTokens());
         const elements = Array.isArray(source.elements) ? source.elements : [];
+        const logo = template.elements.find((element) => element.id === "logo");
+        const savedLogo = elements.find((element) => element?.id === "logo" && element.kind === "logo");
+        if (savedLogo) {
+          ["x_pct", "y_mm", "width_mm", "height_mm"].forEach((key) => {
+            logo[key] = savedLogo[key] ?? logo[key];
+          });
+        }
+        normalizePoLogoGeometry(logo, template.page_size);
         template.elements.forEach((element) => {
           const limits = PO_TEMPLATE_FONT_LIMITS[element.id];
           if (!limits) return;
@@ -8253,6 +8273,7 @@
       }
 
       function setPoTemplateFromSettings(settings) {
+        endPoLogoGesture();
         APP_SETTINGS.poTemplate = normalizePoTemplate(settings);
         poTemplateDraft = clonePoTemplate(APP_SETTINGS.poTemplate);
         pendingPoLogoFile = null;
@@ -8272,6 +8293,59 @@
         const number = Number(value);
         if (!Number.isFinite(number)) return fallback;
         return Math.min(Math.max(number, low), high);
+      }
+
+      function poTemplatePageMm(pageSize = poTemplateDraft?.page_size) {
+        return pageSize === "Letter" ? { width: 215.9, height: 279.4 } : { width: 210, height: 297 };
+      }
+
+      function poTemplateLogoElement() {
+        return poTemplateDraft?.elements.find((element) => element.id === "logo" && element.kind === "logo");
+      }
+
+      function normalizePoLogoGeometry(logo, pageSize = poTemplateDraft?.page_size) {
+        if (!logo) return;
+        const page = poTemplatePageMm(pageSize);
+        const contentWidth = page.width - 30;
+        logo.width_mm = clampPoNumber(logo.width_mm, 5, page.width, 32);
+        logo.height_mm = clampPoNumber(logo.height_mm, 5, page.height, 16);
+        logo.x_pct = clampPoNumber(logo.x_pct, -15 / contentWidth * 100,
+          (page.width - 15 - logo.width_mm) / contentWidth * 100, 0);
+        logo.y_mm = clampPoNumber(logo.y_mm, -15, page.height - 15 - logo.height_mm, 0);
+        // Clamp defaults too, in case a large box leaves no room at the default origin.
+        logo.x_pct = Math.min(Math.max(logo.x_pct, -15 / contentWidth * 100),
+          (page.width - 15 - logo.width_mm) / contentWidth * 100);
+        logo.y_mm = Math.min(Math.max(logo.y_mm, -15), page.height - 15 - logo.height_mm);
+      }
+
+      function canEditPoLogo() {
+        return hasManagerAccess() && !!poTemplateLogoElement() && !!poTemplateLogoUrl() && !!poTemplateLogoImage;
+      }
+
+      function syncPoLogoForm() {
+        const logo = poTemplateLogoElement();
+        if (!logo) return;
+        const page = poTemplatePageMm();
+        const limits = {
+          x: [-15 / (page.width - 30) * 100, (page.width - 15 - logo.width_mm) / (page.width - 30) * 100],
+          y: [-15, page.height - 15 - logo.height_mm],
+          width: [5, page.width], height: [5, page.height],
+        };
+        Object.entries({ x: "x_pct", y: "y_mm", width: "width_mm", height: "height_mm" }).forEach(([id, key]) => {
+          const input = document.getElementById(`po-logo-${id}`);
+          if (!input) return;
+          input.value = logo[key];
+          [input.min, input.max] = limits[id];
+          input.disabled = !canEditPoLogo();
+        });
+      }
+
+      function updatePoLogoGeometry(changes) {
+        if (!canEditPoLogo()) return;
+        const logo = poTemplateLogoElement();
+        Object.assign(logo, changes);
+        normalizePoLogoGeometry(logo);
+        renderPoTemplateCanvas();
       }
 
       function poTemplateMarginPx() {
@@ -8405,16 +8479,12 @@
         }
         if (element.kind === "logo") {
           if (poTemplateLogoImage) {
-            const scale = Math.min(
-              box.width / poTemplateLogoImage.width,
-              box.height / poTemplateLogoImage.height
-            );
             ctx.drawImage(
               poTemplateLogoImage,
               box.x,
               box.y,
-              poTemplateLogoImage.width * scale,
-              poTemplateLogoImage.height * scale
+              box.width,
+              box.height
             );
           } else {
             ctx.setLineDash([5, 4]);
@@ -8459,8 +8529,13 @@
       function renderPoTemplateCanvas() {
         const canvas = document.getElementById("po-template-canvas");
         if (!canvas || !poTemplateDraft) return;
-        canvas.width = poTemplateDraft.page_size === "Letter" ? Math.round(215.9 * PO_CANVAS_MM) : PO_CANVAS_WIDTH;
-        canvas.height = poTemplateDraft.page_size === "Letter" ? Math.round(279.4 * PO_CANVAS_MM) : PO_CANVAS_HEIGHT;
+        const width = poTemplateDraft.page_size === "Letter" ? Math.round(215.9 * PO_CANVAS_MM) : PO_CANVAS_WIDTH;
+        const height = poTemplateDraft.page_size === "Letter" ? Math.round(279.4 * PO_CANVAS_MM) : PO_CANVAS_HEIGHT;
+        // Reassigning canvas dimensions during a drag can disrupt pointer capture.
+        if (canvas.width !== width) canvas.width = width;
+        if (canvas.height !== height) canvas.height = height;
+        canvas.style.touchAction = canEditPoLogo() ? "none" : "auto";
+        syncPoLogoForm();
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
         const margin = poTemplateMarginPx();
@@ -8482,9 +8557,85 @@
         drawPoTemplateFooterPreview(ctx, margin, contentWidth);
 
         poTemplateDraft.elements.forEach((element) => {
+          if (element.kind === "logo") return;
           const box = poTemplateElementBox(element);
           drawPoTemplateElement(ctx, element, box);
         });
+        const logo = poTemplateLogoElement();
+        if (logo) {
+          const box = poTemplateElementBox(logo);
+          drawPoTemplateElement(ctx, logo, box);
+          if (canEditPoLogo()) {
+            const handle = poLogoHandleSize(canvas);
+            ctx.save();
+            ctx.strokeStyle = "#2563eb";
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 4]);
+            ctx.strokeRect(box.x, box.y, box.width, box.height);
+            ctx.setLineDash([]);
+            ctx.fillStyle = "#2563eb";
+            ctx.fillRect(box.x + box.width - handle, box.y + box.height - handle, handle, handle);
+            ctx.restore();
+          }
+        }
+      }
+
+      function poLogoHandleSize(canvas) {
+        return 12 * canvas.width / (canvas.getBoundingClientRect().width || canvas.width);
+      }
+
+      function poLogoPointerPoint(event) {
+        const canvas = event.currentTarget;
+        const rect = canvas.getBoundingClientRect();
+        return { x: (event.clientX - rect.left) * canvas.width / rect.width,
+          y: (event.clientY - rect.top) * canvas.height / rect.height };
+      }
+
+      function startPoLogoGesture(event) {
+        if (!canEditPoLogo() || poTemplateLogoGesture || event.button !== 0) return;
+        const canvas = event.currentTarget;
+        const point = poLogoPointerPoint(event);
+        const logo = poTemplateLogoElement();
+        const box = poTemplateElementBox(logo);
+        if (point.x < box.x || point.x > box.x + box.width || point.y < box.y || point.y > box.y + box.height) return;
+        const handle = poLogoHandleSize(canvas);
+        poTemplateLogoGesture = { pointerId: event.pointerId, canvas, point, logo: { ...logo },
+          resize: point.x >= box.x + box.width - handle && point.y >= box.y + box.height - handle };
+        event.preventDefault();
+        canvas.focus({ preventScroll: true });
+        canvas.setPointerCapture(event.pointerId);
+      }
+
+      function movePoLogoGesture(event) {
+        const gesture = poTemplateLogoGesture;
+        if (!gesture || gesture.pointerId !== event.pointerId) return;
+        if (!canEditPoLogo()) { endPoLogoGesture(); return; }
+        event.preventDefault();
+        const point = poLogoPointerPoint(event);
+        const dx = (point.x - gesture.point.x) / PO_CANVAS_MM;
+        const dy = (point.y - gesture.point.y) / PO_CANVAS_MM;
+        updatePoLogoGeometry(gesture.resize
+          ? { width_mm: gesture.logo.width_mm + dx, height_mm: gesture.logo.height_mm + dy }
+          : { x_pct: gesture.logo.x_pct + dx / (poTemplatePageMm().width - 30) * 100, y_mm: gesture.logo.y_mm + dy });
+      }
+
+      function endPoLogoGesture(event) {
+        const gesture = poTemplateLogoGesture;
+        if (!gesture || (event && gesture.pointerId !== event.pointerId)) return;
+        poTemplateLogoGesture = null;
+        if (gesture.canvas.hasPointerCapture(gesture.pointerId)) gesture.canvas.releasePointerCapture(gesture.pointerId);
+      }
+
+      function handlePoLogoKeydown(event) {
+        if (!canEditPoLogo()) return;
+        const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
+        if (!direction) return;
+        event.preventDefault();
+        endPoLogoGesture();
+        const logo = poTemplateLogoElement();
+        const step = event.shiftKey ? 5 : 1;
+        updatePoLogoGeometry({ x_pct: logo.x_pct + direction[0] * step / (poTemplatePageMm().width - 30) * 100,
+          y_mm: logo.y_mm + direction[1] * step });
       }
 
       function loadPoTemplateLogo() {
@@ -8515,6 +8666,20 @@
       function bindPoTemplateEditor() {
         if (poTemplateBound || !document.getElementById("po-template-canvas")) return;
         poTemplateBound = true;
+        const canvas = document.getElementById("po-template-canvas");
+        canvas.addEventListener("pointerdown", startPoLogoGesture);
+        canvas.addEventListener("pointermove", movePoLogoGesture);
+        ["pointerup", "pointercancel", "lostpointercapture"].forEach((type) => canvas.addEventListener(type, endPoLogoGesture));
+        canvas.addEventListener("keydown", handlePoLogoKeydown);
+        Object.entries({ x: "x_pct", y: "y_mm", width: "width_mm", height: "height_mm" }).forEach(([id, key]) => {
+          document.getElementById(`po-logo-${id}`)?.addEventListener("change", (event) => {
+            if (!canEditPoLogo()) return;
+            endPoLogoGesture();
+            const value = event.target.value;
+            if (value.trim() !== "" && Number.isFinite(Number(value))) updatePoLogoGeometry({ [key]: Number(value) });
+            syncPoLogoForm();
+          });
+        });
         Object.entries(PO_TEMPLATE_FONT_LIMITS).forEach(([id, limits]) => {
           const text = document.getElementById(`po-${id}-text`);
           const font = document.getElementById(`po-${id}-font-size`);
@@ -8539,7 +8704,9 @@
         });
         document.getElementById("po-page-size")?.addEventListener("change", (event) => {
           if (!hasManagerAccess() || !poTemplateDraft) return;
+          endPoLogoGesture();
           poTemplateDraft.page_size = event.target.value === "Letter" ? "Letter" : "A4";
+          normalizePoLogoGeometry(poTemplateLogoElement());
           renderPoTemplateCanvas();
         });
         document.getElementById("po-logo-file")?.addEventListener("change", (event) => {
@@ -8659,12 +8826,14 @@
         if (!hasManagerAccess()) return;
         showConfirmDialog(
           "Reset purchase order template",
-          "Restore the default header text, font sizes and A4 paper size? The client logo is kept. Save the template to apply the reset.",
+          "Restore the default header text, font sizes, logo position and dimensions, and A4 paper size? The client logo image is kept. Save the template to apply the reset.",
           performResetPurchaseOrderTemplate
         );
       }
 
       function performResetPurchaseOrderTemplate() {
+        if (!hasManagerAccess()) return;
+        endPoLogoGesture();
         poTemplateDraft = clonePoTemplate(PO_TEMPLATE_DEFAULT);
         poTemplateDraft.logo_filename = APP_SETTINGS.poTemplate?.logo_filename || "";
         poTemplateDraft.logo_url = APP_SETTINGS.poTemplate?.logo_url || null;

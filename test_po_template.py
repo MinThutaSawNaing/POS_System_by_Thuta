@@ -92,6 +92,77 @@ class PoTemplateLayoutTests(unittest.TestCase):
         for value in ("custom", None, [], {}):
             self.assertEqual(normalize_po_template({"page_size": value})["page_size"], "A4")
 
+    def test_only_logo_geometry_can_move_expand_and_overlap_text(self):
+        from po_template import normalize_po_template
+
+        template = normalize_po_template({"elements": [
+            {"id": "logo", "kind": "logo", "x_pct": 36, "y_mm": 0,
+             "width_mm": 120, "height_mm": 80},
+            {"id": "brand", "kind": "text", "x_pct": 90, "y_mm": 90},
+        ]})
+        logo, brand = template["elements"][:2]
+        self.assertEqual(logo["x_pct"], brand["x_pct"])
+        self.assertEqual(logo["y_mm"], brand["y_mm"])
+        self.assertEqual((logo["width_mm"], logo["height_mm"]), (120, 80))
+        self.assertEqual((brand["x_pct"], brand["y_mm"]), (36, 0))
+        self.assertEqual(normalize_po_template(template), template)
+
+    def test_logo_geometry_stays_on_sheet_and_rejects_nonfinite_values(self):
+        from po_template import normalize_po_template
+
+        for page, width, height in (("A4", 210, 297), ("Letter", 215.9, 279.4)):
+            template = normalize_po_template({"page_size": page, "elements": [
+                {"id": "logo", "width_mm": 999, "height_mm": 999, "x_pct": 999, "y_mm": 999},
+            ]})
+            logo = template["elements"][0]
+            self.assertEqual((logo["width_mm"], logo["height_mm"]), (width, height))
+            self.assertAlmostEqual(15 + logo["x_pct"] / 100 * (width - 30), 0, places=10)
+            self.assertEqual(logo["y_mm"], -15)
+        template = normalize_po_template({"elements": [
+            {"id": "logo", "x_pct": float("nan"), "y_mm": float("inf"),
+             "width_mm": "bad", "height_mm": None},
+        ]})
+        self.assertEqual(template["elements"][0], {
+            "id": "logo", "kind": "logo", "x_pct": 0, "y_mm": 0, "width_mm": 32, "height_mm": 16,
+        })
+
+    def test_logo_is_drawn_after_header_text_and_can_stretch(self):
+        from unittest.mock import MagicMock, patch
+
+        from reportlab.lib.units import mm
+
+        from po_template import PurchaseOrderTemplateHeader
+
+        header = PurchaseOrderTemplateHeader(None, logo_path="client.png")
+        header.wrap(180 * mm, 250 * mm)
+        canvas = MagicMock()
+        header.canv = canvas
+        with patch("po_template.os.path.exists", return_value=True):
+            header.draw()
+        calls = [call[0] for call in canvas.method_calls]
+        self.assertGreater(calls.index("drawImage"), calls.index("drawString"))
+        self.assertFalse(canvas.drawImage.call_args.kwargs["preserveAspectRatio"])
+
+    def test_logo_overlay_uses_first_page_coordinates(self):
+        from unittest.mock import MagicMock, patch
+
+        from reportlab.lib.units import mm
+
+        from po_template import draw_po_template_logo
+
+        canvas = MagicMock()
+        document = MagicMock(page=1, pagesize=(210 * mm, 297 * mm))
+        template = {"elements": [{"id": "logo", "x_pct": 36, "y_mm": 75,
+                                   "width_mm": 120, "height_mm": 70}]}
+        with patch("po_template.os.path.exists", return_value=True):
+            draw_po_template_logo(canvas, document, template, "client.png")
+        self.assertAlmostEqual(canvas.drawImage.call_args.args[1], 64.8 * mm)
+        self.assertAlmostEqual(canvas.drawImage.call_args.args[2], (46 - 75 - 70) * mm)
+        canvas.reset_mock()
+        document.page = 2
+        draw_po_template_logo(canvas, document, template, "client.png")
+        canvas.drawImage.assert_not_called()
+
     def test_legacy_header_values_survive_without_legacy_geometry(self):
         from po_template import normalize_po_template
 
@@ -395,6 +466,27 @@ class PoTemplateApiTests(unittest.TestCase):
         self.assertAlmostEqual(float(media_box[1]), 215.9 * mm, places=2)
         self.assertAlmostEqual(float(media_box[2]), 279.4 * mm, places=2)
 
+    def test_logo_geometry_round_trips_and_prints_as_a_foreground_overlay(self):
+        from unittest.mock import patch
+
+        from po_template import draw_po_template_logo
+
+        client = self.client()
+        po_id = self.printed_order_id()
+        response = self.save_template(client, elements=[
+            {"id": "logo", "kind": "logo", "x_pct": 36, "y_mm": 75,
+             "width_mm": 120, "height_mm": 70},
+        ])
+        self.assertEqual(response.status_code, 200)
+        logo = self.settings()["elements"][0]
+        self.assertEqual((logo["x_pct"], logo["y_mm"], logo["width_mm"], logo["height_mm"]),
+                         (36, 75, 120, 70))
+        with patch.object(self.module, "draw_po_template_logo", wraps=draw_po_template_logo) as overlay:
+            pdf = client.get(f"/api/purchase_orders/{po_id}/print")
+        self.assertEqual(pdf.status_code, 200)
+        self.assertTrue(pdf.data.startswith(b"%PDF-"))
+        self.assertGreaterEqual(overlay.call_count, 1)
+
     def test_dashboard_renders_the_canvas_for_a_manager(self):
         response = self.client().get("/")
         self.assertEqual(response.status_code, 200)
@@ -443,6 +535,58 @@ class PoTemplateDashboardTests(unittest.TestCase):
             self.assertIn(f'aria-controls="settings-group-{group}"', DASHBOARD)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required")
+    def test_logo_pointer_drag_resize_keyboard_and_permissions(self):
+        from test_offline_sync_javascript import _function, _run_node_script
+
+        functions = "\n".join(_function(DASHBOARD, name) for name in (
+            "clampPoNumber", "poTemplatePageMm", "poTemplateLogoElement", "normalizePoLogoGeometry",
+            "canEditPoLogo", "updatePoLogoGeometry", "poLogoHandleSize", "poLogoPointerPoint",
+            "startPoLogoGesture", "movePoLogoGesture", "endPoLogoGesture", "handlePoLogoKeydown",
+        ))
+        result = _run_node_script(f"""
+const PO_CANVAS_MM=794/210;
+let poTemplateDraft={{page_size:'A4',elements:[{{id:'logo',kind:'logo',x_pct:0,y_mm:0,width_mm:32,height_mm:16}},
+  {{id:'brand',kind:'text',x_pct:36,y_mm:0}}]}};
+let poTemplateLogoGesture=null, manager=true, poTemplateLogoImage={{}}, renders=0;
+function hasManagerAccess() {{return manager;}}
+function poTemplateLogoUrl() {{return 'logo.png';}}
+function renderPoTemplateCanvas() {{renders++;}}
+function poTemplateElementBox(logo) {{return {{x:(15+logo.x_pct/100*180)*PO_CANVAS_MM,
+ y:(15+logo.y_mm)*PO_CANVAS_MM,width:logo.width_mm*PO_CANVAS_MM,height:logo.height_mm*PO_CANVAS_MM}};}}
+const captures=new Set();
+const canvas={{width:794,height:1123,getBoundingClientRect:()=>({{left:10,top:20,width:397,height:561.5}}),
+ focus(){{}},setPointerCapture:id=>captures.add(id),hasPointerCapture:id=>captures.has(id),
+ releasePointerCapture:id=>captures.delete(id)}};
+function event(x,y) {{return {{currentTarget:canvas,clientX:10+x/2,clientY:20+y/2,
+ button:0,pointerId:1,preventDefault(){{}}}};}}
+{functions}
+startPoLogoGesture(event(20*PO_CANVAS_MM,20*PO_CANVAS_MM));
+movePoLogoGesture(event((20+64.8)*PO_CANVAS_MM,20*PO_CANVAS_MM));
+endPoLogoGesture();
+const moved={{...poTemplateLogoElement()}};
+const box=poTemplateElementBox(poTemplateLogoElement());
+startPoLogoGesture(event(box.x+box.width-1,box.y+box.height-1));
+movePoLogoGesture(event(box.x+box.width-1+40*PO_CANVAS_MM,box.y+box.height-1+10*PO_CANVAS_MM));
+endPoLogoGesture();
+const resized={{...poTemplateLogoElement()}};
+handlePoLogoKeydown({{key:'ArrowDown',shiftKey:true,preventDefault(){{}}}});
+manager=false;
+updatePoLogoGeometry({{x_pct:0}});
+startPoLogoGesture(event(20*PO_CANVAS_MM,20*PO_CANVAS_MM));
+console.log(JSON.stringify({{moved,resized,final:poTemplateLogoElement(),brand:poTemplateDraft.elements[1],
+ gesture:poTemplateLogoGesture,captures:captures.size,renders}}));
+""")
+        self.assertAlmostEqual(result["moved"]["x_pct"], 36)
+        self.assertAlmostEqual(result["resized"]["width_mm"], 72)
+        self.assertAlmostEqual(result["resized"]["height_mm"], 26)
+        self.assertAlmostEqual(result["final"]["y_mm"], 5)
+        self.assertAlmostEqual(result["final"]["x_pct"], 36)
+        self.assertEqual(result["brand"], {"id": "brand", "kind": "text", "x_pct": 36, "y_mm": 0})
+        self.assertIsNone(result["gesture"])
+        self.assertEqual(result["captures"], 0)
+        self.assertEqual(result["renders"], 3)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required")
     def test_preview_uses_selected_paper_dimensions_and_whole_header_lines(self):
         from test_offline_sync_javascript import _function, _run_node_script
 
@@ -451,7 +595,7 @@ const PO_CANVAS_WIDTH=794, PO_CANVAS_HEIGHT=1123, PO_CANVAS_MM=794/210;
 let poTemplateDraft={{page_size:'Letter',elements:[]}};
 const calls=[];
 const ctx=new Proxy({{canvas:null}}, {{get:(target,key) => key in target ? target[key] : (...args) => {{if(key==='fillText') calls.push(args[0]);}}}});
-const canvas={{width:0,height:0,getContext:() => ctx}}; ctx.canvas=canvas;
+const canvas={{width:0,height:0,style:{{}},getContext:() => ctx}}; ctx.canvas=canvas;
 globalThis.document={{getElementById:() => canvas}};
 function poTemplateMarginPx() {{return 15*PO_CANVAS_MM;}}
 function poTemplateHeaderHeight() {{return 46*PO_CANVAS_MM;}}
@@ -460,6 +604,9 @@ function drawPoTemplateFooterPreview() {{}}
 function poTemplateFontPx(element) {{return element.font_size*4/3;}}
 function poTemplateCanvasFont() {{return '17px Helvetica';}}
 function poTemplateWrappedLines() {{return ['First line','Second line'];}}
+function canEditPoLogo() {{return false;}}
+function syncPoLogoForm() {{}}
+function poTemplateLogoElement() {{return null;}}
 {_function(DASHBOARD, 'poTemplateContentWidth')}
 {_function(DASHBOARD, 'drawPoTemplateElement')}
 {_function(DASHBOARD, 'renderPoTemplateCanvas')}
@@ -490,6 +637,8 @@ const PO_TEMPLATE_FALLBACK_TOKENS = [];
 {_function(DASHBOARD, 'poTemplateTokens')}
 {_function(DASHBOARD, 'clampPoNumber')}
 {_function(DASHBOARD, 'normalizePoTemplate')}
+{_function(DASHBOARD, 'normalizePoLogoGeometry')}
+{_function(DASHBOARD, 'poTemplatePageMm')}
 let poTemplateDraft = normalizePoTemplate({{page_size:'Letter', page_inset_mm:30,
   elements:[{{id:'brand',text:'ACME',font_size:99,x_pct:90,color:'#ff0000'}},
             {{id:'extra',kind:'text',text:'Unwanted'}}]}});
@@ -499,6 +648,10 @@ let renders = 0;
 function hasManagerAccess() {{return manager;}}
 function renderPoTemplateCanvas() {{renders++;}}
 function stagePoTemplateLogo() {{}}
+function startPoLogoGesture() {{}}
+function movePoLogoGesture() {{}}
+function endPoLogoGesture() {{}}
+function handlePoLogoKeydown() {{}}
 const fields = new Map();
 for (const id of ['po-template-canvas','po-page-size','po-logo-file',
   ...['brand','contact','title'].flatMap(id => [`po-${{id}}-text`,`po-${{id}}-font-size`])]) {{
@@ -522,7 +675,9 @@ console.log(JSON.stringify({{draft:poTemplateDraft, renders,
         self.assertEqual(draft["elements"][1]["text"], "Updated")
         self.assertEqual(draft["elements"][1]["font_size"], 20)
         self.assertEqual(draft["elements"][1]["x_pct"], 36)
-        self.assertEqual(result["canvasEvents"], [])
+        self.assertEqual(set(result["canvasEvents"]), {
+            "pointerdown", "pointermove", "pointerup", "pointercancel", "lostpointercapture", "keydown",
+        })
         self.assertEqual(result["renders"], 2)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required")

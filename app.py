@@ -52,6 +52,7 @@ from po_template import (
     PO_TEMPLATE_TOKENS,
     PurchaseOrderTemplateHeader,
     draw_po_template_footer,
+    draw_po_template_logo,
     normalize_po_template,
     po_template_page_size,
 )
@@ -8973,7 +8974,7 @@ def api_print_purchase_order(po_id):
                            topMargin=margin, bottomMargin=20*mm)
     styles = getSampleStyleSheet()
     elements = [
-        PurchaseOrderTemplateHeader(template, letterhead, logo_path=logo_path),
+        PurchaseOrderTemplateHeader(template, letterhead),
         Spacer(1, 6 * mm),
     ]
     
@@ -9055,6 +9056,8 @@ def api_print_purchase_order(po_id):
     def stamp_footer(canvas, document):
         draw_po_template_footer(canvas, document, template, letterhead)
 
+    # afterPage runs after all flowables, so the logo may cover text and tables.
+    doc.afterPage = lambda: draw_po_template_logo(doc.canv, doc, template, logo_path)
     doc.build(elements, onFirstPage=stamp_footer, onLaterPages=stamp_footer)
     buffer.seek(0)
     

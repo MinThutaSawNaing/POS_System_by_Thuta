@@ -1,4 +1,4 @@
-"""Fixed purchase-order letterhead: header text, logo, fonts and paper size.
+"""Purchase-order letterhead: fixed text layout and freely positioned logo.
 
 Clients can update header information without changing document structure.
 Legacy canvas layouts are normalized to the same fixed print layout.
@@ -19,7 +19,7 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.platypus import Flowable
 
 
-PO_TEMPLATE_VERSION = 2
+PO_TEMPLATE_VERSION = 3
 PO_TEMPLATE_SETTING = "po_template_json"
 PO_TEMPLATE_LOGO_SETTING = "po_template_logo_filename"
 PO_MAX_ELEMENTS = 14
@@ -85,14 +85,15 @@ def default_po_template() -> dict[str, Any]:
     return copy.deepcopy(DEFAULT_PO_TEMPLATE)
 
 
-def _number(value: Any, default: float, low: float, high: float) -> float:
+def _number(value: Any, default: float, low: float, high: float, precision: int | None = 1) -> float:
     try:
         number = float(value)
     except (TypeError, ValueError):
-        return round(float(default), 1)
+        number = float(default)
     if number != number or number in (float("inf"), float("-inf")):
-        return round(float(default), 1)
-    return round(min(max(number, low), high), 1)
+        number = float(default)
+    number = min(max(number, low), high)
+    return round(number, precision) if precision is not None else number
 
 
 def _text(value: Any, limit: int = PO_TEXT_LIMIT) -> str:
@@ -104,10 +105,10 @@ def normalize_po_template(
     payload: Any,
     fallback: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Allow header text, font sizes and standard paper sizes only.
+    """Allow header text, font sizes, paper sizes and logo geometry only.
 
-    Rebuild geometry from shipped defaults on every read and write. This also
-    migrates legacy canvas layouts without letting stale clients restore them.
+    Rebuild non-logo geometry from shipped defaults on every read and write.
+    Legacy clients cannot restore unrestricted text layouts.
     Header values with known IDs and the separately stored logo are preserved.
     """
     template = default_po_template()
@@ -130,6 +131,21 @@ def normalize_po_template(
                 continue
             element["text"] = _text(raw.get("text", element["text"]))
             element["font_size"] = _number(raw.get("font_size", element["font_size"]), element["font_size"], *limits)
+        logo = template["elements"][0]
+        raw_logo = by_id.get("logo")
+        if raw_logo and raw_logo.get("kind", "logo") == "logo":
+            for key in ("x_pct", "y_mm", "width_mm", "height_mm"):
+                logo[key] = _number(raw_logo.get(key, logo[key]), logo[key], -1000, 1000, precision=None)
+    # Keep the logo on the selected sheet, but do not reserve text space for it.
+    page_width, page_height = PO_PAGE_SIZES[template["page_size"]]
+    logo = template["elements"][0]
+    margin = template["page_inset_mm"]
+    content_width = page_width - 2 * margin
+    logo["width_mm"] = _number(logo["width_mm"], 32, 5, page_width, precision=None)
+    logo["height_mm"] = _number(logo["height_mm"], 16, 5, page_height, precision=None)
+    logo["x_pct"] = _number(logo["x_pct"], 0, -margin / content_width * 100,
+                            (page_width - margin - logo["width_mm"]) / content_width * 100, precision=None)
+    logo["y_mm"] = _number(logo["y_mm"], 0, -margin, page_height - margin - logo["height_mm"], precision=None)
     return template
 
 
@@ -200,7 +216,7 @@ class PurchaseOrderTemplateHeader(Flowable):
         canvas = self.canv
         canvas.saveState()
         try:
-            for element in self.template["elements"]:
+            for element in sorted(self.template["elements"], key=lambda item: item["kind"] == "logo"):
                 if element["kind"] == "logo":
                     self._draw_logo(canvas, element)
                 elif element["kind"] == "rule":
@@ -227,7 +243,7 @@ class PurchaseOrderTemplateHeader(Flowable):
             canvas.drawImage(
                 self.logo_path, self._box_x(element), bottom,
                 width=width, height=height,
-                preserveAspectRatio=True, anchor="nw", mask="auto",
+                preserveAspectRatio=False, anchor="nw", mask="auto",
             )
         except Exception:  # noqa: BLE001 - a broken image must not fail the whole PO
             return
@@ -278,6 +294,22 @@ class PurchaseOrderTemplateHeader(Flowable):
                     canvas.drawString(x, baseline, line)
         finally:
             canvas.restoreState()
+
+
+def draw_po_template_logo(canvas, document, template, logo_path) -> None:
+    """Overlay the freely positioned logo above first-page text and tables."""
+    if document.page != 1:
+        return
+    header = PurchaseOrderTemplateHeader(template, logo_path=logo_path)
+    margin = header.template["page_inset_mm"] * mm
+    page_width, page_height = document.pagesize
+    header.wrap(page_width - 2 * margin, page_height)
+    canvas.saveState()
+    try:
+        canvas.translate(margin, page_height - margin - header._height)
+        header._draw_logo(canvas, header.template["elements"][0])
+    finally:
+        canvas.restoreState()
 
 
 def draw_po_template_footer(
