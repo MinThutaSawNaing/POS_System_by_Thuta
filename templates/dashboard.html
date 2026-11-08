@@ -1112,6 +1112,28 @@
         box-shadow: inset 0 -1px 0 var(--surface-border);
       }
 
+      /* Promotions tab: the promotions list and the coupon list each own a
+         scrollbar and show five rows by default (a row is ~2.75rem tall, the
+         sticky header ~2.5rem), so neither table can stretch the tab. */
+      .promotions-table-scroll,
+      .coupons-table-scroll {
+        --promotions-visible-rows: 5;
+        max-height: min(
+          calc(var(--promotions-visible-rows) * 2.75rem + 2.5rem),
+          55vh
+        );
+        overflow: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .promotions-table-scroll:focus-visible,
+      .coupons-table-scroll:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
       /* Products multi-select: one narrow checkbox column plus a bulk action
          bar that only appears while at least one product is selected. */
       .products-select-cell {
@@ -2259,22 +2281,29 @@
                   <p class="text-muted text-center py-3 small">No items added</p>
                 </div>
                 <hr />
-                <div class="mb-2 border rounded p-2 small">
-                  <label class="form-label small fw-semibold mb-1" for="pos-coupon-code">Coupon code</label>
+                <div class="mb-2">
                   <div class="input-group input-group-sm">
+                    <span class="input-group-text bg-white text-muted" aria-hidden="true">
+                      <i class="bi bi-ticket-perforated"></i>
+                    </span>
                     <input
                       type="text"
                       class="form-control text-uppercase"
                       id="pos-coupon-code"
-                      placeholder="Enter coupon code"
+                      placeholder="Coupon code"
+                      aria-label="Coupon code"
                       maxlength="40"
                       autocomplete="off"
+                      autocapitalize="characters"
+                      spellcheck="false"
+                      aria-describedby="pos-coupon-feedback"
                       onkeydown="handleCouponKeydown(event)"
+                      oninput="clearCouponFeedback()"
                     />
                     <button class="btn btn-outline-primary" type="button" id="pos-coupon-apply" onclick="applyCouponCode()">Apply</button>
                     <button class="btn btn-outline-secondary d-none" type="button" id="pos-coupon-remove" onclick="removeCouponCode()">Remove</button>
                   </div>
-                  <div class="mt-1 text-muted" id="pos-coupon-feedback" role="status"></div>
+                  <div class="small mt-1 d-none" id="pos-coupon-feedback" role="status" aria-live="polite"></div>
                 </div>
                 <div class="d-flex justify-content-between small mb-1">
                   <span>Subtotal</span>
@@ -2942,7 +2971,13 @@
         </div>
         <div class="card">
           <div class="card-body">
-            <div class="table-responsive">
+            <div
+              class="table-responsive promotions-table-scroll"
+              id="promotions-table-scroll"
+              role="region"
+              aria-label="Promotions list"
+              tabindex="0"
+            >
               <table class="table table-striped table-hover">
                 <thead>
                   <tr>
@@ -2995,7 +3030,13 @@
         </div>
         <div class="card">
           <div class="card-body">
-            <div class="table-responsive">
+            <div
+              class="table-responsive coupons-table-scroll"
+              id="coupons-table-scroll"
+              role="region"
+              aria-label="Coupon list"
+              tabindex="0"
+            >
               <table class="table table-striped table-hover">
                 <thead>
                   <tr>
@@ -15057,8 +15098,16 @@
         if (typeof document === "undefined") return;
         const element = document.getElementById("pos-coupon-feedback");
         if (!element) return;
-        element.textContent = message || "";
-        element.className = "mt-1 " + (kind ? "text-" + kind : "text-muted");
+        const text = message || "";
+        element.textContent = text;
+        // An empty message collapses the line again so the cart totals never
+        // get pushed down by a blank feedback slot.
+        element.className =
+          "small mt-1 " + (kind ? "text-" + kind : "text-muted") + (text ? "" : " d-none");
+      }
+
+      function clearCouponFeedback() {
+        setCouponFeedback("", "");
       }
 
       function updateCouponUi() {
@@ -15093,7 +15142,10 @@
         if (row) row.style.display = "none";
         const applyButton = document.getElementById("pos-coupon-apply");
         const removeButton = document.getElementById("pos-coupon-remove");
-        if (applyButton) applyButton.classList.remove("d-none");
+        if (applyButton) {
+          applyButton.classList.remove("d-none");
+          applyButton.disabled = false;
+        }
         if (removeButton) removeButton.classList.add("d-none");
         setCouponFeedback("", "");
       }
@@ -15101,6 +15153,8 @@
       function removeCouponCode() {
         resetAppliedCoupon();
         setCouponFeedback("Coupon removed.", "muted");
+        const input = document.getElementById("pos-coupon-code");
+        if (input && typeof input.focus === "function") input.focus();
         updateCartDisplay();
       }
 
@@ -15124,6 +15178,9 @@
           return;
         }
         const applyButton = document.getElementById("pos-coupon-apply");
+        // A second Enter press while the first validation is still running must
+        // not fire another request.
+        if (applyButton && applyButton.disabled) return;
         if (applyButton) applyButton.disabled = true;
         fetch("/api/coupons/validate", {
           method: "POST",

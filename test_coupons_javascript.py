@@ -65,11 +65,16 @@ class CouponDashboardTests(unittest.TestCase):
             'id="pos-coupon-discount-row"',
             'onclick="applyCouponCode()"',
             'onclick="removeCouponCode()"',
+            # Typing a new code drops the previous message instead of leaving a
+            # stale warning pinned under the field.
+            'oninput="clearCouponFeedback()"',
+            'aria-describedby="pos-coupon-feedback"',
         ):
             self.assertIn(marker, self.source, f"missing checkout coupon marker: {marker}")
         for function_name in (
             "applyCouponCode", "removeCouponCode", "resetAppliedCoupon",
             "updateCouponUi", "computeCouponDiscountCents", "getCartSubtotalCents",
+            "clearCouponFeedback",
         ):
             self.assertIn(f"function {function_name}(", self.source)
         # The sale payload must carry the applied code to the server.
@@ -187,6 +192,74 @@ async function fetch(url, options) {{
             self.assertIsNone(out["appliedCoupon"])
             self.assertEqual(out["feedback"][-1][0], "Coupon expired")
             self.assertEqual(out["feedback"][-1][1], "danger")
+
+        def _run_functions(self, names, body):
+            source = DASHBOARD.read_text(encoding="utf-8")
+            functions = "\n".join(_function(source, name) for name in names)
+            result = subprocess.run(
+                [NODE, "-e", functions + "\n" + body],
+                check=True, capture_output=True, text=True,
+            )
+            return json.loads(result.stdout)
+
+        def test_feedback_line_collapses_when_the_message_is_cleared(self):
+            out = self._run_functions(("setCouponFeedback",), """
+const element = {textContent: '', className: 'small mt-1 d-none'};
+const document = {getElementById: () => element};
+setCouponFeedback('Coupon expired', 'danger');
+const shown = {text: element.textContent, className: element.className};
+setCouponFeedback('', '');
+console.log(JSON.stringify({shown, cleared: {text: element.textContent,
+  className: element.className}}));
+""")
+            self.assertEqual(out["shown"]["text"], "Coupon expired")
+            self.assertIn("text-danger", out["shown"]["className"])
+            self.assertNotIn("d-none", out["shown"]["className"])
+            self.assertEqual(out["cleared"]["text"], "")
+            self.assertIn("d-none", out["cleared"]["className"])
+
+        def test_removing_a_coupon_restores_the_apply_controls(self):
+            out = self._run_functions(("setCouponFeedback", "resetAppliedCoupon"), """
+function classListOf(initial) {
+  const names = new Set(initial);
+  return {
+    add: (name) => names.add(name),
+    remove: (name) => names.delete(name),
+    contains: (name) => names.has(name),
+  };
+}
+let appliedCoupon = {code: 'SAVE10'};
+const elements = {
+  'pos-coupon-code': {value: 'SAVE10', disabled: true},
+  'pos-coupon-discount-row': {style: {display: 'flex'}},
+  'pos-coupon-apply': {classList: classListOf(['d-none']), disabled: true},
+  'pos-coupon-remove': {classList: classListOf([]), disabled: false},
+  'pos-coupon-feedback': {textContent: 'Coupon applied.',
+    className: 'small mt-1 text-success'},
+};
+const document = {getElementById: (id) => elements[id] || null};
+resetAppliedCoupon();
+console.log(JSON.stringify({
+  appliedCoupon,
+  value: elements['pos-coupon-code'].value,
+  inputDisabled: elements['pos-coupon-code'].disabled,
+  applyHidden: elements['pos-coupon-apply'].classList.contains('d-none'),
+  applyDisabled: elements['pos-coupon-apply'].disabled,
+  removeHidden: elements['pos-coupon-remove'].classList.contains('d-none'),
+  discountRow: elements['pos-coupon-discount-row'].style.display,
+  feedbackText: elements['pos-coupon-feedback'].textContent,
+  feedbackClass: elements['pos-coupon-feedback'].className,
+}));
+""")
+            self.assertIsNone(out["appliedCoupon"])
+            self.assertEqual(out["value"], "")
+            self.assertFalse(out["inputDisabled"])
+            self.assertFalse(out["applyHidden"])
+            self.assertFalse(out["applyDisabled"])
+            self.assertTrue(out["removeHidden"])
+            self.assertEqual(out["discountRow"], "none")
+            self.assertEqual(out["feedbackText"], "")
+            self.assertIn("d-none", out["feedbackClass"])
 
 
 if __name__ == "__main__":

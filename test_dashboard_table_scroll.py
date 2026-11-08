@@ -93,3 +93,34 @@ def test_modal_tables_are_wrapped_too():
     script = source[source.index("<script>"):]
     fragments = re.findall(r"<div class=\"table-responsive\">\s*<table", script)
     assert len(fragments) >= 2
+
+
+PROMOTION_FRAME_TAGS = (
+    ("promotions-table-scroll", "Promotions list"),
+    ("coupons-table-scroll", "Coupon list"),
+)
+
+
+def test_promotions_and_coupons_own_separate_five_row_scroll_frames():
+    """The promotions tab's two lists must not share one tall scroll area."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+
+    for frame_id, label in PROMOTION_FRAME_TAGS:
+        match = re.search(rf'<div[^>]*id="{frame_id}"[^>]*>', source)
+        assert match, f"missing scroll frame {frame_id}"
+        tag = match.group()
+        assert f'class="table-responsive {frame_id}"' in tag
+        assert f'aria-label="{label}"' in tag
+        assert 'role="region"' in tag
+        assert 'tabindex="0"' in tag
+
+    rule = re.search(
+        r"\.promotions-table-scroll,\s*\.coupons-table-scroll\s*\{([^}]*)\}", source
+    )
+    assert rule, "the promotions/coupons scroll frame rule is missing"
+    body = rule.group(1)
+    assert "--promotions-visible-rows: 5;" in body
+    assert "max-height:" in body
+    assert "overflow: auto;" in body
+    assert "overscroll-behavior: contain;" in body
+    assert "scrollbar-gutter: stable;" in body
