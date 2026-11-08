@@ -15704,6 +15704,7 @@
             : "Offline sale queued — awaiting server sync.");
         cart = [];
         updateCartDisplay();
+        if (typeof resetPOSCustomer === "function") resetPOSCustomer();
         const cashReceived = document.getElementById("cash-received");
         if (cashReceived) cashReceived.value = "";
         if (typeof resetSplitPaymentFields === "function") resetSplitPaymentFields();
@@ -15855,6 +15856,7 @@
               
               cart = [];
               updateCartDisplay();
+              if (typeof resetPOSCustomer === "function") resetPOSCustomer();
               document.getElementById("cash-received").value = "";
               if (typeof resetSplitPaymentFields === "function") resetSplitPaymentFields();
               document.getElementById("pos-enable-delivery").checked = false;
@@ -20751,6 +20753,14 @@
             console.error("Error loading customers for POS:", error);
             if (warning) warning.hidden = false;
           });
+      }
+
+      // Reset the POS customer selector to Walk-in after a completed sale.
+      function resetPOSCustomer() {
+        const select = document.getElementById("pos-customer-select");
+        if (!select) return;
+        select.value = "";
+        select.dispatchEvent(new Event("change"));
       }
 
       function loadCustomersForDebtModal() {

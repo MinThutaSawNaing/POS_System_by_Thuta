@@ -570,6 +570,7 @@
         cart = []; updateCartDisplay(); resetSplitPaymentFields();
         el("cash-received").value = ""; el("pos-enable-delivery").checked = false;
         togglePosDeliveryFields(); updateCashRefundDisplay();
+        if (typeof resetPOSCustomer === "function") resetPOSCustomer();
       } else showToast("Original payment sale completed. Current cart was retained; it was not part of this payment.", "info");
       showSaleSuccessModal(data.transaction_id, data.delivery_number, false,
         lastActionState?.sandbox === true
