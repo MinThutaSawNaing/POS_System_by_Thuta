@@ -545,6 +545,48 @@ class MyanMyanPayPaymentTests(unittest.TestCase):
         self.assertIsNone(intent.sale_transaction_id)
         self.assertTrue(self.client.get(ROOT + '/intents').get_json()['payments'])
 
+    def test_stale_paid_order_release_unblocks_a_stranded_current_order(self):
+        # Regression: two open orders can coexist when a previously-released
+        # order is resurrected to SUCCESS by a real (late) callback. Completing
+        # that stale paid order must release the current customer's own open
+        # UNPAID order so they can always mint a fresh QR instead of being stuck.
+        stale = self.begin()
+        self.event(stale, 'FAILED')            # released, e.g. a definitive rejection
+        current = self.begin(self.checkout())  # now allowed (stale is not open)
+        self.assertEqual(db.session.get(PaymentIntent, current['id']).status, 'PENDING')
+        self.event(stale, 'SUCCESS')           # late callback resurrects it as PAID
+        db.session.expire_all()
+        self.assertEqual(db.session.get(PaymentIntent, stale['id']).status, 'SUCCESS')
+        completed = self.client.post(ROOT + '/intents/' + stale['id'] + '/complete', headers=HEADERS)
+        self.assertEqual(completed.status_code, 201, completed.get_json())
+        db.session.expire_all()
+        self.assertEqual(db.session.get(PaymentIntent, current['id']).status, 'FAILED',
+                         'completing one order releases the stranded unpaid order')
+        fresh = self.begin()
+        self.assertEqual(fresh['status'], 'PENDING')
+
+    def test_abandoned_orders_after_one_hour_are_deleted_or_expired(self):
+        from datetime import datetime, timedelta
+        stale_paid = self.begin()
+        self.event(stale_paid)                 # SUCCESS -> must survive cleanup
+        old = datetime.utcnow() - timedelta(hours=2)
+        intent = db.session.get(PaymentIntent, stale_paid['id'])
+        intent.created_at = old
+        db.session.commit()
+        # An UNISSUED abandoned order (no QR/provider ref) is deleted outright.
+        abandoned = PaymentIntent(id=str(uuid.uuid4()), order_id=uuid.uuid4().hex,
+            transaction_id=str(uuid.uuid4()), branch_id=self.branch.id, user_id=self.user.id,
+            amount='1000', currency='MMK', checkout_json='{}', checkout_hash='h',
+            status='PENDING', created_at=old)
+        db.session.add(abandoned)
+        db.session.commit()
+        self.client.get(ROOT + '/intents')   # triggers the abandoned-orders cleanup
+        db.session.expire_all()
+        self.assertIsNone(db.session.get(PaymentIntent, abandoned.id),
+                          'abandoned unissued order older than 1h is deleted')
+        self.assertEqual(db.session.get(PaymentIntent, stale_paid['id']).status, 'SUCCESS',
+                         'a paid order is never deleted by the cleanup')
+
     def test_duplicate_product_lines_invalid_numbers_and_missing_header_rejected(self):
         data = self.checkout()
         self.assertEqual(self.client.post(ROOT + '/intents', json=data).status_code, 403)

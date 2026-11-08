@@ -83,6 +83,48 @@ def register_payment_routes(app, db, pos):
         return (not intent.qr_payload and not intent.vendor_qr_ref
                 and not intent.transaction_ref and not intent.sale_transaction_id)
 
+    def _release_unpaid_open(now=None):
+        """Release every open, UNPAID order for the current user+branch.
+
+        Called after a payment is completed so a leftover abandoned order can
+        never keep the register from minting a fresh QR. Paid (SUCCESS/REFUNDED)
+        orders are never touched - they need reconciliation, not release.
+        """
+        now = now or datetime.utcnow()
+        PaymentIntent.query.filter(
+            PaymentIntent.branch_id == pos['get_current_branch_id'](),
+            PaymentIntent.user_id == session['user_id'],
+            PaymentIntent.sale_transaction_id.is_(None),
+            PaymentIntent.status.in_(('CREATING', 'PENDING')),
+        ).update({'status': 'FAILED', 'updated_at': now}, synchronize_session=False)
+
+    def _cleanup_abandoned(now=None):
+        """Expire/delete abandoned unpaid QRs older than one hour.
+
+        Orders that never got a QR/provider reference cannot have been paid, so
+        they are deleted outright. Issued-but-unpaid orders are only marked
+        EXPIRED (a terminal, non-blocking state) so that a genuine late SUCCESS
+        still resurrects them for reconciliation instead of losing money. Paid
+        SUCCESS/REFUNDED orders are never touched.
+        """
+        now = now or datetime.utcnow()
+        cutoff = now - timedelta(hours=1)
+        abandoned = PaymentIntent.query.filter(
+            PaymentIntent.sale_transaction_id.is_(None),
+            PaymentIntent.status.in_(('CREATING', 'PENDING')),
+            PaymentIntent.created_at < cutoff,
+        ).all()
+        changed = False
+        for intent in abandoned:
+            if unissued(intent):
+                db.session.delete(intent)
+            else:
+                intent.status = 'EXPIRED'
+                intent.updated_at = now
+            changed = True
+        if changed:
+            db.session.commit()
+
     def callback_url():
         value = os.environ.get('MMPAY_CALLBACK_URL', '').strip()
         parsed = urlparse(value)
@@ -283,6 +325,7 @@ def register_payment_routes(app, db, pos):
         if denied:
             return denied
         if request.method == 'GET':
+            _cleanup_abandoned()
             rows = PaymentIntent.query.filter_by(
                 branch_id=pos['get_current_branch_id'](), user_id=session['user_id'],
                 sale_transaction_id=None).filter(PaymentIntent.status.in_(
@@ -310,6 +353,7 @@ def register_payment_routes(app, db, pos):
             # Strict re-request policy: a user/branch may hold only one open order.
             # Refreshing, reopening the modal or reloading the page can never mint a
             # second QR; the caller must resume (or explicitly cancel) the active one.
+            _cleanup_abandoned()
             active_intent = PaymentIntent.query.filter_by(
                 branch_id=pos['get_current_branch_id'](), user_id=session['user_id'],
                 sale_transaction_id=None).filter(PaymentIntent.status.in_(
@@ -455,6 +499,12 @@ def register_payment_routes(app, db, pos):
         # Validation may fail before commit (stock/price/promotion changed).
         # The captured payment remains durable and visible for reconciliation.
         db.session.rollback()
+        # Completing this order means any other open UNPAID order for this
+        # user+branch is abandoned. Release it so the next customer can always
+        # mint a fresh QR instead of being blocked by a stranded order. Paid
+        # (SUCCESS) orders are never released - they need reconciliation.
+        _release_unpaid_open()
+        db.session.commit()
         return result
 
     @app.route('/api/payments/myanmyanpay/intents/<payment_id>/qr')

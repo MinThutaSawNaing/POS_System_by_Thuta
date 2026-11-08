@@ -1048,6 +1048,23 @@ test('pending paid intent resumes after reload, cannot create another payment', 
   h.status = 'SUCCESS'; h.checkout.resume(h.payments[0]); await new Promise(setImmediate);
   await h.checkout.action('complete'); assert.equal(h.completed[0][1], false);
 });
+test('a saved (unfinished-list) order cannot be recorded while the current cart is non-empty', async () => {
+  const h = await buttonHarness();
+  await h.checkout.loadConfig();
+  h.context.cart = [{product_id: 1}];       // the current customer still has items
+  h.status = 'SUCCESS';                      // the saved order was already paid
+  h.checkout.preview();
+  h.checkout.resume({id: 9, status: 'SUCCESS', amount: 1000}, true); // picked from Find unfinished
+  await new Promise(setImmediate);           // let the poll adopt the paid status
+  assert.equal(h.checkout.state().recovered, true);
+  await h.checkout.action('complete');
+  assert.equal(h.completions.length, 0, 'must not record a foreign sale over a live cart');
+  assert.equal(h.calls.filter(c => c.url.endsWith('/complete')).length, 0,
+    'completion must not reach the server while the current cart is non-empty');
+  h.context.cart = [];                       // the cashier clears the current cart first
+  await h.checkout.action('complete');
+  assert.equal(h.completions.length, 1, 'a cleared-cart completion of the paid order is allowed');
+});
 test('duplicate creates blocked; late result ignored after branch changes', async () => {
   const h = harness(); await h.checkout.loadConfig(); let resolve;
   h.intercept = async (path, options) => {

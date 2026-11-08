@@ -17,6 +17,11 @@
     let terminalNotice = "";
     let operationError = "";
     let view = "checkout", operation = "", lastText = "";
+    // True while the active order was picked from the unfinished-payments list
+    // (a saved/foreign order). Such an order may only be completed as a sale
+    // once the current cart is empty, so a stale payment can never overwrite the
+    // customer currently at the register.
+    let recovered = false;
     let pendingCheckoutScope = null;
     let readinessScope = null;
     let readinessError = "";
@@ -86,7 +91,7 @@
         terminalNotice = active.status === "REFUNDED"
           ? `REFUNDED · Order ${reference}: manager reconciliation required. Confirm the refund before accepting a new payment for this order. `
           : `${active.status} · Order ${reference}: original payment closed; checkout can create a new order. `;
-        active = null; quote = null; reconciliation = false;
+        active = null; quote = null; reconciliation = false; recovered = false;
         env.forget?.();
         stop();
       }
@@ -99,7 +104,7 @@
       const s = scope();
       if (s === null) return;
       const openedAt = closeRevision;
-      if (configScope !== s) { active = null; quote = null; busy = false; reconciliation = false; terminalNotice = ""; operationError = ""; view = "checkout"; operation = ""; revision++; pollRevision++; pendingPoll = null; lastProviderCheckAt = Date.now(); stop(); }
+      if (configScope !== s) { active = null; quote = null; busy = false; reconciliation = false; terminalNotice = ""; operationError = ""; view = "checkout"; operation = ""; revision++; pollRevision++; pendingPoll = null; lastProviderCheckAt = Date.now(); stop(); recovered = false; }
       config = null; configScope = s;
       readinessScope = s; readinessError = "";
       if (visible) status("Checking mobile payment readiness. No payment can be accepted yet.");
@@ -143,17 +148,23 @@
         const data = await request("/intents");
         if (!valid(s, r)) return;
         const payments = data.payments || [];
-        env.list(payments, payment => { if (valid(s, r)) resume(payment); });
+        env.list(payments, payment => { if (valid(s, r)) resume(payment, true); });
         status(payments.length
           ? "Select an existing payment to resume. A paid payment must be completed, not paid again."
           : "No unfinished payments found for your account in this branch. Close this window to continue checkout.");
       } catch (error) { if (valid(s, r)) status(error.message); }
       finally { if (valid(s, r)) { busy = false; operation = ""; status(lastText); env.busy(false); } }
     }
-    function resume(payment) {
+    function resume(payment, isFromList) {
       if (busy || scope() === null || !canRecover()) return;
+      const pickingNew = active == null || active.id !== payment.id;
       view = "checkout";
       revision++; active = payment; quote = null; reconciliation = false;
+      // Picking from the unfinished-payments list marks a saved/foreign order:
+      // it may only be completed as a sale once the current cart is empty.
+      // Re-opening the already-active order (seamless return to the tab) keeps
+      // its current-checkout status.
+      recovered = pickingNew ? isFromList !== false : recovered;
       pollRevision++; lastProviderCheckAt = Date.now();
       display();
       poll();
@@ -172,6 +183,7 @@
           return false;
         }
         active = payment;
+        recovered = false;
         if (openedAt === closeRevision) { visible = true; env.open(); }
         status("Restored the saved order after reload. This QR belongs to that order; do not create another payment.");
         poll();
@@ -184,6 +196,7 @@
     }
     async function start(saleData) {
       view = "checkout";
+      recovered = false;
       env.list([], () => {});
       if (mode() === "loading" || readinessScope === scope()) {
         pendingCheckoutScope = scope();
@@ -212,7 +225,7 @@
         if (!valid(s, r)) return;
         if (!visible || startedAt !== closeRevision) return;
         if ((pending.payments || []).length) {
-          env.list(pending.payments, payment => { if (valid(s, r)) resume(payment); });
+          env.list(pending.payments, payment => { if (valid(s, r)) resume(payment, true); });
           status("Resume or cancel an existing payment before creating a new one. Do not pay again.");
           return;
         }
@@ -263,6 +276,14 @@
     async function action(name) {
       if (busy || !active || !canRecover()) return;
       if (name === "complete" && active.status !== "SUCCESS") return;
+      // A saved/foreign order picked from the unfinished list must not be
+      // recorded as a sale while the current cart still has items - otherwise a
+      // stale payment would overwrite the customer currently at the register.
+      if (name === "complete" && recovered
+          && typeof cart !== "undefined" && Array.isArray(cart) && cart.length > 0) {
+        status("This is a saved payment for a different order. Clear the current cart first to record it as a sale, or refresh/cancel it instead. Do not pay again.");
+        return;
+      }
       if (!["complete", "refresh", "cancel"].includes(name)) return;
       const s = scope(), r = revision, id = active.id;
       let verified = false;
@@ -276,7 +297,7 @@
         if (name === "complete") {
           if (!data.success || !data.transaction_id) throw new Error("Sale confirmation missing.");
           const clearCart = !!quote && quote.snapshot === env.snapshot();
-          active = null; quote = null; busy = false; operation = ""; reconciliation = false; operationError = ""; revision++; stop();
+          active = null; quote = null; busy = false; operation = ""; reconciliation = false; operationError = ""; revision++; recovered = false; stop();
           visible = false; pendingCheckoutScope = null;
           env.forget?.();
           env.completed(data, clearCart); status("Sale confirmed. Payment completed.");
@@ -299,7 +320,7 @@
     }
     return {mode, preview, start, list, resume, action, loadConfig,
       close() { visible = false; closeRevision++; pendingCheckoutScope = null; pollRevision++; stop(); status(lastText); },
-      state: () => ({active, quote, busy, visible})};
+      state: () => ({active, quote, busy, visible, recovered})};
   }
   if (typeof module !== "undefined" && module.exports) module.exports = {createCheckout};
   if (!root.document) return;
@@ -609,7 +630,7 @@
   doc.addEventListener("visibilitychange", () => {
     if (doc.hidden) return;
     const current = checkout.state();
-    if (current.active) checkout.resume(current.active);
+    if (current.active) checkout.resume(current.active, current.recovered);
   });
   checkout.loadConfig();
 })(typeof window === "undefined" ? globalThis : window);

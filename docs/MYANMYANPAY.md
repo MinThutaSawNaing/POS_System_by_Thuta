@@ -68,6 +68,20 @@ verified success automatically records its original sale. The button is disabled
 while a payment operation is in flight. Empty searches show **No unfinished
 payments found**, not QR generation progress; QR-only controls stay hidden.
 
+**A saved order picked from the unfinished list is never recorded as a sale while
+the current cart still has items.** Resuming such a saved/foreign payment only lets
+you refresh or cancel it. To close it as a sale the cashier must first complete the
+current sale and clear the cart — otherwise a stale payment could overwrite the
+order a customer is currently scanning. Completing any order also releases any
+other stranded, unpaid open order for the same register, so the next customer can
+always mint a fresh QR instead of being blocked by an abandoned order.
+
+**Abandoned unpaid QRs are cleaned up after one hour.** Orders older than an hour
+that never got a QR/provider reference (so they cannot have been paid) are deleted;
+issued-but-unpaid orders are marked EXPIRED so they stop blocking new QRs. A real
+late SUCCESS callback still resurrects an EXPIRED order for reconciliation, and
+paid (`SUCCESS`/`REFUNDED`) orders are never deleted.
+
 For a genuinely manual-only installation, checkout and its completion notice say
 **not verified by MyanMyanPay** and explain that no provider request is sent.
 These uploaded/static-QR sales will not create provider sandbox transactions.
@@ -237,7 +251,7 @@ the provider's actual retry policy during onboarding; it is not assumed here.
 | Download QR | `Download QR` fetches the exact server-rendered SVG (or the uploaded image in legacy mode) and saves it as `MMQR-<order>.svg|png|jpg`. |
 | Seamless return | No payment path calls `location.reload()`. Returning to the tab re-reads the saved order in place via `visibilitychange`. |
 | State caching | The open order is cached per user+branch in `localStorage` (`mmpay_active:*`) together with the rendered QR (`mmpay_qr:*`). After a reload the order is re-validated with the server and displayed again; no new order is created. |
-| Strict re-request | `POST /intents` refuses a second order while an open `CREATING`/`PENDING`/`SUCCESS` order exists for that user and branch (409 plus the existing payment). A new QR requires an explicit provider cancellation that ends the order. |
+| Strict re-request | `POST /intents` refuses a second order while an open `CREATING`/`PENDING`/`SUCCESS` order exists for that user and branch (409 plus the existing payment). A new QR requires an explicit provider cancellation that ends the order, or the automatic one-hour cleanup of abandoned unpaid orders. |
 | Spam prevention | The same server-side guard, the five-second refresh throttle and per-user/per-branch scoping mean refreshing or replaying a browser cannot mint transactions. |
 
 ## Platform and KYC obligations
