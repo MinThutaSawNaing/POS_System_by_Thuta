@@ -1915,7 +1915,14 @@
       .pos-category-caret { font-size: .7em; opacity: .65; }
       .pos-category-hint { color: var(--pos-muted); font-size: .875rem; white-space: nowrap; }
       .pos-category-chip:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
-      .pos-total-row { background: var(--pos-surface); border-top: 2px solid var(--gray-30); padding: .85rem .65rem; font-size: 1.2rem; font-variant-numeric: tabular-nums; }
+      .pos-total-row { background: var(--pos-surface); border-top: 2px solid var(--gray-30); padding: .85rem .65rem; font-size: 1.2rem; font-variant-numeric: tabular-nums; color: #198754; font-weight: 700; }
+      /* Checkout money rows carry one colour per line so the breakdown reads at
+         a glance: light green subtotal, yellow tax, orange coupon discount,
+         black delivery fee and a bold green total. */
+      .pos-money-subtotal { color: #4caf50; }
+      .pos-money-tax { color: #d9a400; }
+      .pos-money-coupon { color: #fd7e14; }
+      .pos-money-delivery { color: #000; }
       #pos-section .btn:focus-visible, #pos-section .form-control:focus-visible, #pos-section .form-select:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
       #pos-connection-summary { color: var(--pos-muted); font-size: .875rem; }
       #pos-customer-warning { color: var(--pos-warning); }
@@ -2282,42 +2289,54 @@
                 </div>
                 <hr />
                 <div class="mb-2">
-                  <div class="input-group input-group-sm">
-                    <span class="input-group-text bg-white text-muted" aria-hidden="true">
-                      <i class="bi bi-ticket-perforated"></i>
-                    </span>
-                    <input
-                      type="text"
-                      class="form-control text-uppercase"
-                      id="pos-coupon-code"
-                      placeholder="Coupon code"
-                      aria-label="Coupon code"
-                      maxlength="40"
-                      autocomplete="off"
-                      autocapitalize="characters"
-                      spellcheck="false"
-                      aria-describedby="pos-coupon-feedback"
-                      onkeydown="handleCouponKeydown(event)"
-                      oninput="clearCouponFeedback()"
-                    />
-                    <button class="btn btn-outline-primary" type="button" id="pos-coupon-apply" onclick="applyCouponCode()">Apply</button>
-                    <button class="btn btn-outline-secondary d-none" type="button" id="pos-coupon-remove" onclick="removeCouponCode()">Remove</button>
+                  <button
+                    type="button"
+                    class="btn btn-link btn-sm p-0 small text-decoration-none"
+                    id="pos-coupon-toggle"
+                    onclick="toggleCouponField()"
+                    aria-expanded="false"
+                    aria-controls="pos-coupon-field"
+                  >
+                    <i class="bi bi-ticket-perforated"></i> Apply Coupon
+                  </button>
+                  <div id="pos-coupon-field" class="d-none mt-1">
+                    <div class="input-group input-group-sm">
+                      <span class="input-group-text bg-white text-muted" aria-hidden="true">
+                        <i class="bi bi-ticket-perforated"></i>
+                      </span>
+                      <input
+                        type="text"
+                        class="form-control text-uppercase"
+                        id="pos-coupon-code"
+                        placeholder="Coupon code"
+                        aria-label="Coupon code"
+                        maxlength="40"
+                        autocomplete="off"
+                        autocapitalize="characters"
+                        spellcheck="false"
+                        aria-describedby="pos-coupon-feedback"
+                        onkeydown="handleCouponKeydown(event)"
+                        oninput="clearCouponFeedback()"
+                      />
+                      <button class="btn btn-outline-primary" type="button" id="pos-coupon-apply" onclick="applyCouponCode()">Apply</button>
+                      <button class="btn btn-outline-secondary d-none" type="button" id="pos-coupon-remove" onclick="removeCouponCode()">Remove</button>
+                    </div>
+                    <div class="small mt-1 d-none" id="pos-coupon-feedback" role="status" aria-live="polite"></div>
                   </div>
-                  <div class="small mt-1 d-none" id="pos-coupon-feedback" role="status" aria-live="polite"></div>
                 </div>
-                <div class="d-flex justify-content-between small mb-1">
+                <div class="d-flex justify-content-between small mb-1 pos-money-subtotal">
                   <span>Subtotal</span>
                   <span id="subtotal">$0.00</span>
                 </div>
-                <div class="d-flex justify-content-between small mb-1">
+                <div class="d-flex justify-content-between small mb-1 pos-money-tax">
                   <span>Tax</span>
                   <span id="tax">$0.00</span>
                 </div>
-                <div class="d-flex justify-content-between small mb-1 text-success" id="pos-coupon-discount-row" style="display: none">
-                  <span>Coupon discount <span class="text-muted" id="pos-coupon-applied-code"></span></span>
+                <div class="d-flex justify-content-between small mb-1 pos-money-coupon" id="pos-coupon-discount-row" style="display: none">
+                  <span>Coupon discount <span id="pos-coupon-applied-code"></span></span>
                   <span id="pos-coupon-discount">$0.00</span>
                 </div>
-                <div class="d-flex justify-content-between small mb-1" id="pos-delivery-fee-row" style="display: none">
+                <div class="d-flex justify-content-between small mb-1 pos-money-delivery" id="pos-delivery-fee-row" style="display: none">
                   <span id="pos-delivery-fee-label">Delivery fee</span>
                   <span id="pos-delivery-fee-total">$0.00</span>
                 </div>
@@ -14659,6 +14678,8 @@
           cartItems.innerHTML =
             '<p class="text-muted text-center py-3">No items added</p>';
           if (typeof appliedCoupon !== "undefined" && appliedCoupon) resetAppliedCoupon();
+          // An empty sale keeps the coupon field collapsed until it is asked for.
+          if (typeof setCouponFieldVisibility === "function") setCouponFieldVisibility(false);
           document.getElementById("subtotal").textContent = formatCurrency(0);
           document.getElementById("tax").textContent = formatCurrency(0);
           document.getElementById("total").textContent = formatCurrency(0);
@@ -15110,6 +15131,35 @@
         setCouponFeedback("", "");
       }
 
+      function setCouponFieldVisibility(visible) {
+        if (typeof document === "undefined") return;
+        const field = document.getElementById("pos-coupon-field");
+        const toggle = document.getElementById("pos-coupon-toggle");
+        if (field) field.classList.toggle("d-none", !visible);
+        if (toggle) {
+          toggle.setAttribute("aria-expanded", visible ? "true" : "false");
+          toggle.innerHTML = visible
+            ? '<i class="bi bi-x-circle"></i> Hide coupon field'
+            : '<i class="bi bi-ticket-perforated"></i> Apply Coupon';
+        }
+      }
+
+      function toggleCouponField() {
+        if (typeof document === "undefined") return;
+        const field = document.getElementById("pos-coupon-field");
+        if (!field) return;
+        // The coupon field stays collapsed until the cashier asks for it, so an
+        // unused sale keeps the cart panel short.
+        const visible = field.classList.contains("d-none");
+        // An applied coupon keeps its Remove button on screen.
+        if (!visible && appliedCoupon) return;
+        setCouponFieldVisibility(visible);
+        if (visible) {
+          const input = document.getElementById("pos-coupon-code");
+          if (input && typeof input.focus === "function") input.focus();
+        }
+      }
+
       function updateCouponUi() {
         if (typeof document === "undefined") return;
         const row = document.getElementById("pos-coupon-discount-row");
@@ -15124,6 +15174,10 @@
         if (codeLabel) codeLabel.textContent = appliedCoupon ? "(" + appliedCoupon.code + ")" : "";
         if (applyButton) applyButton.classList.toggle("d-none", Boolean(appliedCoupon));
         if (removeButton) removeButton.classList.toggle("d-none", !appliedCoupon);
+        // An applied coupon keeps the field (and its Remove button) on screen.
+        if (appliedCoupon && typeof setCouponFieldVisibility === "function") {
+          setCouponFieldVisibility(true);
+        }
         if (input) {
           input.disabled = Boolean(appliedCoupon);
           if (appliedCoupon) input.value = appliedCoupon.code;

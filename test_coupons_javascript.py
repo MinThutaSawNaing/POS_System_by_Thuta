@@ -63,6 +63,10 @@ class CouponDashboardTests(unittest.TestCase):
             'id="pos-coupon-remove"',
             'id="pos-coupon-feedback"',
             'id="pos-coupon-discount-row"',
+            # The code field hides behind a link so an unused sale stays compact.
+            'id="pos-coupon-toggle"',
+            'id="pos-coupon-field" class="d-none mt-1"',
+            'onclick="toggleCouponField()"',
             'onclick="applyCouponCode()"',
             'onclick="removeCouponCode()"',
             # Typing a new code drops the previous message instead of leaving a
@@ -74,7 +78,7 @@ class CouponDashboardTests(unittest.TestCase):
         for function_name in (
             "applyCouponCode", "removeCouponCode", "resetAppliedCoupon",
             "updateCouponUi", "computeCouponDiscountCents", "getCartSubtotalCents",
-            "clearCouponFeedback",
+            "clearCouponFeedback", "toggleCouponField", "setCouponFieldVisibility",
         ):
             self.assertIn(f"function {function_name}(", self.source)
         # The sale payload must carry the applied code to the server.
@@ -260,6 +264,61 @@ console.log(JSON.stringify({
             self.assertEqual(out["discountRow"], "none")
             self.assertEqual(out["feedbackText"], "")
             self.assertIn("d-none", out["feedbackClass"])
+
+        def test_coupon_field_starts_collapsed_and_the_link_reveals_it(self):
+            out = self._run_functions(("setCouponFieldVisibility", "toggleCouponField"), """
+function classListOf(initial) {
+  const names = new Set(initial);
+  return {
+    add: (name) => names.add(name),
+    remove: (name) => names.delete(name),
+    toggle: (name, force) => {
+      const on = force === undefined ? !names.has(name) : Boolean(force);
+      if (on) names.add(name); else names.delete(name);
+      return on;
+    },
+    contains: (name) => names.has(name),
+  };
+}
+let appliedCoupon = null;
+const toggle = {
+  expanded: null,
+  label: '',
+  setAttribute: (name, value) => { toggle.expanded = value; },
+  get innerHTML() { return toggle.label; },
+  set innerHTML(value) { toggle.label = value; },
+};
+const input = {focused: false, focus: () => { input.focused = true; }};
+const elements = {
+  'pos-coupon-field': {classList: classListOf(['d-none'])},
+  'pos-coupon-toggle': toggle,
+  'pos-coupon-code': input,
+};
+const document = {getElementById: (id) => elements[id] || null};
+const hidden = () => elements['pos-coupon-field'].classList.contains('d-none');
+const steps = [];
+toggleCouponField();
+steps.push({hidden: hidden(), expanded: toggle.expanded, label: toggle.label,
+  focused: input.focused});
+appliedCoupon = {code: 'SAVE10'};
+setCouponFieldVisibility(true);
+toggleCouponField();
+steps.push({hidden: hidden(), label: toggle.label});
+appliedCoupon = null;
+toggleCouponField();
+steps.push({hidden: hidden(), expanded: toggle.expanded, label: toggle.label});
+console.log(JSON.stringify({steps}));
+""")
+            opened, locked, closed = out["steps"]
+            self.assertFalse(opened["hidden"])
+            self.assertEqual(opened["expanded"], "true")
+            self.assertIn("Hide coupon field", opened["label"])
+            self.assertTrue(opened["focused"])
+            # An applied coupon keeps the field (and its Remove button) visible.
+            self.assertFalse(locked["hidden"])
+            self.assertTrue(closed["hidden"])
+            self.assertEqual(closed["expanded"], "false")
+            self.assertIn("Apply Coupon", closed["label"])
 
 
 if __name__ == "__main__":

@@ -117,3 +117,29 @@ console.log(JSON.stringify({{ total: getCurrentCartTotal() }}));
 
     assert run("paid") == 2500
     assert run("cash_on_delivery") == 2000
+
+
+def test_checkout_money_rows_keep_their_colour_code():
+    """Subtotal light green, tax yellow, coupon orange, delivery black, total bold green."""
+    source = DASHBOARD.read_text(encoding="utf-8")
+
+    def rule(selector):
+        match = re.search(rf"{re.escape(selector)}\s*\{{([^}}]*)\}}", source)
+        assert match, f"missing CSS rule for {selector}"
+        return match.group(1)
+
+    assert "color: #4caf50;" in rule(".pos-money-subtotal")
+    assert "color: #d9a400;" in rule(".pos-money-tax")
+    assert "color: #fd7e14;" in rule(".pos-money-coupon")
+    assert "color: #000;" in rule(".pos-money-delivery")
+
+    total = rule(".pos-total-row")
+    assert "color: #198754;" in total
+    assert "font-weight: 700;" in total
+
+    # The rendered rows have to wear those classes.
+    assert re.search(r'pos-money-subtotal"[^>]*>\s*<span>Subtotal</span>', source)
+    assert re.search(r'pos-money-tax"[^>]*>\s*<span>Tax</span>', source)
+    assert re.search(r'pos-money-coupon"[^>]*id="pos-coupon-discount-row"', source)
+    assert re.search(r'pos-money-delivery"[^>]*id="pos-delivery-fee-row"', source)
+    assert "fw-bold mb-2 pos-total-row" in source
