@@ -279,6 +279,54 @@ def _number(value, field):
         raise ValueError(field + ' must be a finite nonnegative number' + (' between 0 and 100' if field == 'tax_rate' else '')) from None
 
 
+def _category_parts(value):
+    """Slash-delimited paths use the same 64-level bound as category displays."""
+    parts = [part.strip() for part in value.split('/')]
+    if any(not part for part in parts):
+        raise ValueError('Category path contains an empty level')
+    if any(len(part) > 50 for part in parts):
+        raise ValueError('Category name is too long (maximum 50 characters per level)')
+    if len(parts) > 64:
+        raise ValueError('Category path must not exceed 64 levels')
+    return parts
+
+
+def _resolve_category(value, cats, children, create_categories):
+    # Categories created before path imports may contain literal slashes.
+    # An exact legacy label keeps its identity rather than silently moving products.
+    literal = cats.get(_norm(value), [])
+    if '/' in value and literal:
+        if len(literal) > 1:
+            raise ValueError('Category name is ambiguous: ' + value)
+        if not literal[0].is_active:
+            raise ValueError('Category is inactive: ' + value)
+        return literal[0], literal[0].name
+    parts = _category_parts(value)
+    category, parent_id = None, None
+    missing = False
+    resolved = []
+    for part in parts:
+        # Keep legacy name-only imports working when the name is unambiguous.
+        if len(parts) == 1:
+            matches = cats.get(_norm(part), [])
+        else:
+            matches = children.get((parent_id, _norm(part)), []) if not missing else []
+        if len(matches) > 1:
+            raise ValueError('Category name is ambiguous; use a full category path: ' + value)
+        category = matches[0] if matches else None
+        if category is not None:
+            if not category.is_active:
+                raise ValueError('Category is inactive: ' + ' / '.join(resolved + [category.name]))
+            parent_id = category.id
+            resolved.append(category.name)
+        else:
+            if not create_categories:
+                raise ValueError('Unknown category: ' + value + '; enable create missing categories to import')
+            missing = True
+            resolved.append(part)
+    return category, ' / '.join(resolved)
+
+
 def _plan(columns, mapping, rows, products, categories, units, mode, create_categories, pictures=None):
     pictures = pictures or {}
     barcodes = {p.barcode: p for p in products if p.barcode}
@@ -288,8 +336,10 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
         names[_norm(product.name)].append(product)
         if product.sku:
             skus[product.sku.strip().casefold()].append(product)
+    children = defaultdict(list)
     for category in categories:
         cats[_norm(category.name)].append(category)
+        children[(category.parent_id, _norm(category.name))].append(category)
     for unit in units:
         for label in {_norm(unit.name), _norm(unit.symbol)}:
             measures[label].append(unit)
@@ -396,16 +446,11 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
         category_name = values.get('category', '')
         category = None
         if category_name:
-            matches = cats.get(_norm(category_name), [])
-            if len(category_name) > 50 or len(matches) > 1:
-                errors.append('Category name is too long or ambiguous')
-            elif matches:
-                category = matches[0]
-                if not category.is_active:
-                    errors.append('Category is inactive: ' + category_name)
-            elif not create_categories:
-                errors.append('Unknown category: ' + category_name + '; enable create missing categories to import')
-            changes['category'] = category.name if category else category_name
+            try:
+                category, category_name = _resolve_category(category_name, cats, children, create_categories)
+            except ValueError as error:
+                errors.append(str(error))
+            changes['category'] = category_name
         unit_name = values.get('unit', '')
         if unit_name:
             matches = measures.get(_norm(unit_name), [])
@@ -487,6 +532,9 @@ def register_product_import(app, db, models):
         sheet.set_column('A:A', 28)
         sheet.set_column('B:C', 22, book.add_format({'num_format': '@'}))
         sheet.set_column('D:H', 18)
+        sheet.write_comment('F1', 'Use / for nested categories, for example '
+                            'Shirt/Man/Streets/Tshirt/Green. Enable Create missing categories '
+                            'in the import window to create missing levels. Each level: maximum 50 characters.')
         # Paste or insert each product picture into its row's Photo column.
         sheet.set_column('I:I', 24)
         book.close()
@@ -562,17 +610,21 @@ def register_product_import(app, db, models):
                 db.session.rollback()
                 return jsonify(success=False, message='Resolve every preview error before importing.',
                                columns=columns, mapping=mapping, preview=preview, warnings=warnings), 400
-            created_categories = {}
+            category_children = {(c.parent_id, _norm(c.name)): c for c in categories}
             for action, existing, barcode, changes, category, photo in plans:
                 if changes.get('category'):
                     if category is None:
-                        key = _norm(changes['category'])
-                        category = created_categories.get(key)
-                        if category is None:
-                            category = Category(name=changes['category'], branch_id=branch_id, is_active=True)
-                            db.session.add(category)
-                            db.session.flush()
-                            created_categories[key] = category
+                        parent_id = None
+                        for part in _category_parts(changes['category']):
+                            key = (parent_id, _norm(part))
+                            category = category_children.get(key)
+                            if category is None:
+                                category = Category(name=part, branch_id=branch_id,
+                                                    parent_id=parent_id, is_active=True)
+                                db.session.add(category)
+                                db.session.flush()
+                                category_children[key] = category
+                            parent_id = category.id
                     changes['category_id'] = category.id
                     changes['category'] = category.name
                 if photo:

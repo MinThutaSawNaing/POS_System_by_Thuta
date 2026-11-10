@@ -300,6 +300,90 @@ class ProductImportTests(unittest.TestCase):
         _, preview = self.preview([['Name', 'Price', 'Category'], ['Juice', 1, 'Beverage']], create_categories='true')
         self.assertEqual(preview['preview']['summary']['error'], 1)
 
+    def test_category_paths_create_nested_levels_and_reuse_shared_parents(self):
+        rows = [['Name', 'Price', 'Category'],
+                ['Green shirt', 12, 'Shirt/Man/Streets/Tshirt/Green'],
+                ['Blue shirt', 15, ' shirt / MAN / Streets / Tshirt / Blue']]
+        content, preview = self.preview(rows, create_categories='true')
+        self.assertEqual(preview['preview']['summary']['error'], 0, preview)
+        self.assertEqual(Category.query.count(), 0)
+        result = self.post('commit', content, create_categories='true',
+                           preview_token=preview['preview_token'])
+        self.assertEqual(result.status_code, 200, result.get_json())
+        self.assertEqual(Category.query.count(), 6)
+        green = Product.query.filter_by(name='Green shirt').one().category_ref
+        blue = Product.query.filter_by(name='Blue shirt').one().category_ref
+        self.assertEqual(green.name, 'Green')
+        self.assertEqual(green.parent_id, blue.parent_id)
+        self.assertEqual(green.to_dict()['path'], 'Shirt / Man / Streets / Tshirt / Green')
+
+    def test_category_paths_reuse_existing_tree_and_disambiguate_leaf_names(self):
+        root = Category(name='Shirt', branch_id=self.branch.id)
+        other = Category(name='Dress', branch_id=self.branch.id)
+        db.session.add_all([root, other])
+        db.session.flush()
+        green = Category(name='Green', parent_id=root.id, branch_id=self.branch.id)
+        db.session.add_all([green, Category(name='Green', parent_id=other.id, branch_id=self.branch.id)])
+        db.session.commit()
+        _, ambiguous = self.preview([['Name', 'Price', 'Category'], ['Ambiguous', 1, 'Green']])
+        self.assertEqual(ambiguous['preview']['summary']['error'], 1)
+        content, preview = self.preview([['Name', 'Price', 'Category'], ['Shirt', 1, ' shirt / GREEN ']])
+        self.assertEqual(preview['preview']['summary']['error'], 0, preview)
+        self.assertEqual(self.post('commit', content, preview_token=preview['preview_token']).status_code, 200)
+        self.assertEqual(Product.query.one().category_id, green.id)
+        self.assertEqual(Category.query.count(), 4)
+
+    def test_existing_literal_slash_category_keeps_its_identity(self):
+        category = Category(name='Men/Women', branch_id=self.branch.id)
+        db.session.add(category)
+        db.session.commit()
+        for create in ('false', 'true'):
+            content, preview = self.preview([['Name', 'Price', 'Category'],
+                                             ['Legacy ' + create, 1, 'Men/Women']],
+                                            create_categories=create)
+            self.assertEqual(preview['preview']['summary']['error'], 0, preview)
+            self.assertEqual(self.post('commit', content, create_categories=create,
+                                      preview_token=preview['preview_token']).status_code, 200)
+            self.assertEqual(Product.query.filter_by(name='Legacy ' + create).one().category_id, category.id)
+            self.assertEqual(Category.query.count(), 1)
+
+    def test_category_paths_validate_levels_and_require_creation_opt_in(self):
+        for path in ('Shirt//Green', '/Shirt', 'Shirt/', 'Shirt/' + 'x' * 51,
+                     '/'.join(['Level'] * 65)):
+            with self.subTest(path=path):
+                content, preview = self.preview([['Name', 'Price', 'Category'], ['Bad', 1, path]],
+                                                create_categories='true')
+                self.assertEqual(preview['preview']['summary']['error'], 1)
+                self.assertEqual(self.post('commit', content, create_categories='true',
+                                          preview_token=preview['preview_token']).status_code, 400)
+                self.assertEqual(Category.query.count(), 0)
+        _, preview = self.preview([['Name', 'Price', 'Category'], ['New', 1, 'Shirt/Green']])
+        self.assertIn('Unknown category', preview['preview']['rows'][0]['message'])
+        # The total path can exceed 50 characters when each individual level fits.
+        content, preview = self.preview([['Name', 'Price', 'Category'],
+                                         ['Long path', 1, 'A' * 40 + '/' + 'B' * 40]], create_categories='true')
+        self.assertEqual(preview['preview']['summary']['error'], 0, preview)
+        self.assertEqual(self.post('commit', content, create_categories='true',
+                                  preview_token=preview['preview_token']).status_code, 200)
+        self.assertEqual(Category.query.count(), 2)
+
+    def test_category_paths_reject_inactive_ancestors_and_stay_in_branch(self):
+        root = Category(name='Shirt', branch_id=self.branch.id, is_active=False)
+        foreign = Category(name='Shirt', branch_id=self.other.id)
+        db.session.add_all([root, foreign])
+        db.session.commit()
+        _, preview = self.preview([['Name', 'Price', 'Category'], ['Bad', 1, 'Shirt/Green']],
+                                  create_categories='true')
+        self.assertIn('Category is inactive', preview['preview']['rows'][0]['message'])
+        root.is_active = True
+        db.session.commit()
+        content, preview = self.preview([['Name', 'Price', 'Category'], ['Good', 1, 'Shirt/Green']],
+                                        create_categories='true')
+        self.assertEqual(self.post('commit', content, create_categories='true',
+                                  preview_token=preview['preview_token']).status_code, 200)
+        self.assertEqual(Product.query.one().category_ref.parent_id, root.id)
+        self.assertEqual(Category.query.filter_by(branch_id=self.other.id).count(), 1)
+
     def test_invalid_unit_numeric_values_and_mapped_formulas(self):
         for field, value in [('Unit', 'missing'), ('Price', 'NaN'), ('Price', 'Infinity'), ('Price', '-1'), ('Tax Rate', 101), ('Cost', -1), ('Name', '=1+1')]:
             with self.subTest(field=field, value=value):
