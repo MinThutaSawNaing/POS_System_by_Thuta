@@ -33,6 +33,7 @@ Safety rails every WRITE tool (mutates=True) must follow:
 """
 
 import json
+import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
@@ -182,13 +183,13 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "search_products": {
         "name": "search_products",
-        "description": "Search products in the active branch by name. Returns stock level, price, cost and status for every matching product.",
+        "description": "Search products in the active branch by exact case-insensitive SKU first, then name, barcode or category. SKU is distinct from barcode. Returns SKU, stock level, price, cost and status for every matching product.",
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Product name or part of a name to search for."
+                    "description": "Exact SKU (case insensitive), product name, barcode or category. SKU fragments are not searched."
                 },
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10}
             },
@@ -219,9 +220,9 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "get_purchase_order_products": {
         "name": "get_purchase_order_products",
-        "description": "Find shared purchase-order product choices across branches by name. Use explicit product IDs for PO items; normal product tools remain branch-local.",
+        "description": "Find shared purchase-order product choices across branches by exact case-insensitive SKU first, then name. Same SKU in multiple branches returns all choices with branch IDs; resolve ambiguity and use explicit product IDs for PO items. Normal product tools remain branch-local.",
         "parameters": {"type": "object", "properties": {
-            "query": {"type": "string", "description": "Optional product name filter."},
+            "query": {"type": "string", "description": "Optional exact SKU or product name filter."},
             "limit": {"type": "integer", "description": "Maximum choices (1-100)."}}}
     },
     "get_supplier_details": {
@@ -455,7 +456,8 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "barcode": {
                     "type": "string",
                     "description": "Alternative: the barcode of the product."
-                }
+                },
+                "sku": {"type": "string", "description": "Alternative: exact case-insensitive SKU in the active branch, distinct from barcode."}
             }
         }
     },
@@ -545,6 +547,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "reorder_point": {"type": "integer", "description": "Reorder point, >= 0. Default 10."},
                 "reorder_quantity": {"type": "integer", "description": "Reorder quantity, >= 0. Default 50."},
                 "barcode": {"type": "string", "description": "Optional barcode."},
+                "sku": {"type": "string", "description": "Optional branch-unique SKU (case insensitive), max 100 characters after trimming. Blank clears it; omission preserves it on update."},
                 "product_id": {"type": "integer", "description": "Provide to update an existing product instead of creating one."}
             },
             "required": ["name", "price"]
@@ -691,13 +694,14 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "update_product": {
         "name": "update_product",
-        "description": "Rename or partially edit one existing product: name, barcode, category, price, cost, tax rate or reorder settings. Only the fields you pass change; stock is untouched (use adjust_product_stock). Use get_product_details or search_products first to find product_id.",
+        "description": "Rename or partially edit one existing product: name, barcode, SKU, category, price, cost, tax rate or reorder settings. Only the fields you pass change; stock is untouched (use adjust_product_stock). Use get_product_details or search_products first to find product_id.",
         "parameters": {
             "type": "object",
             "properties": {
                 "product_id": {"type": "integer", "description": "The product to edit (find it with search_products)."},
                 "name": {"type": "string", "description": "New product name, for a rename."},
                 "barcode": {"type": "string", "description": "New barcode value."},
+                "sku": {"type": "string", "description": "New branch-unique SKU (case insensitive), max 100 characters after trimming. Blank clears it; omit to preserve."},
                 "category": {"type": "string", "description": "Category name to move the product into."},
                 "price": {"type": "number", "description": "New selling price, >= 0."},
                 "cost": {"type": "number", "description": "New unit cost, >= 0."},
@@ -1243,13 +1247,13 @@ TOOL_SCHEMAS: Dict[str, Dict] = {
 # ==============================================================================
 TOOL_OUTPUT_HINTS: Dict[str, str] = {
     "search_products":
-        "total_products, inventory[] {product_id, name, barcode, category, current_stock, price, cost, status}",
+        "total_products, inventory[] {product_id, name, barcode, sku, category, current_stock, price, cost, status}",
     "get_inventory_status":
-        "total_products, inventory[] {product_id, name, barcode, current_stock, reorder_point, price, cost, status}",
+        "total_products, inventory[] {product_id, name, barcode, sku, current_stock, reorder_point, price, cost, status}",
     "get_product_details":
-        "product_id, name, barcode, category, price, cost, stock, tax_rate, supplier_prices[] {supplier_id, agreed_price}",
+        "product_id, name, barcode, sku, category, price, cost, stock, tax_rate, supplier_prices[] {supplier_id, agreed_price}",
     "get_low_stock_items":
-        "summary {low_stock_count, out_of_stock_count}, items[] {product_id, name, barcode, current_stock, suggested_reorder_qty, unit_cost}",
+        "summary {low_stock_count, out_of_stock_count}, items[] {product_id, name, barcode, sku, current_stock, suggested_reorder_qty, unit_cost}",
     "get_supplier_list":
         "total_suppliers, suppliers[] {supplier_id, name, category, phone, quality_rating}",
     "get_supplier_details":
@@ -1259,7 +1263,7 @@ TOOL_OUTPUT_HINTS: Dict[str, str] = {
     "get_purchase_orders":
         "total_orders, orders[] {po_id, po_number, supplier_id, status, total_amount, notes, items[] {purchase_order_item_id, product_id, ordered_qty, received_qty, unit_cost}}",
     "get_purchase_order_products":
-        "total_products, products[] {product_id, name, branch_id, cost}",
+        "total_products, products[] {product_id, name, sku, branch_id, cost}",
     "get_warehouse_inventory":
         "total_items, warehouse_items[] {warehouse_item_id, product_id, product_name, quantity, batch_number}",
     "get_warehouse_transfer_history":
@@ -1322,6 +1326,28 @@ class AITools:
         """Get a model class by name"""
         return self.models.get(name)
 
+    def _validate_sku(self, sku, product_id=None):
+        """Validate before touching an ORM object; omitted SKU leaves it alone."""
+        if sku is None:
+            return None, None
+        if not isinstance(sku, str):
+            return None, {"error": "sku must be a string"}
+        sku = sku.strip() or None
+        if sku and len(sku) > 100:
+            return None, {"error": "sku must be at most 100 characters"}
+        Product = self._get_model('Product')
+        if sku:
+            if not hasattr(Product, 'sku'):
+                return None, {"error": "SKU support is unavailable until the backend is integrated"}
+            duplicate = Product.query.filter(
+                Product.branch_id == self._branch_id(),
+                self.db.func.lower(Product.sku) == sku.lower())
+            if product_id is not None:
+                duplicate = duplicate.filter(Product.id != product_id)
+            if duplicate.first():
+                return None, {"error": "SKU already exists in the active branch"}
+        return sku, None
+
     def _supplier_category(self, category=None, category_id=None):
         """Shared supplier choices must never resolve ambiguous names with first()."""
         Category = self._get_model('Category')
@@ -1374,6 +1400,7 @@ class AITools:
             result.append({
                 "product_id": product.id,
                 "name": product.name,
+                "sku": getattr(product, "sku", None),
                 "barcode": product.barcode,
                 "category": product.category,
                 "current_stock": current_stock,
@@ -1411,6 +1438,7 @@ class AITools:
                 low_stock_items.append({
                     "product_id": product.id,
                     "name": product.name,
+                    "sku": getattr(product, "sku", None),
                     "barcode": product.barcode,
                     "category": product.category,
                     "current_stock": current_stock,
@@ -1431,7 +1459,8 @@ class AITools:
     def search_products(self, query: str, limit: int = 10) -> Dict[str, Any]:
         """Search products in the active branch by name, barcode or category.
 
-        The name filter is tried first exactly as asked. When that matches
+        Exact case-insensitive SKU has priority; SKU is never token-matched.
+        The name filter is tried next exactly as asked. When that matches
         nothing the query is reduced to its meaningful words and matched across
         name/barcode/category, so "how many IOS devices" still finds stock
         instead of reporting an empty catalogue. ``total_products`` is the real
@@ -1443,9 +1472,19 @@ class AITools:
         if not Product or not query_text:
             return self._scope({"total_products": 0, "inventory": [], "suggestions": []})
         base = self._branch_filter(Product.query, Product)
-        rows = base.filter(Product.name.ilike(f"%{query_text}%")).all()
-        matched_by = "name"
-        if not rows:
+        sku_column = getattr(Product, 'sku', None)
+        sku_identifier = bool(re.fullmatch(
+            r'(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]+(?:[-_.:/][A-Za-z0-9]+)+', query_text))
+        rows = (base.filter(self.db.func.lower(sku_column) == query_text.lower()).all()
+                if sku_column is not None else [])
+        matched_by = "sku" if rows else "name"
+        if not rows and sku_identifier:
+            # A missing identifier must not degrade to a similarly named item.
+            rows = base.filter(Product.barcode == query_text).all()
+            matched_by = "barcode" if rows else "sku"
+        if not rows and not sku_identifier:
+            rows = base.filter(Product.name.ilike(f"%{query_text}%")).all()
+        if not rows and not sku_identifier:
             terms = product_search_terms(query_text)
             if terms:
                 # Every meaningful word must appear somewhere in the row, and
@@ -1466,6 +1505,8 @@ class AITools:
             result.append({
                 "product_id": product.id,
                 "name": product.name,
+                "sku": getattr(product, "sku", None),
+                "branch_id": getattr(product, "branch_id", None),
                 "barcode": product.barcode,
                 "category": product.category,
                 "current_stock": current_stock,
@@ -1476,6 +1517,8 @@ class AITools:
                 "cost": money_str(product.cost or 0)
             })
         payload = {"total_products": len(rows), "inventory": result, "matched_by": matched_by}
+        if sku_identifier:
+            payload['identifier_query'] = True
         if not result:
             # Nothing matched: hand back the real vocabulary (size, categories and
             # a spread of real names) so the assistant can retry with a term that
@@ -1565,10 +1608,20 @@ class AITools:
         Product = self._get_model('Product')
         choices = Product.query
         if query:
-            choices = choices.filter(Product.name.ilike(f'%{query}%'))
+            query = str(query).strip()
+            sku_column = getattr(Product, 'sku', None)
+            sku_matches = (choices.filter(self.db.func.lower(sku_column) == query.lower())
+                           if sku_column is not None else None)
+            if sku_matches is not None and sku_matches.first():
+                # Procurement is shared: return all branch choices, never pick one.
+                choices = sku_matches
+            elif re.fullmatch(r'(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]+(?:[-_.:/][A-Za-z0-9]+)+', query):
+                choices = choices.filter(Product.barcode == query)
+            else:
+                choices = choices.filter(Product.name.ilike(f'%{query}%'))
         products = choices.order_by(Product.name, Product.id).limit(self._limit(limit, 50)).all()
         rows = [{"product_id": p.id, "name": p.name, "branch_id": p.branch_id,
-                 "cost": money_str(p.cost or 0)} for p in products]
+                 "sku": getattr(p, "sku", None), "cost": money_str(p.cost or 0)} for p in products]
         return {"products": rows, "total_products": len(rows)}
         
     def get_supplier_details(self, supplier_id: int) -> Dict[str, Any]:
@@ -1587,6 +1640,7 @@ class AITools:
             price_agreements.append({
                 "product_id": pa.product_id,
                 "product_name": pa.product.name if pa.product else None,
+                "sku": getattr(pa.product, "sku", None),
                 "agreed_price": money_str(pa.agreed_price),
                 "valid_from": pa.valid_from.isoformat() if pa.valid_from else None,
                 "valid_to": pa.valid_to.isoformat() if pa.valid_to else None
@@ -1646,6 +1700,7 @@ class AITools:
                     "product_id": item.product_id,
                     "product_branch_id": item.product.branch_id if item.product else None,
                     "product_name": item.product.name if item.product else None,
+                    "sku": getattr(item.product, "sku", None),
                     "ordered_qty": item.ordered_qty,
                     "received_qty": item.received_qty,
                     "unit_cost": money_str(item.unit_cost or 0)
@@ -1735,6 +1790,7 @@ class AITools:
             created_items.append({
                 "product_id": product_id,
                 "product_name": product.name,
+                "sku": getattr(product, "sku", None),
                 "quantity": quantity,
                 "unit_cost": money_str(unit_cost)
             })
@@ -1824,6 +1880,7 @@ class AITools:
                     "product_branch_id": item.product.branch_id if item.product else None,
                     "product_name": item.product.name if item.product else None,
                     "barcode": item.product.barcode if item.product else None,
+                    "sku": getattr(item.product, "sku", None),
                     "quantity": item.quantity,
                     "location": item.location,
                     "batch_number": item.batch_number,
@@ -1927,6 +1984,8 @@ class AITools:
             self.db.session.commit()
             self.db.session.expire_all()
             return {"success": True, "transfer_id": transfer.id, "product_id": product_id,
+                "sku": getattr(target, "sku", None),
+                "source_sku": getattr(product, "sku", None),
                 "target_product_id": target.id, "target_branch_id": target_branch_id,
                 "product_name": target.name, "quantity_transferred": quantity,
                 "new_stock_level": target.stock, "transferred_from": transferred_from}
@@ -1974,6 +2033,10 @@ class AITools:
         ranked = query.filter(Product.id.isnot(None)).group_by(SaleItem.product_id, Product.name)
         total_products = ranked.count()
         rows = ranked.order_by(quantity.desc(), SaleItem.product_id.asc()).limit(top_n).all()
+        sku_by_id = {}
+        if hasattr(Product, "sku") and rows:
+            sku_by_id = dict(self.db.session.query(Product.id, Product.sku).filter(
+                Product.id.in_([row.product_id for row in rows])).all())
         return self._scope({
             "period": "all_time" if all_time else "rolling_days",
             "period_days": None if all_time else days,
@@ -1987,22 +2050,40 @@ class AITools:
             },
             "top_selling_products": [{
                 "product_id": row.product_id, "product_name": row.name or "Unknown (deleted product)",
+                "sku": sku_by_id.get(row.product_id),
                 "total_quantity": row.total_quantity,
                 "total_revenue": money_plain(row.total_revenue or 0),
                 "sale_count": row.sale_count,
             } for row in rows],
         })
         
-    def get_product_details(self, product_id: int = None, barcode: str = None) -> Dict[str, Any]:
+    def get_product_details(self, product_id: int = None, barcode: str = None,
+                            sku: str = None) -> Dict[str, Any]:
         """Get detailed product information"""
         Product = self._get_model('Product')
         
-        if product_id:
+        if sku is not None:
+            if not isinstance(sku, str) or not sku.strip() or len(sku.strip()) > 100:
+                return {"error": "sku must be a nonblank string of at most 100 characters"}
+            sku_column = getattr(Product, 'sku', None)
+            if sku_column is None:
+                return {"error": "Product not found"}
+            matches = self._branch_filter(Product.query.filter(
+                self.db.func.lower(sku_column) == sku.strip().lower()), Product)
+            if product_id is not None:
+                matches = matches.filter_by(id=product_id)
+            if barcode is not None:
+                matches = matches.filter_by(barcode=barcode)
+            matches = matches.all()
+            if len(matches) > 1:
+                return {"error": "SKU is ambiguous across branches; select an active branch or provide product_id"}
+            product = matches[0] if matches else None
+        elif product_id:
             product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
         elif barcode:
             product = self._branch_filter(Product.query.filter_by(barcode=barcode), Product).first()
         else:
-            return {"error": "Either product_id or barcode must be provided"}
+            return {"error": "Either product_id, barcode or sku must be provided"}
             
         if not product:
             return {"error": "Product not found"}
@@ -2010,7 +2091,7 @@ class AITools:
         if trusted_tool_context(self.context).get('role') in ('cashier', 'staff'):
             return self._scope({
                 'product_id': product.id, 'name': product.name,
-                'barcode': product.barcode, 'category': product.category,
+                'barcode': product.barcode, 'sku': getattr(product, 'sku', None), 'category': product.category,
                 'price': money_str(product.price or 0), 'stock': product.stock or 0,
                 'tax_rate': float(product.tax_rate or 0),
             })
@@ -2028,6 +2109,7 @@ class AITools:
         return {
             "product_id": product.id,
             "name": product.name,
+            "sku": getattr(product, "sku", None),
             "barcode": product.barcode,
             "category": product.category,
             "price": money_str(product.price or 0),
@@ -2078,6 +2160,7 @@ class AITools:
             suggestions.append({
                 "product_id": product_id,
                 "name": item['name'],
+                "sku": item.get("sku"),
                 "current_stock": item['current_stock'],
                 "daily_sales_velocity": round(daily_velocity, 2),
                 "suggested_reorder_qty": suggested_qty,
@@ -2160,7 +2243,7 @@ class AITools:
             state = 'active' if promo.start_date <= now <= promo.end_date else ('upcoming' if promo.start_date > now else 'expired')
             if status and status.lower() not in ('all', state):
                 continue
-            rows.append({"id": promo.id, "product_id": promo.product_id, "product_name": promo.product.name if promo.product else None,
+            rows.append({"id": promo.id, "product_id": promo.product_id, "product_name": promo.product.name if promo.product else None, "sku": getattr(promo.product, "sku", None),
                          "discount_type": promo.discount_type, "discount_value": money_str(promo.discount_value or 0), "status": state,
                          "start_date": promo.start_date.isoformat() if promo.start_date else None, "end_date": promo.end_date.isoformat() if promo.end_date else None})
         return self._scope({"total_promotions": len(rows), "promotions": rows})
@@ -2329,7 +2412,7 @@ class AITools:
     def get_warehouse_transfer_history(self, limit: int = 20) -> Dict[str, Any]:
         Transfer = self._get_model('WarehouseTransfer')
         transfers = Transfer.query.order_by(Transfer.created_at.desc()).limit(self._limit(limit)).all()
-        rows = [{"id": t.id, "target_branch_id": t.branch_id, "product_name": t.product.name if t.product else 'Unknown', "quantity": t.quantity, "batch_number": t.batch_number, "performed_by": t.performer.username if t.performer else None, "created_at": t.created_at.isoformat() if t.created_at else None} for t in transfers]
+        rows = [{"id": t.id, "target_branch_id": t.branch_id, "product_name": t.product.name if t.product else 'Unknown', "sku": getattr(t.product, "sku", None), "quantity": t.quantity, "batch_number": t.batch_number, "performed_by": t.performer.username if t.performer else None, "created_at": t.created_at.isoformat() if t.created_at else None} for t in transfers]
         return {"total_transfers": len(rows), "transfers": rows}
 
     def get_sales_summary(self, days: int = 30, limit: int = 10, all_time: bool = False) -> Dict[str, Any]:
@@ -2518,10 +2601,13 @@ class AITools:
     def upsert_product(self, name: str, price, cost=None, tax_rate=0.0, stock: int = 0,
                        category: str = None, reorder_point: int = 10,
                        reorder_quantity: int = 50, barcode: str = None,
-                       product_id: int = None) -> Dict[str, Any]:
+                       product_id: int = None, sku: str = None) -> Dict[str, Any]:
         """Create a product or update an existing one (manager only)."""
         Product = self._get_model('Product')
         Category = self._get_model('Category')
+        normalized_sku, error = self._validate_sku(sku, product_id)
+        if error:
+            return error
         if not isinstance(name, str) or not name.strip():
             return {"error": "Product name is required"}
         name = name.strip()
@@ -2602,16 +2688,20 @@ class AITools:
             )
             self.db.session.add(product)
             created = True
+        if sku is not None:
+            product.sku = normalized_sku
+            changed_fields.append("sku")
         try:
             self.db.session.commit()
         except Exception:
             self.db.session.rollback()
-            return {"error": "Failed to save product; check for a duplicate barcode in the active branch"}
+            return {"error": "Failed to save product; check for a duplicate barcode or SKU in the active branch"}
         return {
             "success": True,
             "created": created,
             "product_id": product.id,
             "product_name": product.name,
+            "sku": getattr(product, "sku", None),
             "changed_fields": changed_fields,
             "price": money_plain(product.price),
             "cost": money_plain(product.cost or 0),
@@ -2623,7 +2713,7 @@ class AITools:
     def update_product(self, product_id: int, name: str = None, barcode: str = None,
                        category: str = None, price=None, cost=None, tax_rate=None,
                        reorder_point: int = None, reorder_quantity: int = None,
-                       reorder_enabled: bool = None) -> Dict[str, Any]:
+                       reorder_enabled: bool = None, sku: str = None) -> Dict[str, Any]:
         """Edit one product in place; every field you do not pass keeps its value."""
         Product = self._get_model('Product')
         Category = self._get_model('Category')
@@ -2632,11 +2722,14 @@ class AITools:
         product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
         if not product:
             return {"error": f"Product with ID {product_id} not found in the active branch"}
-        fields = {"name": name, "barcode": barcode, "category": category, "price": price,
+        normalized_sku, error = self._validate_sku(sku, product_id)
+        if error:
+            return error
+        fields = {"name": name, "barcode": barcode, "sku": sku, "category": category, "price": price,
                   "cost": cost, "tax_rate": tax_rate, "reorder_point": reorder_point,
                   "reorder_quantity": reorder_quantity, "reorder_enabled": reorder_enabled}
         if all(value is None for value in fields.values()):
-            return {"error": "Tell me which field to change: name, barcode, category, price, "
+            return {"error": "Tell me which field to change: name, barcode, sku, category, price, "
                              "cost, tax_rate, reorder_point, reorder_quantity or reorder_enabled"}
 
         changed = []
@@ -2725,16 +2818,24 @@ class AITools:
             product.reorder_enabled = bool(reorder_enabled)
             changed.append("reorder_enabled")
 
+        if sku is not None and normalized_sku != getattr(product, 'sku', None):
+            product.sku = normalized_sku
+            changed.append("sku")
         if not changed:
             return {"success": True, "product_id": product.id,
-                    "product_name": product.name, "changed": [],
+                    "product_name": product.name, "sku": getattr(product, 'sku', None), "changed": [],
                     "message": f"Nothing to change: '{product.name}' already matches."}
-        self.db.session.commit()
+        try:
+            self.db.session.commit()
+        except Exception:
+            self.db.session.rollback()
+            return {"error": "Failed to save product; check for a duplicate barcode or SKU in the active branch"}
         if changed == ["name"]:
             message = f"Renamed product {product.id} to '{product.name}'."
         else:
             message = f"Updated '{product.name}' ({', '.join(changed)})."
         return {"success": True, "product_id": product.id, "product_name": product.name,
+                "sku": getattr(product, "sku", None),
                 "barcode": product.barcode, "category": product.category,
                 "price": money_plain(product.price or 0),
                 "cost": money_plain(product.cost or 0),
@@ -2765,6 +2866,7 @@ class AITools:
             "success": True,
             "product_id": product.id,
             "product_name": product.name,
+            "sku": getattr(product, "sku", None),
             "previous_stock": old_stock,
             "delta": delta_val,
             "new_stock": new_stock,
@@ -2807,6 +2909,7 @@ class AITools:
             "promotion_id": promotion.id,
             "product_id": product.id,
             "product_name": product.name,
+            "sku": getattr(product, "sku", None),
             "discount_type": discount_type,
             "discount_value": money_plain(value_dec),
             "start_date": start_dt.date().isoformat(),
@@ -3134,6 +3237,7 @@ class AITools:
                 "requires_cascade": True,
                 "product_id": product.id,
                 "product_name": product.name,
+                "sku": getattr(product, "sku", None),
                 "usage": removable_usage,
                 "sales_history_count": sales_history_count,
                 "error": (
@@ -3149,6 +3253,7 @@ class AITools:
                 "needs_confirmation": True,
                 "product_id": product.id,
                 "product_name": product.name,
+                "sku": getattr(product, "sku", None),
                 "sales_history_count": sales_history_count,
                 "error": (
                     f"Product '{product.name}' (ID {product.id}) has "
@@ -3160,6 +3265,7 @@ class AITools:
             }
 
         product_name = product.name
+        product_sku = getattr(product, "sku", None)
         removed = {}
         if removable_usage:
             # Mirrors remove_product_catalog_records() in app.py; the agent
@@ -3184,6 +3290,7 @@ class AITools:
             "success": True,
             "deleted_product_id": product_id,
             "deleted_product_name": product_name,
+            "sku": product_sku,
             "changed_fields": ["deleted"]
         }
         if sales_history_count:
@@ -3293,6 +3400,7 @@ class AITools:
             "success": True,
             "product_id": product.id,
             "product_name": product.name,
+            "sku": getattr(product, "sku", None),
             "old_price": money_plain(old_price),
             "new_price": money_plain(price_dec),
             "changed_fields": ["price"]

@@ -57,7 +57,7 @@ class WarehouseReportBuilderTests(unittest.TestCase):
         report = self._report()
         self.assertEqual(
             [entry["label"] for entry in report["columns"]],
-            ["Product Name", "Catalog Branch", "Barcode", "Location", "Batch", "Qty", "Unit cost",
+            ["Product Name", "Catalog Branch", "Barcode", "SKU", "Location", "Batch", "Qty", "Unit cost",
              "Stock value", "Shop stock", "Received", "Expiry"],
         )
         first = report["rows"][0]
@@ -320,7 +320,7 @@ class ReportRendererTests(unittest.TestCase):
         sheet = parts["xl/worksheets/sheet1.xml"]
         # Header on row 4, two data rows, then the totals row: the filter must
         # cover the data rows only, and the totals must not overwrite them.
-        self.assertIn('autoFilter ref="A4:K6"', sheet)
+        self.assertIn('autoFilter ref="A4:L6"', sheet)
         self.assertIn('<row r="7"', sheet)
         self.assertIn("<v>7.5</v>", sheet)     # first line stock value
         self.assertIn("<v>40</v>", sheet)      # second line quantity (data row)
@@ -358,7 +358,7 @@ class ReportRendererTests(unittest.TestCase):
         self.assertIn("Purchase Order Report", shared)
         self.assertIn("Coffee Beans", shared)
         item_sheet = archive.read("xl/worksheets/sheet2.xml").decode("utf-8")
-        self.assertIn('autoFilter ref="A4:H5"', item_sheet)
+        self.assertIn('autoFilter ref="A4:I5"', item_sheet)
         # Progress and money are numeric cells so the columns can be summed.
         self.assertIn("<v>100</v>", item_sheet)   # 3 of 3 received
         self.assertIn("<v>90</v>", item_sheet)    # line total + line total total
@@ -369,7 +369,7 @@ class ReportRendererTests(unittest.TestCase):
 class ProductCatalogReportTests(unittest.TestCase):
     def test_untrusted_catalog_text_is_not_an_excel_formula_or_link(self):
         report = reports.build_product_catalog_report([
-            {'barcode': '=1+1', 'product_name': '=HYPERLINK("https://example.com", "click")',
+            {'barcode': '=1+1', 'sku': '=SKU(1)', 'product_name': '=HYPERLINK("https://example.com", "click")',
              'category': 'https://example.com', 'price': 12.50, 'stock': 3},
         ], generated_by='=1+2', filters_text='=1+3')
         archive = zipfile.ZipFile(io.BytesIO(reports.build_report_xlsx(report)))
@@ -381,20 +381,81 @@ class ProductCatalogReportTests(unittest.TestCase):
         strings = archive.read('xl/sharedStrings.xml').decode('utf-8')
         self.assertIn('=1+1', strings)
         self.assertIn('=1+3', strings)
+        self.assertIn('=SKU(1)', strings)
 
     def test_catalog_has_public_columns_and_stock_totals(self):
         report = reports.build_product_catalog_report([
-            {'barcode': '1234567890123', 'product_name': 'Coffee',
+            {'barcode': '1234567890123', 'sku': 'COFFEE-001', 'product_name': 'Coffee',
              'price': 12.50, 'stock': 3, 'tax_rate': 5, 'cost': 7.25},
             {'product_name': 'Tea', 'price': 4, 'stock': 2},
         ], branch_name='Downtown')
         self.assertEqual(report['totals']['stock'], 5)
         self.assertEqual([entry['key'] for entry in report['columns']],
-                         ['barcode', 'product_name', 'category', 'price', 'stock', 'unit', 'tax_rate'])
+                          ['barcode', 'sku', 'product_name', 'category', 'price', 'stock', 'unit', 'tax_rate'])
         self.assertEqual(report['rows'][0]['barcode'], '1234567890123')
+        self.assertEqual(report['rows'][0]['sku'], 'COFFEE-001')
+        self.assertIsNone(report['rows'][1]['sku'])
         self.assertNotIn('cost', report['rows'][0])
         self.assertTrue(reports.build_report_pdf(report).startswith(b'%PDF'))
         self.assertTrue(reports.build_report_xlsx(report).startswith(b'PK'))
+
+
+class SkuReportTests(unittest.TestCase):
+    def test_optional_sku_exports_blank_and_preserves_leading_zeros(self):
+        import xml.etree.ElementTree as ET
+
+        report = reports.build_product_catalog_report([
+            {'product_name': 'Legacy', 'sku': None},
+            {'product_name': 'Numbered', 'sku': '000123'},
+        ])
+        archive = zipfile.ZipFile(io.BytesIO(reports.build_report_xlsx(report)))
+        ns = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        sheet = ET.fromstring(archive.read('xl/worksheets/sheet1.xml'))
+        blank = sheet.find(".//s:c[@r='B5']", ns)
+        self.assertIsNotNone(blank)
+        shared = ET.fromstring(archive.read('xl/sharedStrings.xml'))
+        blank_index = int(blank.find('s:v', ns).text)
+        self.assertEqual(''.join(shared[blank_index].itertext()), '')
+        strings = archive.read('xl/sharedStrings.xml').decode('utf-8')
+        self.assertIn('000123', strings)
+
+    def test_inventory_reports_keep_sku_distinct_from_barcode(self):
+        for builder in (reports.build_warehouse_stock_report, reports.build_low_stock_report):
+            with self.subTest(builder=builder.__name__):
+                report = builder([
+                    {'product_name': 'Coffee', 'barcode': 'BAR-001', 'sku': 'SKU-001'},
+                    {'product_name': 'Legacy', 'barcode': 'BAR-002'},
+                ])
+                keys = [entry['key'] for entry in report['columns']]
+                self.assertEqual(keys[keys.index('barcode') + 1], 'sku')
+                self.assertEqual(report['rows'][0]['sku'], 'SKU-001')
+                self.assertEqual(report['rows'][0]['barcode'], 'BAR-001')
+                self.assertIsNone(report['rows'][1]['sku'])
+                pdf = reports.build_report_pdf(report, compress=False)
+                self.assertIn(b'SKU-001', pdf)
+                self.assertIn(b'BAR-001', pdf)
+                archive = zipfile.ZipFile(io.BytesIO(reports.build_report_xlsx(report)))
+                self.assertIn('SKU-001', archive.read('xl/sharedStrings.xml').decode('utf-8'))
+
+    def test_warehouse_accepts_product_sku_alias_without_barcode_fallback(self):
+        report = reports.build_warehouse_stock_report([
+            {'product_sku': 'SKU-ALIAS', 'barcode': 'BAR-001'},
+            {'sku': None, 'barcode': 'BAR-002'},
+        ])
+        self.assertEqual(report['rows'][0]['sku'], 'SKU-ALIAS')
+        self.assertIsNone(report['rows'][1]['sku'])
+
+    def test_procurement_item_sheet_accepts_sku_and_product_sku(self):
+        sheet = reports.build_purchase_order_item_sheet([{'po_number': 'PO-1', 'items': [
+            {'product_name': 'Coffee', 'sku': 'SKU-001', 'barcode': 'BAR-001'},
+            {'product_name': 'Tea', 'product_sku': 'SKU-002'},
+            {'product_name': 'Legacy', 'barcode': 'BAR-003'},
+        ]}])
+        self.assertIn('sku', [entry['key'] for entry in sheet['columns']])
+        self.assertEqual([row['sku'] for row in sheet['rows']], ['SKU-001', 'SKU-002', None])
+        report = reports.build_purchase_order_report([])
+        archive = zipfile.ZipFile(io.BytesIO(reports.build_report_xlsx(report, extra_sheets=[sheet])))
+        self.assertIn('SKU-002', archive.read('xl/sharedStrings.xml').decode('utf-8'))
 
 
 class ReportExportEndpointTests(unittest.TestCase):

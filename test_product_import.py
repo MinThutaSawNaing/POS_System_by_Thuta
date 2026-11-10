@@ -131,7 +131,7 @@ class ProductImportTests(unittest.TestCase):
         from product_import import _xlsx
         header = next(cells for number, cells in _xlsx(response.data)[0] if number == 1)
         self.assertEqual([cell[0] for cell in header],
-                         ['Name', 'Barcode', 'Price', 'Cost', 'Category', 'Unit', 'Tax Rate', 'Photo'])
+                         ['Name', 'Barcode', 'SKU', 'Price', 'Cost', 'Category', 'Unit', 'Tax Rate', 'Photo'])
         content = workbook([['Name', 'Barcode', 'Price', 'Unit', 'Stock'], ['Tea', '0000123', 12.5, 'pc', 99]])
         response = self.post('preview', content)
         self.assertEqual(response.status_code, 200, response.get_json())
@@ -162,12 +162,94 @@ class ProductImportTests(unittest.TestCase):
 
     def test_updates_only_nonblank_catalog_fields_and_preserves_identity(self):
         product = self.product()
-        content, preview = self.preview([['SKU', 'Selling Price', 'Cost Price', 'Name'], ['T', 20, '', 'Renamed']], duplicate_mode='update')
+        content, preview = self.preview([['Barcode', 'Selling Price', 'Cost Price', 'Name'], ['T', 20, '', 'Renamed']], duplicate_mode='update')
         self.assertEqual(preview['preview']['rows'][0]['action'], 'update')
         self.assertEqual(self.post('commit', content, duplicate_mode='update', preview_token=preview['preview_token']).status_code, 200)
         db.session.expire_all()
         self.assertEqual((product.name, product.price, product.cost, product.stock, product.catalog_id, product.photo_filename),
                          ('Renamed', 20, 4, 17, 'keep-catalog', 'keep.png'))
+
+    def test_sku_is_optional_independent_text_and_previewed(self):
+        content, preview = self.preview([
+            ['Name', 'Barcode', 'SKU', 'Price'],
+            ['Tea', '0000123', '0000456', 12],
+            ['Coffee', '', '', 8]])
+        self.assertEqual(preview['mapping']['sku'], 'SKU')
+        self.assertEqual(preview['mapping']['barcode'], 'Barcode')
+        self.assertEqual(preview['preview']['rows'][0]['sku'], '0000456')
+        self.assertEqual(preview['preview']['summary']['create'], 2)
+        self.assertEqual(self.post('commit', content, preview_token=preview['preview_token']).status_code, 200)
+        tea = Product.query.filter_by(name='Tea').one()
+        self.assertEqual((tea.barcode, tea.sku), ('0000123', '0000456'))
+        self.assertIsNone(Product.query.filter_by(name='Coffee').one().sku)
+
+    def test_sku_only_identity_and_blank_or_missing_sku_preserve(self):
+        product = self.product(sku='000AbC')
+        for headers, row in [(['SKU', 'Price'], ['000abc', 20]),
+                             (['Barcode', 'SKU', 'Price'], ['T', '', 21]),
+                             (['Barcode', 'Price'], ['T', 22])]:
+            with self.subTest(headers=headers):
+                content, preview = self.preview([headers, row], duplicate_mode='update')
+                self.assertEqual(preview['preview']['summary']['update'], 1)
+                self.assertEqual(self.post('commit', content, duplicate_mode='update',
+                                          preview_token=preview['preview_token']).status_code, 200)
+                db.session.refresh(product)
+                self.assertEqual(product.price, row[-1])
+                self.assertEqual(product.sku, '000abc')
+                self.assertEqual(product.barcode, 'T')
+
+    def test_sku_branch_scope_and_sku_only_does_not_alias_barcode(self):
+        self.product(branch_id=self.other.id, sku='0001')
+        content, preview = self.preview([['Name', 'SKU', 'Price'], ['Coffee', '0001', 12]])
+        self.assertEqual(preview['preview']['summary']['create'], 1)
+        self.assertNotIn('barcode', preview['mapping'])
+        self.assertEqual(self.post('commit', content, preview_token=preview['preview_token']).status_code, 200)
+        product = Product.query.filter_by(branch_id=self.branch.id).one()
+        self.assertEqual(product.sku, '0001')
+        self.assertIsNone(product.barcode)
+
+    def test_sku_collisions_duplicates_and_length_are_atomic_errors(self):
+        self.product(sku='SKU-A')
+        self.product(name='Coffee', barcode='C', sku='SKU-B', catalog_id='coffee')
+        cases = [
+            [['Tea', 'T', 'sku-b', 12]],
+            [['Tea', 'NEW', 'sku-a', 12]],
+            [['Tea', '', 'unused', 12]],
+            [['New', 'N', 'x' * 101, 12]],
+            [['New', 'N', 'Repeated', 12], ['Other', 'O', 'REPEATED', 13]],
+        ]
+        for rows in cases:
+            with self.subTest(rows=rows):
+                content, preview = self.preview([['Name', 'Barcode', 'SKU', 'Price']] + rows,
+                                                duplicate_mode='update')
+                self.assertEqual(preview['preview']['summary']['error'], len(rows))
+                self.assertEqual(self.post('commit', content, duplicate_mode='update',
+                                          preview_token=preview['preview_token']).status_code, 400)
+                self.assertEqual(Product.query.count(), 2)
+
+    def test_distinct_identifiers_cannot_update_same_product_twice(self):
+        product = self.product(sku='SKU-A')
+        content, preview = self.preview([
+            ['Barcode', 'SKU', 'Price'], ['T', '', 12], ['', 'sku-a', 25],
+        ], duplicate_mode='update')
+        self.assertEqual(preview['preview']['summary']['error'], 2, preview)
+        for row in preview['preview']['rows']:
+            self.assertIn('Repeated file target product', row['message'])
+        response = self.post('commit', content, duplicate_mode='update',
+                             preview_token=preview['preview_token'])
+        self.assertEqual(response.status_code, 400, response.get_json())
+        db.session.refresh(product)
+        self.assertEqual(product.price, 10)
+
+    def test_barcode_match_can_assign_sku_and_accepts_100_characters(self):
+        product = self.product()
+        sku = '0' * 100
+        content, preview = self.preview([['Barcode', 'SKU'], ['T', sku]], duplicate_mode='update')
+        self.assertEqual(preview['preview']['summary']['update'], 1)
+        self.assertEqual(self.post('commit', content, duplicate_mode='update',
+                                  preview_token=preview['preview_token']).status_code, 200)
+        db.session.refresh(product)
+        self.assertEqual(product.sku, sku)
 
     def test_unknown_headers_can_be_remapped_and_effective_mapping_is_signed(self):
         content, initial = self.preview([['Description', 'Scan', 'Retail'], ['Tea', '0001', 12]])
@@ -244,6 +326,53 @@ class ProductImportTests(unittest.TestCase):
         book.close()
         preview = self.post('preview', output.getvalue()).get_json()
         self.assertEqual(preview['preview']['rows'][0]['barcode'], '000123')
+
+    def test_numeric_sku_precision_zero_padding_and_formulas(self):
+        for value in (1234567890123456, '=1+1'):
+            _, preview = self.preview([['Name', 'SKU', 'Price'], ['Tea', value, 12]])
+            self.assertEqual(preview['preview']['summary']['error'], 1)
+        output = io.BytesIO()
+        book = xlsxwriter.Workbook(output, {'in_memory': True})
+        sheet = book.add_worksheet()
+        sheet.write_row(0, 0, ['Name', 'SKU', 'Price'])
+        sheet.write(1, 0, 'Tea')
+        sheet.write_number(1, 1, 123, book.add_format({'num_format': '000000'}))
+        sheet.write(1, 2, 12)
+        book.close()
+        preview = self.post('preview', output.getvalue()).get_json()
+        self.assertEqual(preview['preview']['rows'][0]['sku'], '000123')
+        self.assertEqual(preview['preview']['summary']['create'], 1)
+
+    def test_csv_preserves_sku_text_leading_zeros(self):
+        content = b'Name,Barcode,SKU,Price\nTea,000123,000456,12\n'
+        fields = {'duplicate_mode': 'skip'}
+        response = self.client.post('/api/products/import/preview', data={
+            **fields, 'file': (io.BytesIO(content), 'catalog.csv')})
+        self.assertEqual(response.status_code, 200)
+        preview = response.get_json()
+        self.assertEqual(preview['preview']['rows'][0]['sku'], '000456')
+        result = self.client.post('/api/products/import/commit', data={
+            **fields, 'file': (io.BytesIO(content), 'catalog.csv'),
+            'preview_token': preview['preview_token']})
+        self.assertEqual(result.status_code, 200, result.get_json())
+        self.assertEqual(Product.query.one().sku, '000456')
+
+    def test_sku_export_layout_footer_roundtrip(self):
+        self.product(sku='000123')
+        self.product(name='Coffee', barcode=None, sku=None, catalog_id='coffee')
+        self.product(name='Juice', barcode=None, sku=None, catalog_id='juice')
+        content = workbook([
+            ['Product List'], ['Branch: Local'], [],
+            ['Barcode', 'SKU', 'Product Name', 'Category', 'Price', 'Stock', 'Unit', 'Tax rate'],
+            ['T', '000123', 'Tea', '—', 10, 17, '—', 0],
+            ['—', '—', 'Coffee', '—', 10, 17, '—', 0],
+            ['—', '—', 'Juice', '—', 10, 17, '—', 0],
+            ['TOTAL', '', '', '', '', 51, '', '']])
+        preview = self.post('preview', content).get_json()
+        self.assertEqual(preview['preview']['summary'], {'create': 0, 'update': 0, 'skip': 3, 'error': 0})
+        self.assertEqual(preview['preview']['rows'][0]['sku'], '000123')
+        self.assertEqual(preview['preview']['rows'][1]['sku'], '')
+        self.assertEqual(preview['preview']['rows'][1]['barcode'], '')
 
     def test_own_export_metadata_and_total_row_are_not_products(self):
         self.product()
@@ -376,7 +505,7 @@ class ProductImportTests(unittest.TestCase):
     def test_initial_inference_matches_ui_full_mapping_on_commit(self):
         content, preview = self.preview([['Item Name', 'SKU', 'Selling Price'], ['Tea', 'T', 12]])
         mapping = {key: preview['mapping'].get(key, '') for key in
-                   ('name', 'barcode', 'price', 'cost', 'category', 'unit', 'tax_rate')}
+                   ('name', 'barcode', 'sku', 'price', 'cost', 'category', 'unit', 'tax_rate')}
         response = self.post('commit', content, mapping=json.dumps(mapping), preview_token=preview['preview_token'])
         self.assertEqual(response.status_code, 200, response.get_json())
 
@@ -464,7 +593,7 @@ class ProductImportTests(unittest.TestCase):
         previous = Path(app.config['UPLOAD_FOLDER']) / 'previous.png'
         previous.write_bytes(b'old photo')
         product = self.product(photo_filename='previous.png')
-        content = picture_workbook([['SKU', 'Selling Price', 'Photo'], ['T', 20, '']])
+        content = picture_workbook([['Barcode', 'Selling Price', 'Photo'], ['T', 20, '']])
         preview = self.post('preview', content, duplicate_mode='update').get_json()
         self.assertEqual(preview['preview']['rows'][0]['action'], 'update', preview)
         result = self.post('commit', content, duplicate_mode='update',

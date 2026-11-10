@@ -201,7 +201,7 @@ raise.
   string and used to surface as the generic "I'm sorry, something went wrong.
   Please try again." reply.
 - **A specific question needs a specific field.** `search_products` renders as
-  `🔎 Product Search` with barcode, category, price and stock per match;
+  `🔎 Product Search` with SKU, barcode, category, price and stock per match;
   `get_product_details` always prints the barcode; `get_inventory_status` and
   `get_low_stock_items` add `Barcode:` when the request asked for one
   (`original_command` is passed in for exactly this). Never answer a "what is

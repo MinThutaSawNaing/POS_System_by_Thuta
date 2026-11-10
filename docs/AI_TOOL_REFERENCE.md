@@ -1061,6 +1061,10 @@ Get detailed information about a specific product including stock, pricing, and 
     "barcode": {
       "type": "string",
       "description": "Alternative: the barcode of the product."
+    },
+    "sku": {
+      "type": "string",
+      "description": "Alternative: exact case-insensitive SKU in the active branch, distinct from barcode."
     }
   }
 }
@@ -1093,7 +1097,7 @@ List active-branch promotions, optionally filtered to active, upcoming, or expir
 
 ## `get_purchase_order_products`
 
-Find shared purchase-order product choices across branches by name. Use explicit product IDs for PO items; normal product tools remain branch-local.
+Find shared purchase-order product choices across branches by exact case-insensitive SKU first, then name. Same SKU in multiple branches returns all choices with branch IDs; resolve ambiguity and use explicit product IDs for PO items. Normal product tools remain branch-local.
 
 - Category: `purchasing`
 - Mutates data: `False`
@@ -1106,7 +1110,7 @@ Find shared purchase-order product choices across branches by name. Use explicit
   "properties": {
     "query": {
       "type": "string",
-      "description": "Optional product name filter."
+      "description": "Optional exact SKU or product name filter."
     },
     "limit": {
       "type": "integer",
@@ -1842,7 +1846,7 @@ Schedule a report email to be sent every day or every week at a chosen local tim
 
 ## `search_products`
 
-Search products in the active branch by name. Returns stock level, price, cost and status for every matching product.
+Search products in the active branch by exact case-insensitive SKU first, then name, barcode or category. SKU is distinct from barcode. Returns SKU, stock level, price, cost and status for every matching product.
 
 - Category: `inventory`
 - Mutates data: `False`
@@ -1855,7 +1859,7 @@ Search products in the active branch by name. Returns stock level, price, cost a
   "properties": {
     "query": {
       "type": "string",
-      "description": "Product name or part of a name to search for."
+      "description": "Exact SKU (case insensitive), product name, barcode or category. SKU fragments are not searched."
     },
     "limit": {
       "type": "integer",
@@ -2149,7 +2153,7 @@ Move a delivery to its next valid stage: to_deliver -> packaged -> delivering ->
 
 ## `update_product`
 
-Rename or partially edit one existing product: name, barcode, category, price, cost, tax rate or reorder settings. Only the fields you pass change; stock is untouched (use adjust_product_stock). Use get_product_details or search_products first to find product_id.
+Rename or partially edit one existing product: name, barcode, SKU, category, price, cost, tax rate or reorder settings. Only the fields you pass change; stock is untouched (use adjust_product_stock). Use get_product_details or search_products first to find product_id.
 
 - Category: `inventory`
 - Mutates data: `True`
@@ -2171,6 +2175,10 @@ Rename or partially edit one existing product: name, barcode, category, price, c
     "barcode": {
       "type": "string",
       "description": "New barcode value."
+    },
+    "sku": {
+      "type": "string",
+      "description": "New branch-unique SKU (case insensitive), max 100 characters after trimming. Blank clears it; omit to preserve."
     },
     "category": {
       "type": "string",
@@ -2534,6 +2542,10 @@ Create a product or update an existing product's price, cost, tax rate, stock, c
     "barcode": {
       "type": "string",
       "description": "Optional barcode."
+    },
+    "sku": {
+      "type": "string",
+      "description": "Optional branch-unique SKU (case insensitive), max 100 characters after trimming. Blank clears it; omission preserves it on update."
     },
     "product_id": {
       "type": "integer",

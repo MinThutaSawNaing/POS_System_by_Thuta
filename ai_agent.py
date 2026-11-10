@@ -117,7 +117,14 @@ class AIAgent:
         # Remove any existing system message
         self.conversation_history = [m for m in self.conversation_history if m.role != "system"]
         # Add new system message at the beginning
-        self.conversation_history.insert(0, Message(role="system", content=prompt))
+        sku_guidance = (
+            "\nSKU is an optional branch-scoped stock identifier, distinct from the physical barcode. "
+            "Use get_product_details(sku=...) for exact case-insensitive lookup; never substitute a "
+            "similar SKU or retry a missing SKU as unrelated name tokens. Resolve branch/product "
+            "ambiguity before writes. SKU is unique only within a branch. Omit sku to preserve it "
+            "on edits, or pass a blank string to clear it; maximum trimmed length is 100."
+        )
+        self.conversation_history.insert(0, Message(role="system", content=prompt + sku_guidance))
         
     def add_user_message(self, content: str):
         """Add a user message to the conversation"""

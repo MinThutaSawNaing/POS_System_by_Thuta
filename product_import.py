@@ -41,7 +41,8 @@ DRAWING = {'xdr': 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetD
            'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
 ALIASES = {
     'name': ('name', 'product name', 'item name'),
-    'barcode': ('barcode', 'sku'),
+    'barcode': ('barcode',),
+    'sku': ('sku',),
     'price': ('price', 'selling price'),
     'cost': ('cost', 'cost price'),
     'category': ('category',),
@@ -246,17 +247,20 @@ def _table(rows, supplied):
     body = [(n, c) for n, c in rows if n > header[0] and any(x[0].strip() or x[1] for x in c)]
     # Our own report has a fixed heading, column layout and a stock-only TOTAL
     # footer. Never interpret a client product merely named "Total" as a footer.
+    report_columns = ['Barcode', 'Product Name', 'Category', 'Price', 'Stock', 'Unit', 'Tax rate']
     own_report = (header[0] == 4 and rows[0][1][0][0] == 'Product List'
-                  and columns == ['Barcode', 'Product Name', 'Category', 'Price', 'Stock', 'Unit', 'Tax rate'])
+                  and columns in (report_columns, ['Barcode', 'SKU', *report_columns[1:]]))
     if own_report:
         if body:
             _, last = body[-1]
             if (last[0][0] == 'TOTAL' and not last[0][1]
-                    and all(not cell[0] and not cell[1] for i, cell in enumerate(last) if i not in (0, 4))):
+                    and all(not cell[0] and not cell[1] for i, cell in enumerate(last)
+                            if i not in (0, columns.index('Stock')))):
                 body.pop()
         cleaned = []
+        optional_columns = {columns.index(c) for c in ('Barcode', 'SKU', 'Category', 'Unit') if c in columns}
         for n, cells in body:
-            cleaned.append((n, [('', *cell[1:]) if i in (2, 5) and cell[0] == '—' else cell
+            cleaned.append((n, [('', *cell[1:]) if i in optional_columns and cell[0] == '—' else cell
                                 for i, cell in enumerate(cells)]))
         body = cleaned
     if len(body) > MAX_ROWS:
@@ -278,9 +282,12 @@ def _number(value, field):
 def _plan(columns, mapping, rows, products, categories, units, mode, create_categories, pictures=None):
     pictures = pictures or {}
     barcodes = {p.barcode: p for p in products if p.barcode}
+    skus = defaultdict(list)
     names, cats, measures = defaultdict(list), defaultdict(list), defaultdict(list)
     for product in products:
         names[_norm(product.name)].append(product)
+        if product.sku:
+            skus[product.sku.strip().casefold()].append(product)
     for category in categories:
         cats[_norm(category.name)].append(category)
     for unit in units:
@@ -316,7 +323,7 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
                         errors.append('Invalid percentage tax rate')
                 else:
                     errors.append('Percentage format is not allowed for price or cost')
-            if key == 'barcode' and value and numeric:
+            if key in ('barcode', 'sku') and value and numeric:
                 try:
                     digits = Decimal(value)
                     if not digits.is_finite() or digits < 0 or digits != digits.to_integral_value() or digits >= Decimal('1e15'):
@@ -325,34 +332,57 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
                     if re.fullmatch('0+', fmt):
                         value = value.zfill(len(fmt))
                 except (InvalidOperation, ValueError, OverflowError):
-                    errors.append('Ambiguous numeric barcode; format it as text (maximum 15 numeric digits)')
+                    errors.append('Ambiguous numeric ' + key + '; format it as text (maximum 15 numeric digits)')
             values[key] = value
         name, barcode = values.get('name', ''), values.get('barcode', '')
-        row = {'row': number, 'name': name, 'barcode': barcode, 'action': 'error', 'message': ''}
+        sku = values.get('sku', '')
+        row = {'row': number, 'name': name, 'barcode': barcode, 'sku': sku, 'action': 'error', 'message': ''}
         prepared.append((row, values, errors))
         if barcode:
             identities[('barcode', barcode)].append(errors)
+        if sku:
+            identities[('sku', sku.casefold())].append(errors)
         if name:
             identities[('name', _norm(name))].append(errors)
     for repeated in identities.values():
         if len(repeated) > 1:
             for errors in repeated:
-                errors.append('Repeated file identity (name or barcode)')
+                errors.append('Repeated file identity (name, barcode or SKU)')
     plans, result = [], []
+    resolved_rows = defaultdict(list)
     for row, values, errors in prepared:
         name, barcode = row['name'], row['barcode']
         existing = barcodes.get(barcode) if barcode else None
+        sku = row['sku']
+        sku_matches = skus.get(sku.casefold(), []) if sku else []
+        if len(sku_matches) > 1:
+            errors.append('Ambiguous existing SKU')
+        elif sku_matches:
+            sku_product = sku_matches[0]
+            if ((existing is not None and existing is not sku_product)
+                    or (barcode and sku_product.barcode != barcode)):
+                errors.append('Barcode/SKU collision with a different existing product')
+            elif existing is None:
+                existing = sku_product
+        if existing is not None:
+            resolved_rows[existing.id].append(row)
         same_names = names.get(_norm(name), []) if name else []
         if len(name) > 100 or len(barcode) > 50:
             errors.append('Name or barcode exceeds maximum length (100/50)')
+        if len(sku) > 100:
+            errors.append('SKU exceeds maximum length (100)')
         if len(same_names) > 1:
             errors.append('Ambiguous existing product name')
         if barcode and same_names and any(p.barcode != barcode for p in same_names):
             errors.append('Barcode/name collision with a different existing product')
+        if sku and same_names and any(p is not existing for p in same_names):
+            errors.append('SKU/name collision with a different existing product')
         if not name and existing is None:
             errors.append('Name is required for new products; map a name column')
         action = ('skip' if mode == 'skip' else 'update') if existing else ('skip' if not barcode and len(same_names) == 1 else 'create')
         changes = {}
+        if sku:
+            changes['sku'] = sku
         if name:
             changes['name'] = name
         for key in ('price', 'cost', 'tax_rate'):
@@ -401,7 +431,7 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
         else:
             row['action'] = action
             row['message'] = {'create': 'Create product (stock zero)', 'update': 'Update supplied nonblank catalog fields', 'skip': 'Existing product skipped'}[action]
-            if not barcode and action == 'skip':
+            if not barcode and not sku and action == 'skip':
                 row['message'] = 'Existing name matched; name-only rows are never updated'
             if category_name and category is None and action != 'skip':
                 row['message'] += '; create active category: ' + category_name
@@ -412,6 +442,15 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
                     row['photo'] = picture
                 plans.append((action, existing, barcode, changes, category, photo))
         result.append(row)
+    # Distinct supplied identifiers can still refer to the same stored product.
+    # Reject every such row instead of silently applying the last update twice.
+    repeated_targets = {identifier for identifier, rows in resolved_rows.items() if len(rows) > 1}
+    for identifier in repeated_targets:
+        for row in resolved_rows[identifier]:
+            row['action'] = 'error'
+            row['message'] = (row['message'] + '; Repeated file target product').strip('; ')
+            row.pop('changes', None)
+    plans = [plan for plan in plans if plan[1] is None or plan[1].id not in repeated_targets]
     summary = {action: sum(r['action'] == action for r in result) for action in ('create', 'update', 'skip', 'error')}
     return {'rows': result, 'summary': summary}, list(dict.fromkeys(warnings)), plans
 
@@ -443,13 +482,13 @@ def register_product_import(app, db, models):
         output = io.BytesIO()
         book = xlsxwriter.Workbook(output, {'in_memory': True})
         sheet = book.add_worksheet('Products')
-        sheet.write_row(0, 0, ['Name', 'Barcode', 'Price', 'Cost', 'Category', 'Unit', 'Tax Rate', 'Photo'])
+        sheet.write_row(0, 0, ['Name', 'Barcode', 'SKU', 'Price', 'Cost', 'Category', 'Unit', 'Tax Rate', 'Photo'])
         sheet.freeze_panes(1, 0)
         sheet.set_column('A:A', 28)
-        sheet.set_column('B:B', 22, book.add_format({'num_format': '@'}))
-        sheet.set_column('C:G', 18)
+        sheet.set_column('B:C', 22, book.add_format({'num_format': '@'}))
+        sheet.set_column('D:H', 18)
         # Paste or insert each product picture into its row's Photo column.
-        sheet.set_column('H:H', 24)
+        sheet.set_column('I:I', 24)
         book.close()
         output.seek(0)
         return send_file(output, as_attachment=True, download_name='product_import_template.xlsx',

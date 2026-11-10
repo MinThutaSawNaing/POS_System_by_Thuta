@@ -82,7 +82,7 @@
   const doc = root.document, el = id => doc.getElementById(id);
   const modal = el("importProductsModal");
   if (!modal) return;
-  const fields = {name: "Product name *", barcode: "Barcode / SKU", price: "Selling price *",
+  const fields = {name: "Product name *", barcode: "Barcode", sku: "SKU (optional)", price: "Selling price *",
     cost: "Cost", category: "Category", unit: "Unit", tax_rate: "Tax rate (%)",
     photo: "Photo (picture in the cell)"};
   const scope = () => typeof currentBranch !== "undefined" && currentBranch?.id &&
@@ -162,7 +162,7 @@
         const changes = Object.entries(row.changes || {}).map(([key, value]) =>
           `${fields[key] || key}: ${value}`).join("; ");
         const detail = [row.message, changes, row.photo ? `photo: ${row.photo}` : ""].filter(Boolean).join(" — ");
-        [row.row, row.name, row.barcode, row.action, detail].forEach(value => {
+        [row.row, row.name, row.barcode, row.sku, row.action, detail].forEach(value => {
           const td = doc.createElement("td"); td.textContent = String(value ?? ""); tr.appendChild(td);
         });
         if (row.action === "error") tr.className = "table-danger";

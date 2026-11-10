@@ -36,6 +36,7 @@ See [setup, security controls, and recovery notes](docs/email-two-factor.md) bef
 - **Inventory & Product Management**
   - Product CRUD with photo upload and preview
   - Barcode support with printable labels
+  - Optional SKU stock codes, separate from barcodes, with branch-scoped uniqueness, search, imports and exports
   - Cost, category, tax rate, stock control
   - Centralized category management with color coding
   - Reorder points and automated low-stock alerts
@@ -87,6 +88,23 @@ See [setup, security controls, and recovery notes](docs/email-two-factor.md) bef
   - Inventory, procurement, warehouse, sales, customer, debt, delivery, promotion, and return summaries
   - Smart reorder recommendations and sales trend analysis
   - Secure Markdown-formatted responses backed by live database data
+
+### Working with SKUs
+
+In **Products**, enter an optional SKU when adding or editing a product, for
+example `TSH-BLK-M-001`. Keep leading zeros by treating codes as text. Leave the
+field blank if the product does not need a SKU. Nonblank SKUs are unique within
+each branch (case-insensitive); barcode scanning remains a separate feature.
+
+Managers and owners can ask Loli to work with SKU identifiers, for example:
+
+- "Show stock for SKU TSH-BLK-M-001."
+- "Change the selling price of SKU TSH-BLK-M-001 to 25."
+- "Set the SKU of product 42 to TSH-BLK-M-001."
+
+The assistant resolves the exact SKU to a product before acting. Its normal
+permissions and approval rules still apply. Select the intended branch first;
+do not assume a SKU identifies the same product across different branches.
 
 - **Windows Setup Script**
   - `SetupTheSoftware.bat` creates a virtual environment and installs dependencies

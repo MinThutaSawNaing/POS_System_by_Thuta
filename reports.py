@@ -167,6 +167,7 @@ WAREHOUSE_STOCK_COLUMNS = (
     column("product_name", "Product Name", width=34),
     column("product_branch", "Catalog Branch", width=20),
     column("barcode", "Barcode", width=18),
+    column("sku", "SKU", width=18),
     column("location", "Location", width=14),
     column("batch_number", "Batch", width=16),
     column("quantity", "Qty", width=9, align="right", kind="int"),
@@ -196,6 +197,7 @@ PURCHASE_ORDER_ITEM_COLUMNS = (
     column("po_number", "PO number", width=24),
     column("product_branch", "Product Branch", width=20),
     column("product_name", "Product Name", width=34),
+    column("sku", "SKU", width=18),
     column("ordered_qty", "Ordered", width=10, align="right", kind="int"),
     column("received_qty", "Received", width=10, align="right", kind="int"),
     column("progress_percent", "Progress", width=12, align="right", kind="percent"),
@@ -437,6 +439,7 @@ def build_warehouse_stock_report(
             "product_name": str(record.get("product_name") or "Unknown"),
             "product_branch": str(record.get("product_branch") or ""),
             "barcode": record.get("barcode"),
+            "sku": record.get("sku") or record.get("product_sku"),
             "location": record.get("location"),
             "batch_number": record.get("batch_number"),
             "quantity": quantity,
@@ -492,6 +495,7 @@ def build_product_catalog_report(
     """Build a simple catalog list for checking products outside the dashboard."""
     rows = [{
         "barcode": record.get("barcode"),
+        "sku": record.get("sku"),
         "product_name": str(record.get("product_name") or ""),
         "category": record.get("category"),
         "price": round_money_value(record.get("price")),
@@ -506,6 +510,7 @@ def build_product_catalog_report(
         file_stem="product_list",
         columns=(
             column("barcode", "Barcode", width=18),
+            column("sku", "SKU", width=18),
             column("product_name", "Product Name", width=32),
             column("category", "Category", width=18),
             column("price", "Price", width=13, align="right", kind="money"),
@@ -529,6 +534,7 @@ def build_product_catalog_report(
 LOW_STOCK_COLUMNS = (
     column("product_name", "Product Name", width=34),
     column("barcode", "Barcode", width=18),
+    column("sku", "SKU", width=18),
     column("category", "Category", width=18),
     column("current_stock", "On hand", width=10, align="right", kind="int"),
     column("reorder_point", "Reorder at", width=11, align="right", kind="int"),
@@ -563,6 +569,7 @@ def build_low_stock_report(
         rows.append({
             "product_name": str(record.get("name") or record.get("product_name") or "Unknown"),
             "barcode": record.get("barcode"),
+            "sku": record.get("sku"),
             "category": record.get("category"),
             "current_stock": current,
             "reorder_point": int(round(number_value(record.get("reorder_point")))),
@@ -704,6 +711,7 @@ def build_purchase_order_item_rows(
                 "po_number": po_number,
                 "product_branch": str(record.get("product_branch") or ""),
                 "product_name": str(item.get("product_name") or "Unknown product"),
+                "sku": item.get("sku") or item.get("product_sku"),
                 "ordered_qty": ordered,
                 "received_qty": received,
                 "progress_percent": round(received / ordered * 100) if ordered else 0,
@@ -1218,7 +1226,11 @@ def _write_worksheet(
             align = str(entry.get("align") or "left")
             cell_format = number_formats[(align, kind)]
             value = row.get(entry.get("key"))
-            if kind in ("money", "int", "percent"):
+            if entry.get("key") == "sku":
+                # Optional SKU must round-trip as blank, not a display placeholder.
+                # Write identifiers as text to retain leading zeros and avoid formulas.
+                worksheet.write_string(excel_row, index, str(value) if value is not None else "", cell_format)
+            elif kind in ("money", "int", "percent"):
                 if kind == "int":
                     worksheet.write_number(excel_row, index, int(round(number_value(value))), cell_format)
                 else:

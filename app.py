@@ -11,6 +11,7 @@ import json
 import time
 import struct
 import hmac
+import html
 import math
 import random
 import threading
@@ -908,6 +909,7 @@ def build_inventory_alert_payload(branch_id=None):
             'product_id': product.id,
             'name': product.name,
             'barcode': product.barcode,
+            'sku': product.sku,
             'category': product.category,
             'current_stock': current_stock,
             'reorder_point': reorder_point,
@@ -992,9 +994,25 @@ def delete_product_image(filename):
 def product_photo_url(filename):
     return url_for('product_image', filename=filename) if filename else None
 
+def validated_product_sku(value, branch_id, product_id=None):
+    """Keep stock codes textual, optional and unambiguous within a branch."""
+    if value is not None and not isinstance(value, str):
+        raise ValueError('SKU must be text')
+    sku = (value.strip() or None) if value is not None else None
+    if sku and len(sku) > 100:
+        raise ValueError('SKU must be 100 characters or fewer')
+    if sku:
+        query = Product.query.filter(Product.branch_id == branch_id, Product.sku == sku)
+        if product_id is not None:
+            query = query.filter(Product.id != product_id)
+        if query.first():
+            raise ValueError('SKU already in use in this branch')
+    return sku
+
 def serialize_product(product):
     data = {
         'id': product.id,
+        'sku': product.sku,
         'barcode': product.barcode,
         'name': product.name,
         'price': product.price,
@@ -1876,9 +1894,11 @@ class Unit(db.Model):
 
 class Product(db.Model):
     __table_args__ = (db.UniqueConstraint('branch_id', 'barcode', name='uq_product_branch_barcode'),
+                      db.UniqueConstraint('branch_id', 'sku', name='uq_product_branch_sku'),
                       db.UniqueConstraint('branch_id', 'catalog_id', name='uq_product_branch_catalog'))
     id = db.Column(db.Integer, primary_key=True)
     barcode = db.Column(db.String(50))  # Physical scan value; unique inside a branch.
+    sku = db.Column(db.String(100, collation='NOCASE'))  # Optional internal stock code, not a barcode.
     catalog_id = db.Column(db.String(64), default=lambda: uuid.uuid4().hex)
     name = db.Column(db.String(100), nullable=False)
     price = db.Column(db.Float, nullable=False)
@@ -2334,7 +2354,7 @@ AUDIT_SENSITIVE_FIELDS = {
 }
 AUDIT_LABEL_FIELDS = (
     'transaction_id', 'workflow_id', 'po_number', 'delivery_number', 'name',
-    'username', 'key', 'barcode', 'memory_id', 'batch_number', 'id',
+    'username', 'key', 'sku', 'barcode', 'memory_id', 'batch_number', 'id',
 )
 AUDIT_TIMEZONE = pytz.timezone('Asia/Yangon')
 AUDIT_PAGE_SIZE = 30
@@ -3247,6 +3267,7 @@ with app.app_context():
         db.session.execute(text('ALTER TABLE product ADD COLUMN photo_filename VARCHAR(255)'))
         db.session.commit()
     product_migrations = [
+        ('sku', 'ALTER TABLE product ADD COLUMN sku VARCHAR(100) COLLATE NOCASE'),
         ('reorder_point', 'ALTER TABLE product ADD COLUMN reorder_point INTEGER DEFAULT 10'),
         ('reorder_quantity', 'ALTER TABLE product ADD COLUMN reorder_quantity INTEGER DEFAULT 50'),
         ('reorder_enabled', 'ALTER TABLE product ADD COLUMN reorder_enabled BOOLEAN DEFAULT 1'),
@@ -3275,6 +3296,8 @@ with app.app_context():
         db.session.execute(text("UPDATE product SET barcode = NULL WHERE barcode = ''"))
         db.session.execute(text("UPDATE product SET catalog_id = 'legacy-' || id WHERE catalog_id IS NULL"))
     db.session.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_product_branch_barcode ON product (branch_id, barcode)'))
+    db.session.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_product_branch_sku ON product (branch_id, sku COLLATE NOCASE)'))
+    db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_sku_nocase ON product (sku COLLATE NOCASE, id DESC)'))
     db.session.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS uq_product_branch_catalog ON product (branch_id, catalog_id)'))
     db.session.execute(text('CREATE INDEX IF NOT EXISTS idx_product_branch_id ON product (branch_id, id DESC)'))
     transfer_columns = {col['name'] for col in inspect(db.engine).get_columns('warehouse_transfer')}
@@ -5032,7 +5055,7 @@ def product_prefix_ids(search, branch_id=None, include_category=False, page_boun
     if branch_id is not None:
         base = base.filter(Product.branch_id == branch_id)
     probes = [base.filter(column.like(pattern, escape='\\'))
-              for column in (Product.name, Product.barcode)]
+              for column in (Product.name, Product.barcode, Product.sku)]
     if include_category:
         # The free-text `product.category` column has no usable prefix index, so
         # probing it forces a catalogue scan on the bounded path. Category names
@@ -5056,7 +5079,7 @@ def product_lookup_candidates(search, branch_id=None):
         base = base.filter(Product.branch_id == branch_id)
     pattern = prefix_pattern(search)
     candidates = []
-    for column in (Product.name, Product.barcode):
+    for column in (Product.name, Product.barcode, Product.sku):
         probe = base.filter(column.like(pattern, escape='\\')).order_by(
             Product.name.collate('NOCASE'), Product.id).limit(size).subquery()
         candidates.append(select(probe.c.id))
@@ -5104,7 +5127,7 @@ def api_products():
                 return jsonify({'success': False, 'message': 'Invalid category'}), 400
 
             pos_query = db.session.query(
-                Product.id, Product.barcode, Product.name, Product.price,
+                Product.id, Product.barcode, Product.sku, Product.name, Product.price,
                 Product.stock, Product.tax_rate, Product.photo_filename,
                 Product.unit_id,
             ).filter(Product.branch_id == branch_id)
@@ -5126,6 +5149,7 @@ def api_products():
             items = [{
                 'id': row.id,
                 'barcode': row.barcode,
+                'sku': row.sku,
                 'name': row.name,
                 'price': row.price,
                 'stock': row.stock,
@@ -5158,6 +5182,7 @@ def api_products():
             query = query.filter(
                 (Product.name.ilike(like_q)) |
                 (Product.barcode.ilike(like_q)) |
+                (Product.sku.ilike(like_q)) |
                 (Product.category.ilike(like_q))
             )
 
@@ -5222,6 +5247,10 @@ def api_products():
                 return jsonify({'success': False, 'message': 'Category not found in this branch'}), 400
 
         # Check for duplicate barcode within same branch
+        try:
+            sku = validated_product_sku(data.get('sku'), branch_id)
+        except ValueError as error:
+            return jsonify(success=False, message=str(error)), 400
         barcode = data.get('barcode') or None
         if barcode:
             existing = Product.query.filter_by(barcode=barcode, branch_id=branch_id).first()
@@ -5244,6 +5273,7 @@ def api_products():
 
         product = Product(
             barcode=barcode,
+            sku=sku,
             name=name,
             price=price,
             cost=cost,
@@ -5265,7 +5295,7 @@ def api_products():
             db.session.commit()
         except IntegrityError:
             db.session.rollback()
-            return jsonify(success=False, message='Barcode already in use in this branch'), 409
+            return jsonify(success=False, message='Barcode or SKU already in use in this branch'), 409
         return jsonify({'success': True, 'message': 'Product added'}), 201
 
 @app.route('/api/products/export', methods=['GET'])
@@ -5305,6 +5335,7 @@ def export_product_catalog():
         query = query.filter(or_(
             Product.name.ilike(like_search),
             Product.barcode.ilike(like_search),
+            Product.sku.ilike(like_search),
             Product.category.ilike(like_search),
             Product.category_id.in_(
                 db.session.query(Category.id).filter(Category.name.ilike(like_search))
@@ -5316,6 +5347,7 @@ def export_product_catalog():
     ).order_by(Product.name.asc(), Product.id.asc()).all()
     records = [{
         'barcode': product.barcode,
+        'sku': product.sku,
         'product_name': product.name,
         'category': product.category_ref.name if product.category_ref else product.category,
         'price': product.price,
@@ -5492,6 +5524,12 @@ def api_single_product(product_id):
         if not data:
             return jsonify({'success': False, 'message': 'No data provided'}), 400
 
+        if 'sku' in data:
+            try:
+                product.sku = validated_product_sku(data.get('sku'), branch_id, product_id)
+            except ValueError as error:
+                return jsonify(success=False, message=str(error)), 400
+
         # Check for duplicate barcode within same branch
         if 'barcode' in data and data['barcode']:
             existing = Product.query.filter(
@@ -5600,7 +5638,7 @@ def api_single_product(product_id):
             db.session.rollback()
             if new_photo:
                 delete_product_image(new_photo)
-            return jsonify(success=False, message='Barcode already in use in this branch'), 409
+            return jsonify(success=False, message='Barcode or SKU already in use in this branch'), 409
         if previous_photo and previous_photo != product.photo_filename:
             delete_product_image(previous_photo)
         return jsonify({'success': True, 'message': 'Product updated'})
@@ -5746,11 +5784,13 @@ def api_search_products():
     products = Product.query.filter(
         (Product.name.ilike(f'%{query}%')) | 
         (Product.barcode.ilike(f'%{query}%')) |
+        (Product.sku.ilike(f'%{query}%')) |
         (Product.category.ilike(f'%{query}%'))
     ).filter(Product.branch_id == branch_id).limit(10).all()
     return jsonify([{
         'id': p.id,
         'barcode': p.barcode,
+        'sku': p.sku,
         'name': p.name,
         'price': p.price,
         'stock': p.stock,
@@ -6667,6 +6707,7 @@ def api_single_sale(transaction_id):
             'sale_item_id': item.id,
             'product_id': item.product_id,
             'name': product.name if product else DELETED_PRODUCT_LABEL,
+            'sku': product.sku if product else None,
             'price': item.price,
             'quantity': item.quantity,
             'tax': item.tax,
@@ -7046,6 +7087,7 @@ def api_single_return_exchange(workflow_id):
             'movement': item.movement,
             'product_id': item.product_id,
             'product_name': item.product.name if item.product else DELETED_PRODUCT_LABEL,
+            'sku': item.product.sku if item.product else None,
             'quantity': item.quantity,
             'unit_price': item.unit_price,
             'tax_rate': item.tax_rate,
@@ -8357,6 +8399,7 @@ def api_promotions():
             'id': p.id,
             'product_id': p.product_id,
             'product_name': p.product.name,
+            'sku': p.product.sku,
             'discount_type': p.discount_type,
             'discount_value': p.discount_value,
             'start_date': p.start_date.astimezone(myanmar_tz).isoformat() if p.start_date.tzinfo else myanmar_tz.localize(p.start_date).isoformat(),
@@ -8411,6 +8454,7 @@ def api_single_promotion(promo_id):
             'id': promo.id,
             'product_id': promo.product_id,
             'product_name': promo.product.name,
+            'sku': promo.product.sku,
             'discount_type': promo.discount_type,
             'discount_value': promo.discount_value,
             'start_date': promo.start_date.astimezone(myanmar_tz).isoformat() if promo.start_date.tzinfo else myanmar_tz.localize(promo.start_date).isoformat(),
@@ -8668,6 +8712,8 @@ def serialize_purchase_order(po, include_items=False):
     if include_items:
         payload['items'] = [{
             'product_name': item.product.name if item.product else 'Unknown product',
+            'sku': item.product.sku if item.product else None,
+            'product_sku': item.product.sku if item.product else None,
             'ordered_qty': item.ordered_qty,
             'received_qty': item.received_qty,
             'unit_cost': item.unit_cost,
@@ -8793,6 +8839,8 @@ def api_purchase_order_products():
         'price': product.price,
         'cost': product.cost,
         'branch_name': branch_names.get(product.branch_id, 'Unassigned'),
+        'sku': product.sku,
+        'barcode': product.barcode,
     } for product in products])
 
 @app.route('/api/purchase_orders/export', methods=['GET'])
@@ -8936,7 +8984,8 @@ def api_single_purchase_order(po_id):
                 'id': item.id,
                 'product_id': item.product_id,
                 'product_name': item.product.name if item.product else 'Unknown',
-                'product_sku': item.product.barcode if item.product else None,
+                'product_sku': item.product.sku if item.product else None,
+                'product_barcode': item.product.barcode if item.product else None,
                 'ordered_qty': item.ordered_qty,
                 'received_qty': item.received_qty,
                 'remaining_qty': item.ordered_qty - item.received_qty,
@@ -9089,22 +9138,23 @@ def api_print_purchase_order(po_id):
     
     # Items Table
     elements.append(Paragraph("Items", styles['Heading2']))
-    items_header = ['Product Name', 'Qty', 'Unit Cost', 'Total']
+    items_header = ['Product Name', 'SKU', 'Qty', 'Unit Cost', 'Total']
     items_data = [items_header]
     
     for item in po.items:
         line_total = item.ordered_qty * item.unit_cost
         items_data.append([
             item.product.name if item.product else 'Unknown',
+            Paragraph(html.escape(item.product.sku or '') if item.product else '', styles['Normal']),
             str(item.ordered_qty),
             format_currency(item.unit_cost),
             format_currency(line_total)
         ])
     
     # Add total row
-    items_data.append(['', '', 'TOTAL:', format_currency(po.total_amount)])
+    items_data.append(['', '', '', 'TOTAL:', format_currency(po.total_amount)])
     
-    items_table = Table(items_data, colWidths=[200, 50, 80, 80])
+    items_table = Table(items_data, colWidths=[150, 80, 40, 70, 70])
     items_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -9526,6 +9576,8 @@ def api_supplier_products(supplier_id):
             'id': a.id,
             'product_id': a.product_id,
             'product_name': a.product.name if a.product else 'Unknown',
+            'sku': a.product.sku if a.product else None,
+            'product_sku': a.product.sku if a.product else None,
             'product_branch': branch_names.get(a.product.branch_id, '') if a.product else '',
             'agreed_price': a.agreed_price,
             'valid_from': a.valid_from.isoformat() if a.valid_from else None,
@@ -9581,13 +9633,14 @@ def warehouse_inventory_query(search_query='', low_stock=False, *, prefix=False,
             if page_bound:
                 pattern = prefix_pattern(search_query)
                 probes = [query.filter(Product.name.like(pattern, escape='\\')),
-                          query.filter(Product.barcode.like(pattern, escape='\\'))]
+                          query.filter(Product.barcode.like(pattern, escape='\\')),
+                          query.filter(Product.sku.like(pattern, escape='\\'))]
                 query = query.filter(WarehouseInventory.id.in_(bounded_search_ids(probes, WarehouseInventory.id)))
             else:
                 query = query.filter(WarehouseInventory.product_id.in_(product_prefix_ids(search_query)))
         else:
             pattern = f'%{search_query}%'
-            query = query.filter(or_(Product.name.ilike(pattern), Product.barcode.ilike(pattern)))
+            query = query.filter(or_(Product.name.ilike(pattern), Product.barcode.ilike(pattern), Product.sku.ilike(pattern)))
     return query
 
 
@@ -9603,6 +9656,8 @@ def serialize_warehouse_rows(inventory):
         'product_name': item.product.name if item.product else 'Unknown',
         'product_branch': branch_names.get(item.product.branch_id, '') if item.product else '',
         'barcode': item.product.barcode if item.product else None,
+        'sku': item.product.sku if item.product else None,
+        'product_sku': item.product.sku if item.product else None,
         'quantity': item.quantity, 'total_warehouse_qty': int(totals.get(item.product_id, 0) or 0),
         'main_stock': item.product.stock if item.product else 0,
         'location': item.location, 'batch_number': item.batch_number, 'unit_cost': item.unit_cost,
@@ -9774,6 +9829,13 @@ def api_warehouse_transfer():
             return jsonify(success=False, message='Destination catalog barcode differs. Reconcile product barcodes before transferring.'), 409
         if not target_product and product.barcode:
             target_product = Product.query.filter_by(branch_id=target_branch_id, barcode=product.barcode).first()
+        sku_match = Product.query.filter_by(branch_id=target_branch_id, sku=product.sku).first() if product.sku else None
+        if sku_match and (not target_product or sku_match.id != target_product.id):
+            db.session.rollback()
+            return jsonify(success=False, message='Destination SKU belongs to another catalog product. Reconcile SKU before transferring.'), 409
+        if target_product and product.sku and target_product.sku and product.sku.lower() != target_product.sku.lower():
+            db.session.rollback()
+            return jsonify(success=False, message='Destination catalog SKU differs. Reconcile SKU before transferring.'), 409
         warehouse_query = WarehouseInventory.query.filter_by(product_id=product_id)
         if batch_number:
             warehouse_query = warehouse_query.filter_by(batch_number=batch_number)
@@ -9824,7 +9886,7 @@ def api_warehouse_transfer():
             if not product.catalog_id:
                 product.catalog_id = uuid.uuid4().hex
             target_product = Product(
-                catalog_id=product.catalog_id, barcode=product.barcode,
+                catalog_id=product.catalog_id, barcode=product.barcode, sku=product.sku,
                 name=product.name, price=product.price, cost=product.cost, stock=0,
                 category=category.name if category else None,
                 category_id=category.id if category else None, unit_id=product.unit_id,
@@ -9881,6 +9943,7 @@ def api_warehouse_transfers():
             'product_name': t.product.name if t.product else 'Unknown',
             'target_branch_name': branch_names.get(t.branch_id, 'Unknown'),
             'barcode': t.product.barcode if t.product else None,
+            'sku': t.product.sku if t.product else None,
             'quantity': t.quantity,
             'from_warehouse': t.from_warehouse,
             'batch_number': t.batch_number,

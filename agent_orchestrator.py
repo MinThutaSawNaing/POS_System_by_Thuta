@@ -79,7 +79,7 @@ class TaskPlan:
 TOOL_CATEGORIES = {
     "inventory": {
         "tools": ["get_inventory_status", "get_low_stock_items", "get_product_details", "search_products", "suggest_reorder_quantities"],
-        "keywords": ["stock", "inventory", "product", "item", "reorder", "quantity", "available", "how many", "how much", "barcode", "prices",
+        "keywords": ["stock", "inventory", "product", "item", "reorder", "quantity", "available", "how many", "how much", "barcode", "sku", "prices",
                      "in stock", "out of stock", "remaining", "left", "run out"]
     },
     "supplier": {
@@ -184,8 +184,8 @@ _WRITE_INTENT_KEYWORDS = (
 # change request on the single-shot path, which offers no write tools at all —
 # the user is told the change is impossible. Match in that direction.
 _WRITE_INTENT_PATTERN = re.compile(
-    r"\b(?:change|update|set|edit|adjust|increase|decrease|raise|lower)\b"
-    r"[^.?!\n]{0,40}?\b(?:price|prices|cost|stock|quantity|name|barcode|"
+    r"\b(?:change|update|set|edit|adjust|increase|decrease|raise|lower|clear)\b"
+    r"[^.?!\n]{0,40}?\b(?:price|prices|cost|stock|quantity|name|barcode|sku|"
     r"reorder\s+point)\b",
     re.IGNORECASE)
 
@@ -217,6 +217,7 @@ You own live database tools. Any question about stock, products, prices, sales, 
 - Call only the tools offered in this request, by their exact names. This system has no other APIs: never invent a tool name, endpoint, or provider function, and never claim a tool exists when it is not offered. If no offered tool can answer, say so in plain text.
 - Fill arguments from the user's words: product names into name/search arguments, statuses into status filters, and date ranges computed from the Current Date above (for example "yesterday", "this month", or a number of days). Never invent argument names a tool does not document.
 - Chain tools when one result feeds the next: search_products to identify an item, then get_product_details or get_supplier_price_for_product with its id; get_low_stock_items before suggesting reorders.
+- SKU is optional and distinct from physical barcode. Exact case-insensitive SKU lookup uses get_product_details(sku=...). Search gives exact SKU priority and never token-matches SKU fragments. Never retry a missing SKU with unrelated keywords. The same SKU can exist in different branches: resolve branch/product ambiguity before any write. Omit sku to preserve it on edits; blank string clears it; trimmed maximum is 100 characters.
 - If a tool returns empty results or fails, say so plainly and try at most one plausible alternative tool. Never substitute invented numbers for missing data.
 - For "how many" / counting questions, answer with the real count from the tool payload (`total_products` for a product search, or `get_inventory_status` for the whole catalogue) plus the names behind that number. A brand or platform word the catalogue may not store literally (for example "iOS devices") must be turned into a searchable keyword such as the product family name ("iphone"); when a search matches nothing, use the categories and product names the tool returned instead of repeating the same words.
 - Quote money exactly as the tool returned it: never restate a price in another currency, never re-format or re-round an amount, and never invent a currency symbol. The currency label in the tool data is the store's currency.
@@ -1042,7 +1043,7 @@ class AgentOrchestrator:
             # the real product names beats telling the user stock does not exist.
             if tool_results and not any(r.get("rejected") for r in tool_results):
                 tool_results = self._retry_empty_product_search(
-                    tool_results, filtered_tools, temperature)
+                    tool_results, filtered_tools, temperature, command)
 
             rejected_calls = [r for r in tool_results if r.get("rejected")]
             if rejected_calls:
@@ -1880,7 +1881,7 @@ class AgentOrchestrator:
             return "Nothing was changed: this product is not the one selected in the previous result. Please confirm the intended product."
         if command and tool in {"update_product", "update_product_price"}:
             requested_fields = {
-                "barcode": r"\bbarcode\b", "price": r"\b(?:price|prices|selling|sell)\b",
+                "barcode": r"\bbarcode\b", "sku": r"\bsku\b", "price": r"\b(?:price|prices|selling|sell)\b",
                 "cost": r"\bcost\b", "name": r"\b(?:name|rename)\b",
                 "category": r"\bcategory\b",
             }
@@ -2003,7 +2004,7 @@ class AgentOrchestrator:
         return None
 
     def _retry_empty_product_search(self, tool_results: List[Dict], filtered_tools: List[Dict],
-                                    temperature: float) -> List[Dict]:
+                                    temperature: float, original_command: str = "") -> List[Dict]:
         """One bounded retry when a product search came back with nothing.
 
         The empty result carries the branch's real vocabulary (categories and a
@@ -2015,7 +2016,11 @@ class AgentOrchestrator:
                  if r.get("function_name") == "search_products"
                  and isinstance(r.get("result"), dict)
                  and not (r["result"].get("inventory") or [])]
+        if re.search(r"\bsku\b", original_command or "", re.I):
+            return tool_results
         if not empty:
+            return tool_results
+        if any(item['result'].get('identifier_query') for item in empty):
             return tool_results
         hints: List[str] = []
         for item in empty:
@@ -2473,6 +2478,7 @@ class AgentOrchestrator:
                 lines.append(f"{len(winners)} products are tied at this price.")
             for row in winners:
                 lines.append(f"• **{row.get('name') or 'Unknown product'}** — "
+                             f"SKU: {_text_or_placeholder(row.get('sku'))} | "
                              f"Barcode: {_text_or_placeholder(row.get('barcode'))} | "
                              f"Category: {_text_or_placeholder(row.get('category'))} | "
                              f"Stock: {row.get('current_stock', '?')} units")
@@ -2572,7 +2578,9 @@ class AgentOrchestrator:
                     lines.append(f"🔎 **Product Search** ({count_text})")
                     for p in matches[:10]:
                         lines.append(f"• **{p.get('name') or 'Unknown product'}**")
-                        facts = [f"Barcode: {_text_or_placeholder(p.get('barcode'))}"]
+                        facts = [f"SKU: {_text_or_placeholder(p.get('sku'))}", f"Barcode: {_text_or_placeholder(p.get('barcode'))}"]
+                        if p.get('branch_id') is not None:
+                            facts.append(f"Branch: {p['branch_id']}")
                         if p.get('category'):
                             facts.append(f"Category: {p['category']}")
                         facts.append(f"Price: {self._money(p.get('price', 0))}")
@@ -2604,6 +2612,7 @@ class AgentOrchestrator:
                     stock = p.get('current_stock')
                     line = (f"• **{p.get('name') or 'Unknown product'}** - "
                             f"{stock if stock is not None else '?'} units ({status_label})")
+                    line += f" | SKU: {_text_or_placeholder(p.get('sku'))}"
                     if show_barcode:
                         line += f" | Barcode: {_text_or_placeholder(p.get('barcode'))}"
                     lines.append(line)
@@ -2626,6 +2635,7 @@ class AgentOrchestrator:
                         lines.append(f"• **{item.get('name') or 'Unknown product'}** - {status}")
                         details = (f"Reorder point: {item.get('reorder_point', 0)} | "
                                    f"Suggested qty: {item.get('suggested_reorder_qty', 0)}")
+                        details += f" | SKU: {_text_or_placeholder(item.get('sku'))}"
                         if wants_barcode:
                             details += f" | Barcode: {_text_or_placeholder(item.get('barcode'))}"
                         lines.append(f"  {details}")
@@ -2738,6 +2748,7 @@ class AgentOrchestrator:
                     lines.append(f"❌ **Error**: {result_data['error']}")
                 else:
                     lines.append(f"📦 **{result_data.get('name') or 'Product'}**")
+                    lines.append(f"SKU: {_text_or_placeholder(result_data.get('sku'))}")
                     lines.append(f"Barcode: {_text_or_placeholder(result_data.get('barcode'))}")
                     lines.append(f"Category: {_text_or_placeholder(result_data.get('category'))}")
                     # Money arrives as a formatted string ("68,000.00"), so it

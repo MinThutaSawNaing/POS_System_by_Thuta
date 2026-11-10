@@ -905,6 +905,11 @@
         background: #fff;
       }
 
+      .product-sku-input::placeholder {
+        color: #6c757d;
+        opacity: 0.6;
+      }
+
       /* === Barcode Search Bar - Clean Professional === */
       .barcode-search-wrapper {
         margin-bottom: 1rem;
@@ -2478,10 +2483,10 @@
                   type="text"
                   id="products-search"
                   class="form-control"
-                  placeholder="Starts with name, barcode or category"
+                  placeholder="Starts with name, SKU, barcode or category"
                   aria-describedby="products-search-hint"
                 />
-                <small id="products-search-hint" class="text-muted">Search matches the beginning of a name, barcode or category.</small>
+                <small id="products-search-hint" class="text-muted">Search matches the beginning of a name, SKU, barcode or category.</small>
               </div>
               <div class="col-12 col-md-7 d-flex flex-wrap gap-2 justify-content-md-end">
                 <button class="btn btn-success" data-capability="catalog.write" data-bs-toggle="modal" data-bs-target="#importProductsModal">
@@ -2544,6 +2549,7 @@
                     </th>
                     <th>Photo</th>
                     <th>Barcode</th>
+                    <th>SKU</th>
                     <th>Name</th>
                     <th>Price</th>
                     <th>Stock</th>
@@ -2556,7 +2562,7 @@
                 <tbody id="products-table">
                   <!-- Products will be loaded here -->
                   <tr>
-                    <td colspan="10" class="text-center py-4">
+                    <td colspan="11" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                       </div>
@@ -3712,8 +3718,8 @@
             <div class="row g-2 align-items-end filter-row">
               <div class="col-12 col-sm-6 col-md-4">
                 <label class="form-label small">Search</label>
-                <input type="text" id="warehouse-search" class="form-control form-control-sm" placeholder="Starts with product name or barcode" aria-describedby="warehouse-search-hint" />
-                <small id="warehouse-search-hint" class="text-muted">Matches the beginning of a name or barcode.</small>
+                <input type="text" id="warehouse-search" class="form-control form-control-sm" placeholder="Starts with product name, SKU or barcode" aria-describedby="warehouse-search-hint" />
+                <small id="warehouse-search-hint" class="text-muted">Matches the beginning of a name, SKU or barcode.</small>
               </div>
               <div class="col-6 col-sm-3 col-md-2">
                 <label class="form-label small">Low Stock</label>
@@ -5165,6 +5171,10 @@
           <div class="modal-body">
             <form id="add-product-form">
               <div class="mb-3">
+                <label class="form-label" for="add-sku">SKU <small class="text-muted">(optional)</small></label>
+                <input type="text" class="form-control product-sku-input" id="add-sku" maxlength="100" placeholder="TSH-BLK-M-001" />
+              </div>
+              <div class="mb-3">
                 <label class="form-label"
                   >Barcode <small class="text-muted">(optional)</small></label
                 >
@@ -5316,6 +5326,10 @@
           <div class="modal-body">
             <form id="edit-product-form">
               <input type="hidden" id="edit-product-id" />
+              <div class="mb-3">
+                <label class="form-label" for="edit-sku">SKU <small class="text-muted">(optional)</small></label>
+                <input type="text" class="form-control product-sku-input" id="edit-sku" maxlength="100" placeholder="TSH-BLK-M-001" />
+              </div>
               <div class="mb-3">
                 <label class="form-label"
                   >Barcode <small class="text-muted">(optional)</small></label
@@ -5839,7 +5853,7 @@
                   type="search"
                   class="form-control"
                   id="barcode-product-search"
-                  placeholder="Starts with name, barcode, or category"
+                  placeholder="Starts with name, SKU, barcode, or category"
                   aria-label="Search products for barcode labels"
                   aria-controls="barcode-products-table"
                   autocomplete="off"
@@ -7280,8 +7294,8 @@
             </div>
             <details class="border rounded p-2 mb-3">
               <summary class="text-primary">Select Multiple Products</summary>
-              <label for="po-products-search" class="form-label mt-2">Search products by name or barcode</label>
-              <input type="search" id="po-products-search" class="form-control form-control-sm mb-2" placeholder="Starts with product name or barcode…" oninput="loadPurchaseOrderProducts()" />
+              <label for="po-products-search" class="form-label mt-2">Search products by name, SKU or barcode</label>
+              <input type="search" id="po-products-search" class="form-control form-control-sm mb-2" placeholder="Starts with product name, SKU or barcode…" oninput="loadPurchaseOrderProducts()" />
               <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
                 <button type="button" class="btn btn-sm btn-outline-secondary" onclick="selectPurchaseOrderProducts(true)">Select results</button>
                 <button type="button" class="btn btn-sm btn-outline-secondary" onclick="selectPurchaseOrderProducts(false)">Clear selection</button>
@@ -7760,7 +7774,7 @@
               <p class="small">Review the actions below. Fix all error rows in Excel and upload again before importing. Duplicate rows within the file are never silently applied.</p>
               <div class="table-responsive" style="max-height: 22rem;">
                 <table class="table table-sm table-striped align-middle">
-                  <thead><tr><th>Excel row</th><th>Product</th><th>Barcode</th><th>Action</th><th>Details</th></tr></thead>
+                  <thead><tr><th>Excel row</th><th>Product</th><th>Barcode</th><th>SKU</th><th>Action</th><th>Details</th></tr></thead>
                   <tbody id="product-import-rows"></tbody>
                 </table>
               </div>
@@ -11464,6 +11478,7 @@
         if (!p) return null;
         return {
           id: p.id,
+          sku: p.sku || null,
           name: p.name,
           price: p.price,
           stock: p.stock,
@@ -13848,6 +13863,7 @@
               if (!query) return true;
               return (
                 String(p.product_name || "").toLowerCase().includes(query) ||
+                String(p.sku || "").toLowerCase().includes(query) ||
                 String(p.discount_type || "").toLowerCase().includes(query)
               );
             });
@@ -13869,7 +13885,7 @@
                 : '<span class="badge bg-secondary">Inactive</span>';
               const row = document.createElement("tr");
               row.innerHTML = `
-                <td>${p.product_name}</td>
+                <td>${escapeHtml(p.product_name)}${p.sku ? `<small class="d-block text-muted text-break">SKU: ${escapeHtml(p.sku)}</small>` : ""}</td>
                 <td>${
                   p.discount_type === "percent"
                     ? p.discount_value + "%"
@@ -14312,6 +14328,7 @@
                     escapeHtml(product.name)
                   }</h6>
                   <p class="card-text mb-1">${formatCurrency(product.price)}</p>
+                  ${product.sku ? `<small class="d-block text-muted text-break">SKU: ${escapeHtml(product.sku)}</small>` : ""}
                   ${posStockHtml(product)}
               </div>
           </div>
@@ -14395,7 +14412,7 @@
         if (products.length === 0) {
           productGrid.innerHTML = posCategoryFilterId !== null
             ? posGridState("No saved products in this category", "The saved catalogue has no products in this category. Choose All products, or reload when the connection is available.", "category")
-            : posGridState("No saved products match", "Try a different name or barcode, or reload products when the connection is available.");
+            : posGridState("No saved products match", "Try a different name, SKU or barcode, or reload products when the connection is available.");
           return;
         }
 
@@ -14409,7 +14426,8 @@
               ${getProductPhotoHtml(product.photo_url, product.name, "product-card-img")}
               <h6 class="card-title fw-bold text-success mb-2">${escapeHtml(product.name)}</h6>
               <p class="card-text mb-1">${formatCurrency(product.price)}</p>
-              ${posStockHtml(product)}
+              ${product.sku ? `<small class="d-block text-muted text-break">SKU: ${escapeHtml(product.sku)}</small>` : ""}
+                  ${posStockHtml(product)}
             </div>
           </div>
         `;
@@ -14465,7 +14483,7 @@
 
             if (data.length === 0) {
               productGrid.innerHTML =
-                posGridState("No matching products", "Check the barcode or spelling, or clear the search to browse all products.");
+                posGridState("No matching products", "Check the SKU, barcode or spelling, or clear the search to browse all products.");
               return;
             }
 
@@ -14485,7 +14503,8 @@
                                             escapeHtml(product.name)
                                           }</h6>
                                           <p class="card-text">${formatCurrency(product.price)}</p>
-                                          ${posStockHtml(product)}
+                                          ${product.sku ? `<small class="d-block text-muted text-break">SKU: ${escapeHtml(product.sku)}</small>` : ""}
+                  ${posStockHtml(product)}
                                       </div>
                                   </div>
                               `;
@@ -14511,6 +14530,7 @@
               const matches = query
                 ? cached.filter((p) =>
                     String(p.name || "").toLowerCase().includes(query) ||
+                    String(p.sku || "").toLowerCase().includes(query) ||
                     String(p.barcode || "").toLowerCase().includes(query))
                 : cached;
               posProductPage = 1;
@@ -16004,6 +16024,7 @@
               row.className = "barcode-product-row";
               row.dataset.searchText = [
                 product.name,
+                product.sku,
                 product.barcode,
                 product.category,
               ].filter(Boolean).join(" ").toLocaleLowerCase();
@@ -16012,7 +16033,7 @@
                             product.id
                           }"${prefill ? " checked" : ""}></td>
                           <td>${escapeHtml(product.barcode || "N/A")}</td>
-                          <td>${escapeHtml(product.name)}</td>
+                          <td>${escapeHtml(product.name)}${product.sku ? `<small class="d-block text-muted text-break">SKU: ${escapeHtml(product.sku)}</small>` : ""}</td>
                           <td>${formatCurrency(product.price)}</td>
                           <td>
                             <input type="number" class="form-control form-control-sm barcode-qty" data-id="${product.id}" min="1" step="1" value="1" />
@@ -17338,7 +17359,7 @@
         if (!data.items || data.items.length === 0) {
           productsTable.innerHTML = `
                                   <tr>
-                                      <td colspan="10" class="text-center py-4 text-muted">No products found.</td>
+                                      <td colspan="11" class="text-center py-4 text-muted">No products found.</td>
                                   </tr>
                               `;
           syncProductSelectionUi();
@@ -17374,6 +17395,7 @@
                                   </td>
                                   <td>${getProductPhotoHtml(product.photo_url, product.name, "product-thumb")}</td>
                                   <td>${escapeHtml(product.barcode || "N/A")}</td>
+                                  <td class="text-break">${escapeHtml(product.sku || "—")}</td>
                                   <td>${escapeHtml(product.name)}</td>
                                   <td>$${product.price.toFixed(2)}</td>
                                   <td>${product.stock}</td>
@@ -17475,6 +17497,11 @@
 
       function saveProduct() {
         if (!requireCapability("catalog.write")) return;
+        const sku = document.getElementById("add-sku").value.trim();
+        if (sku.length > 100) {
+          showToast("SKU must be 100 characters or fewer", "warning");
+          return;
+        }
         const barcode = document.getElementById("add-barcode").value.trim();
         const name = document.getElementById("add-product-name").value.trim();
         const price = parseFloat(document.getElementById("add-price").value);
@@ -17492,6 +17519,7 @@
         }
 
         const productData = new FormData();
+        productData.append("sku", sku);
         productData.append("barcode", barcode || "");
         productData.append("name", name);
         productData.append("price", String(price));
@@ -17542,6 +17570,7 @@
           .then((response) => response.json())
           .then((product) => {
             currentProduct = product;
+            document.getElementById("edit-sku").value = product.sku || "";
             document.getElementById("edit-product-id").value = product.id;
             document.getElementById("edit-barcode").value =
               product.barcode || "";
@@ -17596,6 +17625,11 @@
         }
 
         const productId = document.getElementById("edit-product-id").value;
+        const sku = document.getElementById("edit-sku").value.trim();
+        if (sku.length > 100) {
+          showToast("SKU must be 100 characters or fewer", "warning");
+          return;
+        }
         const barcode = document.getElementById("edit-barcode").value.trim();
         const name = document.getElementById("edit-product-name").value.trim();
         const price = parseFloat(document.getElementById("edit-price").value);
@@ -17615,6 +17649,7 @@
         }
 
         const productData = new FormData();
+        productData.append("sku", sku);
         productData.append("barcode", barcode || "");
         productData.append("name", name);
         productData.append("price", String(price));
@@ -18290,7 +18325,7 @@
           opt.value = item.sale_item_id;
           opt.dataset.maxQty = item.available_return_quantity;
           opt.dataset.price = item.price;
-          opt.textContent = `${item.name} | Sold: ${item.quantity} | Returnable: ${item.available_return_quantity} | ${formatCurrency(item.price)}`;
+          opt.textContent = `${item.name}${item.sku ? ` | SKU: ${item.sku}` : ""} | Sold: ${item.quantity} | Returnable: ${item.available_return_quantity} | ${formatCurrency(item.price)}`;
           select.appendChild(opt);
         });
 
@@ -19254,7 +19289,7 @@
               ) {
                 const currentProduct = document.createElement("option");
                 currentProduct.value = productId;
-                currentProduct.textContent = promo.product_name;
+                currentProduct.textContent = promo.product_name + (promo.sku ? ` | SKU: ${promo.sku}` : "");
                 productSelect.appendChild(currentProduct);
               }
 
@@ -21402,8 +21437,8 @@
             items.slice(0, 30).forEach(item => {
               const option = document.createElement("option");
               option.value = String(item.id);
-              option.textContent = branchProduct ? `${item.name} | Stock: ${item.stock || 0} | ${formatCurrency(item.price || 0)}` : product
-                ? `${item.name} — ${item.branch_name || "Unassigned"} (${formatCurrency(item.price || 0)})` : item.name;
+              option.textContent = branchProduct ? `${item.name}${item.sku ? ` | SKU: ${item.sku}` : ""} | Stock: ${item.stock || 0} | ${formatCurrency(item.price || 0)}` : product
+                ? `${item.name}${item.sku ? ` | SKU: ${item.sku}` : ""} — ${item.branch_name || "Unassigned"} (${formatCurrency(item.price || 0)})` : item.name;
               if (product) {
                 option.dataset.unitCost = String(item.unit_cost ?? item.cost ?? 0);
                 option.dataset.cost = String(item.cost ?? item.unit_cost ?? 0);
@@ -21523,7 +21558,7 @@
           <div class="col-auto align-self-end"><button type="button" class="btn btn-outline-danger mb-2" aria-label="Remove order line"><i class="bi bi-trash"></i></button></div>`;
         const product = row.querySelector("select");
         product.add(new Option("Select product", ""));
-        if (item.product_id != null) product.add(new Option(item.product_name || "Current product", String(item.product_id), true, true));
+        if (item.product_id != null) product.add(new Option((item.product_name || "Current product") + (item.sku ? ` | SKU: ${item.sku}` : ""), String(item.product_id), true, true));
         row.querySelector(".edit-po-quantity").value = item.ordered_qty ?? item.quantity ?? 1;
         row.querySelector(".edit-po-cost").value = item.unit_cost ?? 0;
         row.querySelector("button").addEventListener("click", () => { if (!recordManagementSaving && !editingPurchaseOrder.linesLocked) row.remove(); });
@@ -21855,7 +21890,7 @@
                 <tbody>
                   ${po.items.map(item => `
                     <tr>
-                      <td>${item.product_name}</td>
+                      <td>${escapeHtml(item.product_name)}${item.sku ? `<small class="d-block text-muted text-break">SKU: ${escapeHtml(item.sku)}</small>` : ""}</td>
                       <td class="text-center">${item.ordered_qty}</td>
                       <td class="text-center ${item.received_qty >= item.ordered_qty ? 'text-success' : (item.received_qty > 0 ? 'text-warning' : '')}">${item.received_qty}</td>
                       <td class="text-end">${formatCurrency(item.unit_cost)}</td>
@@ -22065,7 +22100,7 @@
             updatePurchaseOrderProductCount();
           });
           const text = document.createElement("span");
-          text.textContent = `${product.name} — ${product.branch_name || "Unassigned"} | Cost: ${formatCurrency(product.cost ?? 0)}`;
+          text.textContent = `${product.name}${product.sku ? ` | SKU: ${product.sku}` : ""} — ${product.branch_name || "Unassigned"} | Cost: ${formatCurrency(product.cost ?? 0)}`;
           label.appendChild(checkbox);
           label.appendChild(text);
           results.appendChild(label);
@@ -22162,7 +22197,7 @@
         if (product) {
           const option = document.createElement("option");
           option.value = String(product.id);
-          option.textContent = `${product.name} — ${product.branch_name || "Unassigned"} (${formatCurrency(product.price || 0)})`;
+          option.textContent = `${product.name}${product.sku ? ` | SKU: ${product.sku}` : ""} — ${product.branch_name || "Unassigned"} (${formatCurrency(product.price || 0)})`;
           option.dataset.unitCost = String(product.cost ?? 0);
           productSelect.appendChild(option);
           productSelect.value = option.value;
@@ -22295,7 +22330,7 @@
               const row = document.createElement("div");
               row.className = "row g-2 mb-2 align-items-center";
               row.innerHTML = `
-                <div class="col-md-5"><strong>${escapeHtml(item.product_name)}</strong></div>
+                <div class="col-md-5"><strong>${escapeHtml(item.product_name)}</strong>${item.sku ? `<small class="d-block text-muted text-break">SKU: ${escapeHtml(item.sku)}</small>` : ""}</div>
                 <div class="col-md-3"><small>Remaining: ${remaining}</small></div>
                 <div class="col-md-4">
                   <input type="number" min="0" max="${remaining}" value="${savedItems?.find(saved => saved.purchase_order_item_id === item.id)?.received_qty || 0}" ${retry ? "disabled" : ""} class="form-control receive-item-qty" data-po-item-id="${item.id}" />
@@ -23102,7 +23137,7 @@
               const row = document.createElement("tr");
               row.innerHTML = `
                 <td><input type="checkbox" class="form-check-input warehouse-row-select" aria-label="Select ${escapeHtml(item.product_name)}" ${warehouseSelection.has(String(item.id)) ? 'checked' : ''} ${item.quantity <= 0 ? 'disabled' : ''} /></td>
-                <td><strong>${escapeHtml(item.product_name)}</strong></td>
+                <td><strong>${escapeHtml(item.product_name)}</strong>${item.sku ? `<small class="d-block text-muted text-break">SKU: ${escapeHtml(item.sku)}</small>` : ""}</td>
                 <td class="d-none d-md-table-cell">${escapeHtml(item.product_branch || '-')}</td>
                 <td class="d-none d-md-table-cell">${escapeHtml(item.barcode || '-')}</td>
                 <td><span class="badge ${item.quantity <= 5 ? 'bg-warning' : 'bg-primary'}">${item.quantity}</span></td>
@@ -23510,7 +23545,7 @@
         table.innerHTML = "";
         items.forEach(item => {
           const row = document.createElement("tr");
-          row.innerHTML = `<td>${escapeHtml(item.view.productName)}<br><small>${escapeHtml(item.payload.batch_number || '-')}</small></td>
+          row.innerHTML = `<td>${escapeHtml(item.view.productName)}${item.view.sku ? `<small class="d-block text-muted text-break">SKU: ${escapeHtml(item.view.sku)}</small>` : ""}<br><small>${escapeHtml(item.payload.batch_number || '-')}</small></td>
             <td>${Number(item.view.availableQty)}</td>
             <td><input class="form-control form-control-sm" type="number" min="1" step="1" max="${Number(item.view.availableQty)}" aria-label="Quantity for ${escapeHtml(item.view.productName)}" /></td>
             <td>${item.skipped ? 'Skipped (rejected)' : item.done ? 'Confirmed' : item.rejected ? 'Rejected' : saved ? 'Pending / retry' : 'Ready'}</td>`;
@@ -23540,7 +23575,7 @@
           warehouseBulkDraft = queue?.items || [...warehouseSelection.values()].map(item => ({
             done: false, rowId: String(item.id),
             payload: {product_id: Number(item.product_id), quantity: 1, batch_number: item.batch_number || null},
-            view: {productName: item.product_name, availableQty: item.quantity}
+            view: {productName: item.product_name, sku: item.sku || null, availableQty: item.quantity}
           }));
           const branch = document.getElementById("warehouse-bulk-branch");
           branch.innerHTML = branchesList.filter(b => b.is_active).map(b =>
@@ -23665,7 +23700,7 @@
             table.innerHTML = transfers.slice(0, 50).map((t) => `
               <tr>
                 <td><small>${new Date(t.created_at).toLocaleString()}</small></td>
-                <td>${escapeHtml(t.product_name)}</td>
+                <td>${escapeHtml(t.product_name)}${t.sku ? `<small class="d-block text-muted text-break">SKU: ${escapeHtml(t.sku)}</small>` : ""}</td>
                 <td>${escapeHtml(t.target_branch_name || '-')}</td>
                 <td><span class="badge bg-success">${t.quantity}</span></td>
                 <td><small>${escapeHtml(t.batch_number || '-')}</small></td>

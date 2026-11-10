@@ -59,14 +59,25 @@ Rules and limits:
 
 ## Duplicate policy
 
-- A matching **barcode in the active branch** identifies an existing product.
-  Barcodes in other branches do not cause cross-branch updates.
+- **SKU** and **Barcode** map to separate columns. SKU is optional and limited
+  to 100 characters. Format both identifiers as text to preserve leading zeros.
+  The download template includes both columns; the preview shows them separately.
+- A matching **barcode or exact SKU in the active branch** identifies an existing
+  product. SKU matching is case-insensitive. Identifiers in other branches do
+  not cause cross-branch updates. If barcode and SKU identify different products,
+  the row is rejected rather than choosing one. Imports do not change barcodes.
 - **Skip** is the default: existing records are not changed.
 - **Update** changes only supplied, nonblank catalog fields. Blank cells do not
   erase existing values. Stock, record IDs and catalog identity are kept, and a
   row's picture replaces the existing photo (see [Photos](#photos)).
-- A name without a barcode is not safe enough for automatic updates. Existing
-  name matches are skipped or flagged; provide the existing barcode to update.
+- A blank or omitted SKU preserves the current SKU during an update. To clear a
+  SKU deliberately, use the product edit screen. A supplied nonblank SKU must
+  not belong to another product in the active branch.
+- A name without a barcode or SKU is not safe enough for automatic updates.
+  Existing name matches are skipped or flagged; provide an existing identifier.
+- Older versions treated an import heading named `SKU` as a barcode alias.
+  It now means SKU only. Review mappings for files prepared for those versions;
+  existing database barcodes are not automatically copied or moved to SKU.
 - Conflicting identities, ambiguous names and repeated products in the same
   file are reported rather than resolved by silently overwriting a row.
 - A successful import is atomic. If validation or saving fails, the import does

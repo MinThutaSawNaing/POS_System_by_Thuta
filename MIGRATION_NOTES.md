@@ -1,5 +1,34 @@
 # Migration notes
 
+## November 2026 optional product SKU
+
+- Startup adds nullable `product.sku` (`VARCHAR(100) COLLATE NOCASE`) to existing
+  databases, plus branch-scoped uniqueness and lookup indexes. Existing products
+  keep their IDs, barcodes, stock, and relationships; their SKU starts empty.
+  Restart the updated application to apply the idempotent migration. As with all
+  schema upgrades, back up the database and uploads first and rehearse on a copy
+  with a single application process before restarting production workers.
+- SKU is a separate optional text identifier, not a replacement for barcode or
+  `catalog_id`. Leading zeros are retained. Blank inputs become SQL NULL;
+  nonblank SKUs must be unique in their branch, ignoring ASCII case. The same SKU
+  may be used by a product in another branch. An omitted SKU in an edit preserves
+  the existing value; an explicitly blank SKU clears it.
+- Sales/return lines, purchase-order lines, supplier price agreements, promotions,
+  warehouse batches, and transfer records already refer to `product.id`. They
+  resolve the SKU through that relationship rather than storing independently
+  editable copies. Accounts, customers, payments, settings, audit infrastructure,
+  and other non-product tables do not need SKU columns. SKU changes are captured
+  by the existing product audit trail.
+- Product imports now map **SKU** separately from **Barcode**. Older files with
+  a header named SKU were previously interpreted as barcodes; review the mapping
+  before importing those files. Existing barcodes are never automatically moved
+  into SKU because that would guess at the customer's intended identifiers.
+- Warehouse clones retain SKU. Conflicting SKU/catalog identities at a
+  destination are rejected before stock is debited; reconcile them explicitly.
+- The AI assistant can look up a SKU and use the resolved product ID for stock,
+  pricing, purchasing, and other permitted product tasks. Existing roles and
+  approval rules still apply; SKU does not grant extra access.
+
 ## October 2026 branch stabilization (v2)
 
 This release changes database structure. Rehearse it on a copy of the existing
