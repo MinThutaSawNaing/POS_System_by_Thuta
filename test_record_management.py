@@ -205,8 +205,11 @@ class RecordManagementTests(unittest.TestCase):
                 replay_status, replay_payload = replay_future.result(timeout=15)
                 delete_status, delete_payload = delete_future.result(timeout=15)
             self.assertEqual(deletion_slipped, [False])
-            self.assertEqual(replay_status, 200, replay_payload)
-            self.assertTrue(replay_payload['duplicate'])
+            # This manually seeded, pre-ledger sale must be reconciled rather
+            # than acknowledged without an original payload fingerprint. Its
+            # tombstone read still serializes with history deletion.
+            self.assertEqual(replay_status, 409, replay_payload)
+            self.assertEqual(replay_payload['code'], 'legacy_checkout_review')
             self.assertEqual(delete_status, 200, delete_payload)
         finally:
             event.remove(engine, 'after_cursor_execute', after_read)

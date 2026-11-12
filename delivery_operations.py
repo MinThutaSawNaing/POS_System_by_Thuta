@@ -13,6 +13,8 @@ import ipaddress
 import json
 from flask import send_file
 from PIL import Image, ImageOps, UnidentifiedImageError
+from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.wsgi import get_input_stream
 
 
 _actor = ContextVar('delivery_operation_actor', default=None)
@@ -431,7 +433,11 @@ class DeliveryOperations:
         def api_delivery_extension(delivery_id):
             try:
                 if request.path.endswith('/proofs'):
-                    request.max_content_length = 6 * 1024 * 1024
+                    # Per-request max_content_length is read-only before Flask
+                    # 3.1. Bound the parser's stream without changing global
+                    # configuration (which would race with other requests).
+                    request.stream = get_input_stream(
+                        request.environ, max_content_length=6 * 1024 * 1024)
                 if db.engine.dialect.name == 'sqlite':
                     db.session.execute(ns['text']('BEGIN IMMEDIATE'))
                 delivery = ns['operational_delivery_query']().filter(Delivery.id == delivery_id).with_for_update().first()
@@ -448,6 +454,9 @@ class DeliveryOperations:
                 delivery.updated_at = datetime.utcnow()
                 db.session.commit()
                 return jsonify(success=True, deleted=deleted, delivery=ns['serialize_delivery'](delivery))
+            except RequestEntityTooLarge:
+                db.session.rollback()
+                return jsonify(success=False, message='Proof request must be at most 6MB'), 413
             except PermissionError as error:
                 db.session.rollback()
                 return jsonify(success=False, message=str(error)), 403

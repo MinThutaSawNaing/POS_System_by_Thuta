@@ -618,6 +618,9 @@ An admin account is auto-created if missing:
 
 ## Testing and safe upgrades
 
+For the one-central-server, cash-only browser outbox policy and safe retry/rollback
+procedures, see [Offline checkout recovery](docs/offline-checkout-recovery.md).
+
 Install the application requirements and `pytest`; Node.js is needed for the
 executed dashboard JavaScript regressions. Run the complete suite without
 touching the working database, uploaded files or deployment secrets:

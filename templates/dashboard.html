@@ -2431,7 +2431,18 @@
                     <small class="fw-bold" id="refund-amount">$0.00</small>
                   </div>
                 </div>
-                <div id="pending-sales-badge" class="text-center small text-warning mb-1" style="display: none"></div>
+                <div id="pending-sales-badge" class="text-center small text-warning mb-1" style="display: none" role="status"></div>
+                <div class="form-check small mb-2">
+                  <input class="form-check-input" type="checkbox" id="pos-force-offline-cash" />
+                  <label class="form-check-label" for="pos-force-offline-cash">Central server unreachable? Save NEW cash checkouts offline.</label>
+                  <div class="text-muted">Cash only; no coupons or delivery. Existing uncertain checkouts must use recovery, not a new sale. Uncheck after reconnecting.</div>
+                </div>
+                <details class="mt-2 small" id="checkout-recovery-panel">
+                  <summary>Checkout recovery / reconciliation</summary>
+                  <p>Do not clear browser data. Failed or uncertain checkouts need manager review; never collect payment twice. Export for a manager, then retry only on their instruction. This is a recorded procedural approval, not a manager login. Retry sends the original payload and tender unchanged, as the original user in the original branch. Legacy queues are export/reconcile only.</p>
+                  <button type="button" class="btn btn-sm btn-outline-secondary" onclick="exportCheckoutRecovery()">Export immutable journal</button>
+                  <div id="checkout-recovery-list" class="mt-2" aria-live="polite"></div>
+                </details>
                 <button
                   id="complete-sale-btn"
                   class="btn btn-success w-100"
@@ -7850,6 +7861,7 @@
     </div>
 
     <script src="/public/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+    <script src="/public/offline-checkout.js"></script>
     <script src="/public/vendor/chartjs/chart.umd.min.js"></script>
     <script>
       // Fail closed even if the optional integration script fails to load.
@@ -13009,7 +13021,11 @@
               <div class="row"><span>Date</span><span>${escape(receipt.createdAt)}</span></div>
               <div class="row"><span>Cashier</span><span>${escape(receipt.cashierName)}</span></div>
               <div class="row"><span>Payment</span><span>${escape(receipt.paymentMethod)}</span></div>
-              <div class="center muted">OFFLINE SALE — pending sync</div><hr>
+              <div class="center muted">${escape(receipt.recoveryStatus === "synced"
+                ? "SAVED CHECKOUT COPY — server acknowledged"
+                : receipt.checkoutOffline === false
+                  ? "SAVED CHECKOUT — verify central outcome; do not pay again"
+                  : "OFFLINE SALE — pending sync / reconciliation")}</div><hr>
               ${itemRows}<hr>
               <div class="row"><span>Subtotal</span><span>${money(receipt.subtotal)}</span></div>
               <div class="row"><span>Tax</span><span>${money(receipt.tax)}</span></div>${Number(receipt.deliveryFee) ? `
@@ -15294,6 +15310,88 @@
       // ============================================
       let isSyncingPendingSales = false;
 
+      function checkoutScopeCurrent(user, branch) {
+        return !dashboardSessionStale && !dashboardBranchStale && !branchSwitchInFlight &&
+          CACHE_USER_ID === user && currentBranch?.id === branch;
+      }
+
+      function checkoutJournal() {
+        if (CACHE_USER_ID == null || currentBranch?.id == null) throw new Error("Select a branch before checkout");
+        const user = CACHE_USER_ID, branch = currentBranch.id;
+        return OfflineCheckout.create({storage: localStorage, userId: user, branchId: branch,
+          id: generateClientTxnId, current: () => checkoutScopeCurrent(user, branch),
+          locks: navigator.locks, fetch: (url, options) => fetch(url, options)});
+      }
+
+      function exportCheckoutRecovery() {
+        try {
+          const data = checkoutJournal().exportData();
+          const key = "pos_pending_sales_v2:" + encodeURIComponent(CACHE_USER_ID) + ":" + encodeURIComponent(currentBranch.id);
+          data.legacy = [{key, raw: localStorage.getItem(key)}];
+          // Ownerless records are not displayed to a different signed-in cashier.
+          if (["manager", "boss"].includes(CACHE_USER_ROLE)) data.legacy.push({key: "pos_pending_sales", raw: localStorage.getItem("pos_pending_sales")});
+          const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type: "application/json"}));
+          const link = document.createElement("a");
+          link.href = url; link.download = "checkout-reconciliation-" + currentBranch.id + ".json";
+          link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (error) { showToast("Export failed: " + error.message, "error"); }
+      }
+
+      async function retryCheckoutRecovery(id) {
+        const reviewer = window.prompt("Only retry on a manager's instruction after they review the saved payload, tender and errors. Enter the reviewing manager's name (recorded in the audit journal):");
+        if (!reviewer?.trim()) return;
+        if (!window.confirm("Manager " + reviewer.trim() + " has reviewed and approved retry of the ORIGINAL checkout unchanged? Do not collect payment again. This records your acknowledgement, not a manager login.")) return;
+        try {
+          const journal = checkoutJournal(), user = CACHE_USER_ID, branch = currentBranch.id;
+          const result = await journal.send(id, true, false, reviewer);
+          if (checkoutScopeCurrent(user, branch)) {
+            showToast(result?.success ? "Checkout reconciled: " + result.transaction_id : "Checkout retained: " + (result?.error || "Review required"), result?.success ? "success" : "warning");
+            if (result?.success) { loadSales(); loadDashboardStats(); invalidateProductsCache(); }
+          }
+        } catch (error) { showToast("Checkout retained: " + error.message, "error"); }
+        updatePendingSalesBadge();
+      }
+
+      function renderCheckoutRecovery() {
+        const panel = document.getElementById("checkout-recovery-list");
+        if (!panel) return;
+        panel.replaceChildren();
+        try {
+          const entries = checkoutJournal().list().sort((a, b) =>
+            Number(a.status === "synced") - Number(b.status === "synced") ||
+            (b.created_at || "").localeCompare(a.created_at || ""));
+          const limit = Number(panel.dataset.limit || 30);
+          if (entries.length > limit) {
+            const more = document.createElement("button");
+            more.className = "btn btn-sm btn-outline-secondary mb-2";
+            more.textContent = `Showing ${limit} of ${entries.length} records. Show 30 more`;
+            more.onclick = () => { panel.dataset.limit = String(limit + 30); renderCheckoutRecovery(); };
+            panel.appendChild(more);
+          }
+          for (const entry of entries.slice(0, limit)) {
+            const row = document.createElement("div"); row.className = "border rounded p-2 mb-2";
+            const info = document.createElement("div");
+            info.textContent = `${entry.transaction_id} · ${entry.saleData?.payment_method || "unknown tender"} · ${entry.status} · attempts: ${entry.attempts} · ${entry.created_at || ""} ${entry.error || ""}`;
+            row.appendChild(info);
+            const history = document.createElement("pre"); history.className = "small text-wrap";
+            history.textContent = JSON.stringify(entry.events, null, 2); row.appendChild(history);
+            if (entry.receiptSnapshot) {
+              const receipt = document.createElement("button"); receipt.className = "btn btn-sm btn-outline-secondary";
+              receipt.textContent = "View / print saved receipt";
+              receipt.onclick = () => openOfflineReceiptWindow(
+                {...entry.receiptSnapshot, recoveryStatus: entry.status}, true);
+              row.appendChild(receipt);
+            }
+            if (!["synced", "corrupt"].includes(entry.status)) {
+              const retry = document.createElement("button"); retry.className = "btn btn-sm btn-outline-warning ms-1";
+              retry.textContent = "Retry unchanged after manager review";
+              retry.onclick = () => retryCheckoutRecovery(entry.transaction_id); row.appendChild(retry);
+            }
+            panel.appendChild(row);
+          }
+        } catch (error) { panel.textContent = "Recovery storage unavailable: " + error.message + ". Do not clear browser data."; }
+      }
+
       function getPendingSales() {
         try {
           // Standalone Node extraction harnesses omit rendered constants. Never
@@ -15303,10 +15401,16 @@
           if (user == null || branch == null) return [];
           const key = "pos_pending_sales_v2:" + encodeURIComponent(user) + ":" + encodeURIComponent(branch);
           const raw = localStorage.getItem(key);
-          const list = raw ? JSON.parse(raw) : [];
-          return Array.isArray(list) ? list : [];
+          let legacy = [];
+          try {
+            const list = raw ? JSON.parse(raw) : [];
+            legacy = Array.isArray(list) ? list : [{status: "corrupt", error: "Legacy queue requires reconciliation"}];
+          } catch (_) { legacy = [{status: "corrupt", error: "Legacy queue requires reconciliation"}]; }
+          if (typeof OfflineCheckout === "undefined") return legacy;
+          try { return legacy.concat(checkoutJournal().list().filter(entry => entry.status !== "synced")); }
+          catch (_) { return legacy.concat([{status: "corrupt", error: "Recovery storage unavailable"}]); }
         } catch (e) {
-          return [];
+          return [{status: "corrupt", error: "Recovery storage unavailable; do not clear browser data"}];
         }
       }
 
@@ -15316,6 +15420,9 @@
           const branch = typeof currentBranch === "undefined" ? "harness" : currentBranch?.id;
           if (user == null || branch == null) return false;
           const key = "pos_pending_sales_v2:" + encodeURIComponent(user) + ":" + encodeURIComponent(branch);
+          // Compatibility helper only: production checkout never rewrites v2.
+          const existing = localStorage.getItem(key);
+          if (existing && !Array.isArray(JSON.parse(existing))) return false;
           localStorage.setItem(key, JSON.stringify(list));
           return true;
         } catch (e) {
@@ -15440,26 +15547,18 @@
       function queueOfflineSale(saleData, receiptSnapshot) {
         if (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) return false;
         if (typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) return false;
-        saleData.transaction_id = generateClientTxnId();
-        if (receiptSnapshot) receiptSnapshot.transactionId = saleData.transaction_id;
-        const pending = getPendingSales();
-        pending.push({
-          transaction_id: saleData.transaction_id,
-          saleData: saleData,
-          receiptSnapshot: receiptSnapshot || null,
-          created_at: new Date().toISOString(),
-        });
-        // Persisting can fail (quota full / storage disabled). Surface that to the
-        // caller instead of claiming a sale was saved when it was not.
-        const saved = setPendingSales(pending);
-        updatePendingSalesBadge();
-        setConnectionStatus("offline");
-        if (!saved) {
-          console.error("Offline sale was NOT queued — storage write failed:", saleData.transaction_id);
-          return false;
+        try {
+          const entry = checkoutJournal().prepare(saleData, receiptSnapshot, true);
+          Object.assign(saleData, entry.saleData);
+          if (receiptSnapshot) receiptSnapshot.transactionId = entry.transaction_id;
+          // UI refresh failure after durable save must never report "not saved"
+          // and leave the cashier able to create a second intent for this cart.
+          try { updatePendingSalesBadge(); setConnectionStatus("offline"); }
+          catch (error) { console.error("Checkout saved; recovery display refresh failed", error); }
+          return true;
+        } catch (error) {
+          showToast("Sale NOT saved: " + error.message, "error"); return false;
         }
-        showToast(`Sale saved offline — will sync automatically (ID: ${saleData.transaction_id.slice(0,8)})`, "warning");
-        return true;
       }
 
       function updatePendingSalesBadge() {
@@ -15478,12 +15577,15 @@
           }
         } catch (e) { /* storage unavailable */ }
         const count = getPendingSales().length;
+        const v2key = "pos_pending_sales_v2:" + encodeURIComponent(typeof CACHE_USER_ID === "undefined" ? "harness" : CACHE_USER_ID) + ":" + encodeURIComponent(typeof currentBranch === "undefined" ? "harness" : currentBranch?.id);
+        try { if (localStorage.getItem(v2key) && localStorage.getItem(v2key) !== "[]") legacyPending = true; } catch (_) { legacyPending = true; }
+        if (typeof OfflineCheckout !== "undefined") renderCheckoutRecovery();
         if (legacyPending) {
           badge.textContent = "Legacy offline sales need manager reconciliation. They have not been synced or moved. Do not clear browser data." +
-            (count ? " " + count + " account sales waiting to sync." : "");
+            (count ? " " + count + " account checkouts retained on this device." : "");
           badge.style.display = "block";
         } else if (count > 0) {
-          badge.textContent = count + (count === 1 ? " sale" : " sales") + " waiting to sync";
+          badge.textContent = count + (count === 1 ? " sale" : " sales") + " pending / needs review. Open Checkout recovery.";
           badge.style.display = "block";
         } else {
           badge.style.display = "none";
@@ -15573,120 +15675,35 @@
         if (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) return;
         if (typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) return;
         if (typeof branchSwitchInFlight !== "undefined" && branchSwitchInFlight) return;
-        if (isSyncingPendingSales) return;
-        const pending = getPendingSales();
-        if (pending.length === 0) return;
-        const syncBranch = typeof currentBranch === "undefined" ? "harness" : currentBranch?.id;
+        if (typeof OfflineCheckout === "undefined" || isSyncingPendingSales || isBrowserOffline()) return;
         isSyncingPendingSales = true;
-        setConnectionStatus("syncing");
-        let stopSync = false;
-        let syncedCount = 0;
-        let rejectedCount = 0;
-        let syncedIds = [];
         try {
-          for (const entry of pending.slice()) {
-            if (stopSync) break;
-            if (typeof currentBranch !== "undefined" && currentBranch?.id !== syncBranch) break;
-            try {
-              const response = await fetch("/api/sales", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(entry.saleData),
-              });
-              const contentType = response.headers.get("content-type") || "";
-              if (!contentType.includes("application/json")) {
-                // HTML/login page returned — stop syncing, retry later
-                stopSync = true;
-                return;
-              }
-              if (response.status === 401 || response.status === 403 ||
-                  (response.status === 409 && (response.headers.get("x-pos-session-mismatch") === "1" ||
-                    response.headers.get("x-pos-branch-mismatch") === "1"))) {
-                // Session expired / not authorized: the server never accepted or
-                // rejected this sale, so keep it queued and retry after login.
-                // Dropping it here would lose money taken at the counter.
-                stopSync = true;
-                return;
-              }
-              const data = await response.json();
-              // Do not dequeue from a different branch if the selector changed
-              // while this request was in flight. Replay is idempotent later.
-              if (typeof currentBranch !== "undefined" && currentBranch?.id !== syncBranch) break;
-              if (data.success) {
-                const current = getPendingSales();
-                if (!setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id))) {
-                  // The sale is safely on the server but could not be dequeued
-                  // locally. The next sync replays the same transaction_id and the
-                  // server returns the original sale (idempotent), so retrying
-                  // here can never create a duplicate.
-                  console.warn("Synced sale could not be removed from the offline queue; it will retry idempotently:", entry.transaction_id);
-                }
-                syncedCount++;
-                syncedIds.push(entry.saleData.transaction_id);
-                updatePendingSalesBadge();
-              } else if (!response.ok) {
-                // Split payments may already have collected one or more legs while
-                // offline, so keep their audit trail for cashier reconciliation.
-                // Preserve the legacy drop behavior for older single-method queues.
-                rejectedCount++;
-                if (entry.saleData.payment_method === "split_payment") {
-                  stopSync = true;
-                  showToast("Offline split sale needs attention: " + (data.message || "Server rejected the sale"), "error");
-                } else {
-                  const current = getPendingSales();
-                  if (!setPendingSales(current.filter((p) => p.transaction_id !== entry.transaction_id))) {
-                    console.warn("Rejected sale could not be removed from the offline queue:", entry.transaction_id);
-                  }
-                  showToast("Offline sale rejected: " + (data.message || "Unknown error"), "error");
-                }
-                updatePendingSalesBadge();
-              } else {
-                // Other failure — keep queued, retry later
-                console.warn("Offline sale sync failed:", data.message || response.status);
-              }
-            } catch (err) {
-              // Network error — keep queued, retry later silently
-              console.warn("Offline sale sync network error:", err);
+          const journal = checkoutJournal(), user = CACHE_USER_ID, branch = currentBranch.id;
+          const entries = journal.list().filter(e => e.status === "pending" && e.saleData.checkout_context.offline);
+          for (const entry of entries) {
+            if (!checkoutScopeCurrent(user, branch)) break;
+            setConnectionStatus("syncing");
+            const result = await journal.send(entry.transaction_id, false);
+            if (!checkoutScopeCurrent(user, branch)) break;
+            if (result?.success) {
+              showToast("Saved checkout synced: " + result.transaction_id, "success");
+              loadSales(); loadDashboardStats(); invalidateProductsCache();
+            } else if (result) {
+              showToast("Checkout retained for manager review: " + (result.error || entry.transaction_id), "warning");
+              if (["auth", "unknown"].includes(result.status)) break;
             }
           }
-          if (syncedCount > 0) {
-            // A reconnected sale is now on the server — refresh the same views
-            // the online success path refreshes so it shows up immediately.
-            loadSales();
-            loadDashboardStats();
-            invalidateProductsCache();
-          }
-          if (syncedCount === 1) {
-            showSaleSuccessModal(syncedIds[0], null, false);
-          } else if (syncedCount > 1) {
-            showToast(`Offline sales synced: ${syncedCount} (latest ID: ${syncedIds[syncedIds.length - 1].slice(0, 8)})`, "success");
-          }
-        } finally {
-          if (getPendingSales().length === 0) {
-            // Everything drained. Only celebrate when the sale is actually on the
-            // server; rejected sales just fall back to the plain connection state.
-            if (syncedCount > 0 && rejectedCount === 0) {
-              setConnectionStatus("synced");
-              connectionStatusTimer = setTimeout(function () {
-                setConnectionStatus(isBrowserOffline() ? "offline" : "online");
-              }, 3500);
-            } else {
-              setConnectionStatus(isBrowserOffline() ? "offline" : "online");
-            }
-          } else {
-            // Still offline or blocked (network/auth) — keep the queue visible.
-            setConnectionStatus("offline");
-          }
+        } catch (error) { showToast("Recovery stopped; data retained: " + error.message, "error"); }
+        finally {
           isSyncingPendingSales = false;
+          setConnectionStatus(isBrowserOffline() ? "offline" : "online");
           updatePendingSalesBadge();
         }
       }
 
       window.addEventListener("online", function () {
-        // While the connection is down the service worker answers API GETs from
-        // its own cache, and those replies were stamped as freshly fetched here.
-        // Drop the memory cache so nothing from before the outage can be shown as
-        // live data once the connection is back.
+        // API responses are never service-worker cached. Discard old in-memory
+        // snapshots as well so reconnect does not present pre-outage data as live.
         invalidateAllCache();
         if (getPendingSales().length) {
           syncPendingSales();
@@ -15705,6 +15722,13 @@
       function finishOfflineSale(saleData) {
         isSaleProcessing = true;
         setCompleteSaleButtonState(true);
+        if (saleData.payment_method !== "cash" || saleData.payment_breakdown ||
+            saleData.coupon_code || saleData.delivery?.enabled) {
+          showToast("Offline sales are cash only, without coupons or delivery. Sale NOT saved; cart retained.", "warning");
+          isSaleProcessing = false;
+          setCompleteSaleButtonState(false);
+          return;
+        }
         const receiptSnapshot = buildOfflineReceiptSnapshot(saleData);
         if (!queueOfflineSale(saleData, receiptSnapshot)) {
           // The sale could not be recorded on this device. Never show a success
@@ -15718,20 +15742,25 @@
           setCompleteSaleButtonState(false);
           return;
         }
-        showSaleSuccessModal(saleData.transaction_id, null, saleData.payment_method === "debt",
-          saleData.payment_method === "mobile_payment" || (saleData.payment_method === "split_payment" && saleData.payment_breakdown?.mobile_payment > 0)
-            ? "Offline manual sale queued — not verified by MyanMyanPay. No provider request was sent."
-            : "Offline sale queued — awaiting server sync.");
+        // Transfer ownership of the basket before touching optional UI. A modal
+        // or customer-display exception must not expose the basket for resale.
         cart = [];
-        updateCartDisplay();
-        if (typeof resetPOSCustomer === "function") resetPOSCustomer();
-        const cashReceived = document.getElementById("cash-received");
-        if (cashReceived) cashReceived.value = "";
-        if (typeof resetSplitPaymentFields === "function") resetSplitPaymentFields();
-        setTimeout(() => {
-          isSaleProcessing = false;
-          setCompleteSaleButtonState(false);
-        }, SALE_COOLDOWN_MS);
+        try {
+          updateCartDisplay();
+          if (typeof resetPOSCustomer === "function") resetPOSCustomer();
+          const cashReceived = document.getElementById("cash-received");
+          if (cashReceived) cashReceived.value = "";
+          if (typeof resetSplitPaymentFields === "function") resetSplitPaymentFields();
+          showSaleSuccessModal(saleData.transaction_id, null, false,
+            "Offline cash sale queued — awaiting server sync. This is not a central stock reservation.");
+        } catch (error) {
+          showToast("Checkout " + saleData.transaction_id + " is saved. Display refresh failed; open Checkout recovery. Do not repeat this sale.", "warning");
+        } finally {
+          setTimeout(() => {
+            isSaleProcessing = false;
+            setCompleteSaleButtonState(false);
+          }, SALE_COOLDOWN_MS);
+        }
       }
 
       function completeSale(mmqrConfirmed = false) {
@@ -15758,6 +15787,10 @@
         const paymentMethod = document.getElementById("payment-method").value;
         if (paymentMethod === "debt" && !requireCapability("debts")) return;
         const customerId = document.getElementById("pos-customer-select").value;
+        if (((typeof navigator !== "undefined" && navigator.onLine === false) || document.getElementById("pos-force-offline-cash")?.checked) && (paymentMethod !== "cash" || (typeof appliedCoupon !== "undefined" && appliedCoupon) || document.getElementById("pos-enable-delivery")?.checked)) {
+          showToast("Offline checkout is CASH ONLY, without coupons or delivery. No payment or sale was recorded.", "warning");
+          return;
+        }
 
         if ((paymentMethod === "mobile_payment" || (paymentMethod === "split_payment" && splitUsesMobilePayment())) && typeof MyanMyanPayCheckout === "undefined") {
           showToast("Payment verification is unavailable. Reload while online; no payment or sale has been confirmed.", "error");
@@ -15850,63 +15883,65 @@
         setCompleteSaleButtonState(true);
 
         // Offline: queue the sale locally instead of fetching
-        if (navigator.onLine === false) {
+        // navigator.onLine can remain true when Wi-Fi works but the central
+        // server/WAN is unreachable. Explicit mode affects NEW cash intents
+        // only; it never converts/rekeys a previously attempted online checkout.
+        if (navigator.onLine === false || document.getElementById("pos-force-offline-cash")?.checked) {
           finishOfflineSale(saleData);
           return;
         }
 
-        fetch("/api/sales", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(saleData),
-        })
-          .then((response) => response.json())
+        // Intent and receipt are durable BEFORE the first network operation.
+        // Even an online rejection/unknown response stays here for review; never
+        // create a new offline key or substitute a cash tender after a failure.
+        let journal, intent;
+        const checkoutUser = CACHE_USER_ID, checkoutBranch = currentBranch.id;
+        try {
+          journal = checkoutJournal();
+          intent = journal.prepare(saleData, buildOfflineReceiptSnapshot(saleData), false);
+        } catch (error) {
+          showToast("Sale NOT sent or saved: " + error.message + ". Cart retained.", "error");
+          isSaleProcessing = false; setCompleteSaleButtonState(false); return;
+        }
+        // Once durable, the cart is represented by this exact intent. Removing it
+        // prevents another press from charging the same basket under a new key.
+        cart = [];
+        try {
+          updateCartDisplay();
+          if (typeof resetPOSCustomer === "function") resetPOSCustomer();
+          document.getElementById("cash-received").value = "";
+          if (typeof resetSplitPaymentFields === "function") resetSplitPaymentFields();
+          document.getElementById("pos-enable-delivery").checked = false;
+          togglePosDeliveryFields(); updateCashRefundDisplay();
+          updatePendingSalesBadge();
+        } catch (error) {
+          console.error("Checkout saved; optional display refresh failed", error);
+        }
+        journal.send(intent.transaction_id, false, true)
           .then((data) => {
-            if (data.success) {
-              const message = paymentMethod === "debt" 
-                ? `${t("saleCompletedDebt")} Transaction ID: ${data.transaction_id}`
-                : `${t("saleCompleted")} Transaction ID: ${data.transaction_id}`;
-              
-              // Show success modal instead of alert
+            if (!checkoutScopeCurrent(checkoutUser, checkoutBranch)) return;
+            if (data?.success) {
               showSaleSuccessModal(data.transaction_id, data.delivery_number, paymentMethod === "debt",
-                paymentMethod === "mobile_payment" || (paymentMethod === "split_payment" && splitUsesMobilePayment())
-                  ? "Manual payment recorded — not verified by MyanMyanPay. No provider request was sent." : "");
-              
-              cart = [];
-              updateCartDisplay();
-              if (typeof resetPOSCustomer === "function") resetPOSCustomer();
-              document.getElementById("cash-received").value = "";
-              if (typeof resetSplitPaymentFields === "function") resetSplitPaymentFields();
-              document.getElementById("pos-enable-delivery").checked = false;
-              togglePosDeliveryFields();
-              updateCashRefundDisplay();
-              // Clear date filters to ensure new sales appear in history
-              const startDateFilter = document.getElementById("sales-start-date-filter");
-              const endDateFilter = document.getElementById("sales-end-date-filter");
-              if (startDateFilter) startDateFilter.value = "";
-              if (endDateFilter) endDateFilter.value = "";
-              const searchInput = document.getElementById("sales-search");
-              if (searchInput) searchInput.value = "";
-              loadSales();
-              loadDashboardStats();
-              invalidateProductsCache();
+                paymentMethod === "mobile_payment" || paymentMethod === "split_payment"
+                  ? "Original manual tender recorded — not verified by MyanMyanPay." : "");
+              // Preserve the established post-sale history reset, but only after
+              // server acknowledgement (never for unknown/rejected checkouts).
+              for (const id of ["sales-start-date-filter", "sales-end-date-filter", "sales-search"]) {
+                const field = document.getElementById(id);
+                if (field) field.value = "";
+              }
+              loadSales(); loadDashboardStats(); invalidateProductsCache();
             } else {
-              showToast(t("errorCompletingSale") + ": " + (data.message || "Unknown error"), "error");
+              showToast("Checkout " + intent.transaction_id + " retained for manager review: " + (data?.error || "Outcome unknown") + ". Do not take payment again. Open Checkout recovery.", "warning");
             }
           })
           .catch((error) => {
-            console.error("Error:", error);
-            // Network failure: queue the sale for later sync
-            finishOfflineSale(saleData);
+            showToast("Checkout " + intent.transaction_id + " is saved; outcome uncertain: " + error.message + ". Do not repeat checkout. Open recovery.", "error");
           })
           .finally(() => {
-            // Reset processing state after cooldown
-            setTimeout(() => {
-              isSaleProcessing = false;
-              setCompleteSaleButtonState(false);
-            }, SALE_COOLDOWN_MS);
+            try { updatePendingSalesBadge(); }
+            catch (error) { console.error("Recovery badge refresh failed", error); }
+            setTimeout(() => { isSaleProcessing = false; setCompleteSaleButtonState(false); }, SALE_COOLDOWN_MS);
           });
       }
 

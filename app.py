@@ -18,6 +18,9 @@ import threading
 from sqlalchemy import inspect, text, func, event, or_, and_, case, select, union_all
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session as SQLAlchemySession, aliased, joinedload, selectinload
+from checkout_recovery import (
+    CheckoutValidationError, validate_checkout, checkout_fingerprint, finite_amount,
+)
 from inventory_paging import (
     InventoryQueryError, bounded_integer, prefix_pattern, cursor_rows,
     export_rows, bounded_search_ids, EXPORT_ROW_LIMIT, ORDER_LINE_LIMIT,
@@ -2065,6 +2068,23 @@ class DeletedSaleRequest(db.Model):
     transaction_id = db.Column(db.String(128), primary_key=True)
     branch_id = db.Column(db.Integer, nullable=False)
     deleted_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class CheckoutRequest(db.Model):
+    """Immutable acceptance evidence, independent of deletable sales/catalogue.
+
+    Historical IDs deliberately have no cascading foreign keys. Never prune this
+    ledger: a browser can retry long after a receipt or product is deleted.
+    """
+    transaction_id = db.Column(db.String(128), primary_key=True)
+    fingerprint = db.Column(db.String(64), nullable=False)
+    user_id = db.Column(db.Integer, nullable=False)
+    branch_id = db.Column(db.Integer, nullable=False)
+    device_id = db.Column(db.String(128))
+    occurred_at = db.Column(db.String(64))
+    offline = db.Column(db.Boolean, nullable=False, default=False)
+    accepted_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    response_json = db.Column(db.Text, nullable=False)
 
 
 class Sale(db.Model):
@@ -6126,9 +6146,11 @@ def api_create_sale():
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    data = request.get_json()
-    if not data or 'items' not in data:
-        return jsonify({'success': False, 'message': 'Missing required fields'}), 400
+    data = request.get_json(silent=True)
+    try:
+        validate_checkout(data)
+    except CheckoutValidationError as error:
+        return jsonify(success=False, code='invalid_checkout', message=str(error)), 400
 
     # SQLite can raise "database is locked" under concurrent POS writes; retry the
     # whole transaction (stock checks + guarded decrements) up to 3 times before failing.
@@ -6143,7 +6165,8 @@ def api_create_sale():
                 app.logger.warning(f"Sale transaction hit DB lock (attempt {attempt + 1}); retrying...")
                 continue
             app.logger.error(f"Error creating sale: {str(exc)}")
-            return jsonify({'success': False, 'message': f'Error creating sale: {str(exc)}'}), 500
+            return jsonify(success=False, code='retry_later',
+                           message='Checkout is temporarily unavailable. Retry the same transaction ID.'), 503
         except IntegrityError:
             # Two concurrent requests raced on the same client transaction_id:
             # both passed the "does it exist" check, then one hit the UNIQUE
@@ -6155,12 +6178,9 @@ def api_create_sale():
             if not client_txn_id:
                 app.logger.error("IntegrityError creating sale")
                 return jsonify({'success': False, 'message': 'Error creating sale'}), 500
-            existing = Sale.query.filter_by(
-                transaction_id=client_txn_id,
-                branch_id=get_current_branch_id(),
-            ).first()
-            if existing:
-                return _sale_replay_response(existing)
+            replay = _checkout_replay(data, get_current_branch_id())
+            if replay is not None:
+                return replay
             if attempt < max_attempts - 1:
                 time.sleep(0.2)
                 continue
@@ -6190,9 +6210,47 @@ def _sale_replay_response(existing):
     return jsonify(response), 200
 
 
+def _checkout_replay(data, branch_id):
+    """Resolve a retry before consulting mutable customers, stock or pricing."""
+    key = data.get('transaction_id')
+    if not key:
+        return None
+    ledger = db.session.get(CheckoutRequest, key)
+    if ledger:
+        if ledger.branch_id != branch_id or ledger.user_id != session.get('user_id'):
+            if session.get('role') == 'cashier':
+                return jsonify(success=False, message='Sale not found'), 404
+            return jsonify(success=False, code='idempotency_conflict',
+                           message='Transaction ID is not available for this account and branch.'), 409
+        if ledger.fingerprint != checkout_fingerprint(data):
+            return jsonify(success=False, code='idempotency_conflict',
+                           message='Transaction ID was already used with a different checkout. Keep the original payload for reconciliation.'), 409
+        if db.session.get(DeletedSaleRequest, key):
+            return jsonify(success=False, code='checkout_conflict',
+                           message='This transaction was processed and its history deleted. It cannot be synced again.'), 409
+        response = json.loads(ledger.response_json)
+        response.update(duplicate=True, message='Sale already synced')
+        return jsonify(response), 200
+    if db.session.get(DeletedSaleRequest, key):
+        return jsonify(success=False, code='checkout_conflict',
+                       message='This transaction was processed and its history deleted. It cannot be synced again.'), 409
+    existing = Sale.query.filter_by(transaction_id=key).first()
+    if existing:
+        if existing.branch_id != branch_id or not cashier_can_access_sale(existing):
+            return jsonify(success=False, message='Sale not found'), 404
+        # Pre-upgrade sales have no immutable request fingerprint. Do not guess
+        # one from mutable/deletable sale items and report an unsafe success.
+        return jsonify(success=False, code='legacy_checkout_review',
+                       message='This transaction predates retry verification. A manager must reconcile its original receipt; it has not been recreated.'), 409
+    return None
+
+
 def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
     """Run a single sale transaction. Raises OperationalError on DB lock so the caller can retry."""
     try:
+        # Provider quote/completion also calls this helper directly. Apply the
+        # same finite-number and item-shape checks at that boundary.
+        validate_checkout(data)
         if not quote_only and db.engine.dialect.name == 'sqlite':
             # Serialize checkout with history deletion BEFORE reading either
             # idempotency guard. SELECT alone need not start a real transaction
@@ -6204,6 +6262,15 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             # Validation/replay early returns are released by request teardown;
             # payment completion also explicitly rolls back after this call.
         branch_id = get_current_branch_id()
+        context = data.get('checkout_context') or {}
+        if context and (str(context['branch_id']) != str(branch_id)
+                        or str(context['user_id']) != str(session.get('user_id'))):
+            return jsonify(success=False, code='checkout_conflict',
+                           message='Checkout belongs to a different account or branch.'), 409
+        if not quote_only:
+            replay = _checkout_replay(data, branch_id)
+            if replay is not None:
+                return replay
         customer_id = data.get('customer_id')
         payment_method = str(data.get('payment_method') or 'cash').strip().lower()
         if payment_method == 'split_payment' and customer_id:
@@ -6214,20 +6281,16 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
                 return jsonify({'success': False, 'message': 'Customer not found in current branch'}), 404
         if session.get('role') == 'cashier' and payment_method == 'debt':
             return jsonify({'success': False, 'message': 'Manager access required for credit sales'}), 403
+        if payment_method == 'debt' and not customer_id:
+            return jsonify(success=False, message='A customer is required for credit sales; the debt cannot be omitted.'), 400
         # Idempotency guard for offline sales: if the client already sent this
         # transaction_id (e.g. a retried sync after a lost response), return the
         # original sale instead of creating a duplicate.
         client_txn_id = str(data.get('transaction_id') or '').strip()
-        if client_txn_id and db.session.get(DeletedSaleRequest, client_txn_id):
-            return jsonify(success=False, message='This transaction was already processed and its history deleted. It cannot be synced again.'), 409
         if client_txn_id and not quote_only and verified_payment_id is None:
             reserved_payment = PaymentIntent.query.filter_by(transaction_id=client_txn_id).first()
             if reserved_payment:
                 return jsonify(success=False, message='This checkout belongs to a saved payment. Resume it from MyanMyanPay.'), 409
-        if client_txn_id:
-            existing = Sale.query.filter_by(transaction_id=client_txn_id, branch_id=get_current_branch_id()).first()
-            if existing:
-                return _sale_replay_response(existing)
 
         # Delivery is validated before the totals: an "already paid" delivery fee
         # is charged with this sale, so it must be part of the cart total that
@@ -6291,6 +6354,14 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             # price is only accepted when it matches a currently-active promotion
             # (within 0.01 tolerance). Normal-price sales are always accepted.
             normal_price = to_decimal(product.price or 0)
+            if context.get('offline'):
+                if ('tax_rate' not in item or to_decimal(item['tax_rate']) != to_decimal(product.tax_rate or 0)):
+                    return jsonify(success=False, code='checkout_conflict',
+                                   message='Tax changed since offline checkout. Manager review required.'), 409
+                if price != normal_price and not any(
+                        price == promo_price for promo_price in active_promotion_prices(product)):
+                    return jsonify(success=False, code='checkout_conflict',
+                                   message='Price changed since offline checkout. Manager review required.'), 409
             if price < normal_price:
                 promo_prices = active_promotion_prices(product)
                 if not any(abs(price - promo_price) <= Decimal('0.01') for promo_price in promo_prices):
@@ -6346,6 +6417,9 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             total = total - coupon_discount
 
         total_rounded = round_money(total)
+        if context and finite_amount(context['expected_total'], 'Expected total') != total_rounded:
+            return jsonify(success=False, code='checkout_conflict',
+                           message='Checkout total changed. Original cash and receipt were not altered; manager review required.'), 409
 
         allowed_payment_methods = {'cash', 'credit_card', 'debit_card', 'mobile_payment', 'debt', 'split_payment'}
         if payment_method not in allowed_payment_methods:
@@ -6460,7 +6534,14 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             if stock_result.rowcount == 0:
                 db.session.rollback()
                 return jsonify({'success': False, 'message': f'Insufficient stock for {item["product"].name}. Available: {item["product"].stock}'}), 400
-            previous_stock = int(item['product'].stock or 0)
+            # The ORM instance can be stale after our raw guarded UPDATE,
+            # especially when this basket contains the same product twice.
+            # Audit the actual transition under this transaction's writer lock.
+            current_stock = db.session.execute(
+                text('SELECT stock FROM product WHERE id = :pid'),
+                {'pid': item['product'].id},
+            ).scalar_one()
+            previous_stock = int(current_stock) + item['quantity']
             record_audit_event(
                 category='Inventory', action='update', entity_type='Product',
                 entity_id=item['product'].id, entity_label=item['product'].name,
@@ -6557,15 +6638,39 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
             default=json_default
         )
 
-        db.session.commit()
-
-        return jsonify({
+        response = {
             'success': True,
             'message': 'Sale completed',
             'transaction_id': sale.transaction_id,
+            # SQLite persists the existing sale.date column without tzinfo.
+            # Match that representation on initial acceptance and every replay.
+            'created_at': sale.date.replace(tzinfo=None).isoformat(),
+            'total': money_float(sale.total),
+            'refund_amount': money_float(sale.refund_amount),
+            'payment_method': sale.payment_method,
+            'payment_breakdown': get_sale_payment_breakdown(sale),
             'delivery_number': sale.delivery.delivery_number if getattr(sale, 'delivery', None) else None
-        }), 201
+        }
+        if client_txn_id:
+            db.session.add(CheckoutRequest(
+                transaction_id=client_txn_id, fingerprint=checkout_fingerprint(data),
+                user_id=session['user_id'], branch_id=branch_id,
+                device_id=context.get('device_id'), occurred_at=context.get('occurred_at'),
+                offline=bool(context.get('offline')), response_json=json.dumps(response),
+            ))
+            record_audit_event(
+                category='Sales', action='checkout_accepted', entity_type='CheckoutRequest',
+                entity_id=client_txn_id, branch_id=branch_id,
+                summary=f"Checkout {client_txn_id} accepted ({'offline upload' if context.get('offline') else 'online'}).",
+                changes={'device_id': {'before': None, 'after': context.get('device_id')},
+                         'occurred_at': {'before': None, 'after': context.get('occurred_at')}},
+            )
+        db.session.commit()
+        return jsonify(response), 201
 
+    except CheckoutValidationError as error:
+        db.session.rollback()
+        return jsonify(success=False, code='invalid_checkout', message=str(error)), 400
     except OperationalError:
         db.session.rollback()
         raise

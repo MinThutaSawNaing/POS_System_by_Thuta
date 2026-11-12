@@ -37,6 +37,33 @@ class DeliveryExtensionTests(unittest.TestCase):
         self.assertEqual(self.client(branch=self.b).post(f'/api/deliveries/{id}/carrier', json={}).status_code, 404)
         self.assertEqual(self.client(role='cashier').post(f'/api/deliveries/{id}/carrier', json={}).status_code, 403)
 
+    def test_proof_request_limit_is_local_to_request_and_does_not_write(self):
+        id = self.delivery()
+        original_limit = self.app.config['MAX_CONTENT_LENGTH']
+        response = self.client().post(f'/api/deliveries/{id}/proofs', data={
+            'kind': 'photo', 'file': (io.BytesIO(b'x' * (6 * 1024 * 1024 + 1)), 'large.png')})
+        self.assertEqual(response.status_code, 413, response.json)
+        self.assertEqual(self.app.config['MAX_CONTENT_LENGTH'], original_limit)
+        with self.app.app_context():
+            self.assertEqual(self.module.DeliveryProof.query.filter_by(delivery_id=id).count(), 0)
+        self.assertEqual(self.proof(id).status_code, 200)
+
+    def test_proof_stream_without_content_length_is_still_bounded(self):
+        id = self.delivery()
+        from werkzeug.test import EnvironBuilder
+        builder = EnvironBuilder(path=f'/api/deliveries/{id}/proofs', method='POST', data={
+            'kind': 'photo', 'file': (io.BytesIO(b'x' * (6 * 1024 * 1024 + 1)), 'large.png')})
+        try:
+            environ = builder.get_environ()
+            environ.pop('CONTENT_LENGTH', None)
+            environ['wsgi.input_terminated'] = True
+            response = self.client().open(environ)
+            self.assertEqual(response.status_code, 413, response.json)
+            with self.app.app_context():
+                self.assertEqual(self.module.DeliveryProof.query.filter_by(delivery_id=id).count(), 0)
+        finally:
+            builder.close()
+
     def test_private_sanitized_proof_signature_and_limit(self):
         id = self.delivery()
         response = self.proof(id)

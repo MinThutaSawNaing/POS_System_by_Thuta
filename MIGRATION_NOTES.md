@@ -1,5 +1,22 @@
 # Migration notes
 
+## November 2026 checkout recovery ledger
+
+- Startup creates the additive `checkout_request` table via the existing
+  `db.create_all()` convention. No existing financial records are rewritten.
+- New client transaction IDs receive immutable request fingerprints and accepted
+  response evidence atomically with sale/stock/debt changes. Historical records
+  cannot safely be backfilled from current mutable data; pre-ledger replay needs
+  manager reconciliation. Never purge this ledger with sale/product history.
+- Rehearse startup twice on a staging copy; take a verified independent database
+  and uploads backup before any authorized production rollout. This patch does
+  not run a deployment or migration against production.
+- Code rollback does not undo accepted transactions and removes the new retry
+  protections. Database restore loses all post-backup sales and retry identities;
+  pending browser uploads must be reconciled before writes resume. Do not drop
+  the ledger or clear browser data. See `docs/offline-checkout-recovery.md` for
+  the central-server boundary, cash-only policy and rollback limitations.
+
 ## November 2026 optional product SKU
 
 - Startup adds nullable `product.sku` (`VARCHAR(100) COLLATE NOCASE`) to existing

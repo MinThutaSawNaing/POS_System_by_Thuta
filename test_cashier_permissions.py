@@ -284,14 +284,16 @@ def test_cash_customer_association_does_not_create_debt(world):
     assert world['client'].get('/api/sales/cash-association/print').status_code == 200
 
 
-@pytest.mark.parametrize('index,status', [(0, 200), (1, 404)])
+@pytest.mark.parametrize('index,status', [(0, 409), (1, 404)])
 def test_idempotent_sale_replay_respects_owner(world, index, status):
     before = state(world)
     response = world['client'].post('/api/sales', json=checkout(world,
         transaction_id=world['sales'][index].transaction_id))
     assert response.status_code == status
     if index == 0:
-        assert response.get_json()['duplicate'] is True
+        # These fixtures predate the immutable request ledger. Ownership alone
+        # cannot prove that this submitted checkout matches the original.
+        assert response.get_json()['code'] == 'legacy_checkout_review'
     assert state(world) == before
 
 

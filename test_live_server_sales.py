@@ -1,6 +1,6 @@
 """Live-server integration + network-level tests for offline sale sync.
 
-Starts a real Flask dev server on 127.0.0.1:5057 and exercises the actual
+Starts a real Flask dev server on a loopback ephemeral port and exercises the actual
 HTTP stack: routing, auth, JSON parsing, idempotent replay, stock
 validation, concurrent writers, and connection-refused behaviour.
 """
@@ -25,22 +25,26 @@ _server_log = None
 
 
 def _start_server():
-    global _server, _server_log
+    global _server, _server_log, BASE
     _server_log = tempfile.TemporaryFile(mode='w+b')
     _server = subprocess.Popen(
         [sys.executable, "-c",
-         "from app import app; app.run(host='127.0.0.1', port=5057, threaded=True)"],
+         "from app import app; from werkzeug.serving import make_server; "
+         "server=make_server('127.0.0.1',0,app,threaded=True); "
+         "print('POS_TEST_PORT='+str(server.server_port),flush=True); server.serve_forever()"],
         stdout=_server_log,
         stderr=subprocess.STDOUT,
     )
     for _ in range(50):
         if _server.poll() is not None:
             break
-        try:
-            socket.create_connection(("127.0.0.1", 5057), timeout=0.5).close()
-            return
-        except OSError:
-            time.sleep(0.2)
+        _server_log.seek(0)
+        output = _server_log.read().decode('utf-8', errors='replace')
+        for line in output.splitlines():
+            if line.startswith('POS_TEST_PORT='):
+                BASE = 'http://127.0.0.1:' + line.split('=', 1)[1]
+                return
+        time.sleep(0.2)
     _server_log.seek(0)
     raise RuntimeError("Test server did not start:\n" + _server_log.read().decode('utf-8', errors='replace'))
 
@@ -140,7 +144,7 @@ class LiveServerSaleTests(unittest.TestCase):
         resp = self.session.post(
             BASE + '/api/sales', data='{not valid json',
             headers={'Content-Type': 'application/json'})
-        self.assertIn(resp.status_code, (400, 500))
+        self.assertEqual(resp.status_code, 400)
 
     def test_03_missing_items_rejected(self):
         resp = self.session.post(BASE + '/api/sales', json={'payment_method': 'cash'})
@@ -204,9 +208,13 @@ class LiveServerSaleTests(unittest.TestCase):
 
     def test_08_connection_refused_behaves_like_offline(self):
         """A closed port must fail fast with ConnectionError (client queues)."""
-        with self.assertRaises(requests.exceptions.ConnectionError):
-            requests.post('http://127.0.0.1:5058/api/sales',
-                          json=self._payload('live-x'), timeout=3)
+        # Reserve a non-listening socket so another test suite cannot accidentally
+        # supply a real server at a fixed "closed" port.
+        with socket.socket() as reserved:
+            reserved.bind(('127.0.0.1', 0))
+            with self.assertRaises(requests.exceptions.ConnectionError):
+                requests.post(f'http://127.0.0.1:{reserved.getsockname()[1]}/api/sales',
+                              json=self._payload('live-x'), timeout=3)
 
     def test_09_health_endpoint_responds(self):
         resp = self.session.get(BASE + '/healthz')

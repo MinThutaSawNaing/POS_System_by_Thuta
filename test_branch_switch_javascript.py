@@ -300,8 +300,9 @@ network=async(input,init)=>{
  return new Response(JSON.stringify({success:false,code:'stale_branch'}),{status:409,
  headers:{'content-type':'application/json','x-pos-branch-mismatch':'1'}});
 };
-// In-progress sync receiving 409 must retain even a non-split-payment sale.
-await syncPendingSales();
+// A live API mismatch pauses checkout and sync. Pre-upgrade v2 records are
+// deliberately never auto-uploaded; retain them for explicit reconciliation.
+await fetch('/api/products');
 assert.equal(getPendingSales().length,1); assert.equal(dashboardBranchStale,true);
 assert.equal(reloads,0); assert.equal(notices.length,1);
 const count=calls.length;

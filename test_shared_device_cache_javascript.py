@@ -120,7 +120,7 @@ handlers.fetch({request: {url: 'https://pos.test/public/vendor/bootstrap/bootstr
 console.log(JSON.stringify({deletes, writes, failures, network, asset: await asset}));
 })().catch(e => {console.error(e); process.exit(1)});
 ''')
-    assert out['deletes'] == ['parrot-pos-1.1.1']
+    assert out['deletes'] == ['parrot-pos-1.1.1', 'parrot-pos-1.2.0']
     assert out['writes'] == []
     assert all(out['failures'])
     assert all(options == {'cache': 'no-store'} for _, options in out['network'])

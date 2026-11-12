@@ -86,7 +86,9 @@ globalThis.fetch = window.fetch;
  let isSyncingPendingSales = false;
  // The real sync function closes over these same script-level bindings below.
  mismatch = true;
- await syncPendingSales();
+ // Legacy queues no longer upload automatically. Trigger the same identity
+ // mismatch on a live read, then verify both checkout and sync stay paused.
+ await window.fetch('/api/products');
  const callsAtBlock = calls.length;
  const response = await window.fetch('/api/products');
  await syncPendingSales();
