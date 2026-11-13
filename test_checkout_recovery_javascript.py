@@ -261,18 +261,21 @@ await syncPendingSales();assert.deepEqual(notices,[]);assert.equal(posts.length,
 
 def test_avatar_preference_saves_explicitly_survives_reload_and_is_user_scoped():
     run('''
-const control={value:'on'}, events=[], notices=[];
-Object.assign(globalThis,{CACHE_USER_ID:3,document:{getElementById:()=>control},
+const controls=[{value:'on',checked:true},{value:'off',checked:false}], events=[], notices=[];
+const choose=value=>controls.forEach(control=>control.checked=control.value===value);
+const selected=()=>controls.find(control=>control.checked).value;
+Object.assign(globalThis,{CACHE_USER_ID:3,document:{querySelectorAll:()=>controls,
+ querySelector:()=>controls.find(control=>control.checked)},
  window:{dispatchEvent:event=>events.push(event.detail.enabled)},
  CustomEvent:class {constructor(name,options){this.detail=options.detail}},
  requireCapability:()=>true,showToast:message=>notices.push(message)});
-loadAIAvatarPreference();assert.equal(control.value,'on');assert.deepEqual(events,[true]);
-control.value='off';assert.equal(localStorage.getItem(aiAvatarPreferenceKey()),null);
+loadAIAvatarPreference();assert.equal(selected(),'on');assert.deepEqual(events,[true]);
+choose('off');assert.equal(localStorage.getItem(aiAvatarPreferenceKey()),null);
 saveAIAvatarPreference();assert.equal(localStorage.getItem(aiAvatarPreferenceKey()),'off');
-assert.equal(events.at(-1),false);control.value='on';loadAIAvatarPreference();assert.equal(control.value,'off');
-CACHE_USER_ID=4;loadAIAvatarPreference();assert.equal(control.value,'on');
-CACHE_USER_ID=3;control.value='on';saveAIAvatarPreference();assert.equal(events.at(-1),true);
-control.value='off';localStorage.setItem=()=>{throw Error('quota')};
+assert.equal(events.at(-1),false);choose('on');loadAIAvatarPreference();assert.equal(selected(),'off');
+CACHE_USER_ID=4;loadAIAvatarPreference();assert.equal(selected(),'on');
+CACHE_USER_ID=3;choose('on');saveAIAvatarPreference();assert.equal(events.at(-1),true);
+choose('off');localStorage.setItem=()=>{throw Error('quota')};
 saveAIAvatarPreference();assert.equal(events.at(-1),true);assert(notices.at(-1).includes('Could not save'));
 ''', ('aiAvatarPreferenceKey','loadAIAvatarPreference','saveAIAvatarPreference'))
 

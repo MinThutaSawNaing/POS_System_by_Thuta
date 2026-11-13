@@ -1006,6 +1006,47 @@
         margin: 0 !important;
       }
 
+      #product-grid > .pos-load-more-cell {
+        grid-column: 1 / -1;
+        position: sticky;
+        bottom: 0;
+        z-index: 2;
+        padding: 0.75rem !important;
+        background: #fff;
+        border-top: 1px solid var(--surface-border);
+        box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.08);
+      }
+
+      .pos-load-more-cell .btn {
+        width: 100%;
+        min-height: 48px;
+        font-weight: 600;
+        white-space: normal;
+      }
+
+      .purchase-filters {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+        align-items: start;
+      }
+
+      .purchase-filters > div { min-width: 0; }
+      .purchase-filters .form-label { margin-bottom: 0.5rem; }
+      .purchase-filters .form-control,
+      .purchase-filters .form-select,
+      .purchase-filters .btn { min-height: 40px; }
+      .purchase-filter-actions { grid-column: 1 / -1; }
+
+      @media (min-width: 1200px) {
+        .purchase-filters { grid-template-columns: 1.5fr 1fr 1.25fr 1fr 1fr; }
+      }
+
+      @media (max-width: 575.98px) {
+        .purchase-filters { grid-template-columns: minmax(0, 1fr); }
+        .purchase-filter-actions .btn { width: 100%; }
+      }
+
       .card-stat {
         border-left: 4px solid var(--primary-color);
       }
@@ -3567,10 +3608,10 @@
 
         <!-- Filters -->
         <div class="card mb-3">
-          <div class="card-body py-2">
-            <div class="row g-2 align-items-end filter-row">
-              <div class="col-12 col-sm-6 col-md-3">
-                <label class="form-label small">Search</label>
+          <div class="card-body">
+            <div class="purchase-filters">
+              <div>
+                <label class="form-label small" for="purchase-orders-search">Search</label>
                 <input
                   type="text"
                   id="purchase-orders-search"
@@ -3579,8 +3620,8 @@
                   title="Search matches the beginning of a PO number or supplier name."
                 />
               </div>
-              <div class="col-6 col-sm-3 col-md-2">
-                <label class="form-label small">Status</label>
+              <div>
+                <label class="form-label small" for="purchase-orders-status-filter">Status</label>
                 <select id="purchase-orders-status-filter" class="form-select form-select-sm">
                   <option value="">All Status</option>
                   <option value="draft">Draft</option>
@@ -3591,23 +3632,23 @@
                   <option value="cancelled">Cancelled</option>
                 </select>
               </div>
-              <div class="col-6 col-sm-3 col-md-2">
-                <label class="form-label small">Supplier</label>
+              <div>
+                <label class="form-label small" for="purchase-orders-supplier-filter">Supplier</label>
                 <select id="purchase-orders-supplier-filter" class="form-select form-select-sm">
                   <option value="">All Suppliers</option>
                 </select>
               </div>
-              <div class="col-6 col-sm-3 col-md-2">
-                <label class="form-label small">From Date</label>
+              <div>
+                <label class="form-label small" for="purchase-orders-start-date">From Date</label>
                 <input type="date" id="purchase-orders-start-date" class="form-control form-control-sm" />
               </div>
-              <div class="col-6 col-sm-3 col-md-2">
-                <label class="form-label small">To Date</label>
+              <div>
+                <label class="form-label small" for="purchase-orders-end-date">To Date</label>
                 <input type="date" id="purchase-orders-end-date" class="form-control form-control-sm" />
               </div>
-              <div class="col-12 col-sm-6 col-md-1">
-                <button class="btn btn-sm btn-outline-secondary w-100" onclick="clearPurchaseOrderFilters()">
-                  <i class="bi bi-x-circle"></i>
+              <div class="purchase-filter-actions d-flex justify-content-end">
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearPurchaseOrderFilters()">
+                  <i class="bi bi-x-circle" aria-hidden="true"></i> Clear filters
                 </button>
               </div>
             </div>
@@ -4834,15 +4875,19 @@
             </div>
           </div>
           <div class="card-body">
-            <div class="mb-3 border-bottom pb-3">
-              <label class="form-label" for="settings-ai-avatar-enabled">Floating AI chat avatar</label>
-              <select class="form-select mb-2" id="settings-ai-avatar-enabled">
-                <option value="on">On</option>
-                <option value="off">Off</option>
-              </select>
-              <div class="form-text mb-2">Show or hide the floating assistant for your account on this browser. Turn it back on here when needed.</div>
+            <fieldset class="mb-3 border-bottom pb-3" id="settings-ai-avatar-enabled" aria-describedby="settings-ai-avatar-help">
+              <legend class="form-label fs-6">Floating AI chat avatar</legend>
+              <div class="d-flex gap-3 mb-2">
+                <label class="d-flex align-items-center gap-2 border rounded px-3 py-2">
+                  <input class="form-check-input m-0" type="radio" name="settings-ai-avatar" id="settings-ai-avatar-on" value="on" checked> On
+                </label>
+                <label class="d-flex align-items-center gap-2 border rounded px-3 py-2">
+                  <input class="form-check-input m-0" type="radio" name="settings-ai-avatar" id="settings-ai-avatar-off" value="off"> Off
+                </label>
+              </div>
+              <div class="form-text mb-2" id="settings-ai-avatar-help">Show or hide the floating assistant for your account on this browser. Turn it back on here when needed.</div>
               <button type="button" class="btn btn-primary" id="save-ai-avatar-btn" onclick="saveAIAvatarPreference()"><i class="bi bi-save"></i> Save avatar preference</button>
-            </div>
+            </fieldset>
             <div class="mb-3">
               <label class="form-label">APIFree.ai API Key</label>
               <div class="input-group">
@@ -9217,15 +9262,16 @@
         let enabled = true;
         try { enabled = localStorage.getItem(aiAvatarPreferenceKey()) !== "off"; }
         catch (_) { /* Keep the default when storage is blocked. */ }
-        const control = document.getElementById("settings-ai-avatar-enabled");
-        if (control) control.value = enabled ? "on" : "off";
+        document.querySelectorAll('input[name="settings-ai-avatar"]').forEach(control => {
+          control.checked = control.value === (enabled ? "on" : "off");
+        });
         window.dispatchEvent(new CustomEvent("pos-ai-avatar-visibility", {detail: {enabled}}));
       }
 
       function saveAIAvatarPreference() {
         if (!requireCapability("admin")) return;
-        const control = document.getElementById("settings-ai-avatar-enabled");
-        const value = control.value === "off" ? "off" : "on";
+        const control = document.querySelector('input[name="settings-ai-avatar"]:checked');
+        const value = control?.value === "off" ? "off" : "on";
         try {
           const key = aiAvatarPreferenceKey();
           localStorage.setItem(key, value);
@@ -14387,9 +14433,8 @@
             if (posProductsHaveMore) {
               const loadMoreCell = document.createElement("div");
               loadMoreCell.className = "pos-load-more-cell";
-              loadMoreCell.style.cssText = "grid-column: 1 / -1; text-align: center; padding: 0.75rem 0;";
               loadMoreCell.innerHTML = `
-                <button class="btn btn-outline-dark btn-sm" onclick="loadMorePOSProducts()">
+                <button type="button" class="btn btn-primary" onclick="loadMorePOSProducts()">
                   <i class="bi bi-arrow-down"></i> Load More Products
                 </button>
               `;
@@ -14485,9 +14530,8 @@
         if (posProductPage < posProductTotalPages) {
           const loadMoreCell = document.createElement("div");
           loadMoreCell.className = "pos-load-more-cell";
-          loadMoreCell.style.cssText = "grid-column: 1 / -1; text-align: center; padding: 0.75rem 0;";
           loadMoreCell.innerHTML = `
-            <button class="btn btn-outline-dark btn-sm" onclick="loadMorePOSProducts()">
+            <button type="button" class="btn btn-primary" onclick="loadMorePOSProducts()">
               <i class="bi bi-arrow-down"></i> Load More Products (Page ${posProductPage} of ${posProductTotalPages})
             </button>
           `;
