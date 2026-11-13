@@ -16,10 +16,13 @@ Offline reload/login, new catalogue downloads and provider payment verification
 are not supported. Never distribute the SQLite file to branches or place it on
 a shared network drive as an alternative synchronization mechanism.
 
-If the browser still reports an active network while the central server/WAN is
-unreachable, explicitly select **Save NEW cash checkouts offline**. This applies
-only to new baskets. Never recreate an uncertain prior checkout: use recovery
-with its original ID instead. Uncheck explicit offline mode when service returns.
+The checkout button probes the central server with a three-second deadline, even
+when Wi-Fi reports a connection. New eligible cash baskets save offline
+automatically when the server is unreachable; there is no manual offline switch.
+A background probe runs every 20 seconds and resumes synchronization when service
+returns. Never recreate an uncertain prior checkout: automatic recovery resends
+its original ID and unchanged payload instead. If checkout inputs change during
+the probe, the cashier must confirm the updated basket with another click.
 
 ## Agreed financial policy
 
@@ -72,17 +75,20 @@ per-entry/per-attempt keys avoid whole-array read/modify/write data loss between
 tabs. Native Web Locks, when available, additionally serialize same-ID sends;
 the server ledger still protects against duplicate transport without Web Locks.
 
-Only newly recorded, never-attempted offline cash records are automatically
-uploaded. Once an attempt has an unknown, rejected, authentication or conflict
-outcome, it remains for explicit review/retry. A browser crash between sending
-and recording a response likewise needs review; retry the original ID, not a new
-checkout. A confirmed server acceptance takes precedence over another tab's
+New pending intents and uncertain attempts automatically upload/replay with their
+original ID, payload and tender. Automatic retries wait at least one minute after
+an attempt/result, exponentially backing off to five minutes. HTTP 408/429/5xx,
+transport failures and crashes remain uncertain, not failed sales. HTTP 401 pauses
+until the original session is usable again (with the same backoff); permission
+denials, business rejections, stock/price conflicts and corrupt data require help.
+Any definite rejection evidence blocks automatic retry even if a later attempt
+has an uncertain result. A confirmed server acceptance takes precedence over another tab's
 late failed response. Storage-write failure must not be reported as a saved sale.
 Transport and response-body waits are bounded to 30 seconds; timeout/5xx/malformed
 success responses are uncertain outcomes, not proof that no sale committed.
 Corrupt or orphaned attempt records are exposed for export and reconciliation.
 
-Use the POS recovery panel to inspect the transaction ID, attempt/error state,
+Use **Manager help / saved sales** to inspect the transaction ID, attempt/error state,
 original receipt and JSON export. Give the export to the manager to reconcile
 cash taken, physical goods, central receipt and stock. If a stock conflict is
 legitimately corrected, use the existing authorized stock workflow, then retry
@@ -153,8 +159,9 @@ malformed success replies, orphaned/corrupt events, failed storage writes before
 and after transport, unfinished attempts with clock rollback, optional UI failures
 after saving, duplicate-product stock audit transitions, bounded exhausted SQLite
 locks and repeated 32-request four-branch duplicate bursts. Timeouts and HTTP 5xx
-remain **unknown**, not proof that the server rolled back. Retry the unchanged
-intent only after reconciliation; never take payment again on that assumption.
+remain **unknown**, not proof that the server rolled back. Automatic recovery
+replays the unchanged intent using the server ledger; never take payment again
+on the assumption that the first attempt failed.
 
 The production workflow currently deploys automatically on pushes to `main`.
 A source-only push without rollout authorization must suppress that workflow

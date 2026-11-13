@@ -93,7 +93,9 @@ function checkoutJournal(){return OfflineCheckout.create({storage:localStorage,u
  await recovery.send(first.transaction_id,false,!offline);check(posts===1,'unknown never auto retries');
  if(offline){await syncPendingSales();await syncPendingSales();}
  else {for(const e of recovery.list().filter(e=>e.status==='pending'))await recovery.send(e.transaction_id,false,true);}
- check((await recovery.send(first.transaction_id,true,false,'Browser-test manager')).success,'same ID replay');
+ const originalNow=Date.now;Date.now=()=>originalNow()+61000;
+ check((await recovery.recover(first.transaction_id)).success,'automatic same ID replay');
+ Date.now=originalNow;
  check(recovery.list().every(e=>e.status==='synced'),'all records must settle');
  const before=posts;
  await Promise.all(Array.from({length:5},()=>recovery.send(first.transaction_id,true,false,'Browser-test manager')));

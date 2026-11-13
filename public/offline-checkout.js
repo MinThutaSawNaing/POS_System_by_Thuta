@@ -83,14 +83,24 @@
       put(prefix + "intent:" + sale.transaction_id, intent);
       return copy(intent);
     }
-    async function send(id, manual, initialOnline, reviewer) {
+    async function send(id, manual, initialOnline, reviewer, automatic) {
       const run = async () => {
         if (!options.current()) throw Error("Session or branch changed; reload before retry");
         if (manual && (typeof reviewer !== "string" || !reviewer.trim())) throw Error("Record the reviewing manager before retry");
         const entry = list().find(e => e.transaction_id === id);
         if (!entry || entry.status === "corrupt") throw Error("Checkout unavailable or corrupt; export for reconciliation");
         if (entry.status === "synced") return {success: true, transaction_id: entry.server_transaction_id, replay: true};
-        if (!manual && (entry.status !== "pending" || (!initialOnline && !entry.saleData.checkout_context.offline))) return null;
+        if (automatic) {
+          // Never change the original intent. The server's atomic acceptance
+          // ledger makes an exact replay safe even after a lost response/crash.
+          // Definite business/permission failures always require review;
+          // expired sessions may recover in the same authenticated scope.
+          if (entry.events.some(e => e.type === "result" && (["conflict", "rejected"].includes(e.status) || (e.status === "auth" && e.http_status !== 401)))) return null;
+          const lastAt = Math.max(0, ...entry.events.map(e => Date.parse(e.at)));
+          const delay = Math.min(300000, 60000 * 2 ** Math.min(3, Math.max(0, entry.attempts - 1)));
+          if (entry.attempts && Date.now() - lastAt < delay) return null;
+          if (!["pending", "unknown", "auth"].includes(entry.status)) return null;
+        } else if (!manual && (entry.status !== "pending" || (!initialOnline && !entry.saleData.checkout_context.offline))) return null;
         const attempt = options.id(), base = prefix + "event:" + id + ":" + attempt;
         put(base + ":start", {type: "attempt", attempt_id: attempt, at: new Date().toISOString(), manual: Boolean(manual),
           manager_review: manual ? reviewer.trim() : null, review_attested_by: manual ? options.userId : null});
@@ -109,10 +119,10 @@
             return response;
           };
           const response = await Promise.race([transport(), new Promise((_, reject) => {
-            timer = setTimeout(() => { controller.abort(); reject(Error("Checkout timed out; outcome unknown. Retry the original ID after review.")); }, timeoutMs);
+            timer = setTimeout(() => { controller.abort(); reject(Error("Checkout timed out; saved for automatic recovery with the original ID. Do not collect payment again.")); }, timeoutMs);
           })]);
           const success = response.ok && data.success === true && data.transaction_id === entry.transaction_id;
-          result = {status: success ? "synced" : response.status >= 500 ? "unknown" : response.status === 409 ? "conflict" : response.status === 401 || response.status === 403 ? "auth" : "rejected",
+          result = {status: success ? "synced" : response.status >= 500 || [408, 429].includes(response.status) ? "unknown" : response.status === 409 ? "conflict" : response.status === 401 || response.status === 403 ? "auth" : "rejected",
             http_status: response.status, code: data.code || null, error: success ? "" : String(data.message || "Checkout rejected; manager review required"), transaction_id: success ? data.transaction_id : null};
         } catch (error) { result = {status: "unknown", error: String(error.message || error)}; }
         finally { clearTimeout(timer); }
@@ -124,7 +134,7 @@
       if (options.locks?.request) return options.locks.request(prefix + id, run);
       return run();
     }
-    return {prepare, list, send, exportData: () => ({version: 3, user_id: options.userId, branch_id: options.branchId,
+    return {prepare, list, send, recover: id => send(id, false, false, null, true), exportData: () => ({version: 3, user_id: options.userId, branch_id: options.branchId,
       records: keys().map(key => ({key, raw: store.getItem(key)}))})};
   }
   root.OfflineCheckout = {create};

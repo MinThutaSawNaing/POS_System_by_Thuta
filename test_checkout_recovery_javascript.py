@@ -65,6 +65,98 @@ assert(journal.exportData().records.some(r=>r.raw.includes('Response lost')));
 ''')
 
 
+def test_automatic_recovery_waits_then_replays_original_checkout_without_manager():
+    run('''
+const entry=journal.prepare({...payload,payment_method:'credit_card'},receipt,false);
+mode='network';await journal.send(entry.transaction_id,false,true);
+assert.equal(await journal.recover(entry.transaction_id),null);
+assert.equal(posts.length,1);
+const originalNow=Date.now;Date.now=()=>originalNow()+61000;
+mode='success';const result=await journal.recover(entry.transaction_id);
+assert.equal(result.success,true);assert.deepEqual(posts[1],posts[0]);
+assert.equal(journal.list()[0].status,'synced');
+assert.equal(journal.list()[0].events.filter(e=>e.type==='attempt')[1].manual,false);
+Date.now=originalNow;
+''')
+
+
+@pytest.mark.parametrize('kind', ['400', '409', '403'])
+def test_automatic_recovery_never_retries_definite_rejection(kind):
+    run('''
+const entry=journal.prepare(payload,receipt,true);mode=KIND;
+await journal.send(entry.transaction_id,false);
+const originalNow=Date.now;Date.now=()=>originalNow()+3600000;
+assert.equal(await journal.recover(entry.transaction_id),null);
+assert.equal(posts.length,1);Date.now=originalNow;
+'''.replace('KIND', json.dumps(kind)))
+
+
+def test_health_probe_detects_server_outage_and_recovers_while_wifi_is_online():
+    run('''
+Object.assign(globalThis,{navigator:{onLine:true},checkoutConnectionCheck:null,
+ checkoutServerUnavailable:false,setConnectionStatus:()=>{}});
+globalThis.fetch=async()=>{throw Error('WAN down')};
+assert.equal(await checkCheckoutConnection(),false);
+assert.equal(checkoutServerUnavailable,true);
+globalThis.fetch=async()=>({ok:true,redirected:false,json:async()=>({status:'ok'})});
+assert.equal(await checkCheckoutConnection(),true);
+assert.equal(checkoutServerUnavailable,false);
+''', ('checkCheckoutConnection','isBrowserOffline'))
+
+
+@pytest.mark.parametrize('kind', ['408', '429', '401'])
+def test_temporary_http_failure_recovers_with_original_id(kind):
+    run('''
+const entry=journal.prepare(payload,receipt,true);mode=KIND;
+await journal.send(entry.transaction_id,false);
+const originalNow=Date.now;Date.now=()=>originalNow()+61000;mode='success';
+assert((await journal.recover(entry.transaction_id)).success);
+assert.deepEqual(posts[0],posts[1]);Date.now=originalNow;
+'''.replace('KIND', json.dumps(kind)))
+
+
+def test_changed_basket_during_connection_check_requires_fresh_confirmation():
+    run('''
+let resolveProbe, completed=0;const toasts=[];
+Object.assign(globalThis,{checkoutPreflight:false,isSaleProcessing:false,CACHE_USER_ID:3,currentBranch:{id:7},
+ cart:[{product_id:9,quantity:1}],appliedCoupon:null,document:{querySelectorAll:()=>[]},
+ checkoutScopeCurrent:()=>true,setCompleteSaleButtonState:()=>{},showToast:s=>toasts.push(s),
+ checkCheckoutConnection:()=>new Promise(resolve=>resolveProbe=resolve),completeSale:()=>completed++});
+const pending=completeSaleAutomatically();cart[0].quantity=2;resolveProbe(true);await pending;
+assert.equal(completed,0);assert(toasts.some(s=>s.includes('Checkout changed')));
+assert.equal(checkoutPreflight,false);
+''', ('completeSaleAutomatically',))
+
+
+def test_automatic_retry_backs_off_and_cannot_bypass_prior_business_conflict():
+    run('''
+const entry=journal.prepare(payload,receipt,true);mode='network';
+await journal.send(entry.transaction_id,false);
+const originalNow=Date.now;Date.now=()=>originalNow()+61000;
+await journal.recover(entry.transaction_id);assert.equal(posts.length,2);
+assert.equal(await journal.recover(entry.transaction_id),null);
+Date.now=()=>originalNow()+181000;mode='409';
+await journal.recover(entry.transaction_id);assert.equal(posts.length,3);
+mode='network';await journal.send(entry.transaction_id,true,false,'Manager');
+Date.now=()=>originalNow()+3600000;
+assert.equal(await journal.recover(entry.transaction_id),null);
+assert.equal(posts.length,4);Date.now=originalNow;
+''')
+
+
+def test_automatic_recovery_after_reload_keeps_unfinished_original_attempt():
+    run('''
+const entry=journal.prepare(payload,receipt,true);mode='wait';
+const sending=journal.send(entry.transaction_id,false);
+const originalNow=Date.now;Date.now=()=>originalNow()+61000;
+const reloaded=OfflineCheckout.create(options);mode='success';
+assert((await reloaded.recover(entry.transaction_id)).success);
+assert.deepEqual(posts[0],posts[1]);
+pendingResponse(response('409'));await sending;
+assert.equal(reloaded.list()[0].status,'synced');Date.now=originalNow;
+''')
+
+
 @pytest.mark.parametrize('kind,status', [('400','rejected'),('409','conflict'),('500','unknown'),('401','auth'),('403','auth'),('html','unknown'),('network','unknown')])
 def test_all_errors_retained_no_automatic_permanent_retry(kind, status):
     run(f'''
@@ -148,7 +240,7 @@ def test_actual_dashboard_sync_never_sends_legacy_or_failed_queue():
 Object.assign(globalThis,{CACHE_USER_ID:3,CACHE_USER_ROLE:'manager',currentBranch:{id:7},
  dashboardSessionStale:false,dashboardBranchStale:false,branchSwitchInFlight:false,isSyncingPendingSales:false,
  isBrowserOffline:()=>false,checkoutJournal:()=>journal,setConnectionStatus:()=>{},showToast:()=>{},
- updatePendingSalesBadge:()=>{},loadSales:()=>{},loadDashboardStats:()=>{},invalidateProductsCache:()=>{}});
+  checkoutServerUnavailable:false,updatePendingSalesBadge:()=>{},loadSales:()=>{},loadDashboardStats:()=>{},invalidateProductsCache:()=>{}});
 raw['pos_pending_sales_v2:3:7']='broken legacy cash/card queue';
 const entry=journal.prepare(payload,receipt,true);mode='409';
 await syncPendingSales(); await syncPendingSales();
@@ -243,15 +335,15 @@ assert.deepEqual(posts[0],posts[1]);assert.equal(journal.list()[0].status,'synce
 
 
 @pytest.mark.parametrize('tender', ['cash', 'mobile_payment', 'credit_card', 'debt', 'split_payment'])
-def test_explicit_offline_cash_mode_when_browser_still_reports_online(tender):
+def test_detected_server_outage_when_browser_still_reports_online(tender):
     run('''
 const fields={'payment-method':{value:TENDER},'pos-customer-select':{value:''},
- 'cash-received':{value:'21'},'pos-enable-delivery':{checked:false},'pos-force-offline-cash':{checked:true}};
+ 'cash-received':{value:'21'},'pos-enable-delivery':{checked:false}};
 let modal=0;
 Object.assign(globalThis,{CACHE_USER_ID:3,CACHE_USER_ROLE:'cashier',currentBranch:{id:7},
  dashboardSessionStale:false,dashboardBranchStale:false,branchSwitchInFlight:false,isSaleProcessing:false,
  cart:[{product_id:9,name:'Coffee',price:10,quantity:2,tax_rate:5}],appliedCoupon:null,
- document:{getElementById:id=>fields[id]||null},navigator:{onLine:true},SALE_COOLDOWN_MS:0,
+  checkoutServerUnavailable:true,document:{getElementById:id=>fields[id]||null},navigator:{onLine:true},SALE_COOLDOWN_MS:0,
  checkoutJournal:()=>journal,buildOfflineReceiptSnapshot:()=>receipt,
  t:s=>s,requireCapability:()=>true,getCurrentCartTotal:()=>21,setCompleteSaleButtonState:()=>{},
  updateCartDisplay:()=>{},updatePendingSalesBadge:()=>{},setConnectionStatus:()=>{},

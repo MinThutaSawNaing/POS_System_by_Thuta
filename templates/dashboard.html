@@ -2432,21 +2432,17 @@
                   </div>
                 </div>
                 <div id="pending-sales-badge" class="text-center small text-warning mb-1" style="display: none" role="status"></div>
-                <div class="form-check small mb-2">
-                  <input class="form-check-input" type="checkbox" id="pos-force-offline-cash" />
-                  <label class="form-check-label" for="pos-force-offline-cash">Central server unreachable? Save NEW cash checkouts offline.</label>
-                  <div class="text-muted">Cash only; no coupons or delivery. Existing uncertain checkouts must use recovery, not a new sale. Uncheck after reconnecting.</div>
-                </div>
+                <div class="small text-muted mb-2" role="status">Offline saving and syncing are automatic. Offline: cash only, without coupons or delivery. Keep this screen open.</div>
                 <details class="mt-2 small" id="checkout-recovery-panel">
-                  <summary>Checkout recovery / reconciliation</summary>
-                  <p>Do not clear browser data. Failed or uncertain checkouts need manager review; never collect payment twice. Export for a manager, then retry only on their instruction. This is a recorded procedural approval, not a manager login. Retry sends the original payload and tender unchanged, as the original user in the original branch. Legacy queues are export/reconcile only.</p>
-                  <button type="button" class="btn btn-sm btn-outline-secondary" onclick="exportCheckoutRecovery()">Export immutable journal</button>
+                  <summary>Manager help / saved sales</summary>
+                  <p>Saved sales retry automatically without charging again. Stock/price conflicts, sign-in problems and damaged records need attention. Do not clear browser data or collect payment twice. Manual retry requires manager instruction and keeps the original sale unchanged; entering a manager name is not a manager login. Older queues require reconciliation.</p>
+                  <button type="button" class="btn btn-sm btn-outline-secondary" onclick="exportCheckoutRecovery()">Download saved sale records</button>
                   <div id="checkout-recovery-list" class="mt-2" aria-live="polite"></div>
                 </details>
                 <button
                   id="complete-sale-btn"
                   class="btn btn-success w-100"
-                  onclick="completeSale()"
+                  onclick="completeSaleAutomatically()"
                 >
                   <i class="bi bi-check-circle" id="complete-sale-icon"></i> <span id="complete-sale-text">Complete Sale</span>
                 </button>
@@ -15356,6 +15352,7 @@
         const panel = document.getElementById("checkout-recovery-list");
         if (!panel) return;
         panel.replaceChildren();
+        if (CACHE_USER_ID == null || currentBranch?.id == null) return;
         try {
           const entries = checkoutJournal().list().sort((a, b) =>
             Number(a.status === "synced") - Number(b.status === "synced") ||
@@ -15576,7 +15573,10 @@
             } catch (e) { legacyPending = true; }
           }
         } catch (e) { /* storage unavailable */ }
-        const count = getPendingSales().length;
+        const pending = getPendingSales();
+        const count = pending.length;
+        const needsReview = pending.some(e => !["pending", "unknown"].includes(e.status) ||
+          e.events?.some(event => event.type === "result" && ["conflict", "rejected"].includes(event.status)));
         const v2key = "pos_pending_sales_v2:" + encodeURIComponent(typeof CACHE_USER_ID === "undefined" ? "harness" : CACHE_USER_ID) + ":" + encodeURIComponent(typeof currentBranch === "undefined" ? "harness" : currentBranch?.id);
         try { if (localStorage.getItem(v2key) && localStorage.getItem(v2key) !== "[]") legacyPending = true; } catch (_) { legacyPending = true; }
         if (typeof OfflineCheckout !== "undefined") renderCheckoutRecovery();
@@ -15585,7 +15585,8 @@
             (count ? " " + count + " account checkouts retained on this device." : "");
           badge.style.display = "block";
         } else if (count > 0) {
-          badge.textContent = count + (count === 1 ? " sale" : " sales") + " pending / needs review. Open Checkout recovery.";
+          badge.textContent = count + (count === 1 ? " sale saved on this device." : " sales saved on this device.") +
+            (needsReview ? " Some sales need manager attention. Open Manager help." : " Syncing is automatic. Do not take payment again.");
           badge.style.display = "block";
         } else {
           badge.style.display = "none";
@@ -15594,6 +15595,55 @@
 
       // Connection / offline-sync status indicator pinned to the sidebar footer.
       let connectionStatusTimer = null;
+      let checkoutServerUnavailable = false;
+      let checkoutConnectionCheck = null;
+      let checkoutPreflight = false;
+
+      async function checkCheckoutConnection() {
+        if (checkoutConnectionCheck) return checkoutConnectionCheck;
+        checkoutConnectionCheck = (async () => {
+          const controller = new AbortController();
+          let timer;
+          try {
+            if (isBrowserOffline()) throw Error("Offline");
+            const probe = async () => {
+              const response = await fetch("/healthz", {cache: "no-store", signal: controller.signal});
+              if (!response.ok || response.redirected || (await response.json()).status !== "ok") throw Error("Server unavailable");
+            };
+            await Promise.race([probe(), new Promise((_, reject) => {
+              timer = setTimeout(() => { controller.abort(); reject(Error("Server timeout")); }, 3000);
+            })]);
+            checkoutServerUnavailable = false;
+          } catch (_) { checkoutServerUnavailable = true; }
+          finally { clearTimeout(timer); }
+          setConnectionStatus(checkoutServerUnavailable ? "offline" : "online");
+          return !checkoutServerUnavailable;
+        })();
+        try { return await checkoutConnectionCheck; }
+        finally { checkoutConnectionCheck = null; }
+      }
+
+      async function completeSaleAutomatically() {
+        if (checkoutPreflight || isSaleProcessing) return;
+        if (!cart.length) { completeSale(); return; }
+        const user = CACHE_USER_ID, branch = currentBranch?.id;
+        if (branch == null) { showToast("Select a branch before checkout.", "warning"); return; }
+        const snapshot = () => JSON.stringify({cart, coupon: appliedCoupon,
+          fields: Array.from(document.querySelectorAll("input, select, textarea"), field => [field.id, field.value, field.checked])});
+        const confirmed = snapshot();
+        checkoutPreflight = true;
+        setCompleteSaleButtonState(true);
+        try {
+          await checkCheckoutConnection();
+          if (checkoutScopeCurrent(user, branch)) {
+            if (snapshot() !== confirmed) showToast("Checkout changed while checking connection. Please press Complete Sale again.", "warning");
+            else completeSale();
+          }
+        } finally {
+          checkoutPreflight = false;
+          if (!isSaleProcessing) setCompleteSaleButtonState(false);
+        }
+      }
       const CONNECTION_STATUS = {
         online: { text: "Online mode detected", icon: "bi-wifi" },
         offline: { text: "Offline mode detected", icon: "bi-wifi-off" },
@@ -15604,8 +15654,8 @@
       function setConnectionStatus(status) {
         const summary = document.getElementById("pos-connection-summary");
         if (summary) summary.textContent = {
-          online: "Network available · Product warnings below indicate whether live data is available.",
-          offline: "Offline · Eligible sales can be saved on this device for later sync. Keep this device's data until sync completes.",
+          online: "Connected · Saved sales sync automatically.",
+          offline: "Server unavailable · Cash sales save automatically on this device. Keep this screen open and do not clear browser data.",
           syncing: "Syncing saved sales · Keep this screen open until syncing finishes.",
           synced: "Saved sales synced · Check any remaining pending-sale warnings before leaving.",
         }[status] || "Check connection status in the sidebar.";
@@ -15679,32 +15729,33 @@
         isSyncingPendingSales = true;
         try {
           const journal = checkoutJournal(), user = CACHE_USER_ID, branch = currentBranch.id;
-          const entries = journal.list().filter(e => e.status === "pending" && e.saleData.checkout_context.offline);
+          const entries = journal.list().filter(e => ["pending", "unknown", "auth"].includes(e.status));
           for (const entry of entries) {
             if (!checkoutScopeCurrent(user, branch)) break;
             setConnectionStatus("syncing");
-            const result = await journal.send(entry.transaction_id, false);
+            const result = await journal.recover(entry.transaction_id);
             if (!checkoutScopeCurrent(user, branch)) break;
             if (result?.success) {
               showToast("Saved checkout synced: " + result.transaction_id, "success");
               loadSales(); loadDashboardStats(); invalidateProductsCache();
             } else if (result) {
-              showToast("Checkout retained for manager review: " + (result.error || entry.transaction_id), "warning");
+              if (result.status !== "unknown") showToast("Saved sale needs manager attention: " + (result.error || entry.transaction_id), "warning");
               if (["auth", "unknown"].includes(result.status)) break;
             }
           }
         } catch (error) { showToast("Recovery stopped; data retained: " + error.message, "error"); }
         finally {
           isSyncingPendingSales = false;
-          setConnectionStatus(isBrowserOffline() ? "offline" : "online");
+          setConnectionStatus(isBrowserOffline() || (typeof checkoutServerUnavailable !== "undefined" && checkoutServerUnavailable) ? "offline" : "online");
           updatePendingSalesBadge();
         }
       }
 
-      window.addEventListener("online", function () {
+      window.addEventListener("online", async function () {
         // API responses are never service-worker cached. Discard old in-memory
         // snapshots as well so reconnect does not present pre-outage data as live.
         invalidateAllCache();
+        if (!await checkCheckoutConnection()) return;
         if (getPendingSales().length) {
           syncPendingSales();
         } else {
@@ -15712,10 +15763,13 @@
         }
       });
       window.addEventListener("offline", function () {
+        checkoutServerUnavailable = true;
         setConnectionStatus("offline");
       });
-      setInterval(function () {
-        if (getPendingSales().length) syncPendingSales();
+      setInterval(async function () {
+        if (await checkCheckoutConnection()) {
+          if (getPendingSales().length) syncPendingSales();
+        }
       }, 20000);
 
       // Shared offline-queue + post-sale cleanup for completeSale()
@@ -15787,7 +15841,7 @@
         const paymentMethod = document.getElementById("payment-method").value;
         if (paymentMethod === "debt" && !requireCapability("debts")) return;
         const customerId = document.getElementById("pos-customer-select").value;
-        if (((typeof navigator !== "undefined" && navigator.onLine === false) || document.getElementById("pos-force-offline-cash")?.checked) && (paymentMethod !== "cash" || (typeof appliedCoupon !== "undefined" && appliedCoupon) || document.getElementById("pos-enable-delivery")?.checked)) {
+        if (((typeof navigator !== "undefined" && navigator.onLine === false) || (typeof checkoutServerUnavailable !== "undefined" && checkoutServerUnavailable)) && (paymentMethod !== "cash" || (typeof appliedCoupon !== "undefined" && appliedCoupon) || document.getElementById("pos-enable-delivery")?.checked)) {
           showToast("Offline checkout is CASH ONLY, without coupons or delivery. No payment or sale was recorded.", "warning");
           return;
         }
@@ -15882,11 +15936,9 @@
         isSaleProcessing = true;
         setCompleteSaleButtonState(true);
 
-        // Offline: queue the sale locally instead of fetching
-        // navigator.onLine can remain true when Wi-Fi works but the central
-        // server/WAN is unreachable. Explicit mode affects NEW cash intents
-        // only; it never converts/rekeys a previously attempted online checkout.
-        if (navigator.onLine === false || document.getElementById("pos-force-offline-cash")?.checked) {
+        // Health probing also detects a WAN/server outage while Wi-Fi is up.
+        // Never convert or rekey a previously attempted online checkout.
+        if (navigator.onLine === false || (typeof checkoutServerUnavailable !== "undefined" && checkoutServerUnavailable)) {
           finishOfflineSale(saleData);
           return;
         }
@@ -15932,7 +15984,9 @@
               }
               loadSales(); loadDashboardStats(); invalidateProductsCache();
             } else {
-              showToast("Checkout " + intent.transaction_id + " retained for manager review: " + (data?.error || "Outcome unknown") + ". Do not take payment again. Open Checkout recovery.", "warning");
+              showToast(data?.status === "unknown"
+                ? "Sale saved on this device. We will retry automatically. Do not take payment again."
+                : "Saved sale needs manager attention: " + (data?.error || "Check saved sales") + ". Do not take payment again.", "warning");
             }
           })
           .catch((error) => {
