@@ -88,7 +88,7 @@ Transport and response-body waits are bounded to 30 seconds; timeout/5xx/malform
 success responses are uncertain outcomes, not proof that no sale committed.
 Corrupt or orphaned attempt records are exposed for export and reconciliation.
 
-Use **Manager help / saved sales** to inspect the transaction ID, attempt/error state,
+Use **Sales History → Manager help / saved sales** to inspect the transaction ID, attempt/error state,
 original receipt and JSON export. Give the export to the manager to reconcile
 cash taken, physical goods, central receipt and stock. If a stock conflict is
 legitimately corrected, use the existing authorized stock workflow, then retry

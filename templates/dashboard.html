@@ -2431,14 +2431,6 @@
                     <small class="fw-bold" id="refund-amount">$0.00</small>
                   </div>
                 </div>
-                <div id="pending-sales-badge" class="text-center small text-warning mb-1" style="display: none" role="status"></div>
-                <div class="small text-muted mb-2" role="status">Offline saving and syncing are automatic. Offline: cash only, without coupons or delivery. Keep this screen open.</div>
-                <details class="mt-2 small" id="checkout-recovery-panel">
-                  <summary>Manager help / saved sales</summary>
-                  <p>Saved sales retry automatically without charging again. Stock/price conflicts, sign-in problems and damaged records need attention. Do not clear browser data or collect payment twice. Manual retry requires manager instruction and keeps the original sale unchanged; entering a manager name is not a manager login. Older queues require reconciliation.</p>
-                  <button type="button" class="btn btn-sm btn-outline-secondary" onclick="exportCheckoutRecovery()">Download saved sale records</button>
-                  <div id="checkout-recovery-list" class="mt-2" aria-live="polite"></div>
-                </details>
                 <button
                   id="complete-sale-btn"
                   class="btn btn-success w-100"
@@ -2736,6 +2728,16 @@
               </div>
             </div>
           </div>
+        </div>
+
+        <div class="border rounded p-3 mb-3 small">
+          <p class="text-muted mb-2">Saved sales sync automatically. Review or download records here if needed.</p>
+          <div id="pending-sales-badge" class="text-warning mb-2" style="display: none" role="status"></div>
+          <details id="checkout-recovery-panel">
+            <summary>Manager help / saved sales</summary>
+            <button type="button" class="btn btn-sm btn-outline-secondary mt-2" onclick="exportCheckoutRecovery()">Download saved sale records</button>
+            <div id="checkout-recovery-list" class="mt-2" aria-live="polite"></div>
+          </details>
         </div>
 
         <div class="row mb-3">
@@ -15586,7 +15588,7 @@
           badge.style.display = "block";
         } else if (count > 0) {
           badge.textContent = count + (count === 1 ? " sale saved on this device." : " sales saved on this device.") +
-            (needsReview ? " Some sales need manager attention. Open Manager help." : " Syncing is automatic. Do not take payment again.");
+            (needsReview ? " Some sales need manager attention. Open Manager help in Sales History." : " Syncing is automatic. Do not take payment again.");
           badge.style.display = "block";
         } else {
           badge.style.display = "none";

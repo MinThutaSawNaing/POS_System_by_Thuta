@@ -37,6 +37,21 @@ def test_cashier_shell_hides_admin_before_javascript_runs():
     assert 'data-capability="labels" class="btn btn-success"' in html
 
 
+@pytest.mark.parametrize("role", ["cashier", "manager", "boss"])
+def test_saved_sale_controls_live_in_sales_history_not_checkout(role):
+    html = render(role)
+    before_sales, sales = html.split('<div id="sales-section"', 1)
+    sales = sales.split('id="sales-search"', 1)[0]
+    for marker in ('id="checkout-recovery-panel"', 'id="checkout-recovery-list"',
+                   'id="pending-sales-badge"', 'onclick="exportCheckoutRecovery()"'):
+        assert marker not in before_sales
+        assert marker in sales
+        assert html.count(marker) == 1
+    assert 'Saved sales sync automatically. Review or download records here if needed.' in sales
+    assert 'Offline saving and syncing are automatic. Offline:' not in html
+    assert 'Saved sales retry automatically without charging again. Stock/price conflicts' not in html
+
+
 @pytest.mark.parametrize("role", ["manager", "boss"])
 def test_manager_shell_does_not_use_cashier_css(role):
     html = render(role)

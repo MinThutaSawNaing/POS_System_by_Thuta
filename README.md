@@ -31,7 +31,7 @@ See [setup, security controls, and recovery notes](docs/email-two-factor.md) bef
   - Automatically uploads saved sales when the server is reachable again
   - Safely retries uncertain checkouts with the original sale ID, basket and tender, preventing duplicate sales and stock deductions
   - Uses retry backoff instead of repeatedly submitting failed requests; stock/price conflicts, permission denials and damaged records require attention
-  - Simple saved-sale status messages, with receipt printing and record downloads under **Manager help / saved sales**
+  - Uncluttered POS checkout, with saved-sale status, receipt printing and record downloads under **Sales History → Manager help / saved sales**
   - Offline operation requires an already-open, signed-in POS screen and a previously cached branch catalogue; offline login/reload is not supported
   - New offline sales are **cash only**, without coupons, delivery, debt, card/mobile or split payments
 
@@ -631,7 +631,7 @@ An admin account is auto-created if missing:
 1. While connected, sign in, select the branch and load its product catalogue. Keep that POS screen open during an outage.
 2. Press **Complete Sale** as usual. The software checks the central server and automatically saves an eligible cash checkout on the device if the server is unreachable.
 3. Keep the same browser profile, user and branch available. Saved sales upload automatically when connectivity returns. Uncertain attempts retry with the exact original checkout, with a delay increasing from one to five minutes.
-4. If a sale needs attention, open **Manager help / saved sales** to inspect its receipt and errors or download the saved records for reconciliation. Never collect payment again or create another sale to replace an uncertain checkout.
+4. If a sale needs attention, open **Sales History → Manager help / saved sales** to inspect its receipt and errors or download the saved records for reconciliation. Never collect payment again or create another sale to replace an uncertain checkout.
 
 An offline receipt is **provisional**: it does not reserve central stock or prove
 server acceptance. Upload checks stock, prices, tax and the expected total; genuine
