@@ -50,6 +50,15 @@ def test_saved_sale_controls_live_in_sales_history_not_checkout(role):
     assert 'Saved sales sync automatically. Review or download records here if needed.' in sales
     assert 'Offline saving and syncing are automatic. Offline:' not in html
     assert 'Saved sales retry automatically without charging again. Stock/price conflicts' not in html
+    assert 'id="pos-connection-summary"' not in html
+
+
+@pytest.mark.parametrize("role", ["manager", "boss"])
+def test_avatar_preference_has_explicit_save_and_is_not_api_key_save(role):
+    html = render(role)
+    assert 'id="settings-ai-avatar-enabled"' in html
+    assert 'onclick="saveAIAvatarPreference()"' in html
+    assert 'id="save-ai-avatar-btn"' in html
 
 
 @pytest.mark.parametrize("role", ["manager", "boss"])

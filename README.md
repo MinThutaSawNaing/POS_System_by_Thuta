@@ -4,6 +4,8 @@ Professional, full-featured **Point of Sale (POS)** system built with **Flask** 
 
 Parrot POS helps teams run day-to-day store workflows from one dashboard: product management, checkout, inventory, promotions, sales reporting, customer/supplier records, debt management, barcode labels, role-based user access, and an intelligent AI assistant.
 
+Managers and owners can hide the floating AI chat avatar in **Settings → AI assistant → Floating AI chat avatar**. Choose **On** or **Off**, then click **Save avatar preference**. This preference applies to the signed-in user on the current browser, persists after refresh, and does not delete chat history. Return to the same setting to show the avatar again.
+
 ## Optional email two-step login
 
 Configure Resend SMTP in **Settings → Email** (host, port, user, SMTP password/API key, and sender), then use **Users → Add email** to opt individual users in. Email linking and unlinking are managed in Users only. Password-only login stays unchanged until an email is verified; unlinking requires the account password and an inbox code.

@@ -1929,7 +1929,6 @@
       .pos-money-coupon { color: #fd7e14; }
       .pos-money-delivery { color: #000; }
       #pos-section .btn:focus-visible, #pos-section .form-control:focus-visible, #pos-section .form-select:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
-      #pos-connection-summary { color: var(--pos-muted); font-size: .875rem; }
       #pos-customer-warning { color: var(--pos-warning); }
       @media (max-width: 575.98px) { .pos-notice { flex-wrap: wrap; } .pos-notice .btn { margin-left: 0; width: 100%; } }
     </style>
@@ -2193,7 +2192,6 @@
           </div>
         </div>
 
-        <div id="pos-connection-summary" class="mb-2" role="status" aria-live="polite">Connection status is shown in the sidebar.</div>
         <div id="pos-catalog-notice" role="alert" hidden></div>
         <div id="pos-split-hint" class="pos-split-hint d-none d-lg-flex" role="note">
           <i class="bi bi-arrows-expand" aria-hidden="true"></i>
@@ -4836,6 +4834,15 @@
             </div>
           </div>
           <div class="card-body">
+            <div class="mb-3 border-bottom pb-3">
+              <label class="form-label" for="settings-ai-avatar-enabled">Floating AI chat avatar</label>
+              <select class="form-select mb-2" id="settings-ai-avatar-enabled">
+                <option value="on">On</option>
+                <option value="off">Off</option>
+              </select>
+              <div class="form-text mb-2">Show or hide the floating assistant for your account on this browser. Turn it back on here when needed.</div>
+              <button type="button" class="btn btn-primary" id="save-ai-avatar-btn" onclick="saveAIAvatarPreference()"><i class="bi bi-save"></i> Save avatar preference</button>
+            </div>
             <div class="mb-3">
               <label class="form-label">APIFree.ai API Key</label>
               <div class="input-group">
@@ -9202,6 +9209,32 @@
       }
 
       // AI Agent Settings Functions
+      function aiAvatarPreferenceKey() {
+        return "pos_ai_avatar_enabled_v1:" + encodeURIComponent(CACHE_USER_ID);
+      }
+
+      function loadAIAvatarPreference() {
+        let enabled = true;
+        try { enabled = localStorage.getItem(aiAvatarPreferenceKey()) !== "off"; }
+        catch (_) { /* Keep the default when storage is blocked. */ }
+        const control = document.getElementById("settings-ai-avatar-enabled");
+        if (control) control.value = enabled ? "on" : "off";
+        window.dispatchEvent(new CustomEvent("pos-ai-avatar-visibility", {detail: {enabled}}));
+      }
+
+      function saveAIAvatarPreference() {
+        if (!requireCapability("admin")) return;
+        const control = document.getElementById("settings-ai-avatar-enabled");
+        const value = control.value === "off" ? "off" : "on";
+        try {
+          const key = aiAvatarPreferenceKey();
+          localStorage.setItem(key, value);
+          if (localStorage.getItem(key) !== value) throw Error("Browser did not retain preference");
+          window.dispatchEvent(new CustomEvent("pos-ai-avatar-visibility", {detail: {enabled: value === "on"}}));
+          showToast("AI avatar preference saved", "success");
+        } catch (_) { showToast("Could not save avatar preference. Check browser storage.", "error"); }
+      }
+
       function loadAISettings() {
         if (!requireCapability("admin")) return;
         fetch("/api/settings")
@@ -11832,6 +11865,7 @@
         initPOSSplitResizer();
         applyWorkspacePermissions();
         applySettingsUI();
+        loadAIAvatarPreference();
         loadSettings();
         if (hasCapability("catalog.write")) loadUnits();
         loadBranchSelector();
@@ -15654,13 +15688,6 @@
       };
 
       function setConnectionStatus(status) {
-        const summary = document.getElementById("pos-connection-summary");
-        if (summary) summary.textContent = {
-          online: "Connected · Saved sales sync automatically.",
-          offline: "Server unavailable · Cash sales save automatically on this device. Keep this screen open and do not clear browser data.",
-          syncing: "Syncing saved sales · Keep this screen open until syncing finishes.",
-          synced: "Saved sales synced · Check any remaining pending-sale warnings before leaving.",
-        }[status] || "Check connection status in the sidebar.";
         const indicator = document.getElementById("connection-status-indicator");
         if (!indicator) return;
         if (connectionStatusTimer) {
@@ -15724,6 +15751,10 @@
       }
 
       async function syncPendingSales() {
+        // Startup loads the branch asynchronously. No checkout is recoverable
+        // until its original account/branch scope is known; this is not an error.
+        if (typeof CACHE_USER_ID === "undefined" || CACHE_USER_ID == null ||
+            typeof currentBranch === "undefined" || currentBranch?.id == null) return;
         if (typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) return;
         if (typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) return;
         if (typeof branchSwitchInFlight !== "undefined" && branchSwitchInFlight) return;

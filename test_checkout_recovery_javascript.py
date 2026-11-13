@@ -249,6 +249,48 @@ assert.equal(journal.list()[0].status,'conflict');
 ''', ('syncPendingSales','checkoutScopeCurrent'))
 
 
+def test_refresh_sync_waits_silently_for_branch_initialization():
+    run('''
+const notices=[];
+Object.assign(globalThis,{CACHE_USER_ID:3,currentBranch:null,isSyncingPendingSales:false,
+ isBrowserOffline:()=>false,checkoutJournal:()=>{throw Error('Select a branch before checkout')},
+ showToast:message=>notices.push(message)});
+await syncPendingSales();assert.deepEqual(notices,[]);assert.equal(posts.length,0);
+''', ('syncPendingSales',))
+
+
+def test_avatar_preference_saves_explicitly_survives_reload_and_is_user_scoped():
+    run('''
+const control={value:'on'}, events=[], notices=[];
+Object.assign(globalThis,{CACHE_USER_ID:3,document:{getElementById:()=>control},
+ window:{dispatchEvent:event=>events.push(event.detail.enabled)},
+ CustomEvent:class {constructor(name,options){this.detail=options.detail}},
+ requireCapability:()=>true,showToast:message=>notices.push(message)});
+loadAIAvatarPreference();assert.equal(control.value,'on');assert.deepEqual(events,[true]);
+control.value='off';assert.equal(localStorage.getItem(aiAvatarPreferenceKey()),null);
+saveAIAvatarPreference();assert.equal(localStorage.getItem(aiAvatarPreferenceKey()),'off');
+assert.equal(events.at(-1),false);control.value='on';loadAIAvatarPreference();assert.equal(control.value,'off');
+CACHE_USER_ID=4;loadAIAvatarPreference();assert.equal(control.value,'on');
+CACHE_USER_ID=3;control.value='on';saveAIAvatarPreference();assert.equal(events.at(-1),true);
+control.value='off';localStorage.setItem=()=>{throw Error('quota')};
+saveAIAvatarPreference();assert.equal(events.at(-1),true);assert(notices.at(-1).includes('Could not save'));
+''', ('aiAvatarPreferenceKey','loadAIAvatarPreference','saveAIAvatarPreference'))
+
+
+def test_hidden_avatar_closes_panel_without_deleting_chat_and_can_return():
+    source = (ROOT / 'templates/ai_agent_widget.html').read_text(encoding='utf-8')
+    _run_node_script('''
+const assert=require('assert');let closed=0,placed=0;const workspace={hidden:false};
+function setOpen(value){assert.equal(value,false);closed++;}
+function hideMemory(){}function hideHistory(){}function hideConfirm(){}
+function restorePosition(){placed++;}
+''' + _function(source, 'applyAvatarVisibility') + '''
+applyAvatarVisibility(false);assert.equal(workspace.hidden,true);assert.equal(closed,1);
+applyAvatarVisibility(true);assert.equal(workspace.hidden,false);assert.equal(placed,1);
+console.log(JSON.stringify({ok:true}));
+''')
+
+
 @pytest.mark.parametrize('tender', ['cash', 'credit_card', 'debt', 'split_payment'])
 def test_actual_complete_sale_durable_before_online_send_and_unknown_not_requeued(tender):
     run('''
