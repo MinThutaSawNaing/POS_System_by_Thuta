@@ -2241,6 +2241,10 @@
         <div class="row pos-workspace" id="pos-workspace">
           <div class="col-12 col-lg-8 order-2 order-lg-1 pos-catalog-column">
             <div class="pos-quick-actions" role="toolbar" aria-label="Quick POS actions">
+              <button type="button" id="pos-offline-load" class="btn btn-outline-primary pos-quick-action"
+                onclick="loadAllProductsForOffline()" aria-describedby="pos-offline-status">
+                Load All Products for Offline Mode
+              </button>
               <button
                 type="button"
                 class="btn btn-outline-secondary pos-quick-action"
@@ -2259,6 +2263,7 @@
                 <kbd class="d-none d-sm-inline">Esc</kbd>
               </button>
             </div>
+            <div id="pos-offline-status" class="small text-muted mb-2" role="status" aria-live="polite"></div>
             <div class="input-group mb-3">
               <span class="input-group-text"><i class="bi bi-upc-scan"></i></span>
               <input
@@ -11059,7 +11064,7 @@
       // duplicated if/else chains in showSection() and refreshCurrentSection().
       const SECTION_LOADERS = {
         dashboard: () => loadDashboardStats(),
-        pos: () => { loadPOSCategories(); loadProductsForPOS(); loadCustomersForPOS(); },
+        pos: () => { loadPOSCategories(); loadProductsForPOS(); loadCustomersForPOS(); checkOfflineProductCatalog(); },
         products: () => loadProducts(),
         categories: () => loadCategories(),
         sales: () => loadSales(),
@@ -11549,17 +11554,159 @@
       function getCachedProducts() {
         // Never borrow a generic or different branch's stock snapshot.
         if (!currentBranch?.id) return [];
+        const complete = offlineCacheGet(cachedProductsKey());
+        if ((complete?.catalog_complete || complete?.catalog_version) && Array.isArray(complete.data)) {
+          if (typeof cachedProducts !== "undefined" && cachedProductsBranchId === currentBranch.id && cachedProducts.length) {
+            const merged = new Map(complete.data.map(product => [String(product.id), product]));
+            cachedProducts.forEach(product => merged.set(String(product.id), {...merged.get(String(product.id)), ...product}));
+            return Array.from(merged.values());
+          }
+          return complete.data;
+        }
         if (typeof cachedProducts !== "undefined" &&
             cachedProductsBranchId === currentBranch.id && cachedProducts.length) return cachedProducts;
         const entry = offlineCacheGet(cachedProductsKey());
         return entry && Array.isArray(entry.data) ? entry.data : [];
       }
 
-      function saveCachedProducts(products) {
+      function saveCachedProducts(products, catalogVersion = null) {
         if (Array.isArray(products)) {
-          offlineCacheSet(cachedProductsKey(), products);
+          const key = scopedOfflineCacheKey(cachedProductsKey());
+          if (!key) return false;
+          const previous = offlineCacheGet(cachedProductsKey());
+          // Ordinary browsing must never truncate a fully downloaded catalog.
+          const complete = !!catalogVersion || !!previous?.catalog_complete || !!previous?.catalog_version;
+          if (!catalogVersion && complete && Array.isArray(previous?.data)) {
+            const merged = new Map(previous.data.map(product => [String(product.id), product]));
+            let changed = false;
+            products.forEach(product => {
+              const old = merged.get(String(product.id));
+              const updated = {...old, ...product};
+              if (JSON.stringify(old) !== JSON.stringify(updated)) changed = true;
+              merged.set(String(product.id), updated);
+            });
+            products = Array.from(merged.values());
+            if (!changed) catalogVersion = previous.catalog_version;
+          }
+          try {
+            localStorage.setItem(key, JSON.stringify({cached_at: new Date().toISOString(),
+              data: products, catalog_version: catalogVersion, catalog_complete: complete}));
+            return true;
+          } catch (error) {
+            console.error("Failed to save offline products:", error);
+            return false;
+          }
+        }
+        return false;
+      }
+
+      let offlineProductSync = null;
+      let offlineCatalogCheck = null;
+      let offlineCatalogVersion = null;
+
+      function renderOfflineProductButton(message = "") {
+        const button = document.getElementById("pos-offline-load");
+        if (!button) return;
+        const entry = offlineCacheGet(cachedProductsKey());
+        const ready = !!entry?.catalog_version && Array.isArray(entry.data) &&
+          offlineCatalogVersion?.branchId === currentBranch?.id &&
+          offlineCatalogVersion.version === entry.catalog_version &&
+          offlineCatalogVersion.count === entry.data.length;
+        button.disabled = !!offlineProductSync || ready;
+        button.style.opacity = ready ? "0.5" : "1";
+        button.setAttribute("aria-busy", offlineProductSync ? "true" : "false");
+        button.innerHTML = offlineProductSync
+          ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Loading products…'
+          : "Load All Products for Offline Mode";
+        document.getElementById("pos-offline-status").textContent = message ||
+          (ready ? `All ${entry.data.length} products saved and up to date.` : "Load this branch’s full catalog for offline use.");
+      }
+
+      async function fetchOfflineCatalogVersion(branchId) {
+        const response = await fetch(`/api/products?view=offline-version&branch_id=${encodeURIComponent(branchId)}`, {cache: "no-store"});
+        const data = await posResponseJSON(response);
+        if (typeof data.version !== "string" || !Number.isInteger(data.count) || data.count < 0 || data.branch_id !== branchId) {
+          throw new Error("Invalid catalog version");
+        }
+        return data;
+      }
+
+      async function checkOfflineProductCatalog() {
+        renderOfflineProductButton();
+        const branchId = currentBranch?.id;
+        if (!posCartScopeCurrent(branchId) || posIsOffline() || offlineProductSync || offlineCatalogCheck) return;
+        const entry = offlineCacheGet(cachedProductsKey());
+        if (!entry?.catalog_complete && !entry?.catalog_version) return;
+        const check = {};
+        offlineCatalogCheck = check;
+        try {
+          const data = await fetchOfflineCatalogVersion(branchId);
+          if (posCartScopeCurrent(branchId)) offlineCatalogVersion = {branchId, ...data};
+        } catch (error) {
+          if (posCartScopeCurrent(branchId)) offlineCatalogVersion = null;
+        } finally {
+          if (offlineCatalogCheck === check) offlineCatalogCheck = null;
+          renderOfflineProductButton();
         }
       }
+
+      async function loadAllProductsForOffline() {
+        const branchId = currentBranch?.id;
+        if (offlineProductSync || !posCartScopeCurrent(branchId)) return;
+        if (posIsOffline()) {
+          renderOfflineProductButton("Reconnect to load all products. Existing saved products are still available.");
+          return;
+        }
+        const sync = {};
+        offlineProductSync = sync;
+        renderOfflineProductButton("Checking product catalog…");
+        let message = "";
+        try {
+          const before = await fetchOfflineCatalogVersion(branchId);
+          const products = new Map();
+          const cursors = new Set();
+          let cursor = null;
+          do {
+            if (!posCartScopeCurrent(branchId)) throw new Error("Branch or account changed. Please retry.");
+            const params = new URLSearchParams({view: "offline", branch_id: String(branchId), per_page: "100"});
+            if (cursor) params.set("cursor", cursor);
+            const response = await fetch(`/api/products?${params}`, {cache: "no-store"});
+            const page = await posResponseJSON(response);
+            if (!Array.isArray(page.items) || typeof page.has_more !== "boolean") throw new Error("Invalid product page");
+            page.items.forEach(product => {
+              if (product.id == null || !Number.isFinite(Number(product.price)) || !Number.isFinite(Number(product.stock))) throw new Error("Invalid product data");
+              products.set(String(product.id), product);
+            });
+            cursor = page.has_more ? page.next_cursor : null;
+            if (page.has_more && (!cursor || cursors.has(String(cursor)))) throw new Error("Invalid product cursor");
+            if (cursor) cursors.add(String(cursor));
+            renderOfflineProductButton(`Loading products: ${products.size} / ${before.count}…`);
+          } while (cursor);
+          const after = await fetchOfflineCatalogVersion(branchId);
+          if (!posCartScopeCurrent(branchId)) throw new Error("Branch or account changed. Please retry.");
+          if (before.version !== after.version || products.size !== after.count) throw new Error("Catalog changed during loading. Please retry.");
+          const rows = Array.from(products.values());
+          if (!saveCachedProducts(rows, after.version)) throw new Error("Device storage is full or unavailable. Free up space and retry.");
+          cachedProducts = rows;
+          cachedProductsBranchId = branchId;
+          productsCacheTimestamp = Date.now();
+          offlineCatalogVersion = {branchId, ...after};
+        } catch (error) {
+          offlineCatalogVersion = null;
+          message = `Offline download not completed: ${error.message} Previous saved products were retained.`;
+        } finally {
+          if (offlineProductSync === sync) offlineProductSync = null;
+          renderOfflineProductButton(posCartScopeCurrent(branchId) ? message : "");
+        }
+      }
+
+      window.addEventListener("online", () => checkOfflineProductCatalog());
+      window.addEventListener("focus", () => {
+        if (currentSection === "pos") checkOfflineProductCatalog();
+      });
+      setInterval(() => {
+        if (currentSection === "pos" && !document.hidden) checkOfflineProductCatalog();
+      }, 60000);
 
       function findCachedProduct(productId) {
         const products = getCachedProducts();
@@ -11586,9 +11733,9 @@
           !dashboardSessionStale && !dashboardBranchStale && !branchSwitchInFlight;
       }
 
-      // Save only products actually fetched, never download an unbounded branch
-      // catalogue. Keep an in-memory copy too when device storage is full. This
-      // is a partial snapshot, not evidence that every branch product is ready.
+      // Browsing saves only fetched products; only the explicit bulk download
+      // marks a snapshot complete. Retain a complete catalog when merging pages
+      // and keep fresh values in memory even when device storage is full.
       function rememberPOSProducts(rows, branchId) {
         if (!posCartScopeCurrent(branchId) || !Array.isArray(rows)) return;
         const merged = new Map(getCachedProducts().map(product => [String(product.id), product]));
@@ -11599,7 +11746,9 @@
           merged.delete(String(product.id));
           merged.set(String(product.id), {...previous, ...product});
         });
-        cachedProducts = Array.from(merged.values()).slice(-2000);
+        const complete = offlineCacheGet(cachedProductsKey());
+        cachedProducts = complete?.catalog_complete || complete?.catalog_version
+          ? Array.from(merged.values()) : Array.from(merged.values()).slice(-2000);
         cachedProductsBranchId = branchId;
         productsCacheTimestamp = 0; // partial catalogue must not satisfy full-list callers
         saveCachedProducts(cachedProducts);

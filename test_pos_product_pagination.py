@@ -2,8 +2,9 @@
 
 import unittest
 import uuid
+from datetime import datetime, timedelta
 
-from app import app, db, Branch, Category, Product, User
+from app import app, db, Branch, Category, Product, Promotion, User
 
 
 class PosProductPaginationTests(unittest.TestCase):
@@ -76,6 +77,49 @@ class PosProductPaginationTests(unittest.TestCase):
         self.assertIsNone(second_data['next_cursor'])
         self.assertFalse({item['id'] for item in first_data['items']} &
                          {item['id'] for item in second_data['items']})
+
+    def test_offline_catalog_pages_and_version_track_admin_changes(self):
+        client = self._client()
+        url = '/api/products?view=offline-version'
+        initial = client.get(url).get_json()
+        products = [Product(name=f'Offline {i}', price=10, stock=4,
+                            branch_id=self.branch.id) for i in range(101)]
+        db.session.add_all(products)
+        db.session.commit()
+        self.product_ids = [product.id for product in products]
+        version = client.get(url)
+        self.assertEqual(version.headers['Cache-Control'], 'no-store')
+        self.assertEqual(version.get_json()['count'], 101)
+        self.assertNotEqual(initial['version'], version.get_json()['version'])
+        first = client.get('/api/products?view=offline&per_page=100').get_json()
+        self.assertEqual(len(first['items']), 100)
+        second = client.get('/api/products?view=offline&per_page=100&cursor=' +
+                            first['next_cursor']).get_json()
+        self.assertEqual(len(second['items']), 1)
+        self.assertFalse(second['has_more'])
+        promo = Promotion(product_id=products[0].id, discount_type='percent',
+                          discount_value=10, start_date=datetime.now(),
+                          end_date=datetime.now() + timedelta(days=1))
+        db.session.add(promo)
+        db.session.commit()
+        try:
+            promoted = client.get(url).get_json()
+            self.assertNotEqual(promoted['version'], version.get_json()['version'])
+            final_page = client.get('/api/products?view=offline&per_page=100&cursor=' +
+                                    first['next_cursor']).get_json()
+            self.assertEqual(final_page['items'][0]['promotions'][0]['discount_value'], 10)
+        finally:
+            db.session.delete(promo)
+            db.session.commit()
+        Product.query.filter_by(id=products[0].id).update({'price': 20})
+        db.session.commit()
+        updated = client.get(url).get_json()
+        self.assertNotEqual(updated['version'], version.get_json()['version'])
+        db.session.delete(products[0])
+        db.session.commit()
+        self.assertNotEqual(client.get(url).get_json()['version'], updated['version'])
+        self.assertEqual(client.get(url + '&branch_id=999999').status_code, 409)
+        self.assertEqual(app.test_client().get(url).status_code, 401)
 
     def test_subcategories_creation_validation_and_pos_filter(self):
         client = self._client()

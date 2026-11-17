@@ -1039,6 +1039,18 @@ def serialize_product(product):
             data.pop(key, None)
     return data
 
+
+def serialize_offline_product(product):
+    data = serialize_product(product)
+    data['promotions'] = [{
+        'id': promotion.id,
+        'discount_type': promotion.discount_type,
+        'discount_value': promotion.discount_value,
+        'start_date': promotion.start_date.isoformat(),
+        'end_date': promotion.end_date.isoformat(),
+    } for promotion in sorted(product.promotions, key=lambda item: item.id)]
+    return data
+
 # --- Unit system helpers ---
 
 def unit_factor_to_root(unit):
@@ -5128,6 +5140,39 @@ def api_products():
         branch_id = get_current_branch_id()
         if get_requested_branch_id(default_to_current=True) != branch_id:
             return jsonify({'success': False, 'message': 'Active branch changed. Reload the page'}), 409
+
+        if request.args.get('view') == 'offline-version':
+            # Hash the actual catalog, including bulk SQL/import changes. Stream
+            # rows rather than instantiate the entire ORM graph in memory.
+            digest = hashlib.sha256()
+            rows = db.session.query(
+                *Product.__table__.columns, Unit.symbol, Unit.name, Category.name,
+            ).outerjoin(Unit, Product.unit_id == Unit.id).outerjoin(
+                Category, Product.category_id == Category.id
+            ).filter(Product.branch_id == branch_id).order_by(Product.id).yield_per(500)
+            count = 0
+            for row in rows:
+                digest.update(json.dumps(list(row), default=str, ensure_ascii=False,
+                                         separators=(',', ':')).encode('utf-8'))
+                digest.update(b'\n')
+                count += 1
+            promotions = db.session.query(*Promotion.__table__.columns).join(
+                Product, Promotion.product_id == Product.id
+            ).filter(Product.branch_id == branch_id).order_by(Promotion.id).yield_per(500)
+            for row in promotions:
+                digest.update(json.dumps(list(row), default=str, ensure_ascii=False,
+                                         separators=(',', ':')).encode('utf-8'))
+                digest.update(b'\n')
+            response = jsonify(version=digest.hexdigest(), count=count, branch_id=branch_id)
+            response.headers['Cache-Control'] = 'no-store'
+            return response
+
+        if request.args.get('view') == 'offline':
+            query = Product.query.options(joinedload(Product.category_ref), joinedload(Product.unit_ref), selectinload(Product.promotions)).filter_by(branch_id=branch_id)
+            rows, paging = cursor_rows(query, Product.id)
+            response = jsonify(items=[serialize_offline_product(row) for row in rows], **paging)
+            response.headers['Cache-Control'] = 'no-store'
+            return response
 
         # The POS grid only needs a small card payload and appends successive
         # pages. Cursor pagination avoids an increasingly expensive OFFSET and

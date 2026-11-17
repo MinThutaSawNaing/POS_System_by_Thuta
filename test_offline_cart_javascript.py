@@ -35,6 +35,8 @@ const search = {value:'', focus(){}};
 const document = {getElementById:id=>id==='product-search'?search:grid,
   createElement:()=>({innerHTML:'',className:''})};
 function getCachedProducts(){return snapshot;}
+function cachedProductsKey(){return 'products_1';}
+function offlineCacheGet(){return null;}
 function saveCachedProducts(rows){snapshot=JSON.parse(JSON.stringify(rows));}
 function isBrowserOffline(){return offline;}
 function hasCapability(){return true;}
