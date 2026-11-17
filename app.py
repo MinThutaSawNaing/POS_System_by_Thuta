@@ -5149,7 +5149,7 @@ def api_products():
             pos_query = db.session.query(
                 Product.id, Product.barcode, Product.sku, Product.name, Product.price,
                 Product.stock, Product.tax_rate, Product.photo_filename,
-                Product.unit_id,
+                Product.unit_id, Product.category_id,
             ).filter(Product.branch_id == branch_id)
             if category_id:
                 # Selecting a shelf includes everything filed under it at any
@@ -5175,6 +5175,7 @@ def api_products():
                 'stock': row.stock,
                 'tax_rate': row.tax_rate,
                 'unit_symbol': unit_symbols.get(row.unit_id),
+                'category_id': row.category_id,
                 'photo_url': product_photo_url(row.photo_filename),
             } for row in rows]
             return jsonify({
@@ -5816,6 +5817,7 @@ def api_search_products():
         'stock': p.stock,
         'tax_rate': p.tax_rate,
         'unit_symbol': p.unit_ref.symbol if p.unit_ref else None,
+        'category_id': p.category_id,
         'photo_url': product_photo_url(p.photo_filename)
     } for p in products])
 

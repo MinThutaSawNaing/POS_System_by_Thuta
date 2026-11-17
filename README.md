@@ -38,6 +38,7 @@ See [setup, security controls, and recovery notes](docs/email-two-factor.md) bef
   - While offline (including a detected POS-server outage), reload shortcuts are blocked and leaving/reloading requests the browser's confirmation warning. Keep the screen open: browsers may ignore that warning, especially on mobile, and cannot guarantee that toolbar refresh or closing is blocked. Normal online refresh remains available.
   - Loaded tabs keep their content while offline rather than reload solely because a cache timer expired. Online tabs refresh after their freshness window, relevant edits, or an explicit Refresh.
   - New offline sales are **cash only**, without coupons, delivery, debt, card/mobile or split payments
+  - POS automatically saves visited product pages, search results and product details for offline cart additions, name/SKU search and barcode scanning. This is a bounded, partial snapshot (up to 2,000 recently loaded products), not a download of the entire branch catalogue. Load required products while online; products never loaded on this device are unavailable offline. New catalogue products still require the server.
 
 - **Configurable Business Settings**
   - POS branding support

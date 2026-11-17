@@ -28,6 +28,9 @@ function escapeHtml(value) { return String(value).replaceAll('&', '&amp;').repla
 const POS_PER_PAGE = 50;
 let posProductsLoading = false, posProductCursor = 50, posProductsHaveMore = true;
 let currentBranch = { id: 1 };
+let dashboardSessionStale = false, dashboardBranchStale = false;
+function rememberPOSProducts() {}
+function posIsOffline() { return false; }
 // Quick category filters: the POS browse grid only adds ?category_id when a
 // chip is active, so the harness starts on "All products".
 let posCategoryFilterId = null;

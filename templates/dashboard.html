@@ -10897,16 +10897,13 @@
       ];
 
       function invalidateProductsCache() {
-        // Called after a product/stock mutation: drop the cached list payloads and
-        // (when online) the persistent offline snapshot so the next load refreshes
-        // it. When offline the snapshot is kept so ringing up keeps working.
+        // Drop live list payloads after mutations, but retain the last successful
+        // offline snapshot until replacement data arrives. Deleting it here made
+        // a connection loss immediately after an online sale disable offline POS.
         cachedProducts = [];
         productsCacheTimestamp = 0;
         cachedProductsBranchId = null;
         invalidateCacheGroups(PRODUCT_MUTATION_GROUPS);
-        if (!isBrowserOffline()) {
-          offlineCacheRemove(cachedProductsKey());
-        }
         // A mutation (or a branch switch) can delete or replace the rows the
         // Products tab has ticked, so no stale selection survives it.
         if (typeof clearProductSelection === "function") clearProductSelection();
@@ -11552,6 +11549,8 @@
       function getCachedProducts() {
         // Never borrow a generic or different branch's stock snapshot.
         if (!currentBranch?.id) return [];
+        if (typeof cachedProducts !== "undefined" &&
+            cachedProductsBranchId === currentBranch.id && cachedProducts.length) return cachedProducts;
         const entry = offlineCacheGet(cachedProductsKey());
         return entry && Array.isArray(entry.data) ? entry.data : [];
       }
@@ -11574,7 +11573,36 @@
           stock: p.stock,
           tax_rate: p.tax_rate || 0,
           promotions: p.promotions || [],
+          unit_symbol: p.unit_symbol || "",
         };
+      }
+
+      function posIsOffline() {
+        return isBrowserOffline() || (typeof checkoutServerUnavailable !== "undefined" && checkoutServerUnavailable);
+      }
+
+      function posCartScopeCurrent(branchId) {
+        return branchId != null && currentBranch?.id === branchId &&
+          !dashboardSessionStale && !dashboardBranchStale && !branchSwitchInFlight;
+      }
+
+      // Save only products actually fetched, never download an unbounded branch
+      // catalogue. Keep an in-memory copy too when device storage is full. This
+      // is a partial snapshot, not evidence that every branch product is ready.
+      function rememberPOSProducts(rows, branchId) {
+        if (!posCartScopeCurrent(branchId) || !Array.isArray(rows)) return;
+        const merged = new Map(getCachedProducts().map(product => [String(product.id), product]));
+        rows.forEach(product => {
+          if (!product || product.id == null || !Number.isFinite(Number(product.price)) ||
+              !Number.isFinite(Number(product.stock))) return;
+          const previous = merged.get(String(product.id)) || {};
+          merged.delete(String(product.id));
+          merged.set(String(product.id), {...previous, ...product});
+        });
+        cachedProducts = Array.from(merged.values()).slice(-2000);
+        cachedProductsBranchId = branchId;
+        productsCacheTimestamp = 0; // partial catalogue must not satisfy full-list callers
+        saveCachedProducts(cachedProducts);
       }
 
       // Best-effort: keep the full product list for the current branch in the
@@ -12415,13 +12443,26 @@
 
         // Search for product by barcode
         const activeBranchId = currentBranch?.id;
+        if (!posCartScopeCurrent(activeBranchId)) return;
+        if (posIsOffline()) {
+          const product = getCachedProducts().find(p => String(p.barcode) === String(barcode));
+          if (!product) {
+            if (searchIfNotExact) searchProducts();
+            else showToast("Barcode not saved for offline use. Reconnect and load the product first.", "warning");
+            return;
+          }
+          if (currentSection !== "pos") showSection("pos");
+          return addToCart(product.id, product.name, product.price, 1, product.tax_rate || 0);
+        }
         const url = activeBranchId
           ? `/api/products/search?q=${encodeURIComponent(barcode)}&branch_id=${encodeURIComponent(activeBranchId)}`
           : "/api/products/search?q=" + encodeURIComponent(barcode);
 
         fetch(url)
-          .then((response) => response.json())
+          .then(posResponseJSON)
           .then((data) => {
+            if (!posCartScopeCurrent(activeBranchId)) return;
+            rememberPOSProducts(data, activeBranchId);
             const product = data.find((p) => p.barcode === barcode);
             if (!product && searchIfNotExact) {
               searchProducts();
@@ -12440,11 +12481,14 @@
             // Add product to cart
             addToCart(product.id, product.name, product.price, 1, product.tax_rate || 0);
 
-            // Show success message
-            showToast(`Added ${product.name} to cart`, "success");
           })
           .catch((error) => {
             console.error("Error processing barcode:", error);
+            if (!posCartScopeCurrent(activeBranchId)) return;
+            if (error.status && error.status < 500) {
+              showPOSCatalogError(error, "search");
+              return;
+            }
             // Offline fallback: look the barcode up in the cached product list.
             const cachedProduct = getCachedProducts().find((p) => String(p.barcode) === barcode);
             if (!cachedProduct) {
@@ -12455,7 +12499,6 @@
               showSection("pos");
             }
             addToCart(cachedProduct.id, cachedProduct.name, cachedProduct.price, 1, cachedProduct.tax_rate || 0);
-            showToast(`Added ${cachedProduct.name} to cart`, "success");
           });
       }
 
@@ -14376,6 +14419,21 @@
 
       function loadProductsForPOS(resetPage = true) {
         if (posProductsLoading) return;
+        if (posIsOffline()) {
+          let saved = getCachedProducts();
+          const query = (document.getElementById("product-search")?.value || "").trim().toLowerCase();
+          if (query) saved = saved.filter(product => [product.name, product.sku, product.barcode]
+            .some(value => String(value || "").toLowerCase().includes(query)));
+          if (saved.length) {
+            if (!resetPage) posProductPage++;
+            renderProductsFromCacheForPOS(saved, resetPage);
+            return;
+          }
+          document.getElementById("product-grid").innerHTML = query
+            ? posGridState("No saved products match", "Only previously loaded products can be searched offline. Clear the search or reconnect to load more.")
+            : posGridState("No products saved on this device", "Reconnect and browse or search products in POS to make them available offline. Creating new catalogue products requires a connection.");
+          return;
+        }
         posProductsLoading = true;
         // Remembered so a chip tapped mid-flight cannot leave the previous
         // category's products under the newly selected chip.
@@ -14403,6 +14461,8 @@
           .then(posResponseJSON)
           .then((data) => {
             if (!Array.isArray(data.items)) throw new Error("Invalid product list");
+            if (currentBranch?.id !== activeBranchId || dashboardSessionStale || dashboardBranchStale) return;
+            rememberPOSProducts(data.items, activeBranchId);
             setPOSCatalogNotice();
             const products = data.items || [];
             posProductsHaveMore = Boolean(data.has_more);
@@ -14429,9 +14489,7 @@
               productCard.innerHTML = `
           <div class="card product-card" onclick="addToCart(${
             product.id
-          }, '${escapeHtml(product.name)}', ${product.price}, 1, ${
-                product.tax_rate
-              })">
+          }, null, null, 1, 0)">
               <div class="card-body p-3">
                   ${getProductPhotoHtml(product.photo_url, product.name, "product-card-img")}
                   <h6 class="card-title fw-bold text-success mb-2">${
@@ -14459,13 +14517,11 @@
 
             normalizeCurrencyDisplay(productGrid);
 
-            // Do not refresh the full offline catalog here: POS only needs the
-            // page being displayed, and fetching every product would defeat
-            // cursor pagination for large branches. Existing snapshots remain
-            // available if the connection drops.
+            // Each visited page is saved above; no full-catalogue request needed.
           })
           .catch((error) => {
             console.error("Error loading products:", error);
+            if (currentBranch?.id !== activeBranchId || dashboardSessionStale || dashboardBranchStale) return;
             if (error.status === 401 || error.status === 403) {
               showPOSCatalogError(error);
               if (resetPage) productGrid.innerHTML = posGridState("Catalog access unavailable", "Read the warning above before continuing.");
@@ -14505,7 +14561,7 @@
             .concat(categoryDescendantIds(posCategories, posCategoryFilterId)));
           products = products.filter((product) => branchCategoryIds.has(Number(product.category_id)));
         }
-        setPOSCatalogNotice("Using saved product data", "Live product data is unavailable. These saved prices and stock levels may have changed. Confirm availability before completing the sale.");
+        setPOSCatalogNotice("Using saved product data", "Only previously loaded products are available offline. Saved prices and stock may have changed; the server checks them when sales sync. Reconnect to load other products.");
 
         if (resetPage) posProductPage = 1;
         posProductTotalPages = Math.max(1, Math.ceil(products.length / POS_PER_PAGE));
@@ -14530,7 +14586,7 @@
           const productCard = document.createElement("div");
           productCard.className = "pos-product-cell";
           productCard.innerHTML = `
-          <div class="card product-card" onclick="addToCart(${product.id}, '${escapeHtml(product.name)}', ${product.price}, 1, ${product.tax_rate})">
+          <div class="card product-card" onclick="addToCart(${product.id}, null, null, 1, 0)">
             <div class="card-body p-3">
               ${getProductPhotoHtml(product.photo_url, product.name, "product-card-img")}
               <h6 class="card-title fw-bold text-success mb-2">${escapeHtml(product.name)}</h6>
@@ -14576,6 +14632,15 @@
           renderPOSCategoryChips();
         }
 
+        if (posIsOffline()) {
+          const normalized = query.toLowerCase();
+          const matches = getCachedProducts().filter(product =>
+            [product.name, product.sku, product.barcode].some(value =>
+              String(value || "").toLowerCase().includes(normalized)));
+          renderProductsFromCacheForPOS(matches, true);
+          return;
+        }
+
         const activeBranchId = currentBranch?.id;
         const url = activeBranchId
           ? `/api/products/search?q=${encodeURIComponent(query)}&branch_id=${encodeURIComponent(activeBranchId)}`
@@ -14586,6 +14651,8 @@
           .then((data) => {
             const productGrid = document.getElementById("product-grid");
             if (!Array.isArray(data)) throw new Error("Invalid search results");
+            if (!posCartScopeCurrent(activeBranchId)) return;
+            rememberPOSProducts(data, activeBranchId);
             setPOSCatalogNotice();
             productGrid.innerHTML = "";
 
@@ -14601,9 +14668,7 @@
               productCard.innerHTML = `
                                   <div class="card product-card" onclick="addToCart(${
                                     product.id
-                                  }, '${escapeHtml(product.name)}', ${
-                product.price
-              }, 1, ${product.tax_rate || 0})">
+                                  }, null, null, 1, 0)">
 
                                       <div class="card-body">
                                           ${getProductPhotoHtml(product.photo_url, product.name, "product-card-img")}
@@ -14626,6 +14691,7 @@
           })
           .catch((error) => {
             console.error("Error searching products:", error);
+            if (!posCartScopeCurrent(activeBranchId)) return;
             if (error.status === 401 || error.status === 403) {
               showPOSCatalogError(error, "search");
               document.getElementById("product-grid").innerHTML = posGridState("Search unavailable", "Read the warning above before continuing.", "search");
@@ -14650,55 +14716,60 @@
           });
       }
 
-      function addToCart(productId, name, price, quantity, tax_rate) {
+      async function addToCart(productId, name, price, quantity, tax_rate) {
         // First, fetch the product to check stock AND promotions
         const activeBranchId = currentBranch?.id;
         const url = activeBranchId
           ? `/api/products/${productId}?branch_id=${encodeURIComponent(activeBranchId)}`
           : `/api/products/${productId}`;
 
-        fetch(url)
-          .then((response) => {
-            if (!response.ok) {
-              throw new Error("Product not found: " + response.status);
+        if (!posCartScopeCurrent(activeBranchId)) return false;
+        quantity = Number(quantity);
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+          showToast("Enter a positive, finite quantity.", "warning");
+          return false;
+        }
+        let product;
+        if (posIsOffline()) {
+          product = findCachedProduct(productId);
+        } else {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 5000);
+          try {
+            const response = await fetch(url, {signal: controller.signal});
+            product = await posResponseJSON(response);
+            if (!posCartScopeCurrent(activeBranchId)) return false;
+            if (!product || String(product.id) !== String(productId)) throw new Error("Invalid product response");
+            rememberPOSProducts([product], activeBranchId);
+          } catch (error) {
+            if (!posCartScopeCurrent(activeBranchId)) return false;
+            // A definite refusal is not a connection loss. Never bypass login,
+            // access restrictions, deleted products or branch/session conflicts.
+            if (error.status && error.status < 500) {
+              showToast("Product could not be added (HTTP " + error.status + "). Reconnect or ask a manager.", "error");
+              return false;
             }
-            return response.json();
-          })
-          .then((product) => {
-            if (!product) {
-              showToast("Product not found!", "error");
-              return;
-            }
-
-            // Check stock
-            const maxAvailable = product.stock;
-            if (quantity > maxAvailable) {
-              showConfirmDialog(
-                "Limited Stock",
-                `${product.name} has only ${maxAvailable} in stock.\nWould you like to add ${maxAvailable} instead?`,
-                () => {
-                  addToCartToInternal(product, maxAvailable);
-                }
-              );
-              return;
-            }
-
-            addToCartToInternal(product, quantity);
-          })
-          .catch((err) => {
-            console.error("Error adding to cart:", err);
-            // Offline fallback: ring up from the cached product record.
-            const cachedProduct = findCachedProduct(productId);
-            if (cachedProduct) {
-              addToCartToInternal(cachedProduct, quantity);
-              return;
-            }
-            showToast("Failed to add product. Check connection.", "error");
-          });
+            product = findCachedProduct(productId);
+            if (product) setPOSCatalogNotice("Using saved product data", "Connection unavailable. Saved prices and stock will be checked when the sale syncs.");
+          } finally { clearTimeout(timer); }
+        }
+        if (!product) {
+          showToast("This product is not saved for offline use. Reconnect and load it in POS first.", "warning");
+          return false;
+        }
+        if (!posCartScopeCurrent(activeBranchId)) return false;
+        return addToCartToInternal(product, quantity);
       }
 
       // Internal function to add product to cart
       function addToCartToInternal(product, quantity) {
+        quantity = Number(quantity);
+        const stock = Number(product.stock);
+        if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(stock) || stock < quantity ||
+            !Number.isFinite(Number(product.price)) || Number(product.price) < 0) {
+          showToast("Invalid quantity or insufficient saved stock for this product.", "warning");
+          return false;
+        }
         const productId = product.id;
         // Apply promotions (if any)
         let finalPrice = product.price;
@@ -14732,7 +14803,7 @@
 
         // Add or update cart
         const existingItem = cart.find(
-          (item) => item.product_id === productId
+          (item) => String(item.product_id) === String(productId)
         );
         if (existingItem) {
           const newQty = existingItem.quantity + quantity;
@@ -14766,6 +14837,7 @@
         const searchInput = document.getElementById("product-search");
         searchInput.value = "";
         searchInput.focus({ preventScroll: true });
+        return true;
       }
 
       function getPosDeliveryPreview() {
