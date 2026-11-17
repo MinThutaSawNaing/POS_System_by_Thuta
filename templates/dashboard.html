@@ -4120,6 +4120,9 @@
               <i class="bi bi-building"></i>
               <span class="branch-name">-</span>
             </span>
+            <span id="users-master-lock-status" class="badge bg-secondary" role="status" aria-live="polite">
+              <i class="bi bi-lock-fill me-1"></i>Master password locked
+            </span>
           </div>
           <div class="d-flex gap-2">
             <button id="users-own-email-btn" type="button" class="btn btn-outline-secondary" onclick="EmailSecurity.open()" title="Link or unlink your own login email, including when another branch is selected">
@@ -6258,6 +6261,7 @@
                   type="password"
                   class="form-control"
                   id="add-password"
+                  autocomplete="new-password"
                   required
                 />
               </div>
@@ -6269,6 +6273,7 @@
                   type="password"
                   class="form-control"
                   id="add-confirm-password"
+                  autocomplete="new-password"
                   required
                 />
               </div>
@@ -6409,6 +6414,7 @@
                   type="password"
                   class="form-control"
                   id="edit-password"
+                  autocomplete="new-password"
                 />
               </div>
               <div class="mb-3">
@@ -6417,6 +6423,7 @@
                   type="password"
                   class="form-control"
                   id="edit-confirm-password"
+                  autocomplete="new-password"
                 />
               </div>
               <div class="mb-3">
@@ -13910,6 +13917,17 @@
         currentSection = sectionId;
         localStorage.setItem(ACTIVE_SECTION_STORAGE_KEY, sectionId);
 
+        // The master-password unlock belongs to the Users tab only. Leaving it
+        // locks immediately; entering it re-reads the server's inactivity timer
+        // so a resumed tab cannot claim an unlock the server already expired.
+        if (previousSection === "users" && sectionId !== "users" &&
+            typeof lockAccountBarrier === "function") {
+          lockAccountBarrier("Master password locked because you left the Users tab.");
+        } else if (sectionId === "users" && previousSection !== "users" &&
+                   typeof syncAccountBarrierFromServer === "function") {
+          syncAccountBarrierFromServer();
+        }
+
         if (sectionNeedsRender(sectionId)) {
           renderSection(sectionId);
         } else {
@@ -14566,6 +14584,16 @@
       let posProductPage = 1;
       let posProductTotalPages = 1;
 
+      // A POS response belongs to the branch the session was scoped to when the
+      // request left. The branch may still be resolving on the first paint (the
+      // cashier lands on POS while /api/branches/current is in flight), so a
+      // request without a branch id is accepted: the server resolved it from the
+      // session. Only a request that carried a branch id can become stale.
+      function posCatalogScopeStillCurrent(requestedBranchId) {
+        return (requestedBranchId == null || currentBranch?.id === requestedBranchId) &&
+          !dashboardSessionStale && !dashboardBranchStale;
+      }
+
       function loadProductsForPOS(resetPage = true) {
         if (posProductsLoading) return;
         if (posIsOffline()) {
@@ -14610,8 +14638,8 @@
           .then(posResponseJSON)
           .then((data) => {
             if (!Array.isArray(data.items)) throw new Error("Invalid product list");
-            if (currentBranch?.id !== activeBranchId || dashboardSessionStale || dashboardBranchStale) return;
-            rememberPOSProducts(data.items, activeBranchId);
+            if (!posCatalogScopeStillCurrent(activeBranchId)) return;
+            rememberPOSProducts(data.items, currentBranch?.id ?? activeBranchId);
             setPOSCatalogNotice();
             const products = data.items || [];
             posProductsHaveMore = Boolean(data.has_more);
@@ -14670,7 +14698,7 @@
           })
           .catch((error) => {
             console.error("Error loading products:", error);
-            if (currentBranch?.id !== activeBranchId || dashboardSessionStale || dashboardBranchStale) return;
+            if (!posCatalogScopeStillCurrent(activeBranchId)) return;
             if (error.status === 401 || error.status === 403) {
               showPOSCatalogError(error);
               if (resetPage) productGrid.innerHTML = posGridState("Catalog access unavailable", "Read the warning above before continuing.");
@@ -19302,9 +19330,114 @@
       // Account-creation barrier: adding users is locked behind a master
       // credential verified on the server, plus a numeric captcha and a rate
       // limiter. The gate is enforced by the API, not just this modal.
+      //
+      // The unlock is also a session, not a one-off toggle: the server lapses it
+      // after ACCOUNT_BARRIER_IDLE_MS of inactivity and the dashboard locks it as
+      // soon as the manager leaves the Users tab. A tab left open for days must
+      // never keep user administration unlocked.
+      const ACCOUNT_BARRIER_IDLE_MS = 10 * 60 * 1000;
+      const ACCOUNT_BARRIER_TOUCH_MIN_MS = 30 * 1000;
       let accountBarrierUnlocked = false;
+      let accountBarrierIdleTimer = null;
+      let accountBarrierLastTouchAt = 0;
+      let accountBarrierStateGeneration = 0;
       let accountBarrierOnUnlock = null;
       let accountBarrierOnCancel = null;
+
+      function renderAccountBarrierState() {
+        const status = document.getElementById("users-master-lock-status");
+        if (!status) return;
+        status.className = "badge " + (accountBarrierUnlocked ? "bg-success" : "bg-secondary");
+        status.innerHTML = accountBarrierUnlocked
+          ? '<i class="bi bi-unlock-fill me-1"></i>Master password unlocked'
+          : '<i class="bi bi-lock-fill me-1"></i>Master password locked';
+      }
+
+      function clearAccountBarrierIdleTimer() {
+        if (accountBarrierIdleTimer) {
+          clearTimeout(accountBarrierIdleTimer);
+          accountBarrierIdleTimer = null;
+        }
+      }
+
+      function scheduleAccountBarrierIdleTimer(remainingMs = ACCOUNT_BARRIER_IDLE_MS) {
+        clearAccountBarrierIdleTimer();
+        if (!accountBarrierUnlocked) return;
+        const requested = Number(remainingMs);
+        const delay = Math.max(1000, Math.min(
+          Number.isFinite(requested) && requested > 0 ? requested : ACCOUNT_BARRIER_IDLE_MS,
+          ACCOUNT_BARRIER_IDLE_MS));
+        accountBarrierIdleTimer = setTimeout(() => {
+          lockAccountBarrier("Master password session expired after inactivity. Unlock again to manage users.");
+        }, delay);
+      }
+
+      function lockAccountBarrier(message = "", options = {}) {
+        const wasUnlocked = accountBarrierUnlocked;
+        accountBarrierUnlocked = false;
+        accountBarrierLastTouchAt = 0;
+        accountBarrierStateGeneration += 1;
+        clearAccountBarrierIdleTimer();
+        renderAccountBarrierState();
+        if (wasUnlocked && options.notifyServer !== false) {
+          // Release the server-side unlock too; its inactivity window is the
+          // backstop if this request never arrives.
+          fetch("/api/account_barrier/lock", { method: "POST", keepalive: true })
+            .catch(() => { /* locked locally is enough until the window lapses */ });
+        }
+        if (message && wasUnlocked) showToast(message, "warning");
+      }
+
+      function noteAccountBarrierActivity() {
+        if (!accountBarrierUnlocked || currentSection !== "users") return;
+        // Local typing/mousing counts as activity immediately; the server only
+        // needs an occasional touch to slide its matching window.
+        scheduleAccountBarrierIdleTimer();
+        const now = Date.now();
+        if (now - accountBarrierLastTouchAt < ACCOUNT_BARRIER_TOUCH_MIN_MS) return;
+        accountBarrierLastTouchAt = now;
+        const generation = accountBarrierStateGeneration;
+        fetch("/api/account_barrier/touch", { method: "POST" })
+          .then((response) => response.json().then((data) => ({ ok: response.ok, data })))
+          .then(({ ok, data }) => {
+            if (generation !== accountBarrierStateGeneration || currentSection !== "users") return;
+            if (!ok || !data.success || !data.unlocked) {
+              lockAccountBarrier("Master password session expired. Unlock again to manage users.", { notifyServer: false });
+              return;
+            }
+            scheduleAccountBarrierIdleTimer((Number(data.expires_in) || 0) * 1000);
+          })
+          .catch(() => { /* keep the local timer; the next change re-checks the server */ });
+      }
+
+      function syncAccountBarrierFromServer() {
+        if (!hasManagerOrBossAccess()) {
+          lockAccountBarrier("", { notifyServer: false });
+          return Promise.resolve(false);
+        }
+        const generation = ++accountBarrierStateGeneration;
+        return fetch("/api/account_barrier/status")
+          .then((response) => response.json().then((data) => ({ ok: response.ok, data })))
+          .then(({ ok, data }) => {
+            if (generation !== accountBarrierStateGeneration || currentSection !== "users") return false;
+            const unlocked = Boolean(ok && data.success && data.unlocked);
+            accountBarrierUnlocked = unlocked;
+            renderAccountBarrierState();
+            if (unlocked) scheduleAccountBarrierIdleTimer((Number(data.expires_in) || 0) * 1000);
+            else clearAccountBarrierIdleTimer();
+            return unlocked;
+          })
+          .catch(() => {
+            if (generation !== accountBarrierStateGeneration) return false;
+            // Never leave a stale local unlock running when the server cannot
+            // confirm it (for example after a connection loss or role change).
+            lockAccountBarrier("", { notifyServer: false });
+            return false;
+          });
+      }
+
+      document.addEventListener("pointerdown", noteAccountBarrierActivity, true);
+      document.addEventListener("keydown", noteAccountBarrierActivity, true);
 
       function barrierModalInstance() {
         const el = document.getElementById("accountBarrierModal");
@@ -19344,9 +19477,12 @@
 
       function openAccountBarrier(onUnlock, warningMessage = "", onCancel = null) {
         if (accountBarrierUnlocked) {
+          scheduleAccountBarrierIdleTimer();
+          renderAccountBarrierState();
           onUnlock();
           return;
         }
+        renderAccountBarrierState();
         accountBarrierOnUnlock = onUnlock;
         accountBarrierOnCancel = onCancel;
         document.getElementById("account-barrier-username").value = "";
@@ -19378,6 +19514,9 @@
             }
             if (data.unlocked) {
               accountBarrierUnlocked = true;
+              accountBarrierStateGeneration += 1;
+              renderAccountBarrierState();
+              scheduleAccountBarrierIdleTimer((Number(data.expires_in) || 0) * 1000);
               barrierModalInstance().hide();
               const onUnlock = accountBarrierOnUnlock;
               accountBarrierOnUnlock = null;
@@ -19418,6 +19557,9 @@
           .then(({ ok, data }) => {
             if (ok && data.success) {
               accountBarrierUnlocked = true;
+              accountBarrierStateGeneration += 1;
+              renderAccountBarrierState();
+              scheduleAccountBarrierIdleTimer((Number(data.expires_in) || 0) * 1000);
               setAccountBarrierAlert("");
               document.getElementById("account-barrier-username").value = "";
               document.getElementById("account-barrier-password").value = "";
@@ -19512,16 +19654,26 @@
           });
       }
 
+      let editUserRequestGeneration = 0;
+
       function editUser(userId) {
+        const generation = ++editUserRequestGeneration;
         fetch("/api/users/" + userId)
           .then((response) => response.json().then((data) => {
             if (!response.ok) throw new Error(data.message || "Failed to load user");
             return data;
           }))
           .then((user) => {
+            // Opening another user while this request was in flight must not
+            // repopulate the modal with the previous account (a stale id would
+            // then apply the new password to the wrong user).
+            if (generation !== editUserRequestGeneration) return;
             document.getElementById("edit-user-id").value = user.id;
             document.getElementById("edit-username").value = user.username;
             document.getElementById("edit-role").value = user.role;
+            // Never carry a previous account's draft password into this form.
+            document.getElementById("edit-password").value = "";
+            document.getElementById("edit-confirm-password").value = "";
 
             const modal = new bootstrap.Modal(
               document.getElementById("editUserModal")
@@ -19529,6 +19681,7 @@
             modal.show();
           })
           .catch((error) => {
+            if (generation !== editUserRequestGeneration) return;
             console.error("Error fetching user:", error);
             showToast("Failed to load user for editing", "error");
           });
@@ -19578,6 +19731,8 @@
                 document.getElementById("editUserModal")
               );
               if (typeof markBranchFormSaved === "function") markBranchFormSaved("editUserModal");
+              document.getElementById("edit-password").value = "";
+              document.getElementById("edit-confirm-password").value = "";
               modal.hide();
               loadUsers();
             } else {

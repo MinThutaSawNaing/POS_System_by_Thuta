@@ -8,6 +8,7 @@ so a direct POST to /api/users cannot bypass it.
 
 import os
 import re
+import time
 import unittest
 import uuid
 from unittest import mock
@@ -206,6 +207,70 @@ class AccountBarrierTests(unittest.TestCase):
         self.assertFalse(response.get_json()['success'])
         self.assertTrue(response.get_json()['refresh_captcha'])
 
+    def _unlock(self, client):
+        answer = self._solve_captcha(client)
+        unlock = client.post('/api/account_barrier/unlock', json={
+            'username': BARRIER_USERNAME, 'password': BARRIER_PASSWORD,
+            'captcha_answer': answer})
+        self.assertEqual(unlock.status_code, 200, unlock.get_data(as_text=True))
+        return unlock
+
+    def _create_user(self, client, prefix='barrier_session'):
+        username = f'{prefix}_{uuid.uuid4().hex[:8]}'
+        response = client.post('/api/users', json={
+            'username': username, 'password': 'SecretPass123!', 'role': 'cashier'})
+        if response.status_code == 201:
+            with app.app_context():
+                user = User.query.filter_by(username=username).first()
+                if user:
+                    self.created_user_ids.append(user.id)
+        return response
+
+    def test_unlock_expires_after_inactivity(self):
+        client = self._client()
+        unlock = self._unlock(client)
+        self.assertTrue(unlock.get_json()['unlocked'])
+        self.assertEqual(unlock.get_json()['ttl'], app_module._BARRIER_UNLOCK_TTL)
+
+        with client.session_transaction() as current:
+            current['account_barrier_unlocked_at'] = (
+                time.time() - app_module._BARRIER_UNLOCK_TTL - 1)
+
+        status = client.get('/api/account_barrier/status').get_json()
+        self.assertFalse(status['unlocked'])
+        self.assertEqual(status['expires_in'], 0)
+        self.assertEqual(self._create_user(client).status_code, 403)
+
+    def test_unlock_flag_without_timestamp_cannot_stay_open(self):
+        client = self._client()
+        with client.session_transaction() as current:
+            current['account_barrier_unlocked'] = True
+            current.pop('account_barrier_unlocked_at', None)
+
+        status = client.get('/api/account_barrier/status').get_json()
+        self.assertFalse(status['unlocked'])
+        self.assertEqual(status['expires_in'], 0)
+        self.assertEqual(self._create_user(client).status_code, 403)
+
+    def test_touch_extends_the_window_and_lock_endpoint_closes_it(self):
+        client = self._client()
+        self._unlock(client)
+
+        with client.session_transaction() as current:
+            current['account_barrier_unlocked_at'] = (
+                time.time() - app_module._BARRIER_UNLOCK_TTL + 30)
+        touch = client.post('/api/account_barrier/touch')
+        self.assertEqual(touch.status_code, 200, touch.get_data(as_text=True))
+        self.assertTrue(touch.get_json()['unlocked'])
+        self.assertGreater(touch.get_json()['expires_in'], 30)
+        self.assertEqual(self._create_user(client).status_code, 201)
+
+        locked = client.post('/api/account_barrier/lock')
+        self.assertEqual(locked.status_code, 200)
+        self.assertFalse(locked.get_json()['unlocked'])
+        self.assertFalse(client.get('/api/account_barrier/status').get_json()['unlocked'])
+        self.assertEqual(self._create_user(client).status_code, 403)
+
     def test_unlock_rejects_wrong_captcha(self):
         client = self._client()
         answer = self._solve_captcha(client)
@@ -363,6 +428,22 @@ class AgentBarrierBypassTests(unittest.TestCase):
         self.assertIn('accountBarrierOnCancel', barrier)
         self.assertIn('if (cancelAction) cancelAction();', barrier)
         self.assertIn('function editUserModalInstance()', source)
+
+    def test_master_password_unlock_is_a_timed_users_tab_session(self):
+        from pathlib import Path
+        source = (Path(__file__).parent / 'templates' / 'dashboard.html').read_text(
+            encoding='utf-8')
+        self.assertIn('const ACCOUNT_BARRIER_IDLE_MS = 10 * 60 * 1000;', source)
+        self.assertIn('function scheduleAccountBarrierIdleTimer', source)
+        self.assertIn('function lockAccountBarrier', source)
+        self.assertIn('Master password locked because you left the Users tab.', source)
+        self.assertIn('/api/account_barrier/lock', source)
+        self.assertIn('/api/account_barrier/touch', source)
+        self.assertIn('/api/account_barrier/status', source)
+        show_section = source[source.index('function showSection(sectionId)'):source.index(
+            '// Add this function to check for authorization errors')]
+        self.assertIn('previousSection === "users" && sectionId !== "users"', show_section)
+        self.assertIn('syncAccountBarrierFromServer()', show_section)
 
     def test_dashboard_explains_role_restriction_and_support_contact(self):
         from pathlib import Path

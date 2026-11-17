@@ -29,6 +29,17 @@ MAX_ATTEMPTS = 5
 SMTP_SSL_PORTS = (465, 2465)
 SMTP_STARTTLS_PORTS = (25, 587, 2587)
 
+
+def password_matches(stored_hash, password):
+    """False for a malformed/legacy hash, never an exception during sign-in."""
+    if not isinstance(stored_hash, str) or not stored_hash or not isinstance(password, str):
+        return False
+    try:
+        return check_password_hash(stored_hash, password)
+    except (TypeError, ValueError):
+        return False
+
+
 SUBJECT = 'Your POS verification code'
 PURPOSE_COPY = {
     'login': ('Sign-in verification', 'Use this code to finish signing in to your POS account.'),
@@ -502,7 +513,7 @@ def register_email_auth(app, db, pos):
         if not snapshot:
             raise EmailAuthError('Invalid credentials.', 401)
         snapshot_fingerprint = fingerprint(snapshot)
-        if not isinstance(password, str) or not check_password_hash(snapshot['password'], password):
+        if not isinstance(password, str) or not password_matches(snapshot['password'], password):
             raise EmailAuthError('The target account password is incorrect.', 403)
         with locked() as connection:
             user = user_row(connection, user_id) if purpose == 'login' else authorize(connection, user_id)
@@ -631,7 +642,7 @@ def register_email_auth(app, db, pos):
                 raise EmailAuthError('Manager access required.', 403)
             actor_fingerprint = fingerprint(actor)
             password = data.get('password')
-            if not isinstance(password, str) or not check_password_hash(actor['password'], password):
+            if not isinstance(password, str) or not password_matches(actor['password'], password):
                 raise EmailAuthError('Your current account password is incorrect.', 403)
             with locked() as connection:
                 actor = authorize(connection, session.get('user_id'))

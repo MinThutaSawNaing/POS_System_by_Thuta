@@ -1,5 +1,21 @@
 # Migration notes
 
+## November 2026 password hash storage
+
+- `user.password` is now declared `VARCHAR(255)` instead of `VARCHAR(120)`.
+  Modern Werkzeug hashes with scrypt by default, which produces a ~162-character
+  salted hash; the old column only accepted it because SQLite ignores declared
+  lengths. Any backend that enforces the length would silently truncate the
+  hash, after which every sign-in reports an incorrect password even though the
+  Users tab reported a successful update.
+- Existing SQLite databases need no rewrite: the stored hashes are already
+  intact and length is not enforced. New databases are created with the wider
+  column. Password updates and account creation now read the hash back before
+  committing and refuse to report success if it cannot be verified.
+- After deploying, have any account that was updated on a length-enforcing
+  backend set its password once more (Users → edit → new password). That writes
+  a complete hash; no data backfill is possible for an already truncated hash.
+
 ## November 2026 checkout recovery ledger
 
 - Startup creates the additive `checkout_request` table via the existing

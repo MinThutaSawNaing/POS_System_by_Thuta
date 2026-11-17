@@ -1,4 +1,5 @@
 import json
+import time
 import unittest
 import uuid
 from datetime import datetime
@@ -130,9 +131,11 @@ class AuditLogTests(unittest.TestCase):
     def test_user_password_is_never_stored_in_audit_details(self):
         client = self.client_for(self.manager_id, 'manager', self.manager.username)
         # Creating users is gated behind the vendor account-creation barrier;
-        # mark this session unlocked so the audit write path is still covered.
+        # unlock this session (with its activity timestamp) so the audit write
+        # path is still covered.
         with client.session_transaction() as current:
             current['account_barrier_unlocked'] = True
+            current['account_barrier_unlocked_at'] = time.time()
         username = f'audit_user_{uuid.uuid4().hex[:8]}'
         secret = 'NeverStoreThisPassword!'
         response = client.post('/api/users', json={

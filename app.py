@@ -587,7 +587,10 @@ ACCOUNT_BARRIER_PASSWORD_SETTING = 'account_barrier_password_hash'
 # is throttled until the oldest failure ages out.
 _BARRIER_MAX_ATTEMPTS = 5
 _BARRIER_ATTEMPT_WINDOW = 15 * 60  # seconds
-_BARRIER_UNLOCK_TTL = 15 * 60      # seconds a successful unlock stays valid
+# The master-password unlock is a Users-tab session, not a permanent capability.
+# It lapses after this much inactivity; the dashboard additionally locks it on
+# leaving the Users tab. Keep within the documented 5-15 minute range.
+_BARRIER_UNLOCK_TTL = 10 * 60      # seconds of inactivity before re-unlock
 _BARRIER_CAPTCHA_TTL = 5 * 60      # seconds a numeric captcha stays valid
 _BARRIER_MAX_CAPTCHAS = 512        # cap on live challenges kept in memory
 
@@ -678,6 +681,20 @@ def _account_barrier_configured():
                 and get_setting(ACCOUNT_BARRIER_USERNAME_SETTING, ''))
 
 
+def verify_password_hash(stored_hash, password):
+    """Verify a stored hash, treating malformed legacy values as a mismatch.
+
+    A truncated or unknown-method hash must reject the sign-in cleanly (and be
+    reset by a manager) instead of raising a 500 that hides the real problem.
+    """
+    if not isinstance(stored_hash, str) or not stored_hash or not isinstance(password, str):
+        return False
+    try:
+        return check_password_hash(stored_hash, password)
+    except (TypeError, ValueError):
+        return False
+
+
 def _verify_account_barrier(username, password):
     """Constant-time username check plus a salted-hash password check."""
     stored_user = get_setting(ACCOUNT_BARRIER_USERNAME_SETTING, '') or ''
@@ -686,25 +703,57 @@ def _verify_account_barrier(username, password):
         return False
     if not hmac.compare_digest(str(stored_user), str(username)):
         return False
-    return check_password_hash(stored_hash, password)
+    return verify_password_hash(stored_hash, password)
+
+
+def _clear_account_barrier_session():
+    """Drop the master-password unlock (and any half-finished challenge)."""
+    session.pop('account_barrier_unlocked', None)
+    session.pop('account_barrier_unlocked_at', None)
+    session.pop('account_barrier_captcha_token', None)
+
+
+def account_barrier_seconds_left():
+    """Seconds of inactivity remaining before the unlock lapses (0 = locked).
+
+    A flag without a timestamp cannot be trusted: an old or partially written
+    session must not keep user administration unlocked indefinitely. The manager
+    simply unlocks again, which writes both values.
+    """
+    if not session.get('account_barrier_unlocked'):
+        return 0
+    unlocked_at = session.get('account_barrier_unlocked_at')
+    if unlocked_at is None:
+        _clear_account_barrier_session()
+        return 0
+    try:
+        elapsed = time.time() - float(unlocked_at)
+    except (TypeError, ValueError):
+        _clear_account_barrier_session()
+        return 0
+    remaining = _BARRIER_UNLOCK_TTL - elapsed
+    if remaining <= 0:
+        _clear_account_barrier_session()
+        return 0
+    return max(1, int(math.ceil(remaining)))
 
 
 def _account_barrier_is_unlocked():
     """Whether this session may create users right now."""
-    if not session.get('account_barrier_unlocked'):
-        return False
-    unlocked_at = session.get('account_barrier_unlocked_at')
-    if unlocked_at is None:
-        return True
-    try:
-        return (time.time() - float(unlocked_at)) < _BARRIER_UNLOCK_TTL
-    except (TypeError, ValueError):
-        return False
+    return account_barrier_seconds_left() > 0
 
 
 def unlock_account_barrier_session():
     session['account_barrier_unlocked'] = True
     session['account_barrier_unlocked_at'] = time.time()
+
+
+def touch_account_barrier_session():
+    """Slide the inactivity window after genuine Users-tab activity."""
+    if not _account_barrier_is_unlocked():
+        return False
+    session['account_barrier_unlocked_at'] = time.time()
+    return True
 
 
 def seed_account_barrier_credential():
@@ -726,7 +775,7 @@ def seed_account_barrier_credential():
         return
     stored_user = get_setting(ACCOUNT_BARRIER_USERNAME_SETTING, '') or ''
     stored_hash = get_setting(ACCOUNT_BARRIER_PASSWORD_SETTING, '') or ''
-    if stored_user == username and stored_hash and check_password_hash(stored_hash, password):
+    if stored_user == username and stored_hash and verify_password_hash(stored_hash, password):
         return
     set_setting(ACCOUNT_BARRIER_USERNAME_SETTING, username)
     set_setting(ACCOUNT_BARRIER_PASSWORD_SETTING, generate_password_hash(password))
@@ -1631,7 +1680,10 @@ def get_returned_quantity_map_for_sale(sale_id):
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
-    password = db.Column(db.String(120), nullable=False)
+    # Werkzeug's default scrypt hash is ~162 characters. The historical 120
+    # limit only "worked" because SQLite ignores VARCHAR lengths; any stricter
+    # backend would store a truncated hash that can never be verified.
+    password = db.Column(db.String(255), nullable=False)
     email = db.Column(db.String(254), nullable=True)
     email_auth_version = db.Column(db.Integer, nullable=False, default=0, server_default='0')
     role = db.Column(db.String(20), default='cashier')
@@ -3802,7 +3854,7 @@ def login():
         username = request.form.get('username', '')
         password = request.form.get('password', '')
         user = User.query.filter_by(username=username).first()
-        if user and check_password_hash(user.password, password):
+        if user and verify_password_hash(user.password, password):
             assigned_branch = db.session.get(Branch, user.branch_id) if user.branch_id else None
             if user.branch_id and (not assigned_branch or not assigned_branch.is_active):
                 session.clear()
@@ -8086,13 +8138,37 @@ def api_dashboard_top_products():
 @app.route('/api/account_barrier/status', methods=['GET'])
 @manager_required
 def api_account_barrier_status():
+    seconds_left = account_barrier_seconds_left()
     return jsonify({
         'success': True,
         'configured': _account_barrier_configured(),
-        'unlocked': _account_barrier_is_unlocked(),
+        'unlocked': seconds_left > 0,
+        'expires_in': seconds_left,
+        'ttl': _BARRIER_UNLOCK_TTL,
         'retry_after': _barrier_retry_after(_barrier_client_key()),
         'max_attempts': _BARRIER_MAX_ATTEMPTS,
     })
+
+
+@app.route('/api/account_barrier/touch', methods=['POST'])
+@manager_required
+def api_account_barrier_touch():
+    """Slide the inactivity window while the manager works in the Users tab."""
+    unlocked = touch_account_barrier_session()
+    return jsonify({
+        'success': True,
+        'unlocked': unlocked,
+        'expires_in': account_barrier_seconds_left(),
+        'ttl': _BARRIER_UNLOCK_TTL,
+    })
+
+
+@app.route('/api/account_barrier/lock', methods=['POST'])
+@manager_required
+def api_account_barrier_lock():
+    """Lock immediately, for example when leaving the Users tab."""
+    _clear_account_barrier_session()
+    return jsonify({'success': True, 'unlocked': False, 'expires_in': 0})
 
 
 @app.route('/api/account_barrier/challenge', methods=['GET'])
@@ -8117,6 +8193,8 @@ def api_account_barrier_challenge():
         'success': True,
         'configured': True,
         'unlocked': _account_barrier_is_unlocked(),
+        'expires_in': account_barrier_seconds_left(),
+        'ttl': _BARRIER_UNLOCK_TTL,
         'question': question,
     })
 
@@ -8172,10 +8250,43 @@ def api_account_barrier_unlock():
         summary='Account-creation barrier unlocked for the current session.',
     )
     db.session.commit()
-    return jsonify({'success': True, 'message': 'Unlocked. You can now add users.'})
+    return jsonify({
+        'success': True,
+        'unlocked': True,
+        'expires_in': account_barrier_seconds_left(),
+        'ttl': _BARRIER_UNLOCK_TTL,
+        'message': 'Unlocked. You can now add users.',
+    })
 
 
 # User API Endpoints
+def hash_user_password(password):
+    """Hash a new account password exactly once and prove the hash verifies.
+
+    Hashing the same value twice (or storing a hash produced by an
+    incompatible/truncating scheme) is indistinguishable from a wrong password
+    at sign-in. Every write path goes through this helper, and the caller
+    re-checks the persisted value before committing.
+    """
+    if not isinstance(password, str) or not password:
+        raise ValueError('Password is required')
+    password_hash = generate_password_hash(password)
+    if not check_password_hash(password_hash, password):
+        raise RuntimeError('The generated password hash could not be verified')
+    return password_hash
+
+
+def persisted_password_matches(user, password):
+    """Read the stored hash back and verify it (catches truncation/double hash)."""
+    try:
+        db.session.flush()
+        db.session.expire(user, ['password'])
+        stored = user.password
+        return verify_password_hash(stored, password)
+    except Exception:
+        return False
+
+
 @app.route('/api/users', methods=['GET'])
 @manager_required
 def api_users():
@@ -8248,15 +8359,28 @@ def api_create_user():
         
     if User.query.filter_by(username=data['username']).first():
         return jsonify({'success': False, 'message': 'Username already exists'}), 400
-        
+
+    try:
+        password_hash = hash_user_password(data['password'])
+    except ValueError as error:
+        return jsonify({'success': False, 'message': str(error)}), 400
+    except RuntimeError:
+        return jsonify({'success': False,
+                        'message': 'The password could not be stored safely. Please try again.'}), 500
+
     user = User(
         username=data['username'],
-        password=generate_password_hash(data['password']),
+        password=password_hash,
         role=data['role'],
         branch_id=branch_id
     )
     db.session.add(user)
+    if not persisted_password_matches(user, data['password']):
+        db.session.rollback()
+        return jsonify({'success': False,
+                        'message': 'The password could not be stored safely. Please try again.'}), 500
     db.session.commit()
+    touch_account_barrier_session()
     return jsonify({'success': True, 'message': 'User created'}), 201
 
 @app.route('/api/users/<int:user_id>', methods=['GET', 'PUT', 'DELETE'])
@@ -8306,19 +8430,41 @@ def api_single_user(user_id):
             existing_user = User.query.filter_by(username=data['username']).first()
             if existing_user and existing_user.id != user.id:
                 return jsonify({'success': False, 'message': 'Username already exists'}), 400
-                
-        security_changed = requested_role != user.role or bool(data.get('password'))
+
+        new_password = data.get('password')
+        password_changed = bool(new_password)
+        password_hash = None
+        if password_changed:
+            try:
+                password_hash = hash_user_password(new_password)
+            except ValueError as error:
+                return jsonify({'success': False, 'message': str(error)}), 400
+            except RuntimeError:
+                return jsonify({'success': False,
+                                'message': 'The password could not be stored safely. Please try again.'}), 500
+
+        security_changed = requested_role != user.role or password_changed
         user.username = data.get('username', user.username)
         user.role = requested_role
-        
-        # Update password if provided
-        if 'password' in data and data['password']:
-            user.password = generate_password_hash(data['password'])
+        if password_changed:
+            user.password = password_hash
+
+        # Prove the password round-trips before committing. A truncated or
+        # double-hashed value would otherwise leave the user permanently unable
+        # to sign in while the API still reports success.
+        if password_changed and not persisted_password_matches(user, new_password):
+            db.session.rollback()
+            return jsonify({'success': False,
+                            'message': 'The password could not be stored safely. Please try again.'}), 500
+
         if security_changed:
-            user.email_auth_version = User.email_auth_version + 1
+            # Legacy rows can predate the NOT NULL default; never let a NULL
+            # version turn every future fingerprint comparison into a TypeError.
+            user.email_auth_version = int(user.email_auth_version or 0) + 1
             email_auth.invalidate(user.id)
-            
+
         db.session.commit()
+        touch_account_barrier_session()
         return jsonify({'success': True, 'message': 'User updated'})
         
     elif request.method == 'DELETE':

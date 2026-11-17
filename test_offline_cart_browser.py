@@ -14,6 +14,7 @@ ROOT = Path(__file__).parent
 def test_product_card_search_and_barcode_work_after_server_disconnect(tmp_path):
     source = (ROOT / "templates/dashboard.html").read_text(encoding="utf-8")
     helpers = "\n".join(_function(source, name) for name in (
+        "posCatalogScopeStillCurrent",
         "loadProductsForPOS", "rememberPOSProducts", "posCartScopeCurrent", "posIsOffline",
         "findCachedProduct", "getCachedProducts", "saveCachedProducts", "cachedProductsKey",
         "scopedOfflineCacheKey", "offlineCacheSet", "offlineCacheGet", "addToCart",

@@ -12,7 +12,7 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="Node requi
 
 def run_cart(body):
     source = (ROOT / "templates/dashboard.html").read_text(encoding="utf-8")
-    names = ["loadProductsForPOS", "findCachedProduct", "addToCart", "addToCartToInternal", "posResponseJSON", "searchProducts", "processBarcodeScan"]
+    names = ["posCatalogScopeStillCurrent", "loadProductsForPOS", "findCachedProduct", "addToCart", "addToCartToInternal", "posResponseJSON", "searchProducts", "processBarcodeScan"]
     # Include new production helpers once implemented; initial run must exercise
     # the old page loader, which never saves displayed products for offline use.
     for name in ["rememberPOSProducts", "posCartScopeCurrent", "posIsOffline"]:
@@ -96,6 +96,40 @@ def test_definite_server_refusal_never_falls_back_to_cached_product(status):
 snapshot=[item]; network=async()=>({{ok:false,status:{status},json:async()=>({{}})}});
 await addToCart(41,'Rice',12.5,1,5); await tick();
 assert.equal(cart.length,0,'A server refusal must never become an offline addition');
+""")
+
+
+def test_products_loaded_while_branch_identity_resolves_still_render():
+    """A cashier landing on POS loads products before /api/branches/current returns.
+
+    The grid must accept that response: the server already scoped it to the
+    session branch. Rejecting it left the cashier on \"Loading products\" until a
+    manual reload because the branch arrived while the request was in flight.
+    """
+    run_cart(r"""
+let release;
+currentBranch = null;
+network = () => new Promise(resolve => release = resolve);
+loadProductsForPOS();
+currentBranch = {id: 1};
+release({ok:true,status:200,json:async()=>({items:[item],has_more:false,next_cursor:null})});
+await tick();
+assert.equal(grid.children.length, 1, 'the first product page must render');
+assert.equal(snapshot.length, 1, 'the rendered page must also be saved for offline use');
+assert.equal(posProductsLoading, false);
+""")
+
+
+def test_product_request_from_old_branch_is_still_discarded():
+    run_cart(r"""
+let release;
+currentBranch = {id:1};
+network = () => new Promise(resolve => release = resolve);
+loadProductsForPOS();
+currentBranch = {id:2};
+release({ok:true,status:200,json:async()=>({items:[item],has_more:false,next_cursor:null})});
+await tick();
+assert.equal(grid.children.length, 0, 'a response from the previous branch must not render');
 """)
 
 

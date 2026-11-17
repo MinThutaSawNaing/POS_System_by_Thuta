@@ -17,7 +17,8 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="Node.js re
 def run_js(body):
     helpers = "\n".join(_function(SOURCE, name) for name in (
         "posGridState", "setPOSCatalogNotice", "posResponseJSON",
-        "showPOSCatalogError", "posStockLevel", "posStockHtml", "loadProductsForPOS",
+        "showPOSCatalogError", "posStockLevel", "posStockHtml",
+        "posCatalogScopeStillCurrent", "loadProductsForPOS",
     ))
     script = """
 const notice = { hidden: true, innerHTML: '', className: '' };
