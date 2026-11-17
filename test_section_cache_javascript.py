@@ -407,15 +407,143 @@ def test_a_write_repaints_the_tabs_that_show_that_data():
     run_cache_tests(body)
 
 
-def test_chart_tabs_always_repaint_when_shown():
+def test_every_tab_keeps_fresh_content_and_reloads_after_expiry_or_invalidation():
     body = """
-  SECTION_LOADERS.dashboard = () => {};
-  SECTION_LOADERS.settings = () => {};
-  renderSection("dashboard");
-  renderSection("settings");
+  for (const section of Object.keys(SECTION_LOADERS)) {
+    let loads = 0;
+    SECTION_LOADERS[section] = () => { loads++; };
+    check(section + ' loads on first visit', sectionNeedsRender(section));
+    renderSection(section);
+    check(section + ' preserves fresh content', !sectionNeedsRender(section));
+    sectionStateOf(section).renderedAt = Date.now() - sectionFreshWindow(section) - 1;
+    check(section + ' expires', sectionNeedsRender(section));
+    renderSection(section);
+    invalidateCacheGroups(sectionResourcesOf(section));
+    check(section + ' responds to writes', sectionNeedsRender(section));
+    check(section + ' only loaded twice', loads === 2);
+  }
+"""
+    run_cache_tests(body)
 
-  check("the dashboard repaints so its charts re-size", sectionNeedsRender("dashboard") === true);
-  check("a plain tab is still skipped while fresh", sectionNeedsRender("settings") === false);
+
+def test_offline_revisits_preserve_expired_content_without_hiding_mutations():
+    body = """
+  globalThis.checkoutServerUnavailable = false;
+  isBrowserOffline = () => true;
+  for (const section of Object.keys(SECTION_LOADERS)) {
+    SECTION_LOADERS[section] = () => {};
+    renderSection(section);
+    sectionStateOf(section).renderedAt = Date.now() - 3600000;
+    check(section + ' keeps offline content', !sectionNeedsRender(section));
+    invalidateCacheGroups(sectionResourcesOf(section));
+    check(section + ' still reflects local invalidation', sectionNeedsRender(section));
+  }
+  isBrowserOffline = () => false;
+  SECTION_LOADERS.products = () => {};
+  renderSection('products');
+  sectionStateOf('products').renderedAt = Date.now() - 3600000;
+  checkoutServerUnavailable = true;
+  check('server outage is offline even with Wi-Fi', !sectionNeedsRender('products'));
+  checkoutServerUnavailable = false;
+  check('online expiry resumes', sectionNeedsRender('products'));
+"""
+    run_cache_tests(body)
+
+
+def test_chart_tabs_preserve_fresh_content_when_switching_tabs():
+    from test_offline_sync_javascript import _function
+
+    source = DASHBOARD.read_text(encoding="utf-8")
+    body = """
+  let currentSection = 'products';
+  const ACTIVE_SECTION_STORAGE_KEY = 'section';
+  const localStorage = {setItem() {}};
+  const elements = Object.fromEntries(['products', 'dashboard', 'reports'].map(
+    name => [name + '-section', {style: {}, content: 'original'}]));
+  const document = {getElementById: id => elements[id], querySelector: () => null};
+  window.scrollTo = () => {};
+  function requireCapability() { return true; }
+  let dashboardLoads = 0, reportLoads = 0, resized = 0;
+  const chart = {resize() { resized++; }};
+  let dashboardChart = chart, salesChart = chart, paymentChart = chart;
+  SECTION_LOADERS.products = () => {};
+  SECTION_LOADERS.dashboard = () => { dashboardLoads++; };
+  SECTION_LOADERS.reports = () => {
+    reportLoads++;
+    elements['reports-section'].content = 'loading';
+  };
+""" + _function(source, "showSection") + """
+  showSection('dashboard');
+  showSection('reports');
+  elements['reports-section'].content = 'loaded report';
+  showSection('products');
+  showSection('dashboard');
+  showSection('reports');
+  check('fresh dashboard loader runs only once', dashboardLoads === 1);
+  check('fresh report loader runs only once', reportLoads === 1);
+  check('returning to reports preserves its content', elements['reports-section'].content === 'loaded report');
+  check('existing charts resize on returning to visible tabs', resized === 3);
+  sectionStateOf('dashboard').renderedAt = Date.now() - 31000;
+  showSection('dashboard');
+  check('expired dashboard still reloads', dashboardLoads === 2);
+  invalidateCacheGroups(['reports']);
+  showSection('reports');
+  check('invalidated report still reloads', reportLoads === 2);
+"""
+    run_cache_tests(body)
+
+
+def test_memory_reads_cache_and_assistant_writes_invalidate_them():
+    body = """
+  network = async input => { log.push(String(input)); return jsonResponse({success:true}); };
+  SECTION_LOADERS.memory = () => {};
+  await fetch('/api/agent/memories?limit=100');
+  await fetch('/api/agent/plan-limit');
+  await fetch('/api/agent/memories?limit=100');
+  check('memory revisit shares the cached read', callsTo('/api/agent/memories').length === 1);
+  for (const path of ['/api/agent/memories', '/api/agent/plan-limit', '/api/agent/chat', '/api/memory/forget']) {
+    renderSection('memory');
+    await fetch(path, {method:'POST', body:'{}'});
+    check(path + ' invalidates the tab', sectionNeedsRender('memory'));
+    check(path + ' clears cached memory reads', !Array.from(cacheStore.values()).some(entry => entry.group === 'memory'));
+    await fetch('/api/agent/memories?limit=100');
+  }
+"""
+    run_cache_tests(body)
+
+
+def test_supplier_category_choices_are_invalidated_by_category_writes():
+    body = """
+  network = async input => jsonResponse({success:true});
+  SECTION_LOADERS.suppliers = () => {};
+  await fetch('/api/suppliers/categories');
+  renderSection('suppliers');
+  await fetch('/api/categories', {method:'POST',body:'{}'});
+  check('category edits evict supplier choices', cacheStore.size === 0);
+  check('category edits refresh the supplier tab', sectionNeedsRender('suppliers'));
+"""
+    run_cache_tests(body)
+
+
+def test_manual_refresh_offline_preserves_views_and_online_still_forces_network():
+    from test_offline_sync_javascript import _function
+
+    source = DASHBOARD.read_text(encoding="utf-8")
+    body = """
+  let offline = true, loads = 0, currentSection = 'products';
+  const notices = [];
+  function isOfflineNavigationProtected() { return offline; }
+  function showToast(message, kind) { notices.push(kind); }
+  SECTION_LOADERS.products = () => { loads++; };
+  network = async input => { log.push(String(input)); return jsonResponse({rows:[]}); };
+  await fetch('/api/products?page=1');
+""" + _function(source, 'refreshCurrentSection') + """
+  refreshCurrentSection();
+  check('offline refresh preserves cached data', cacheStore.size === 1 && loads === 0);
+  check('offline refresh warns instead of reporting success', notices.join(',') === 'warning');
+  offline = false;
+  refreshCurrentSection();
+  check('online refresh clears cached data and loads', cacheStore.size === 0 && loads === 1);
 """
     run_cache_tests(body)
 
@@ -563,7 +691,7 @@ def test_tab_switching_goes_through_the_render_state_not_a_load_chain():
     assert "sectionNeedsRender(sectionId)" in show_section
     assert "renderSection(sectionId)" in show_section
     assert "loadProductsForPOS()" not in show_section, "showSection still reloads POS data directly"
-    assert show_section.count("sectionId === ") <= 1, "the per-section if/else chain is back"
+    assert not re.search(r"\b(?:load\w+|generateReport)\(", show_section), "navigation must not invoke section loaders directly"
 
     refresh = _code_without_comments(
         source[source.index("function refreshCurrentSection()") : source.index("function loadDashboardStats")]

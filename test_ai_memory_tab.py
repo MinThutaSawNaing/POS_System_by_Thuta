@@ -97,8 +97,8 @@ def test_memory_tab_is_registered_in_the_section_cache():
     resources = re.search(r"const SECTION_RESOURCES = \{(.*?)\n\s*\};", SOURCE, re.S).group(1)
     assert re.search(r"^\s*memory:", loaders, re.M)
     assert re.search(r"^\s*memory:", resources, re.M)
-    # An empty resource list means "always re-render": memories change from chat.
-    assert re.search(r"^\s*memory: \[\],", resources, re.M)
+    # Chat and memory mutations invalidate this short-lived cache group.
+    assert re.search(r'^\s*memory: \["memory"\],', resources, re.M)
     assert "memory: () => loadMemoryTab()," in loaders
 
 

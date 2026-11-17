@@ -10574,6 +10574,7 @@
         purchases: 60000,
         warehouse: 60000,
         deliveries: 60000,
+        memory: 30000,
         promotions: 60000,
         categories: 120000,
         users: 120000,
@@ -10622,6 +10623,9 @@
         ["/api/sales", "sales"],
         ["/api/settings", "settings"],
         ["/api/suppliers", "suppliers"],
+        ["/api/suppliers/categories", "categories"],
+        ["/api/agent/memories", "memory"],
+        ["/api/agent/plan-limit", "memory"],
         ["/api/units", "settings"],
         ["/api/users", "users"],
         ["/api/warehouse", "warehouse"],
@@ -10668,9 +10672,9 @@
         // tab painting rows the agent just changed.
         ["/api/agent/chat", null],
         // Memory/conversation endpoints only touch the assistant's own store.
-        ["/api/agent", []],
-        ["/api/ai", []],
-        ["/api/memory", []],
+        ["/api/agent", ["memory"]],
+        ["/api/ai", ["memory"]],
+        ["/api/memory", ["memory"]],
       ];
       const cacheStore = new Map();
       const cacheInflight = new Map();
@@ -11080,7 +11084,7 @@
       // Cache groups each tab paints from. A tab may be skipped on re-entry only
       // while none of these groups has been invalidated and they are all in date.
       const SECTION_RESOURCES = {
-        dashboard: ["dashboard", "reports"],
+        dashboard: ["dashboard", "reports", "products"],
         // The POS tab paints the grid and customer picker, and its quick access
         // strip reads the branch categories behind the filter chips.
         pos: ["pos", "customers", "categories"],
@@ -11094,22 +11098,16 @@
         promotions: ["promotions", "products"],
         customers: ["customers"],
         debts: ["debts", "customers"],
-        suppliers: ["suppliers"],
+        suppliers: ["suppliers", "categories"],
         purchases: ["purchases", "suppliers"],
         warehouse: ["warehouse"],
         deliveries: ["deliveries"],
-        // No cache group: memories change from chat at any time, so the tab
-        // always re-reads them when it is opened.
-        memory: [],
+        // Chat and memory writes invalidate this group through smartFetch.
+        memory: ["memory"],
         users: ["users"],
         logs: ["logs"],
         settings: ["settings", "branches"],
       };
-      // Chart canvases mis-size when they are built inside a display:none parent,
-      // so these tabs always run their loaders (which now resolve from the memory
-      // cache without a network round trip or a spinner frame).
-      const SECTION_ALWAYS_RENDER = new Set(["dashboard", "reports"]);
-
       const sectionState = Object.create(null);
 
       // A tab that paints from an invalidated group must re-render on its next
@@ -11145,11 +11143,14 @@
       function sectionNeedsRender(section) {
         const state = sectionStateOf(section);
         if (!state.rendered) return true;
-        if (SECTION_ALWAYS_RENDER.has(section)) return true;
         const groups = sectionResourcesOf(section);
         if (!groups.length) return true;
+        if (groups.some((group) => cacheGroupEpoch(group) !== state.epochs[group])) return true;
+        // Do not replace a useful loaded view with a failed request just because
+        // its TTL elapsed during an outage. Writes above still take precedence.
+        if (isBrowserOffline() || (typeof checkoutServerUnavailable !== "undefined" && checkoutServerUnavailable)) return false;
         if (Date.now() - state.renderedAt >= sectionFreshWindow(section)) return true;
-        return groups.some((group) => cacheGroupEpoch(group) !== state.epochs[group]);
+        return false;
       }
 
       // Paint a tab's data. Returns true when loaders actually ran so the caller
@@ -11250,8 +11251,8 @@
       }
 
       // AI Agent limits: the plan-step cap is a saved setting, applied on the
-      // next request. Every section open/refresh re-reads the saved value, so
-      // the input always shows what the agent will actually use.
+      // next request. A real section load/refresh re-reads the saved value;
+      // a fresh tab revisit preserves the input and any unsaved edits.
       function loadAIPlanLimit() {
         const field = document.getElementById("ai-max-plan-steps");
         if (!field) return;
@@ -11899,14 +11900,15 @@
 
       // Initialize the application when page loads
       document.addEventListener("DOMContentLoaded", function () {
-        // Register the offline Service Worker (caches the app shell + assets so
-        // the POS can be opened after a cold reload without a connection).
+        // Cache public assets only; authenticated HTML must not be restored on a
+        // shared device. Keep the already-open screen alive during outages.
         if ("serviceWorker" in navigator) {
           navigator.serviceWorker.register("/sw.js").catch(function (err) {
             console.warn("Service worker registration failed:", err);
           });
         }
         initPwaInstallPrompt();
+        initOfflineNavigationProtection();
         initResizableSidebar();
         initPOSSplitResizer();
         applyWorkspacePermissions();
@@ -13716,7 +13718,17 @@
         currentSection = sectionId;
         localStorage.setItem(ACTIVE_SECTION_STORAGE_KEY, sectionId);
 
-        if (sectionNeedsRender(sectionId)) renderSection(sectionId);
+        if (sectionNeedsRender(sectionId)) {
+          renderSection(sectionId);
+        } else {
+          // The parent is visible now. Resize existing charts rather than rerun
+          // loaders, destroy charts, and replace a cached report with a spinner.
+          if (sectionId === "dashboard" && dashboardChart) dashboardChart.resize();
+          if (sectionId === "reports") {
+            if (salesChart) salesChart.resize();
+            if (paymentChart) paymentChart.resize();
+          }
+        }
 
         // The POS tab is worked in, not read: keep the scanner field focused, but
         // without scrolling the page - focus() pulls the field into view, which
@@ -13752,6 +13764,10 @@
       // loaders cannot be answered from memory (the old chain also called a
       // loadSalesReportData() that does not exist, which threw on the Reports tab).
       function refreshCurrentSection() {
+        if (isOfflineNavigationProtected()) {
+          showToast("You are offline. Keep this screen open; refresh will be available when the server reconnects.", "warning");
+          return;
+        }
         const sectionId = currentSection;
         const groups = sectionResourcesOf(sectionId);
 
@@ -15748,6 +15764,28 @@
 
       function isBrowserOffline() {
         return typeof navigator !== "undefined" && navigator.onLine === false;
+      }
+
+      function isOfflineNavigationProtected() {
+        return isBrowserOffline() || checkoutServerUnavailable;
+      }
+
+      function initOfflineNavigationProtection() {
+        window.addEventListener("keydown", function (event) {
+          const reloadKey = event.key === "F5" ||
+            ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === "r");
+          if (!reloadKey || !isOfflineNavigationProtected()) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          showToast("You are offline. Do not reload or close this screen: offline checkout needs this open page. Refresh is available after reconnecting.", "warning");
+        }, { capture: true });
+        window.addEventListener("beforeunload", function (event) {
+          if (!isOfflineNavigationProtected()) return;
+          // Browser toolbar refresh/close cannot be silently blocked. Request
+          // the standard confirmation; the browser controls its text/support.
+          event.preventDefault();
+          event.returnValue = true;
+        });
       }
 
       // PWA installation is browser-controlled. Chromium emits

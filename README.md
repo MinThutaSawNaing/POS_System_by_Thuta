@@ -35,6 +35,8 @@ See [setup, security controls, and recovery notes](docs/email-two-factor.md) bef
   - Uses retry backoff instead of repeatedly submitting failed requests; stock/price conflicts, permission denials and damaged records require attention
   - Uncluttered POS checkout, with saved-sale status, receipt printing and record downloads under **Sales History → Manager help / saved sales**
   - Offline operation requires an already-open, signed-in POS screen and a previously cached branch catalogue; offline login/reload is not supported
+  - While offline (including a detected POS-server outage), reload shortcuts are blocked and leaving/reloading requests the browser's confirmation warning. Keep the screen open: browsers may ignore that warning, especially on mobile, and cannot guarantee that toolbar refresh or closing is blocked. Normal online refresh remains available.
+  - Loaded tabs keep their content while offline rather than reload solely because a cache timer expired. Online tabs refresh after their freshness window, relevant edits, or an explicit Refresh.
   - New offline sales are **cash only**, without coupons, delivery, debt, card/mobile or split payments
 
 - **Configurable Business Settings**

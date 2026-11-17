@@ -69,7 +69,8 @@ def test_sidebar_translation_uses_section_names_not_fragile_positions():
 def test_logs_are_lazy_paged_and_scrolled_inside_their_card():
     assert 'logs: 30,' in DASHBOARD
     assert 'logs: () => loadLogs()' in DASHBOARD
-    assert 'const SECTION_ALWAYS_RENDER = new Set(["dashboard", "reports"])' in DASHBOARD
+    assert 'SECTION_ALWAYS_RENDER' not in DASHBOARD
+    assert 'if (sectionNeedsRender(sectionId))' in DASHBOARD
     assert 'savedSection === "logs"' in DASHBOARD
     assert 'loadLogs();' not in DASHBOARD.split('// Load only what the boot screen needs', 1)[1].split(
         'showSection(startSection);', 1
