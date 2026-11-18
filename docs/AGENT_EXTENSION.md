@@ -33,6 +33,18 @@ explicit tool allowlist. Keyword category matches are not permission to run a
 tool. Ambiguous metrics (for example, "hello, how many Cola today?" could mean
 stock or sales) and missing required context must be clarified first.
 
+Preflight uses a dedicated router system prompt and JSON response mode rather
+than inheriting the execution prompt's requirement to call business tools. A
+single complete JSON code fence is accepted for compatible providers; malformed
+or truncated decisions still fail closed. Clear CRUD requests do not require
+the user to explicitly request a search or supply internal database IDs.
+Verified writes receive only their documented read-only ID lookup dependencies
+(`WRITE_ID_LOOKUPS`); the planner resolves names into IDs using real results.
+Missing user-owned values still require clarification, and multiple product
+matches still block a mutation. Verified write capabilities or multi-tool
+chains select the planner independently of English action keywords. Adding a
+new write with an ID parameter may require extending the lookup dependency map.
+
 Malformed decisions, invented tool names and preflight service failures fail
 closed: no business tool executes. The allowlist applies to planning,
 single-shot calls, repairs, and legacy/fallback execution, and is cleared after
@@ -46,6 +58,9 @@ so arbitrary natural-language correctness cannot be guaranteed; failures to
 verify must not fall back to guessing a tool. Regression coverage lives in
 `test_agent_intent_preflight.py`; downstream routing tests stub the preflight
 explicitly so their scripted API responses stay focused on their own contracts.
+`test_agent_crud_integration.py` additionally runs a create/read/update/delete
+cycle through the real preflight and dispatch code with scripted model responses
+and real tools against a disposable database, never the shop's database.
 
 The complete generated contract is in `AI_TOOL_REFERENCE.md`. After changing a
 tool schema, run `python generate_ai_tool_docs.py`; signature and documentation
