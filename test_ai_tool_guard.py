@@ -164,6 +164,10 @@ class OrchestratorHallucinationTests(unittest.TestCase):
         self.orchestrator = AgentOrchestrator(None, {})
         self.orchestrator.set_request_context(
             {"branch_id": 1, "user_id": 1, "role": "manager"})
+        patch = mock.patch.object(self.orchestrator, '_verify_tool_intent', return_value={
+            'intent': 'tools', 'tools': ['get_inventory_status'], 'missing': [], 'message': ''})
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def tearDown(self):
         agent_orchestrator.reset_orchestrator()

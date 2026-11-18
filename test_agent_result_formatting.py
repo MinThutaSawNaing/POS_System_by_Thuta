@@ -340,7 +340,9 @@ class BarcodeTurnTests(FormatterTestCase):
         tool_call = ToolCall(id="call_1", function_name=payload["function_name"],
                              arguments={})
         reply = ChatResponse(content="", tool_calls=[tool_call], finish_reason="tool_calls")
-        with mock.patch.object(self.orchestrator.agent, "chat", return_value=reply), \
+        with mock.patch.object(self.orchestrator, '_verify_tool_intent', return_value={
+                'intent': 'tools', 'tools': [payload['function_name']], 'missing': [], 'message': ''}), \
+             mock.patch.object(self.orchestrator.agent, "chat", return_value=reply), \
              mock.patch.object(self.orchestrator, "_execute_tools_with_context",
                                return_value=[payload]), \
              mock.patch.object(self.orchestrator, "_fallback_intent_detection",

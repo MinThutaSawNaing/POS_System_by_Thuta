@@ -28,6 +28,14 @@ class SmartsTestBase(unittest.TestCase):
         agent_orchestrator.reset_orchestrator()
         self.orchestrator = AgentOrchestrator(None, {})
         self.orchestrator.set_request_context({"branch_id": 1, "user_id": 1, "role": "manager"})
+        # These tests isolate downstream routing/formatting, not the semantic
+        # preflight (covered without this stub in test_agent_intent_preflight).
+        self.intent_patch = mock.patch.object(
+            self.orchestrator, '_verify_tool_intent', return_value={
+                'intent': 'tools', 'tools': list(self.orchestrator.agent.tool_functions),
+                'missing': [], 'message': ''})
+        self.intent_patch.start()
+        self.addCleanup(self.intent_patch.stop)
 
     def tearDown(self):
         agent_orchestrator.reset_orchestrator()
@@ -117,11 +125,11 @@ class TemperatureContractTests(SmartsTestBase):
         self.assertEqual(temperatures[1], 0.2)
 
     def test_pure_chat_keeps_default_temperature(self):
-        result, temperatures = self._run_command(
-            "who created you?",
-            [ChatResponse(content="I am Loli.", tool_calls=[], finish_reason="stop")])
+        with mock.patch.object(self.orchestrator, '_verify_tool_intent', return_value={
+                'intent': 'chat', 'tools': [], 'missing': [], 'message': 'I am Loli.'}):
+            result, temperatures = self._run_command('who created you?', [])
         self.assertTrue(result["success"])
-        self.assertEqual(temperatures[0], 0.7)
+        self.assertEqual(temperatures, [])  # preflight already answered; no tool-bearing chat
 
 
 class RouterTests(SmartsTestBase):

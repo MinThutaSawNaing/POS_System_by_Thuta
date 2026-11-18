@@ -90,6 +90,12 @@ class PlanExecuteTestBase(unittest.TestCase):
             {"branch_id": 1, "user_id": 1, "role": "manager"}
         )
         self.chat_payloads = []
+        self.intent_patch = mock.patch.object(
+            self.orchestrator, '_verify_tool_intent', return_value={
+                'intent': 'tools', 'tools': list(self.orchestrator.agent.tool_functions),
+                'missing': [], 'message': ''})
+        self.intent_patch.start()
+        self.addCleanup(self.intent_patch.stop)
 
     def tearDown(self):
         agent_orchestrator.reset_orchestrator()
@@ -156,9 +162,9 @@ class PlanValidationTests(PlanExecuteTestBase):
                 "garbage plan please", user_id=1)
 
         self.assertTrue(result["success"])
-        self.assertIn("Single-shot answer instead.", result["message"])
-        # Exactly two planning attempts before the fallback chat call.
-        self.assertEqual(len(self.chat_payloads), 3)
+        self.assertIn("couldn't retrieve enough verified data", result["message"])
+        # A verified data request cannot use ungrounded prose as its fallback.
+        self.assertEqual(len(self.chat_payloads), 4)
 
 
 class FromReferenceResolutionTests(PlanExecuteTestBase):

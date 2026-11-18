@@ -207,7 +207,9 @@ def guard_tool_call(
                     f"Undocumented arguments for '{name}': {', '.join(dropped)}. "
                     f"Allowed arguments: {', '.join(sorted(allowed)) or 'none'}. "
                     "Nothing was executed; retry with documented arguments."))
-            missing = [key for key in schema.get('required', ()) if key not in cleaned]
+            missing = [key for key in schema.get('required', ())
+                       if key not in cleaned or cleaned[key] is None
+                       or (isinstance(cleaned[key], str) and not cleaned[key].strip())]
             if missing:
                 return GuardedToolCall(name, {}, (
                     f"Missing required arguments for '{name}': {', '.join(missing)}. "

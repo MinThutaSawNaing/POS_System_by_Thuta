@@ -232,6 +232,11 @@ class EndToEndPriceChangeTests(unittest.TestCase):
         self.orchestrator.set_request_context(
             {"branch_id": 1, "user_id": 1, "role": "manager"})
         self.orchestrator.agent.api_key = ""   # no network, no repair calls
+        patch = mock.patch.object(self.orchestrator, '_verify_tool_intent', return_value={
+            'intent': 'tools', 'tools': ['search_products', 'update_product_price'],
+            'missing': [], 'message': ''})
+        patch.start()
+        self.addCleanup(patch.stop)
         self.calls = []
         self.prompts = []
 

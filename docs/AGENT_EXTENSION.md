@@ -24,6 +24,29 @@ keep green (`test_agent_plan_execute.py`).
 
 ## Safety rules
 
+### Semantic preflight (before tool selection)
+
+Each ordinary turn first runs a tool-free, stateless semantic check over the
+request, relevant recent transcript/results, current date, trusted branch and
+the registered tool contracts. It returns chat, a focused clarification, or an
+explicit tool allowlist. Keyword category matches are not permission to run a
+tool. Ambiguous metrics (for example, "hello, how many Cola today?" could mean
+stock or sales) and missing required context must be clarified first.
+
+Malformed decisions, invented tool names and preflight service failures fail
+closed: no business tool executes. The allowlist applies to planning,
+single-shot calls, repairs, and legacy/fallback execution, and is cleared after
+the turn. Argument schemas still validate the eventual call, including missing,
+null or blank required values. Explicit memory commands and scoped, previously
+previewed delivery-delete confirmations retain their deterministic handlers.
+
+This adds one model request per ordinary turn. Chat and clarification are
+answered directly by that request. Semantic interpretation remains model-based,
+so arbitrary natural-language correctness cannot be guaranteed; failures to
+verify must not fall back to guessing a tool. Regression coverage lives in
+`test_agent_intent_preflight.py`; downstream routing tests stub the preflight
+explicitly so their scripted API responses stay focused on their own contracts.
+
 The complete generated contract is in `AI_TOOL_REFERENCE.md`. After changing a
 tool schema, run `python generate_ai_tool_docs.py`; signature and documentation
 drift are checked by `test_ai_tool_contracts.py`. The planner receives parameter

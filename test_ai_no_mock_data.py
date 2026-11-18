@@ -14,6 +14,10 @@ class NoMockDataContractTests(unittest.TestCase):
         agent_orchestrator.reset_orchestrator()
         self.orchestrator = AgentOrchestrator(None, {})
         self.orchestrator.set_request_context({"branch_id": 1, "user_id": 1, "role": "manager"})
+        patch = mock.patch.object(self.orchestrator, '_verify_tool_intent', return_value={
+            'intent': 'tools', 'tools': ['get_inventory_status'], 'missing': [], 'message': ''})
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def tearDown(self):
         agent_orchestrator.reset_orchestrator()
@@ -80,13 +84,14 @@ class NoMockDataContractTests(unittest.TestCase):
             self.orchestrator.agent.add_assistant_message(response.content, None)
             return response
 
-        with mock.patch.object(self.orchestrator.agent, "chat", side_effect=fake_chat):
+        with mock.patch.object(self.orchestrator, '_verify_tool_intent', return_value={
+                'intent': 'chat', 'tools': [], 'missing': [], 'message': identity}), \
+             mock.patch.object(self.orchestrator.agent, "chat", side_effect=fake_chat):
             result = self.orchestrator.process_command("who created you?", user_id=1)
 
         self.assertTrue(result["success"])
         self.assertIn(identity, result["message"])
-        self.assertEqual(len(chat_calls), 1)
-        self.assertFalse(chat_calls[0]["force_tool_call"])
+        self.assertEqual(chat_calls, [])
 
     def test_fallback_intent_detection_returns_real_data(self):
         with mock.patch.object(self.orchestrator.ai_tools, "get_supplier_list", return_value={
