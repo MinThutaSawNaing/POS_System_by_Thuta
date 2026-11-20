@@ -79,7 +79,7 @@ async function buttonHarness({enabled = true, configured = true, manual_allowed 
       'completeSale', 'splitUsesMobilePayment', 'resetSplitPaymentFields',
       'updateSplitPaymentDisplay', 'handlePaymentMethodChange', 'toggleCashPaymentFields',
       'getCurrentCartTotal', 'getPosDeliveryPreview', 'updatePosDeliveryFeeRow',
-      'toCents', 'centsToNumber', 'mulMoney'];
+      'toCents', 'centsToNumber', 'mulMoney', 'escapeHtml', 'posHeldSalesKey', 'posCartScopeCurrent'];
     const helpers = functions.map(name => {
       const match = new RegExp(`function ${name}\\([^)]*\\)\\s*\\{`).exec(source);
       assert.ok(match, `dashboard function ${name} exists`);
@@ -91,6 +91,7 @@ async function buttonHarness({enabled = true, configured = true, manual_allowed 
       throw new Error(`Unbalanced dashboard function: ${name}`);
     }).join('\n');
     Object.assign(context, {isSaleProcessing: false, APP_SETTINGS: {},
+      dashboardSessionStale: false, dashboardBranchStale: false, branchSwitchInFlight: false,
       t: text => text, hasCapability: () => true});
     vm.runInNewContext(helpers, context);
     element('payment-method').value = 'mobile_payment';
