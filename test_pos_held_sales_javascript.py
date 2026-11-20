@@ -27,7 +27,7 @@ function node() {
     append(...children){this.children.push(...children);}, replaceChildren(){this.children=[];},
     appendChild(child){this.options.push(child);},
     addEventListener(name,handler){this[name]=handler;}, setAttribute(){}, dispatchEvent(){},
-    focus(){}, classList:{contains:()=>false} };
+    toggleAttribute(){}, focus(){}, classList:{contains:()=>false,toggle(){}} };
 }
 const document = {getElementById(id){if(!nodes.has(id)) nodes.set(id,node()); return nodes.get(id);}, createElement:node};
 const field = id => document.getElementById(id);
@@ -105,7 +105,7 @@ cart = [item('Rice')]; holdPOSSale();
 cart = [item('Tea', 2)]; holdPOSSale();
 const heldCount = () => field('pos-held-sales-count').textContent;
 assert.equal(heldCount(), '2');
-const resumeTea = field('pos-held-sales-list').children[1].children[1].click;
+const resumeTea = field('pos-held-sales-list').children[0].children[1].click;
 currentBranch = {id:2}; renderPOSHeldSales();
 assert.equal(heldCount(), '0');
 resumeTea(); assert.deepEqual(cart, []);
@@ -114,10 +114,10 @@ assert.equal(heldCount(), '0');
 resumeTea(); assert.deepEqual(cart, []);
 CACHE_USER_ID = 5; renderPOSHeldSales();
 assert.equal(heldCount(), '2');
-field('pos-held-sales-list').children[1].children[1].click();
+field('pos-held-sales-list').children[0].children[1].click();
 assert.deepEqual(cart, [item('Tea', 2)]);
 assert.equal(heldCount(), '1');
-assert.match(field('pos-held-sales-list').children[0].children[0].textContent, /Rice/);
+assert.match(field('pos-held-sales-list').children[0].children[0].children[0].textContent, /Rice/);
 """)
 
 
