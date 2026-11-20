@@ -2336,6 +2336,16 @@
                   <!-- Cart items will be displayed here -->
                   <p class="text-muted text-center py-3 small">No items added</p>
                 </div>
+                <div class="d-flex flex-wrap align-items-start gap-2 mt-2">
+                  <button type="button" id="pos-hold-sale" class="btn btn-sm btn-outline-secondary" onclick="holdPOSSale()" disabled>
+                    <i class="bi bi-pause-circle" aria-hidden="true"></i> Hold Sale
+                  </button>
+                  <details id="pos-held-sales" class="flex-grow-1 small">
+                    <summary class="py-1">Held Sales (<span id="pos-held-sales-count" aria-live="polite">0</span>)</summary>
+                    <p id="pos-held-sales-status" class="text-muted my-1" role="status">No sales on hold.</p>
+                    <ul id="pos-held-sales-list" class="list-unstyled mb-0" style="max-height: 12rem; overflow-y: auto;"></ul>
+                  </details>
+                </div>
                 <hr />
                 <div class="mb-2">
                   <button
@@ -10120,6 +10130,7 @@
             }
           }
         });
+        renderPOSHeldSales();
       }
 
       function toggleReportScopeControls() {
@@ -10707,6 +10718,7 @@
       function handleStaleBranch() {
         if (dashboardBranchStale) return;
         dashboardBranchStale = true;
+        renderPOSHeldSales();
         cacheStore.clear();
         cacheInflight.clear();
         const work = typeof getUnsavedBranchWork === "function" ? getUnsavedBranchWork() : [];
@@ -12599,6 +12611,7 @@
 
         // Search for product by barcode
         const activeBranchId = currentBranch?.id;
+        const scannedCart = cart;
         if (!posCartScopeCurrent(activeBranchId)) return;
         if (posIsOffline()) {
           const product = getCachedProducts().find(p => String(p.barcode) === String(barcode));
@@ -12617,7 +12630,7 @@
         fetch(url)
           .then(posResponseJSON)
           .then((data) => {
-            if (!posCartScopeCurrent(activeBranchId)) return;
+            if (cart !== scannedCart || !posCartScopeCurrent(activeBranchId)) return;
             rememberPOSProducts(data, activeBranchId);
             const product = data.find((p) => p.barcode === barcode);
             if (!product && searchIfNotExact) {
@@ -12640,7 +12653,7 @@
           })
           .catch((error) => {
             console.error("Error processing barcode:", error);
-            if (!posCartScopeCurrent(activeBranchId)) return;
+            if (cart !== scannedCart || !posCartScopeCurrent(activeBranchId)) return;
             if (error.status && error.status < 500) {
               showPOSCatalogError(error, "search");
               return;
@@ -14896,6 +14909,7 @@
       async function addToCart(productId, name, price, quantity, tax_rate) {
         // First, fetch the product to check stock AND promotions
         const activeBranchId = currentBranch?.id;
+        const targetCart = cart;
         const url = activeBranchId
           ? `/api/products/${productId}?branch_id=${encodeURIComponent(activeBranchId)}`
           : `/api/products/${productId}`;
@@ -14915,11 +14929,11 @@
           try {
             const response = await fetch(url, {signal: controller.signal});
             product = await posResponseJSON(response);
-            if (!posCartScopeCurrent(activeBranchId)) return false;
+            if (cart !== targetCart || !posCartScopeCurrent(activeBranchId)) return false;
             if (!product || String(product.id) !== String(productId)) throw new Error("Invalid product response");
             rememberPOSProducts([product], activeBranchId);
           } catch (error) {
-            if (!posCartScopeCurrent(activeBranchId)) return false;
+            if (cart !== targetCart || !posCartScopeCurrent(activeBranchId)) return false;
             // A definite refusal is not a connection loss. Never bypass login,
             // access restrictions, deleted products or branch/session conflicts.
             if (error.status && error.status < 500) {
@@ -14934,7 +14948,7 @@
           showToast("This product is not saved for offline use. Reconnect and load it in POS first.", "warning");
           return false;
         }
-        if (!posCartScopeCurrent(activeBranchId)) return false;
+        if (cart !== targetCart || !posCartScopeCurrent(activeBranchId)) return false;
         return addToCartToInternal(product, quantity);
       }
 
@@ -15043,6 +15057,8 @@
       }
 
       function updateCartDisplay() {
+        const holdButton = document.getElementById("pos-hold-sale");
+        if (holdButton) holdButton.disabled = !cart.length || !posHeldSalesKey();
         const cartItems = document.getElementById("cart-items");
         const cartCount = document.getElementById("cart-item-count");
         const deliveryPreview = getPosDeliveryPreview();
@@ -15054,7 +15070,7 @@
         if (cart.length === 0) {
           cartItems.innerHTML =
             '<p class="text-muted text-center py-3">No items added</p>';
-          if (typeof appliedCoupon !== "undefined" && appliedCoupon) resetAppliedCoupon();
+          if (typeof resetAppliedCoupon === "function") resetAppliedCoupon();
           // An empty sale keeps the coupon field collapsed until it is asked for.
           if (typeof setCouponFieldVisibility === "function") setCouponFieldVisibility(false);
           document.getElementById("subtotal").textContent = formatCurrency(0);
@@ -15084,7 +15100,7 @@
           const itemTotal = (itemTotalCents / 100).toFixed(2);
           itemElement.innerHTML = `
                   <div>
-                      <h6 class="mb-0">${item.name}</h6>
+                      <h6 class="mb-0">${escapeHtml(item.name)}</h6>
       ${
         item.original_price && item.original_price > item.price
           ? `<small class="text-danger">Was ${formatCurrency(item.original_price)}</small>`
@@ -15454,6 +15470,7 @@
 
       function clearCart() {
         if (cart.length === 0) return;
+        const targetCart = cart;
         clearLegacyMMQRDeadline();
 
         return showConfirmDialogAsync({
@@ -15463,11 +15480,157 @@
           variant: "warning",
           icon: "bi-cart-x",
         }).then((confirmed) => {
-          if (!confirmed) return;
+          if (!confirmed || cart !== targetCart) return;
           cart = [];
           updateCartDisplay();
         });
       }
+
+      // ===== POS HELD SALES =====
+      // Unpaid drafts, kept in this tab across reloads; never written to the
+      // checkout journal, which is reserved for sales the cashier submitted.
+      const HELD_SALE_DELIVERY_FIELDS = [
+        "pos-delivery-recipient-name", "pos-delivery-recipient-phone", "pos-delivery-address",
+        "pos-delivery-priority", "pos-delivery-fee", "pos-delivery-payment-status",
+      ];
+
+      function posHeldSalesKey() {
+        const branch = currentBranch?.id;
+        if (CACHE_USER_ID == null || !posCartScopeCurrent(branch)) return null;
+        return "pos_held_sales_v1:" + JSON.stringify([CACHE_USER_ID, branch]);
+      }
+
+      function readPOSHeldSales(key) {
+        const entries = JSON.parse(sessionStorage.getItem(key) ?? "[]");
+        if (!Array.isArray(entries) || entries.some(entry => !Array.isArray(entry?.items) ||
+            !entry.items.length || entry.items.some(item => !item ||
+              typeof item.name !== "string" || !Number.isFinite(item.quantity) || item.quantity <= 0))) {
+          throw new Error("Invalid held sales");
+        }
+        return entries;
+      }
+
+      function renderPOSHeldSales() {
+        const hold = document.getElementById("pos-hold-sale");
+        if (!hold) return;
+        const key = posHeldSalesKey();
+        hold.disabled = !key || !cart.length;
+        const list = document.getElementById("pos-held-sales-list");
+        const count = document.getElementById("pos-held-sales-count");
+        const status = document.getElementById("pos-held-sales-status");
+        list.replaceChildren();
+        count.textContent = "0";
+        if (!key) {
+          status.textContent = "Held sales require an active account and branch.";
+          return;
+        }
+        let entries;
+        try { entries = readPOSHeldSales(key); }
+        catch (_) {
+          status.textContent = "Held sales could not be read in this tab.";
+          return;
+        }
+        count.textContent = String(entries.length);
+        status.textContent = entries.length
+          ? "Finish, clear, or hold the current cart before resuming."
+          : "No sales on hold.";
+        entries.forEach((entry, index) => {
+          const row = document.createElement("li");
+          row.className = "d-flex justify-content-between align-items-center gap-2 py-1 border-top";
+          const label = document.createElement("span");
+          label.className = "text-break";
+          const time = new Date(entry.heldAt).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+          const items = entry.items.length;
+          label.textContent = `${time} — ${entry.items[0].name}${items > 1 ? ` + ${items - 1} more` : ""}`;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "btn btn-sm btn-outline-primary";
+          button.textContent = "Resume";
+          button.setAttribute("aria-label", `Resume sale: ${label.textContent}`);
+          button.addEventListener("click", () => resumePOSSale(key, index));
+          row.append(label, button);
+          list.append(row);
+        });
+      }
+
+      function canMovePOSHeldSale() {
+        const mobile = typeof MyanMyanPayCheckout !== "undefined" ? MyanMyanPayCheckout.state() : null;
+        if (checkoutPreflight || isSaleProcessing || mobile?.active || mobile?.busy || mobile?.visible ||
+            document.getElementById("mmqrPaymentModal")?.classList.contains("show")) {
+          showToast("Finish or resolve the current checkout before moving a held sale.", "warning");
+          return false;
+        }
+        return true;
+      }
+
+      function setPOSHeldCart(draft) {
+        // This always creates a new basket identity, so late product/coupon
+        // responses for the previous shopper cannot update the next cart.
+        cart = draft ? draft.items : [];
+        resetAppliedCoupon();
+        appliedCoupon = draft?.coupon ?? null;
+        resetPOSCustomer();
+        if (draft?.customerId) {
+          const select = document.getElementById("pos-customer-select");
+          ensurePOSCustomerOption(select, draft.customerId);
+          select.value = draft.customerId;
+          select.dispatchEvent(new Event("change"));
+        }
+        const delivery = document.getElementById("pos-enable-delivery");
+        delivery.checked = Boolean(draft?.delivery);
+        if (delivery.checked) {
+          for (const id of HELD_SALE_DELIVERY_FIELDS) document.getElementById(id).value = draft.delivery[id];
+        }
+        document.getElementById("payment-method").value = "cash";
+        document.getElementById("cash-received").value = "";
+        resetSplitPaymentFields();
+        clearLegacyMMQRDeadline();
+        togglePosDeliveryFields(); // Also refreshes totals and the customer screen.
+        handlePaymentMethodChange();
+        renderPOSHeldSales();
+        document.getElementById("product-search")?.focus({preventScroll: true});
+      }
+
+      function holdPOSSale() {
+        const key = posHeldSalesKey();
+        if (!key || !cart.length || !canMovePOSHeldSale()) return;
+        const delivery = document.getElementById("pos-enable-delivery").checked
+          ? Object.fromEntries(HELD_SALE_DELIVERY_FIELDS.map(id => [id, document.getElementById(id).value]))
+          : null;
+        const draft = {items: cart, coupon: appliedCoupon, delivery, heldAt: Date.now(),
+          customerId: document.getElementById("pos-customer-select").value};
+        try {
+          const entries = readPOSHeldSales(key);
+          sessionStorage.setItem(key, JSON.stringify([...entries, draft]));
+        } catch (_) {
+          showToast("Could not hold this sale in this tab. The current cart was kept.", "error");
+          return;
+        }
+        setPOSHeldCart(null);
+        showToast("Sale on hold. Ready for the next customer.", "success");
+      }
+
+      function resumePOSSale(key, index) {
+        if (key !== posHeldSalesKey() || !canMovePOSHeldSale()) return;
+        if (cart.length) {
+          showToast("Finish, clear, or hold the current cart before resuming.", "warning");
+          return;
+        }
+        let draft;
+        try {
+          const entries = readPOSHeldSales(key);
+          draft = entries[index];
+          if (!draft) return;
+          entries.splice(index, 1);
+          sessionStorage.setItem(key, JSON.stringify(entries));
+        } catch (_) {
+          showToast("Could not resume this sale in this tab. The held sale was kept.", "error");
+          return;
+        }
+        setPOSHeldCart(draft);
+        showToast("Held sale resumed. Choose a payment method at checkout.", "success");
+      }
+      // ===== END POS HELD SALES =====
 
       // ============================================
       // Checkout coupons
@@ -15597,6 +15760,7 @@
       }
 
       function applyCouponCode() {
+        const targetCart = cart;
         const input = document.getElementById("pos-coupon-code");
         const code = (input?.value || "").trim().toUpperCase();
         if (!code) {
@@ -15626,6 +15790,7 @@
             return data;
           })
           .then((data) => {
+            if (cart !== targetCart) return;
             appliedCoupon = {
               code: data.code,
               discountType: data.discount_type,
@@ -15637,12 +15802,13 @@
             updateCartDisplay();
           })
           .catch((error) => {
+            if (cart !== targetCart) return;
             appliedCoupon = null;
             setCouponFeedback(error.message || "Coupon could not be applied", "danger");
             updateCartDisplay();
           })
           .finally(() => {
-            if (applyButton) applyButton.disabled = false;
+            if (cart === targetCart && applyButton) applyButton.disabled = false;
           });
       }
 
@@ -21345,15 +21511,26 @@
       }
 
       // POS functions for customer selection
+      function ensurePOSCustomerOption(select, customerId) {
+        // A held sale can be resumed while offline or before the customer list
+        // loads. Keep its customer ID instead of silently changing to walk-in;
+        // checkout validates the customer against the current branch.
+        if (!customerId || Array.from(select.options).some(option => option.value === customerId)) return;
+        const option = document.createElement("option");
+        option.value = customerId;
+        option.textContent = `Saved customer #${customerId} (details unavailable)`;
+        select.appendChild(option);
+      }
+
       function loadCustomersForPOS() {
         const select = document.getElementById("pos-customer-select");
-        const selectedCustomer = select.value;
         const warning = document.getElementById("pos-customer-warning");
 
         fetch("/api/pos/customers")
           .then(posResponseJSON)
           .then((data) => {
             if (!Array.isArray(data)) throw new Error("Invalid customer list");
+            const selectedCustomer = select.value;
             select.innerHTML = '<option value="">Walk-in Customer</option>';
             data.forEach((customer) => {
               const option = document.createElement("option");
@@ -21361,6 +21538,7 @@
               option.textContent = `${customer.name} (${customer.phone || "No Phone"})`;
               select.appendChild(option);
             });
+            if (selectedCustomer) ensurePOSCustomerOption(select, selectedCustomer);
             select.value = selectedCustomer;
             if (warning) warning.hidden = true;
           })

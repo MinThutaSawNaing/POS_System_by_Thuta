@@ -237,9 +237,9 @@ loadCustomersForPOS();
 await tick();
 console.log(JSON.stringify({requests, options: select.options, selected: select.value,
   warningHidden: warning.hidden}));
-""", functions=("loadCustomersForPOS", "posResponseJSON"), role=role, setup="""
+""", functions=("loadCustomersForPOS", "ensurePOSCustomerOption", "posResponseJSON"), role=role, setup="""
 const select = {value: '23', innerHTML: '', options: [],
-  appendChild(option) { this.options.push(option); }};
+  appendChild(option) { option.value = String(option.value); this.options.push(option); }};
 const warning = {hidden: false};
 document = {getElementById: id => id === 'pos-customer-select' ? select : warning,
   createElement: () => ({})};
@@ -249,6 +249,6 @@ fetch = async (url, options) => {
 };
 """)
     assert out["requests"] == [{"url": "/api/pos/customers", "method": "GET"}]
-    assert out["options"] == [{"value": 23, "textContent": "Customer (123)"}]
+    assert out["options"] == [{"value": "23", "textContent": "Customer (123)"}]
     assert out["selected"] == "23"
     assert out["warningHidden"] is True

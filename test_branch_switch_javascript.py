@@ -99,7 +99,7 @@ function isBrowserOffline(){return false;}
         cache_code = "let dashboardBranchStale=false; const cacheStore=new Map(),cacheInflight=new Map();\n" + "\n".join(
             _function(SOURCE, name) for name in ("staleBranchResponse", "handleStaleBranch")
         )
-    script = prefix + "\n" + DRAFTS + "\n" + cache_code + "\n" + helpers + "\n" + r"""
+    script = prefix + "\nfunction renderPOSHeldSales(){}\n" + DRAFTS + "\n" + cache_code + "\n" + helpers + "\n" + r"""
 globalThis.fetch = """ + ("window.fetch" if cache else "(input,init)=>network(input,init)") + ";\n" + r"""
 (async()=>{
 """ + body + r"""

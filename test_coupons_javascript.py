@@ -149,7 +149,7 @@ console.log(JSON.stringify({{
             functions = _function(source, "applyCouponCode")
             script = f"""
 const assert = require('node:assert/strict');
-let appliedCoupon = null;
+let cart = [], appliedCoupon = null;
 const calls = [];
 const feedback = [];
 const elements = {{
