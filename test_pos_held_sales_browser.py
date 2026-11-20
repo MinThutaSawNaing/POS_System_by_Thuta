@@ -1,4 +1,4 @@
-"""Exercise the real checkout controls in Chromium at narrow and wide cart widths."""
+"""Exercise the real held-sales controls in Chromium at narrow and wide widths."""
 import re
 import subprocess
 
@@ -9,11 +9,11 @@ from test_offline_sync_javascript import DASHBOARD, _function
 
 
 @pytest.mark.skipif(not BROWSER, reason="Local Chrome/Chromium/Edge required")
-@pytest.mark.parametrize("cart_width", [270, 400])
-def test_cashier_holds_and_resumes_sale_using_visible_controls(tmp_path, cart_width):
+@pytest.mark.parametrize("pos_width", [270, 1200])
+def test_cashier_holds_and_resumes_sale_using_visible_controls(tmp_path, pos_width):
     source = DASHBOARD.read_text(encoding="utf-8")
     styles = re.search(r"<style>(.*?)</style>", source, re.S).group(1)
-    desk = source.split('<div class="pos-hold-desk">', 1)[1].split('<hr />', 1)[0]
+    desk = source.split('<div class="pos-hold-desk">', 1)[1].split('<div id="pos-catalog-notice"', 1)[0]
     module = source.split("// ===== POS HELD SALES =====", 1)[1].split("// ===== END POS HELD SALES =====", 1)[0]
     helpers = "\n".join(_function(source, name) for name in (
         "posCartScopeCurrent", "ensurePOSCustomerOption", "togglePosDeliveryFields",
@@ -47,7 +47,7 @@ try {
   check(!panel.hidden && toggle.getAttribute('aria-expanded') === 'true', 'Toggle opens the queue');
   const resume = panel.querySelector('.pos-held-resume');
   check(resume.getBoundingClientRect().height >= 44, 'Resume touch target too small');
-  check(panel.scrollWidth <= panel.clientWidth, 'Held sales must fit in the cart');
+  check(panel.scrollWidth <= panel.clientWidth, 'Held sales must fit in the POS controls');
   check(panel.textContent.includes('Family-size Jasmine Rice'), 'Ticket identifies the sale');
   resume.click();
   check(cart[0]?.name === 'Family-size Jasmine Rice' && count.textContent === '0' && panel.hidden, 'Resume restores the cart');
@@ -59,7 +59,7 @@ try {
     page = tmp_path / "hold.html"
     page.write_text(
         f'<!doctype html><meta charset="utf-8"><style>{bootstrap}\n{styles}</style>'
-        f'<main id="pos-section" style="width:{cart_width}px"><div class="pos-hold-desk">{desk}'
+        f'<main id="pos-section" style="width:{pos_width}px"><div class="pos-hold-desk">{desk}'
         f'{fields}<select id="pos-customer-select"><option value="">Walk-in</option></select></main>'
         f'<script>{module}\n{helpers}\n{script}</script>', encoding="utf-8",
     )

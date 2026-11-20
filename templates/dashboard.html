@@ -1971,7 +1971,7 @@
       .pos-money-delivery { color: #000; }
       #pos-section .btn:focus-visible, #pos-section .form-control:focus-visible, #pos-section .form-select:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
       #pos-customer-warning { color: var(--pos-warning); }
-      .pos-hold-desk { margin-top: .75rem; }
+      .pos-hold-desk { max-width: 26rem; margin-bottom: 1rem; }
       .pos-hold-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
       .pos-hold-action { min-height: 44px; display: flex; align-items: center; justify-content: center; gap: .4rem; font-weight: 600; }
       .pos-hold-count { min-width: 1.5rem; padding: 0 .3rem; border-radius: 1rem; background: #ededed; color: #333; font-variant-numeric: tabular-nums; }
@@ -2247,6 +2247,21 @@
           </div>
         </div>
 
+        <div class="pos-hold-desk">
+          <div class="pos-hold-actions">
+            <button type="button" id="pos-hold-sale" class="btn btn-sm btn-outline-primary pos-hold-action" onclick="holdPOSSale()" disabled>
+              <i class="bi bi-pause-circle" aria-hidden="true"></i> Hold sale
+            </button>
+            <button type="button" id="pos-held-sales-toggle" class="btn btn-sm btn-outline-secondary pos-hold-action"
+              onclick="setPOSHeldSalesOpen(this.getAttribute('aria-expanded') !== 'true')" aria-expanded="false" aria-controls="pos-held-sales">
+              Held sales <span id="pos-held-sales-count" class="pos-hold-count" aria-live="polite">0</span>
+            </button>
+          </div>
+          <div id="pos-held-sales" class="pos-held-panel small" hidden>
+            <p id="pos-held-sales-status" class="text-muted mb-0" role="status">No sales on hold.</p>
+            <ul id="pos-held-sales-list" class="pos-held-list"></ul>
+          </div>
+        </div>
         <div id="pos-catalog-notice" role="alert" hidden></div>
         <div id="pos-split-hint" class="pos-split-hint d-none d-lg-flex" role="note">
           <i class="bi bi-arrows-expand" aria-hidden="true"></i>
@@ -2349,21 +2364,6 @@
                 <div id="cart-items" style="max-height: 35vh; overflow-y: auto;">
                   <!-- Cart items will be displayed here -->
                   <p class="text-muted text-center py-3 small">No items added</p>
-                </div>
-                <div class="pos-hold-desk">
-                  <div class="pos-hold-actions">
-                    <button type="button" id="pos-hold-sale" class="btn btn-sm btn-outline-primary pos-hold-action" onclick="holdPOSSale()" disabled>
-                      <i class="bi bi-pause-circle" aria-hidden="true"></i> Hold sale
-                    </button>
-                    <button type="button" id="pos-held-sales-toggle" class="btn btn-sm btn-outline-secondary pos-hold-action"
-                      onclick="setPOSHeldSalesOpen(this.getAttribute('aria-expanded') !== 'true')" aria-expanded="false" aria-controls="pos-held-sales">
-                      Held sales <span id="pos-held-sales-count" class="pos-hold-count" aria-live="polite">0</span>
-                    </button>
-                  </div>
-                  <div id="pos-held-sales" class="pos-held-panel small" hidden>
-                    <p id="pos-held-sales-status" class="text-muted mb-0" role="status">No sales on hold.</p>
-                    <ul id="pos-held-sales-list" class="pos-held-list"></ul>
-                  </div>
                 </div>
                 <hr />
                 <div class="mb-2">
