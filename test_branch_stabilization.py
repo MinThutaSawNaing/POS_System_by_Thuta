@@ -81,6 +81,59 @@ class BranchStabilizationTests(unittest.TestCase):
         payload.update(changes)
         return (client or self.client()).post('/api/warehouse/transfer', json=payload)
 
+    def test_branch_inventory_is_read_only_and_cashier_scoped(self):
+        path = '/api/branch_inventory'
+        self.assertEqual(self.app.test_client().get(path).status_code, 401)
+        cashier = self.client(branch=self.b, role='cashier')
+        response = cashier.get(path)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        self.assertEqual(response.json['locations'], [{'id': self.b, 'name': 'Beta'}])
+        self.assertEqual([item['id'] for item in response.json['items']], [self.unrelated])
+        self.assertEqual(set(response.json['items'][0]), {'id', 'name', 'sku', 'barcode', 'stock', 'unit_symbol'})
+        self.assertEqual(cashier.get(path, query_string={'location_id': self.a}).status_code, 403)
+        self.assertEqual(cashier.post(path).status_code, 405)
+        self.assertEqual(cashier.get(path, headers={'X-POS-Branch-ID': str(self.a)}).status_code, 409)
+
+        manager = self.client()
+        other = manager.get(path, query_string={'location_id': self.b}).json
+        self.assertEqual(other['location_id'], self.b)
+        self.assertEqual([branch['id'] for branch in other['locations']], [self.a, self.b])
+        self.assertEqual(manager.get(path).json['location_id'], self.a)
+        self.assertEqual(manager.get(path + '?location_id=99999').status_code, 404)
+        self.assertEqual(manager.get(path + '?location_id=all').status_code, 400)
+
+    def test_inventory_applies_filters_before_bounded_search_and_cursors(self):
+        m = self.module
+        with self.app.app_context():
+            m.db.session.add_all(m.Product(name=f'Probe {i}', sku=f'Z_{i}', price=10,
+                                          stock=stock, branch_id=self.a)
+                                 for i, stock in enumerate([1, 2, 4, 5, 0, 0, 0]))
+            m.db.session.commit()
+        client = self.client()
+        params = dict(q='Z_', stock='low', per_page=2)
+        first = client.get('/api/branch_inventory', query_string=params).json
+        self.assertEqual([row['stock'] for row in first['items']], [4, 2])
+        second = client.get('/api/branch_inventory', query_string=dict(params, cursor=first['next_cursor'])).json
+        self.assertEqual([row['stock'] for row in second['items']], [1])
+        self.assertFalse(second['has_more'])
+        self.assertEqual(client.get('/api/branch_inventory', query_string=dict(
+            params, cursor=first['next_cursor'], stock='out')).status_code, 400)
+        self.assertEqual(client.get('/api/branch_inventory?q=Z_&stock=out').json['items'][0]['stock'], 0)
+
+    def test_shared_product_management_keeps_branch_records_distinct(self):
+        path = '/api/products?view=management&catalog_scope=all&q=Same&per_page=1'
+        manager = self.client()
+        first = manager.get(path).json
+        second = manager.get(path + '&cursor=' + first['next_cursor']).json
+        for result, product_id, owner, stock in ((first, self.unrelated, 'Beta', 7),
+                                                   (second, self.product, 'Alpha', 5)):
+            row = result['items'][0]
+            self.assertEqual((row['id'], row['branch_name'], row['stock']), (product_id, owner, stock))
+        self.assertEqual(manager.get(f'/api/products/{self.unrelated}').status_code, 404)
+        self.assertEqual(self.client(branch=self.b, role='cashier').get(path).status_code, 403)
+        self.assertEqual([p['id'] for p in manager.get('/api/products?view=management').json['items']], [self.product])
+
     def test_transfer_preserves_scan_and_never_matches_name(self):
         result = self.transfer()
         self.assertEqual(result.status_code, 200, result.get_json())

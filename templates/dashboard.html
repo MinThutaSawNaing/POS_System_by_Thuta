@@ -2042,6 +2042,11 @@
           </a>
         </li>
         <li class="nav-item">
+          <a class="nav-link" href="#" onclick="showSection('branch-inventory')">
+            <i class="bi bi-boxes" aria-hidden="true"></i> Branch Inventory
+          </a>
+        </li>
+        <li class="nav-item">
           <a class="nav-link" href="#" onclick="showSection('categories')">
             <i class="bi bi-tags"></i>Categories
           </a>
@@ -2597,8 +2602,16 @@
                   aria-describedby="products-search-hint"
                 />
                 <small id="products-search-hint" class="text-muted">Search matches the beginning of a name, SKU, barcode or category.</small>
+                <div class="mt-2" data-capability="admin">
+                  <label for="products-catalog-scope" class="form-label mb-1">Catalog scope</label>
+                  <select id="products-catalog-scope" class="form-select" onchange="changeProductCatalogScope()">
+                    <option value="current">Current branch</option>
+                    <option value="all">All active branches</option>
+                  </select>
+                  <small id="products-shared-hint" class="d-none text-muted">Read-only catalog lookup. Switch to the product’s owning branch to edit, export, or print labels.</small>
+                </div>
               </div>
-              <div class="col-12 col-md-7 d-flex flex-wrap gap-2 justify-content-md-end">
+              <div id="products-branch-actions" class="col-12 col-md-7 d-flex flex-wrap gap-2 justify-content-md-end align-items-start">
                 <button class="btn btn-success" data-capability="catalog.write" data-bs-toggle="modal" data-bs-target="#importProductsModal">
                   <i class="bi bi-upload"></i> Import Excel
                 </button>
@@ -2682,6 +2695,54 @@
               </table>
             </div>
             <div id="products-pagination" class="d-flex justify-content-start mt-3"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Branch Inventory Section -->
+      <div id="branch-inventory-section" style="display: none">
+        <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
+          <h2 class="mb-0" data-i18n="branch-inventory">Branch Inventory</h2>
+          <button type="button" class="btn btn-outline-secondary" onclick="loadBranchInventory()">
+            <i class="bi bi-arrow-repeat" aria-hidden="true"></i> Refresh
+          </button>
+        </div>
+        <div class="card">
+          <div class="card-body">
+            <p class="text-muted">Stock available at the selected branch. Warehouse stock appears here only after transfer to that branch.</p>
+            <form id="branch-inventory-filters" class="row g-3 mb-3" onsubmit="event.preventDefault(); resetBranchInventoryPage()">
+              <div class="col-12 col-md-4">
+                <label class="form-label" for="branch-inventory-location">Branch</label>
+                <select class="form-select" id="branch-inventory-location" onchange="resetBranchInventoryPage()" disabled></select>
+              </div>
+              <div class="col-12 col-md-3">
+                <label class="form-label" for="branch-inventory-stock">Stock status</label>
+                <select class="form-select" id="branch-inventory-stock" onchange="resetBranchInventoryPage()">
+                  <option value="all">All stock levels</option>
+                  <option value="in_stock">In stock</option>
+                  <option value="low">Low stock</option>
+                  <option value="out">Out of stock</option>
+                </select>
+              </div>
+              <div class="col-12 col-md-5">
+                <label class="form-label" for="branch-inventory-search">Product search</label>
+                <div class="input-group">
+                  <input class="form-control" id="branch-inventory-search" type="search" maxlength="100" placeholder="Starts with name, SKU or barcode" />
+                  <button type="submit" class="btn btn-primary">Search</button>
+                </div>
+              </div>
+            </form>
+            <p id="branch-inventory-status" class="small mb-2" role="status" aria-live="polite"></p>
+            <div class="table-responsive products-table-scroll" tabindex="0" role="region" aria-label="Branch Inventory results">
+              <table class="table table-hover align-middle mb-0">
+                <thead><tr>
+                  <th scope="col">Product</th><th scope="col">SKU</th><th scope="col">Barcode</th>
+                  <th scope="col" class="text-end">On hand</th><th scope="col">Unit</th><th scope="col">Status</th>
+                </tr></thead>
+                <tbody id="branch-inventory-table"></tbody>
+              </table>
+            </div>
+            <div id="branch-inventory-pagination" class="mt-3"></div>
           </div>
         </div>
       </div>
@@ -8092,7 +8153,7 @@
 
       // Backend remains the security boundary. This allowlist keeps the operational
       // workspace deliberate and prevents stale navigation from invoking admin loaders.
-      const CASHIER_SECTIONS = new Set(["pos", "products", "categories", "sales", "returns", "deliveries", "reports"]);
+      const CASHIER_SECTIONS = new Set(["pos", "products", "branch-inventory", "categories", "sales", "returns", "deliveries", "reports"]);
       const MANAGER_CAPABILITIES = new Set(["catalog.write", "deliveries.write", "labels", "debts", "branches.switch", "admin"]);
       const MANAGER_MODAL_IDS = new Set(["addProductModal", "editProductModal", "importProductsModal", "addCategoryModal", "editCategoryModal", "barcodeLabelModal", "addDebtModal", "makePaymentModal", "debtDetailsModal", "addCommunicationModal", "createDeliveryModal", "updateDeliveryModal", "addCouponModal"]);
 
@@ -10762,6 +10823,7 @@
         // Authorization-sensitive reads only: explicitly accounted for but never
         // stored by the SPA cache or service worker.
         ["/api/logs", []],
+        ["/api/branch_inventory", []],
         // Account-creation barrier (challenge/unlock): security-sensitive and
         // always fetched fresh, so it is accounted for but never cached.
         ["/api/account_barrier", []],
@@ -11180,6 +11242,7 @@
         dashboard: () => loadDashboardStats(),
         pos: () => { loadPOSCategories(); loadProductsForPOS(); loadCustomersForPOS(); checkOfflineProductCatalog(); },
         products: () => loadProducts(),
+        "branch-inventory": () => loadBranchInventory(),
         categories: () => loadCategories(),
         sales: () => loadSales(),
         returns: () => loadReturns(),
@@ -11205,6 +11268,7 @@
         // strip reads the branch categories behind the filter chips.
         pos: ["pos", "customers", "categories"],
         products: ["products"],
+        "branch-inventory": ["products", "warehouse", "branches"],
         categories: ["categories"],
         // loadSales() reads /api/reports/sales, so the Sales tab is gated on the
         // reports group too.
@@ -13515,6 +13579,7 @@
           suppliers: "Suppliers",
           purchases: "Purchases",
           warehouse: "Warehouse",
+          "branch-inventory": "Branch Inventory",
           deliveries: "Deliveries",
           users: "Users",
           logs: "Logs",
@@ -13641,6 +13706,7 @@
           suppliers: "ထောက်ပံ့သူများ",
           purchases: "ဝယ်ယူမှုများ",
           warehouse: "ကုန်လက်ကျန်",
+          "branch-inventory": "ဆိုင်ခွဲ ကုန်လက်ကျန်",
           deliveries: "ပို့ဆောင်မှု",
           users: "အသုံးပြုသူများ",
           logs: "စနစ်မှတ်တမ်းများ",
@@ -18233,6 +18299,64 @@
         return removeNext(0);
       }
 
+      function changeProductCatalogScope() {
+        const sharedProductCatalog = document.getElementById("products-catalog-scope").value === "all";
+        document.getElementById("products-shared-hint").classList.toggle("d-none", !sharedProductCatalog);
+        document.getElementById("products-branch-actions").classList.toggle("d-none", sharedProductCatalog);
+        clearProductSelection();
+        pageState.products = 1;
+        return loadProducts();
+      }
+
+      function resetBranchInventoryPage() {
+        pageState["branch-inventory"] = 1;
+        return loadBranchInventory();
+      }
+
+      async function loadBranchInventory() {
+        const location = document.getElementById("branch-inventory-location");
+        const status = document.getElementById("branch-inventory-status");
+        const table = document.getElementById("branch-inventory-table");
+        const params = new URLSearchParams({per_page: "30", stock: document.getElementById("branch-inventory-stock").value});
+        const search = document.getElementById("branch-inventory-search").value.trim();
+        if (search) params.set("q", search);
+        const locationId = location.value || currentBranch?.id;
+        if (locationId) params.set("location_id", locationId);
+        const pending = beginInventoryPage("branch-inventory", params, "branch-inventory-pagination", loadBranchInventory);
+        table.replaceChildren();
+        status.textContent = "Loading branch stock…";
+        try {
+          const response = await fetch(`/api/branch_inventory?${params}`, {cache: "no-store"});
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await response.json();
+          if (!pending.current()) return;
+          pending.accept(data);
+          location.replaceChildren(...data.locations.map((branch) => new Option(branch.name, branch.id)));
+          location.value = String(data.location_id);
+          location.disabled = data.locations.length <= 1;
+          for (const item of data.items) {
+            const row = table.insertRow();
+            const stockStatus = item.stock <= 0 ? "Out of stock" : item.stock < data.low_stock_threshold ? "Low stock" : "In stock";
+            [item.name, item.sku, item.barcode, item.stock, item.unit_symbol, stockStatus].forEach((value, index) => {
+              const cell = row.insertCell();
+              cell.textContent = value ?? "—";
+              if (index === 3) cell.className = "text-end fw-semibold";
+            });
+          }
+          status.textContent = data.items.length ? `Showing ${data.items.length} products at ${location.selectedOptions[0]?.text || "this branch"}.` : "No products match these filters.";
+        } catch (error) {
+          if (!pending.current()) return;
+          pending.fail();
+          table.replaceChildren();
+          if (error.message === "HTTP 404" && location.value) {
+            location.replaceChildren();
+            return resetBranchInventoryPage();
+          }
+          sectionStateOf("branch-inventory").rendered = false;
+          status.textContent = "Could not load branch stock. Check your connection and try Refresh.";
+        }
+      }
+
       function renderProductsResponse(payload) {
         const productsTable = document.getElementById("products-table");
         const productsScroll = document.getElementById("products-table-scroll");
@@ -18254,6 +18378,7 @@
         }
 
         data.items.forEach((product) => {
+          const isShared = Object.prototype.hasOwnProperty.call(product, "branch_name");
           const row = document.createElement("tr");
           const rowId = String(product.id);
           const selected = productSelection.has(rowId);
@@ -18267,33 +18392,23 @@
                                           <i class="bi bi-trash"></i>
                                       </button>`
             : "";
+          const selection = isShared ? "" : `<input type="checkbox" class="form-check-input product-select-checkbox"
+            data-id="${product.id}" data-name="${escapeHtml(product.name)}" data-barcode="${escapeHtml(product.barcode || "")}"
+            aria-label="Select ${escapeHtml(product.name)}" ${selected ? "checked" : ""} onchange="toggleProductSelection(this)" />`;
+          const branchLabel = isShared ? `<small class="d-block text-muted">${escapeHtml(product.branch_name)}</small>` : "";
+          const actions = isShared ? "" : `<button class="btn btn-sm btn-primary me-1" onclick="editProduct(${product.id})">
+            <i class="bi bi-pencil"></i></button>${deleteButton}`;
           row.innerHTML = `
-                                  <td class="products-select-cell">
-                                      <input type="checkbox" class="form-check-input product-select-checkbox"
-                                        data-id="${product.id}"
-                                        data-name="${escapeHtml(product.name)}"
-                                        data-barcode="${escapeHtml(product.barcode || "")}"
-                                        aria-label="Select ${escapeHtml(product.name)}"
-                                        ${selected ? "checked" : ""}
-                                        onchange="toggleProductSelection(this)" />
-                                  </td>
+                                  <td class="products-select-cell">${selection}</td>
                                   <td>${getProductPhotoHtml(product.photo_url, product.name, "product-thumb")}</td>
                                   <td>${escapeHtml(product.barcode || "N/A")}</td>
                                   <td class="text-break">${escapeHtml(product.sku || "—")}</td>
-                                  <td>${escapeHtml(product.name)}</td>
+                                  <td>${escapeHtml(product.name)}${branchLabel}</td>
                                   <td>$${product.price.toFixed(2)}</td>
                                   <td>${product.stock}</td>
                                   <td class="d-none d-md-table-cell">${product.unit_symbol ? escapeHtml(product.unit_symbol) : "—"}</td>
                                   <td>${escapeHtml(product.category || "N/A")}</td>
-                                  <td>${product.tax_rate}%</td>
-                                  <td ${hasCapability("catalog.write") ? "" : "hidden"}>
-                                      <button class="btn btn-sm btn-primary me-1" onclick="editProduct(${
-                                        product.id
-                                      })">
-                                          <i class="bi bi-pencil"></i>
-                                      </button>
-                                      ${deleteButton}
-                                  </td>
+                                  <td ${hasCapability("catalog.write") ? "" : "hidden"}>${actions}</td>
                               `;
           productsTable.appendChild(row);
         });
@@ -18331,8 +18446,10 @@
         // Legacy embedded callers may supply only the numbered paging helpers;
         // the full dashboard always uses opaque cursor navigation.
         const cursorPaging = typeof beginInventoryPage === "function";
-        if (cursorPaging) params.set("view", "management");
-        else params.set("page", String(pageState.products));
+        if (cursorPaging) {
+          params.set("view", "management");
+          if (document.getElementById("products-catalog-scope")?.value === "all") params.set("catalog_scope", "all");
+        } else params.set("page", String(pageState.products));
         params.set("per_page", String(pageSize.products));
         if (query) params.set("q", query);
         const request = cursorPaging

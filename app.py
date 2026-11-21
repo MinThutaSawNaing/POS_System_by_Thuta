@@ -1296,6 +1296,7 @@ CASHIER_API_METHODS = {
     'api_categories': {'GET'}, 'api_single_category': {'GET'},
     'api_units': {'GET'}, 'api_units_convert': {'GET'},
     'api_products': {'GET'}, 'export_product_catalog': {'GET'},
+    'api_branch_inventory': {'GET'},
     'api_single_product': {'GET'}, 'api_search_products': {'GET'},
     'api_create_sale': {'POST'}, 'api_sales': {'GET'}, 'api_single_sale': {'GET'},
     # Coupons are managed by managers, but cashiers must be able to validate one
@@ -5159,10 +5160,10 @@ def api_units_convert():
     })
 
 # Product API Endpoints
-def product_prefix_ids(search, branch_id=None, include_category=False, page_bound=False):
+def product_prefix_ids(search, branch_id=None, include_category=False, page_bound=False, *, base=None):
     """Separate indexed prefix probes avoid an OR forcing a catalog-wide scan."""
     pattern = prefix_pattern(search)
-    base = db.session.query(Product.id)
+    base = db.session.query(Product.id) if base is None else base.with_entities(Product.id)
     if branch_id is not None:
         base = base.filter(Product.branch_id == branch_id)
     probes = [base.filter(column.like(pattern, escape='\\'))
@@ -5205,6 +5206,47 @@ def api_product_summary():
         case((Product.stock < LOW_STOCK_THRESHOLD, 1), else_=0)), 0)
     ).filter(Product.branch_id == get_current_branch_id()).one()
     return jsonify(total_products=total, low_stock=low_stock)
+
+
+@app.route('/api/branch_inventory', methods=['GET'])
+def api_branch_inventory():
+    """Read sellable stock directly from the branch product, never warehouse batches."""
+    if 'user_id' not in session:
+        return jsonify(error='Unauthorized'), 401
+    current_id = get_current_branch_id()
+    can_view_other_branches = session.get('role') in ('manager', 'boss')
+    active = Branch.query.filter_by(is_active=True)
+    location_id = request.args.get('location_id', str(current_id))
+    if not location_id.isascii() or not location_id.isdecimal() or len(location_id) > 10:
+        raise InventoryQueryError('Invalid branch location')
+    location_id = int(location_id)
+    if location_id != current_id and not can_view_other_branches:
+        return jsonify(message='You can only view your assigned branch'), 403
+    location = active.filter_by(id=location_id).first()
+    if not location:
+        return jsonify(message='Branch not found'), 404
+
+    stock = func.coalesce(Product.stock, 0)
+    query = db.session.query(Product.id, Product.name, Product.sku, Product.barcode,
+        stock.label('stock'), Unit.symbol.label('unit_symbol')).outerjoin(Unit, Product.unit_id == Unit.id)
+    query = query.filter(Product.branch_id == location_id)
+    status = request.args.get('stock', 'all')
+    if status == 'in_stock':
+        query = query.filter(stock > 0)
+    elif status == 'low':
+        query = query.filter(stock > 0, stock < LOW_STOCK_THRESHOLD)
+    elif status == 'out':
+        query = query.filter(stock <= 0)
+    elif status != 'all':
+        raise InventoryQueryError('Invalid stock filter')
+    q = (request.args.get('q') or '').strip()
+    if q:
+        query = query.filter(Product.id.in_(product_prefix_ids(q, page_bound=True, base=query)))
+    rows, paging = cursor_rows(query, Product.id)
+    branches = (active.order_by(Branch.name, Branch.id).all() if can_view_other_branches else [location])
+    return jsonify(items=[dict(row._mapping) for row in rows], **paging,
+        location_id=location.id, locations=[{'id': b.id, 'name': b.name} for b in branches],
+        low_stock_threshold=LOW_STOCK_THRESHOLD)
 
 
 @app.route('/api/products', methods=['GET', 'POST'])
@@ -5323,6 +5365,17 @@ def api_products():
                 bounded_integer('limit', 30, 50)).all()
             return jsonify([serialize_product(row) for row in rows])
         if request.args.get('view') == 'management':
+            if request.args.get('catalog_scope') == 'all':
+                if session.get('role') not in ('manager', 'boss'):
+                    return jsonify(message='Manager access required'), 403
+                shared = Product.query.join(Branch, Product.branch_id == Branch.id).filter(Branch.is_active.is_(True))
+                if q:
+                    shared = shared.filter(Product.id.in_(product_prefix_ids(q, include_category=True,
+                        page_bound=True, base=shared)))
+                rows, paging = cursor_rows(shared.add_columns(Branch.name.label('branch_name'), Product.id)
+                    .options(joinedload(Product.category_ref), joinedload(Product.unit_ref)), Product.id)
+                return jsonify(items=[dict(serialize_product(product), branch_name=branch_name)
+                                      for product, branch_name, _ in rows], **paging)
             if q:
                 query = query.filter(Product.id.in_(product_prefix_ids(q, branch_id, include_category=True, page_bound=True)))
             rows, paging = cursor_rows(query, Product.id)

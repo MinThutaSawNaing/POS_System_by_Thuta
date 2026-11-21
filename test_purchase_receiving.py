@@ -82,6 +82,28 @@ class PurchaseReceivingTests(unittest.TestCase):
         data.update(changes)
         return self.client().post(f'/api/purchase_orders/{self.po}/invoice', json=data)
 
+    def test_branch_inventory_reflects_transfer_not_receipt_or_invoice(self):
+        client = self.client()
+        path = '/api/branch_inventory?q=RECEIVE'
+        other = path + f'&location_id={self.foreign}'
+        self.assertEqual(client.get(path).json['items'], [])
+        self.assertEqual(self.receive(10).status_code, 200)
+        self.assertEqual(self.invoice().status_code, 201)
+        self.assertEqual(client.get(other).json['items'][0]['stock'], 0)
+        self.assertEqual(client.get(path).json['items'], [])
+        payload = dict(product_id=self.product, quantity=3, target_branch_id=self.local,
+                       idempotency_key='branch-inventory-transfer')
+        for _ in range(2):
+            response = client.post('/api/warehouse/transfer', json=payload)
+            self.assertEqual(response.status_code, 200, response.json)
+        row, = client.get(path).json['items']
+        self.assertEqual(row['stock'], 3)
+        self.assertNotEqual(row['id'], self.product)
+        self.assertEqual(client.get(other).json['items'][0]['stock'], 0)
+        with self.m.app.app_context():
+            self.assertEqual(self.m.WarehouseInventory.query.one().quantity, 7)
+            self.assertEqual(self.m.db.session.get(self.m.PurchaseOrderItem, self.item).product_id, self.product)
+
     def test_goods_receipt_and_matched_invoice_end_to_end(self):
         m, client = self.m, self.client()
         uri = f'/api/purchase_orders/{self.po}'

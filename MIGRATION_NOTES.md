@@ -1,5 +1,18 @@
 # Migration notes
 
+## Branch Inventory and cross-branch catalog lookup
+
+No schema migration, backfill, or maintenance window is required for this change.
+Branch Inventory projects existing `product.stock` by branch. Warehouse and PO
+receipts, goods receipt history, invoices, sales, and returns retain their existing
+product IDs and quantities. Receiving a PO puts stock into Warehouse; a Warehouse
+transfer adds it to the receiving branch's sellable count.
+
+Product Management's **All active branches** scope is a read-only lookup across
+existing branch product records. It does not merge legacy duplicates, synchronize
+metadata, seed products into other branches, or alter checkout behavior. Edits
+remain in the owning branch. Rolling back the app needs no data rollback.
+
 ## Purchase Order → Goods Received (GRN) → Purchase Invoice
 
 - SQLite startup creates two additive tables, `goods_receipt` and `purchase_invoice`, using the existing `db.create_all()` path. It does not rewrite PO statuses, stock, supplier totals, or receipt retry records. No historical GRNs or invoices are backfilled. Existing properly received orders can be invoiced against their recorded quantities and PO costs without reposting stock; already-cancelled orders with historical receipts need manual reconciliation.

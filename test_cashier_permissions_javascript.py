@@ -12,7 +12,7 @@ from test_offline_sync_javascript import _function, _run_node_script
 
 DASHBOARD = Path(__file__).parent / "templates" / "dashboard.html"
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
-CASHIER_ALLOWED = ["pos", "products", "categories", "sales", "returns", "deliveries", "reports"]
+CASHIER_ALLOWED = ["pos", "products", "branch-inventory", "categories", "sales", "returns", "deliveries", "reports"]
 MANAGER_ONLY = ["dashboard", "promotions", "customers", "debts", "suppliers", "purchases",
                 "warehouse", "users", "logs", "settings"]
 PRIVILEGED_ACTIONS = ["catalog.write", "deliveries.write", "labels", "debts", "branches.switch", "admin"]
