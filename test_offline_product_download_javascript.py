@@ -7,7 +7,7 @@ from test_offline_sync_javascript import _function, _run_node_script, pytestmark
 SOURCE = (Path(__file__).parent / 'templates' / 'dashboard.html').read_text(encoding='utf-8')
 
 
-def run_download(body):
+def run_download(body, extra=''):
     helpers = '\n'.join(_function(SOURCE, name) for name in (
         'scopedOfflineCacheKey', 'offlineCacheGet', 'cachedProductsKey',
         'saveCachedProducts', 'getCachedProducts', 'renderOfflineProductButton',
@@ -46,7 +46,7 @@ async function fetch(url, options) {
   }
   return {ok: true, status: 200, json: async () => payload};
 }
-''' + helpers + '\n(async () => {\n' + body + "\nconsole.log(JSON.stringify({ok: true}));\n})().catch(e => {console.error(e); process.exit(1);});")
+''' + helpers + '\n' + extra + '\n(async () => {\n' + body + "\nconsole.log(JSON.stringify({ok: true}));\n})().catch(e => {console.error(e); process.exit(1);});")
 
 
 def test_bulk_download_persists_all_pages_disables_and_detects_new_products():
@@ -143,3 +143,25 @@ await loadAllProductsForOffline();
 assert.equal(button.disabled, true);
 assert.equal(offlineCacheGet(cachedProductsKey()).catalog_version, 'v2');
 ''')['ok']
+
+
+def test_branch_resolution_restores_download_status_after_early_pos_render():
+    extra = '''
+let currentSection = 'pos';
+function updateBranchIndicators() {}
+function toggleReportScopeControls() {}
+function updateBranchSaveButton() {}
+function hasCapability() { return false; }
+''' + _function(SOURCE, 'bindCurrentBranchUI')
+    assert run_download('''
+await loadAllProductsForOffline();
+currentBranch = null;
+renderOfflineProductButton();
+assert.match(status.textContent, /Load this branch/);
+currentBranch = {id: 7};
+bindCurrentBranchUI(currentBranch);
+await new Promise(resolve => setTimeout(resolve, 0));
+assert.match(status.textContent, /All 101 products saved/);
+assert.equal(button.disabled, true);
+assert.equal(pages, 2); // No second bulk download.
+''', extra)['ok']

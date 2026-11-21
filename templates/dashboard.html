@@ -10121,6 +10121,7 @@
         toggleReportScopeControls();
         updateBranchSaveButton();
         if (hasCapability("catalog.write")) loadCategoryDropdowns();
+        if (currentSection === "pos") checkOfflineProductCatalog();
       }
 
       function applyCachedCurrentBranch() {
@@ -10138,6 +10139,7 @@
           updateBranchIndicators(currentBranch);
           toggleReportScopeControls();
           if (hasCapability("catalog.write")) loadCategoryDropdowns();
+          if (currentSection === "pos") checkOfflineProductCatalog();
         } else {
           currentBranch = null;
           updateBranchIndicators(null);
