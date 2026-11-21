@@ -1971,9 +1971,9 @@
       .pos-money-delivery { color: #000; }
       #pos-section .btn:focus-visible, #pos-section .form-control:focus-visible, #pos-section .form-select:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
       #pos-customer-warning { color: var(--pos-warning); }
-      .pos-hold-desk { max-width: 26rem; margin-bottom: 1rem; }
-      .pos-hold-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
-      .pos-hold-action { min-height: 44px; display: flex; align-items: center; justify-content: center; gap: .4rem; font-weight: 600; }
+      .pos-hold-desk { max-width: 100%; }
+      .pos-hold-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+      .pos-hold-action { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: .4rem; font-weight: 600; }
       .pos-hold-count { min-width: 1.5rem; padding: 0 .3rem; border-radius: 1rem; background: #ededed; color: #333; font-variant-numeric: tabular-nums; }
       .pos-hold-count[data-waiting] { background: #ffe5a1; color: #543a00; }
       .pos-held-panel { margin-top: .5rem; padding: .65rem; border: 1px solid #dedede; border-radius: .5rem; background: var(--pos-surface); }
@@ -1985,6 +1985,18 @@
       .pos-held-ticket-meta { display: block; color: var(--pos-muted); font-variant-numeric: tabular-nums; }
       .pos-held-resume { min-height: 44px; flex-shrink: 0; }
       .pos-hold-desk button:focus-visible { outline: 2px solid #1c54a3; outline-offset: 1px; }
+      .pos-price-check { max-width: 36rem; margin: .25rem 0 1rem; padding: 1rem; border: 1px solid #b8d2ee; border-left: 4px solid #1c54a3; border-radius: .5rem; background: #f5f9ff; }
+      .pos-price-check[hidden] { display: none; }
+      .pos-price-check-results { display: grid; gap: .5rem; max-height: 18rem; overflow-y: auto; }
+      .pos-price-check-result { display: flex; justify-content: space-between; align-items: center; gap: 1rem; width: 100%; min-height: 52px; padding: .55rem .75rem; text-align: left; border: 1px solid #cad7e8; border-radius: .4rem; background: #fff; color: var(--pos-ink); }
+      .pos-price-check-result:hover, .pos-price-check-result:focus-visible { border-color: #1c54a3; background: #eaf3ff; }
+      .pos-price-check-result strong { color: #124e8c; font-size: 1.15rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .pos-price-check-result span { min-width: 0; overflow-wrap: anywhere; }
+      .pos-price-check-result small { display: block; color: var(--pos-muted); }
+      .pos-keyboard-help { margin: 0 0 .75rem; color: var(--pos-muted); font-size: .875rem; line-height: 1.6; }
+      .pos-keyboard-help kbd { margin: 0 .15rem 0 .4rem; }
+      #product-grid .product-card[role="button"] { cursor: pointer; }
+      #product-grid .product-card[role="button"]:focus-visible { outline: 3px solid var(--primary-color); outline-offset: 3px; }
       @media (max-width: 575.98px) { .pos-notice { flex-wrap: wrap; } .pos-notice .btn { margin-left: 0; width: 100%; } }
     </style>
   </head>
@@ -2247,21 +2259,6 @@
           </div>
         </div>
 
-        <div class="pos-hold-desk">
-          <div class="pos-hold-actions">
-            <button type="button" id="pos-hold-sale" class="btn btn-sm btn-outline-primary pos-hold-action" onclick="holdPOSSale()" disabled>
-              <i class="bi bi-pause-circle" aria-hidden="true"></i> Hold sale
-            </button>
-            <button type="button" id="pos-held-sales-toggle" class="btn btn-sm btn-outline-secondary pos-hold-action"
-              onclick="setPOSHeldSalesOpen(this.getAttribute('aria-expanded') !== 'true')" aria-expanded="false" aria-controls="pos-held-sales">
-              Held sales <span id="pos-held-sales-count" class="pos-hold-count" aria-live="polite">0</span>
-            </button>
-          </div>
-          <div id="pos-held-sales" class="pos-held-panel small" hidden>
-            <p id="pos-held-sales-status" class="text-muted mb-0" role="status">No sales on hold.</p>
-            <ul id="pos-held-sales-list" class="pos-held-list"></ul>
-          </div>
-        </div>
         <div id="pos-catalog-notice" role="alert" hidden></div>
         <div id="pos-split-hint" class="pos-split-hint d-none d-lg-flex" role="note">
           <i class="bi bi-arrows-expand" aria-hidden="true"></i>
@@ -2291,6 +2288,46 @@
                 <i class="bi bi-x-circle" aria-hidden="true"></i> Reset
                 <kbd class="d-none d-sm-inline">Esc</kbd>
               </button>
+              <div class="pos-hold-desk">
+                <div class="pos-hold-actions">
+                  <button type="button" id="pos-hold-sale" class="btn btn-sm btn-outline-primary pos-hold-action" onclick="holdPOSSale()" disabled>
+                    <i class="bi bi-pause-circle" aria-hidden="true"></i> Hold sale
+                  </button>
+                  <button type="button" id="pos-held-sales-toggle" class="btn btn-sm btn-outline-secondary pos-hold-action"
+                    onclick="setPOSHeldSalesOpen(this.getAttribute('aria-expanded') !== 'true')" aria-expanded="false" aria-controls="pos-held-sales">
+                    Held sales <span id="pos-held-sales-count" class="pos-hold-count" aria-live="polite">0</span>
+                  </button>
+                  <button type="button" id="pos-price-check-toggle" class="btn btn-sm btn-outline-primary pos-hold-action"
+                    onclick="setPOSPriceCheckOpen(document.getElementById('pos-price-check').hidden)" aria-expanded="false" aria-controls="pos-price-check">
+                    <i class="bi bi-tag" aria-hidden="true"></i> Price Check
+                  </button>
+                </div>
+                <div id="pos-held-sales" class="pos-held-panel small" hidden>
+                  <p id="pos-held-sales-status" class="text-muted mb-0" role="status">No sales on hold.</p>
+                  <ul id="pos-held-sales-list" class="pos-held-list"></ul>
+                </div>
+              </div>
+            </div>
+            <div class="pos-keyboard-help" role="note" aria-label="POS keyboard shortcuts">
+              Keyboard: <kbd>F2</kbd> Search <kbd>F3</kbd> Price Check <kbd>F4</kbd> Payment
+              <kbd>F6</kbd> Hold <kbd>F7</kbd> Held sales <kbd>F8</kbd> Coupon
+              <kbd>F9</kbd> Complete Sale. <kbd>Enter</kbd> searches or confirms the focused action;
+              <kbd>Ctrl+Enter</kbd> completes a sale from checkout fields.
+            </div>
+            <div id="pos-price-check" class="pos-price-check" hidden>
+              <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                <div><strong>Price Check</strong><div class="small text-muted">Look up a price without adding to the sale.</div></div>
+                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="setPOSPriceCheckOpen(false)" aria-label="Close Price Check"><i class="bi bi-x-lg" aria-hidden="true"></i></button>
+              </div>
+              <form onsubmit="event.preventDefault(); checkPOSPrice()">
+                <label class="form-label small fw-semibold" for="pos-price-check-query">Product name, SKU or barcode</label>
+                <div class="input-group mb-2">
+                  <input id="pos-price-check-query" class="form-control" type="search" autocomplete="off" placeholder="Scan or type a product" />
+                  <button class="btn btn-primary" type="submit">Check price</button>
+                </div>
+              </form>
+              <div id="pos-price-check-status" class="small text-muted mb-2" role="status" aria-live="polite">Enter a product name, SKU or barcode.</div>
+              <div id="pos-price-check-results" class="pos-price-check-results" aria-label="Price Check results"></div>
             </div>
             <div id="pos-offline-status" class="small text-muted mb-2" role="status" aria-live="polite"></div>
             <div class="input-group mb-3">
@@ -2302,6 +2339,7 @@
                 aria-label="Scan barcode or search products"
                 placeholder="Scan barcode or search products..."
                 data-i18n-placeholder="scanBarcodeOrSearch"
+                onkeydown="if (event.key === 'Enter' && !isPOSScannerEnter()) { event.preventDefault(); searchProducts(); }"
               />
               <button
                 class="btn btn-primary"
@@ -12545,6 +12583,16 @@
       // Global Barcode Scanner Listener
       // Detects rapid character input followed by Enter key (typical barcode scanner behavior)
       const AUTO_BARCODE_SCANNER_DETECTION_KEY = "pos_auto_barcode_scanner_detection";
+      let barcodeBuffer = "";
+      let lastKeyTime = 0;
+      let barcodeStartTime = 0;
+      const BARCODE_TIMEOUT = 100;
+
+      function isPOSScannerEnter() {
+        return isAutoBarcodeScannerDetectionEnabled() && barcodeBuffer.length >= 3 &&
+          Date.now() - lastKeyTime <= BARCODE_TIMEOUT &&
+          lastKeyTime - barcodeStartTime <= BARCODE_TIMEOUT * barcodeBuffer.length;
+      }
 
       function isAutoBarcodeScannerDetectionEnabled() {
         return localStorage.getItem(AUTO_BARCODE_SCANNER_DETECTION_KEY) !== "false";
@@ -12565,13 +12613,16 @@
       }
 
       function initGlobalBarcodeScanner() {
-        let barcodeBuffer = "";
-        let lastKeyTime = 0;
-        const BARCODE_TIMEOUT = 100; // Max ms between characters to be considered part of same barcode
+        // A rapid scan in the product search field keeps its existing add-to-cart
+        // behavior; a normal Enter there searches the catalog instead.
         const MIN_BARCODE_LENGTH = 3; // Minimum length to be considered a valid barcode
 
         // Listen for keypress events globally
         document.addEventListener("keydown", function(e) {
+          if (e.defaultPrevented || e.isComposing) {
+            barcodeBuffer = "";
+            return;
+          }
           if (!isAutoBarcodeScannerDetectionEnabled()) {
             barcodeBuffer = "";
             return;
@@ -12583,11 +12634,21 @@
 
           // Ignore if user is typing in an input field (except for rapid barcode input)
           const activeElement = document.activeElement;
+          // The dedicated price lookup is read-only; scanner Enter must submit
+          // its form instead of routing the barcode into the current sale.
+          if (activeElement?.id === "pos-price-check-query") {
+            barcodeBuffer = "";
+            return;
+          }
           const isInputField = activeElement && (
             activeElement.tagName === "INPUT" ||
             activeElement.tagName === "TEXTAREA" ||
             activeElement.isContentEditable
           );
+          if (isInputField && activeElement.id !== "product-search") {
+            barcodeBuffer = "";
+            return;
+          }
 
           // If user is in an input field and typing normally (slow), don't intercept
           if (isInputField && timeDiff > BARCODE_TIMEOUT && barcodeBuffer === "") {
@@ -12596,7 +12657,7 @@
 
           // Handle Enter key - process barcode
           if (e.key === "Enter") {
-            if (barcodeBuffer.length >= MIN_BARCODE_LENGTH) {
+            if (barcodeBuffer.length >= MIN_BARCODE_LENGTH && isPOSScannerEnter()) {
               e.preventDefault();
               processBarcodeScan(barcodeBuffer);
               barcodeBuffer = "";
@@ -12617,6 +12678,7 @@
           }
 
           // Add character to buffer
+          if (!barcodeBuffer) barcodeStartTime = currentTime;
           barcodeBuffer += e.key;
         });
       }
@@ -14580,24 +14642,56 @@
         searchInput.select();
       }
 
-      // F2 puts the cursor back in the scan box; Esc clears the search text and
-      // the category shelf. Both keys stay out of the way of open dialogs and of
-      // the cart fields the cashier is typing into.
+      // Shortcuts never take over open dialogs or native editing/selection keys.
+      // Checkout fields use Enter as a deliberate submit; every path goes through
+      // the same preflight and validation as clicking Complete Sale.
       function initPOSQuickAccessKeys() {
         document.addEventListener("keydown", function (event) {
-          if (currentSection !== "pos") return;
-          if (document.querySelector(".modal.show")) return;
+          if (currentSection !== "pos" || event.defaultPrevented || event.repeat ||
+              event.isComposing || document.querySelector(".modal.show")) return;
+          const active = document.activeElement;
+          const inPOS = active && document.getElementById("pos-section").contains(active);
+          if (!inPOS) return;
+          const target = event.target;
+          if (target?.isContentEditable || event.altKey || event.metaKey) return;
+          const editing = active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT";
+          const shortcuts = {
+            F3: "pos-price-check-toggle", F4: "payment-method", F6: "pos-hold-sale",
+            F7: "pos-held-sales-toggle", F8: "pos-coupon-toggle", F9: "complete-sale-btn",
+          };
           if (event.key === "F2") {
             event.preventDefault();
             focusPOSSearchInput();
             return;
           }
-          if (event.key !== "Escape") return;
+          if (!event.ctrlKey && shortcuts[event.key]) {
+            event.preventDefault();
+            const button = document.getElementById(shortcuts[event.key]);
+            if (!button || button.disabled) return;
+            if (event.key === "F4") button.focus({preventScroll: true});
+            else button.click();
+            return;
+          }
+          if (event.key === "Enter") {
+            // Native Enter/Space already activates focused buttons, links, and
+            // selects. Do not turn a price search, coupon, or scan into a sale.
+            if (active.id === "product-search" || active.id === "pos-price-check-query" ||
+                active.id === "pos-coupon-code" || active.tagName === "BUTTON" ||
+                active.tagName === "A" || active.tagName === "SELECT" ||
+                active.getAttribute("role") === "button") return;
+            const checkoutField = document.getElementById("pos-cart-column").contains(active);
+            if (checkoutField && (event.ctrlKey || active.id === "cash-received" ||
+                active.id === "split-amount-one" || active.id === "split-amount-two") &&
+                !document.getElementById("complete-sale-btn").disabled) {
+              event.preventDefault();
+              document.getElementById("complete-sale-btn").click();
+            }
+            return;
+          }
+          if (event.key !== "Escape" || event.ctrlKey) return;
           const searchInput = document.getElementById("product-search");
-          const active = document.activeElement;
           const editingOtherField = active && active !== searchInput && (
-            active.tagName === "INPUT" || active.tagName === "TEXTAREA" ||
-            active.tagName === "SELECT" || active.isContentEditable
+            editing || active.isContentEditable
           );
           if (editingOtherField) return;
           if (posCategoryFilterId === null && !(searchInput && searchInput.value)) return;
@@ -14696,7 +14790,7 @@
               const productCard = document.createElement("div");
               productCard.className = "pos-product-cell";
               productCard.innerHTML = `
-          <div class="card product-card" onclick="addToCart(${
+          <div class="card product-card" role="button" tabindex="0" aria-label="Add ${escapeHtml(product.name)} to sale" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); this.click(); }" onclick="addToCart(${
             product.id
           }, null, null, 1, 0)">
               <div class="card-body p-3">
@@ -14795,7 +14889,7 @@
           const productCard = document.createElement("div");
           productCard.className = "pos-product-cell";
           productCard.innerHTML = `
-          <div class="card product-card" onclick="addToCart(${product.id}, null, null, 1, 0)">
+          <div class="card product-card" role="button" tabindex="0" aria-label="Add ${escapeHtml(product.name)} to sale" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); this.click(); }" onclick="addToCart(${product.id}, null, null, 1, 0)">
             <div class="card-body p-3">
               ${getProductPhotoHtml(product.photo_url, product.name, "product-card-img")}
               <h6 class="card-title fw-bold text-success mb-2">${escapeHtml(product.name)}</h6>
@@ -14875,7 +14969,7 @@
               const productCard = document.createElement("div");
               productCard.className = "pos-product-cell";
               productCard.innerHTML = `
-                                  <div class="card product-card" onclick="addToCart(${
+                                  <div class="card product-card" role="button" tabindex="0" aria-label="Add ${escapeHtml(product.name)} to sale" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); this.click(); }" onclick="addToCart(${
                                     product.id
                                   }, null, null, 1, 0)">
 
@@ -14923,6 +15017,95 @@
             showPOSCatalogError(error, "search");
             document.getElementById("product-grid").innerHTML = posGridState("Search could not finish", "Your search has been kept. Check the connection and retry.", "search");
           });
+      }
+
+      // Price Check reads the active branch catalog without touching the cart,
+      // product grid, scanner search, or held sales.
+      let posPriceCheckRequest = 0;
+
+      function setPOSPriceCheckOpen(open) {
+        const panel = document.getElementById("pos-price-check");
+        panel.hidden = !open;
+        document.getElementById("pos-price-check-toggle").setAttribute("aria-expanded", String(open));
+        if (open) {
+          posPriceCheckRequest++;
+          document.getElementById("pos-price-check-results").replaceChildren();
+          document.getElementById("pos-price-check-status").textContent = "Enter a product name, SKU or barcode.";
+          document.getElementById("pos-price-check-query").focus({preventScroll: true});
+        } else {
+          posPriceCheckRequest++;
+          document.getElementById("pos-price-check-toggle").focus({preventScroll: true});
+        }
+      }
+
+      async function checkPOSPrice() {
+        const query = document.getElementById("pos-price-check-query").value.trim();
+        const status = document.getElementById("pos-price-check-status");
+        const results = document.getElementById("pos-price-check-results");
+        const request = ++posPriceCheckRequest;
+        results.replaceChildren();
+        if (!query) {
+          status.textContent = "Enter a product name, SKU or barcode.";
+          return;
+        }
+        const branchId = currentBranch?.id;
+        if (!posCartScopeCurrent(branchId)) {
+          status.textContent = "Select an active branch and sign in to check prices.";
+          return;
+        }
+        status.textContent = "Checking prices…";
+        let products;
+        let saved = posIsOffline();
+        if (!saved) {
+          try {
+            const url = `/api/products/search?q=${encodeURIComponent(query)}&branch_id=${encodeURIComponent(branchId)}`;
+            products = await fetch(url).then(posResponseJSON);
+            if (!Array.isArray(products)) throw new Error("Invalid price results");
+          } catch (error) {
+            if (request !== posPriceCheckRequest || !posCartScopeCurrent(branchId) || results.closest("[hidden]")) return;
+            if (error.status && error.status < 500) {
+              status.textContent = error.status === 401 ? "Sign in again to check prices." :
+                error.status === 403 || error.status === 409 ? "Product access changed. Reload the page or ask a manager." :
+                "Price Check is unavailable. Try again.";
+              return;
+            }
+            saved = true;
+          }
+        }
+        if (saved) {
+          const needle = query.toLowerCase();
+          products = getCachedProducts().filter(product =>
+            [product.name, product.sku, product.barcode].some(value =>
+              String(value || "").toLowerCase().includes(needle))).slice(0, 10);
+        }
+        if (request !== posPriceCheckRequest || !posCartScopeCurrent(branchId) || results.closest("[hidden]")) return;
+        if (!products.length) {
+          status.textContent = saved ? "No match in saved products. Reconnect to check current prices." :
+            "No matching products. Check the name, SKU or barcode.";
+          return;
+        }
+        const exact = products.find(product =>
+          [product.barcode, product.sku].some(value => String(value || "").toLowerCase() === query.toLowerCase()));
+        status.textContent = (saved ? "Saved prices (may be outdated). " : "Current catalog prices. ") +
+          (exact ? "Exact code match shown first." : `${products.length} matching product${products.length === 1 ? "" : "s"}.`);
+        for (const product of exact ? [exact, ...products.filter(row => row !== exact)] : products) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "pos-price-check-result";
+          const label = document.createElement("span");
+          const name = document.createElement("span");
+          name.textContent = product.name;
+          const detail = document.createElement("small");
+          detail.textContent = [product.sku && `SKU: ${product.sku}`, product.barcode && `Barcode: ${product.barcode}`].filter(Boolean).join(" · ");
+          label.append(name, detail);
+          const price = document.createElement("strong");
+          price.textContent = formatCurrency(product.price);
+          button.append(label, price);
+          button.addEventListener("click", () => {
+            status.textContent = `${product.name}: ${formatCurrency(product.price)}${saved ? " (saved price; confirm when online)" : ""}`;
+          });
+          results.append(button);
+        }
       }
 
       async function addToCart(productId, name, price, quantity, tax_rate) {
@@ -15130,13 +15313,13 @@
                   <div class="text-end">
                       <h6 class="mb-0">${formatCurrency(itemTotal)}</h6>
                       <div class="btn-group btn-group-sm" role="group">
-                          <button class="btn btn-outline-secondary" onclick="adjustQuantity(${index}, -1)">
+                          <button type="button" class="btn btn-outline-secondary" aria-label="Decrease quantity of ${escapeHtml(item.name)}" onclick="adjustQuantity(${index}, -1)">
                               <i class="bi bi-dash"></i>
                           </button>
-                          <button class="btn btn-outline-secondary" onclick="adjustQuantity(${index}, 1)">
+                          <button type="button" class="btn btn-outline-secondary" aria-label="Increase quantity of ${escapeHtml(item.name)}" onclick="adjustQuantity(${index}, 1)">
                               <i class="bi bi-plus"></i>
                           </button>
-                          <button class="btn btn-outline-danger" onclick="removeFromCart(${index})">
+                          <button type="button" class="btn btn-outline-danger" aria-label="Remove ${escapeHtml(item.name)} from sale" onclick="removeFromCart(${index})">
                               <i class="bi bi-trash"></i>
                           </button>
                       </div>

@@ -56,8 +56,9 @@ function fetch(){return new Promise(resolve=>{finishRequest=resolve;});}
 def test_cashier_holds_first_sale_rings_next_and_resumes_first():
     source = DASHBOARD.read_text(encoding="utf-8")
     assert 'id="pos-hold-sale"' in source and 'onclick="holdPOSSale()"' in source
-    # Hold controls sit at the top of the tab, above the catalogue/cart workspace.
-    assert source.index('<div class="pos-hold-desk">') < source.index('<div class="row pos-workspace"')
+    # Hold controls now live beside Reset in the catalogue quick actions.
+    assert source.index('onclick="clearPOSSearchAndFilter()"') < source.index('<div class="pos-hold-desk">')
+    assert source.index('<div class="pos-hold-desk">') < source.index('id="product-search"')
     run_pos(r"""
 cart = [item('Rice')];
 appliedCoupon = {code:'SAVE',discountType:'fixed',discountValue:2,minSubtotalCents:0};
