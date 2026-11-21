@@ -7534,8 +7534,9 @@
             <div class="text-center py-4"><div class="spinner-border text-primary"></div></div>
           </div>
           <div class="modal-footer">
+            <small class="text-body-secondary me-auto" id="po-print-note" hidden>Printing is available after the purchase invoice is recorded.</small>
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-            <button type="button" class="btn btn-outline-primary" id="po-print-btn" onclick="printPurchaseOrder()">
+            <button type="button" class="btn btn-outline-primary" id="po-print-btn" hidden>
               <i class="bi bi-printer"></i> Print PO
             </button>
           </div>
@@ -8879,25 +8880,46 @@
       }
 
       function drawPoTemplateBodyPreview(ctx, top, margin, contentWidth) {
-        const lineHeight = 5 * PO_CANVAS_MM;
+        const scale = PO_CANVAS_MM;
+        const gap = 4 * scale;
+        const panelWidth = (contentWidth - gap) / 2;
         ctx.save();
-        ctx.fillStyle = "#94a3b8";
         ctx.font = "600 11px Helvetica, Arial, sans-serif";
-        ctx.fillText("PO DETAILS (FIXED)", margin, top);
-        ctx.fillStyle = "#dbe2ea";
-        for (let index = 0; index < 3; index += 1) {
-          const width = contentWidth * (index === 2 ? 0.55 : 0.8);
-          ctx.fillRect(margin, top + (3 + index * 2) * PO_CANVAS_MM, width, 1.5);
-        }
-        const tableTop = top + 14 * PO_CANVAS_MM;
-        ctx.fillStyle = "#1f2937";
-        ctx.fillRect(margin, tableTop, contentWidth, 7 * PO_CANVAS_MM);
-        ctx.fillStyle = "#e2e8f0";
+        const panel = (title, left, y, count, height) => {
+          ctx.fillStyle = "#f1f5f9";
+          ctx.fillRect(left, y, panelWidth, height * scale);
+          ctx.fillStyle = "#111827";
+          ctx.fillText(title, left + gap, y + 5 * scale);
+          ctx.fillStyle = "#cbd5e1";
+          for (let line = 0; line < count; line++) {
+            ctx.fillRect(left + gap, y + (9 + line * 4) * scale, panelWidth * (line % 2 ? 0.5 : 0.7), 1.5);
+          }
+        };
+        panel("ORDER DETAILS", margin, top, 5, 30);
+        panel("INVOICE REFERENCE", margin + panelWidth + gap, top, 3, 30);
+        panel("BUYER / ORDERING BRANCH", margin, top + 33 * scale, 4, 30);
+        panel("SUPPLIER", margin + panelWidth + gap, top + 33 * scale, 5, 30);
+        const tableTop = top + 74 * scale;
+        ctx.fillStyle = "#111827";
+        ctx.fillText("ORDER LINE ITEMS  |  USD", margin, tableTop - 2 * scale);
+        ctx.fillStyle = "#1e293b";
+        ctx.fillRect(margin, tableTop, contentWidth, 8 * scale);
+        ctx.fillStyle = "#ffffff";
+        ["Line", "Item description", "SKU", "Qty", "Unit", "Unit price", "Line total"].forEach((label, index) => {
+          ctx.fillText(label, margin + contentWidth * [0.012, 0.077, 0.377, 0.527, 0.622, 0.712, 0.862][index],
+            tableTop + 5 * scale);
+        });
         for (let index = 0; index < 4; index += 1) {
-          ctx.fillRect(margin, tableTop + 11 * PO_CANVAS_MM + index * lineHeight, contentWidth, 1.25);
+          ctx.fillStyle = index % 2 ? "#f1f5f9" : "#ffffff";
+          ctx.fillRect(margin, tableTop + (8 + index * 8) * scale, contentWidth, 8 * scale);
+          ctx.fillStyle = "#cbd5e1";
+          ctx.fillRect(margin, tableTop + (16 + index * 8) * scale, contentWidth, 1.25);
         }
-        ctx.fillStyle = "#94a3b8";
-        ctx.fillRect(margin + contentWidth * 0.68, tableTop + 11 * PO_CANVAS_MM + 4 * lineHeight, contentWidth * 0.32, 1.5);
+        ctx.fillStyle = "#f1f5f9";
+        ctx.fillRect(margin, tableTop + 40 * scale, contentWidth, 8 * scale);
+        ctx.fillStyle = "#111827";
+        ctx.textAlign = "right";
+        ctx.fillText("Order total (USD)", margin + contentWidth * 0.84, tableTop + 45 * scale);
         ctx.restore();
       }
 
@@ -9005,7 +9027,7 @@
         ctx.strokeRect(margin, margin, contentWidth, poTemplateHeaderHeight());
         ctx.restore();
 
-        drawPoTemplateBodyPreview(ctx, margin + poTemplateHeaderHeight() + 12 * PO_CANVAS_MM, margin, contentWidth);
+        drawPoTemplateBodyPreview(ctx, margin + poTemplateHeaderHeight() + 5 * PO_CANVAS_MM, margin, contentWidth);
         drawPoTemplateFooterPreview(ctx, margin, contentWidth);
 
         poTemplateDraft.elements.forEach((element) => {
@@ -22483,7 +22505,7 @@
       let selectedReceivePO = null;
       let receivingInFlight = false;
       let receivingOpenSequence = 0;
-      let currentPOId = null;
+      let purchaseOrderDetailsRequest = 0;
       let cancelPOId = null;
 
       function loadPOSupplierFilter() {
@@ -22741,9 +22763,9 @@
                         <i class="bi bi-x-lg"></i>
                       </button>
                     ` : ''}
-                    <button class="btn btn-outline-primary" onclick="printPurchaseOrderDirect(${po.id})" title="Print">
+                    ${po.invoice ? `<button class="btn btn-outline-primary" onclick="printPurchaseOrderDirect(${po.id})" title="Print purchase order" aria-label="Print purchase order">
                       <i class="bi bi-printer"></i>
-                    </button>
+                    </button>` : ''}
                   </div>
                 </td>
               `;
@@ -22824,7 +22846,13 @@
             <dt>Supplier invoice reference</dt><dd>${escapeHtml(invoice.supplier_reference)}</dd>
             <dt>Invoice date</dt><dd>${escapeHtml(invoice.invoice_date)}</dd>
             <dt>Matched total</dt><dd>${escapeHtml(invoice.total_amount)} ${escapeHtml(invoice.currency)}</dd></dl>
-            ${lineTable(invoice.items, 'quantity')}`;
+            ${lineTable(invoice.items, 'quantity')}
+            <button type="button" class="btn btn-outline-primary" data-print-po>
+              <i class="bi bi-printer"></i> Print PO
+            </button>`;
+          content.querySelector('[data-print-po]').onclick = () => {
+            if (current()) return printPurchaseOrderDirect(po.id);
+          };
         };
         title.textContent = type === 'receipts' ? 'Goods Receipt Notes (GRNs)' : 'Purchase Invoice';
         content.textContent = 'Loading…';
@@ -22864,7 +22892,7 @@
           content.innerHTML = `<form>
             <p>PO <strong>${escapeHtml(po.po_number)}</strong> · ${escapeHtml(po.supplier_name)}<br>
               Expected total: <strong>${escapeHtml(formatCurrency(po.total_amount))}</strong></p>
-            <p class="small text-muted">Match the supplier invoice to the fully received PO. This does not post stock or record a payment.
+            <p class="small text-muted">Recording the supplier invoice unlocks PO printing. This does not post stock or record a payment.
               ${po.has_goods_receipt ? '' : 'This order was received before GRN tracking; no historical GRN will be created.'}</p>
             <label class="form-label d-block">Supplier invoice reference<input class="form-control" name="supplier_reference" maxlength="120" required></label>
             <label class="form-label d-block">Supplier invoice date<input class="form-control" type="date" name="invoice_date" required></label>
@@ -22903,21 +22931,28 @@
       });
 
       function viewPurchaseOrderDetails(poId) {
-        const modal = new bootstrap.Modal(document.getElementById("purchaseOrderDetailsModal"));
+        const panel = document.getElementById("purchaseOrderDetailsModal");
+        const modal = bootstrap.Modal.getOrCreateInstance(panel);
         const content = document.getElementById("po-details-content");
+        const print = document.getElementById("po-print-btn");
+        const printNote = document.getElementById("po-print-note");
+        const requestId = ++purchaseOrderDetailsRequest;
+        const identity = inventoryIdentity();
+        const current = () => requestId === purchaseOrderDetailsRequest && inventoryIdentity() === identity;
+        print.hidden = true;
+        print.onclick = null;
+        printNote.hidden = true;
         content.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div></div>';
         modal.show();
-        currentPOId = poId;
-        const identity = inventoryIdentity();
 
-        fetch(`/api/purchase_orders/${poId}`)
+        return fetch(`/api/purchase_orders/${poId}`)
           .then(async response => {
             const data = await response.json();
             if (!response.ok) throw new Error(data.message || "Purchase order details unavailable");
             return data;
           })
           .then((po) => {
-            if (currentPOId !== poId || inventoryIdentity() !== identity) return;
+            if (!current()) return;
             const statusColors = {
               'draft': 'secondary', 'pending': 'warning', 'approved': 'info',
               'partially_received': 'primary', 'received': 'success', 'cancelled': 'danger'
@@ -22928,7 +22963,7 @@
               <div class="row mb-3">
                 <div class="col-md-6">
                   <h6 class="text-muted">PO Number</h6>
-                  <p class="fs-5">${po.po_number}</p>
+                  <p class="fs-5">${escapeHtml(po.po_number)}</p>
                 </div>
                 <div class="col-md-6 text-end">
                   <h6 class="text-muted">Status</h6>
@@ -22939,8 +22974,8 @@
               <div class="row mb-3">
                 <div class="col-md-6">
                   <h6 class="text-muted">Supplier</h6>
-                  <p><strong>${po.supplier_name}</strong><br>
-                  <small>${po.supplier_phone || ''} ${po.supplier_email ? '<br>' + po.supplier_email : ''}</small></p>
+                  <p><strong>${escapeHtml(po.supplier_name)}</strong><br>
+                  <small>${escapeHtml(po.supplier_phone || '')} ${po.supplier_email ? '<br>' + escapeHtml(po.supplier_email) : ''}</small></p>
                 </div>
                 <div class="col-md-6">
                   <h6 class="text-muted">Product Branch</h6>
@@ -22958,7 +22993,7 @@
                 </div>
                 <div class="col-md-4">
                   <h6 class="text-muted">Created By</h6>
-                  <p>${po.created_by || '-'}</p>
+                  <p>${escapeHtml(po.created_by || '-')}</p>
                 </div>
                 <div class="col-md-4">
                   <h6 class="text-muted">Expected Delivery</h6>
@@ -22969,7 +23004,7 @@
                 <div class="row mb-3">
                   <div class="col-md-6">
                     <h6 class="text-muted">Approved By</h6>
-                    <p>${po.approved_by}</p>
+                    <p>${escapeHtml(po.approved_by)}</p>
                   </div>
                   <div class="col-md-6">
                     <h6 class="text-muted">Approved At</h6>
@@ -22979,13 +23014,13 @@
               ` : ''}
               ${po.cancelled_reason ? `
                 <div class="alert alert-warning">
-                  <strong>Cancelled:</strong> ${po.cancelled_reason}
+                  <strong>Cancelled:</strong> ${escapeHtml(po.cancelled_reason)}
                 </div>
               ` : ''}
               ${po.notes ? `
                 <div class="mb-3">
                   <h6 class="text-muted">Notes</h6>
-                  <p>${po.notes}</p>
+                  <p>${escapeHtml(po.notes)}</p>
                 </div>
               ` : ''}
               <hr>
@@ -23015,12 +23050,21 @@
               </table>
               </div>
             `;
+            printNote.hidden = Boolean(po.invoice);
+            print.hidden = !po.invoice;
+            if (po.invoice) print.onclick = () => {
+              if (current()) return printPurchaseOrderDirect(poId);
+            };
           })
           .catch((error) => {
-            if (currentPOId !== poId || inventoryIdentity() !== identity) return;
+            if (!current()) return;
             content.innerHTML = `<div class="alert alert-danger">${escapeHtml(error.message || "Failed to load purchase order details")}</div>`;
           });
       }
+
+      document.getElementById('purchaseOrderDetailsModal')?.addEventListener('hide.bs.modal', () => {
+        ++purchaseOrderDetailsRequest;
+      });
 
       function submitPurchaseOrderForApproval(poId) {
         showConfirmDialog(
@@ -23153,12 +23197,6 @@
           .finally(() => {
             setCancelPurchaseOrderSaving(false);
           });
-      }
-
-      function printPurchaseOrder() {
-        if (currentPOId) {
-          return openReportDownload(`/api/purchase_orders/${currentPOId}/print`);
-        }
       }
 
       function printPurchaseOrderDirect(poId) {

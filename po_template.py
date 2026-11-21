@@ -12,11 +12,14 @@ from __future__ import annotations
 import copy
 import os
 from typing import Any, Mapping
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_RIGHT
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfbase.pdfmetrics import stringWidth
-from reportlab.platypus import Flowable
+from reportlab.platypus import Flowable, LongTable, Paragraph, Spacer, Table
 
 
 PO_TEMPLATE_VERSION = 3
@@ -336,5 +339,88 @@ def draw_po_template_footer(
             canvas.drawString(margin, baseline, text)
         if footer["show_page_number"]:
             canvas.drawRightString(page_width - margin, baseline, f"Page {document.page}")
+    finally:
+        canvas.restoreState()
+
+
+def purchase_order_body(width, *, details, buyer, supplier, invoice, lines, currency, total, notes):
+    """Build the fixed PO body; labels are trusted and all stored values are plain text."""
+    ink = colors.HexColor('#111827')
+    muted = colors.HexColor('#475569')
+    rule = colors.HexColor('#cbd5e1')
+    shade = colors.HexColor('#f1f5f9')
+    band = colors.HexColor('#1e293b')
+    body = ParagraphStyle('PO body', fontName='Helvetica', fontSize=9, leading=12, textColor=ink)
+    field = ParagraphStyle('PO field', parent=body, spaceBefore=3)
+    heading = ParagraphStyle('PO heading', parent=body, fontName='Helvetica-Bold', keepWithNext=True,
+                             spaceAfter=5)
+    numeric = ParagraphStyle('PO number', parent=body, alignment=TA_RIGHT)
+    column = ParagraphStyle('PO column', parent=body, fontName='Helvetica-Bold', fontSize=8,
+                            textColor=colors.white)
+    column_right = ParagraphStyle('PO right column', parent=column, alignment=TA_RIGHT)
+    total_style = ParagraphStyle('PO total', parent=numeric, fontName='Helvetica-Bold', fontSize=10)
+
+    def plain_text(value):
+        plain = str(value).replace('\r\n', '\n').replace('\r', '\n')
+        return escape(plain).replace('\n', '<br/>')
+
+    def text(value, style=body):
+        return Paragraph(plain_text(value), style)
+
+    def block(title, fields):
+        cells = [text(title, heading)]
+        for name, value in fields:
+            if value is not None and str(value).strip():
+                cells.append(Paragraph(f'<font color="{muted.hexval()}"><b>{escape(name)}:</b></font> '
+                                       f'{plain_text(value)}', field))
+        return cells
+
+    def panels(left, right):
+        return Table([[left, '', right]], colWidths=[(width - 10) / 2, 10, (width - 10) / 2], style=[
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('BACKGROUND', (0, 0), (0, 0), shade),
+            ('BACKGROUND', (2, 0), (2, 0), shade),
+            ('TOPPADDING', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+            ('LEFTPADDING', (0, 0), (-1, -1), 10),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+        ])
+
+    headers = ('Line', 'Item description', 'SKU', 'Qty', 'Unit', 'Unit price', 'Line total')
+    rows = [[text(name, column if index < 3 or index == 4 else column_right)
+             for index, name in enumerate(headers)]]
+    for number, (name, sku, quantity, unit, unit_price, line_total) in enumerate(lines, 1):
+        rows.append([text(number), text(name), text(sku or '-'), text(quantity, numeric),
+                     text(unit or '-'), text(unit_price, numeric), text(line_total, numeric)])
+    rows.append([text(f'Order total ({currency})', total_style), '', '', '', '', '', text(total, total_style)])
+    table = LongTable(rows, colWidths=[width * fraction for fraction in (.065, .30, .15, .095, .09, .15, .15)],
+                      repeatRows=1, style=[
+        ('BACKGROUND', (0, 0), (-1, 0), band),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, shade]),
+        ('LINEBELOW', (0, 1), (-1, -2), .35, rule),
+        ('SPAN', (0, -1), (-2, -1)),
+        ('BACKGROUND', (0, -1), (-1, -1), shade),
+        ('LINEABOVE', (0, -1), (-1, -1), 1, band),
+        ('NOSPLIT', (0, -2), (-1, -1)),
+    ])
+    elements = [panels(block('ORDER DETAILS', details), block('INVOICE REFERENCE', invoice)), Spacer(1, 8),
+                panels(block('BUYER / ORDERING BRANCH', buyer), block('SUPPLIER', supplier)), Spacer(1, 12),
+                text(f'ORDER LINE ITEMS  |  {currency}', heading), table]
+    if notes and notes.strip():
+        elements.extend((Spacer(1, 12), text('ORDER NOTES', heading), text(notes)))
+    return elements
+
+
+def draw_po_continuation(canvas, document, po_number):
+    """Identify detached continuation pages without repeating the full letterhead."""
+    canvas.saveState()
+    try:
+        canvas.setFillColor(colors.HexColor('#475569'))
+        canvas.setFont('Helvetica-Bold', 9)
+        canvas.drawString(document.leftMargin + 6, document.pagesize[1] - 11 * mm,
+                          f'PURCHASE ORDER  |  {_pdf_safe_text(po_number)}  |  Continued')
     finally:
         canvas.restoreState()

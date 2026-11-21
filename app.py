@@ -55,10 +55,12 @@ from po_template import (
     PO_TEMPLATE_SETTING,
     PO_TEMPLATE_TOKENS,
     PurchaseOrderTemplateHeader,
+    draw_po_continuation,
     draw_po_template_footer,
     draw_po_template_logo,
     normalize_po_template,
     po_template_page_size,
+    purchase_order_body,
 )
 from reports import (
     LOW_STOCK_THRESHOLD,
@@ -9006,7 +9008,7 @@ def purchase_order_product_branch_label(po, items=None):
     return branch.name if branch else 'Unassigned'
 
 
-def purchase_order_letterhead_context(po):
+def purchase_order_letterhead_context(po, currency_code):
     """Token values for the branch's purchase-order letterhead.
 
     Client details stay on the branch record (plus the receipt brand override),
@@ -9030,7 +9032,7 @@ def purchase_order_letterhead_context(po):
         'supplier_name': supplier.name if supplier else '',
         'supplier_contact': (supplier.contact_person or '') if supplier else '',
         'supplier_phone': (supplier.phone or '') if supplier else '',
-        'total': format_currency(po.total_amount),
+        'total': format_currency(po.total_amount, currency_code),
     }
 
 
@@ -9452,121 +9454,80 @@ def api_receive_purchase_order(po_id):
 @app.route('/api/purchase_orders/<int:po_id>/print', methods=['GET'])
 @manager_or_boss_required
 def api_print_purchase_order(po_id):
-    """Generate the original purchase order PDF, not a supplier invoice."""
-    po = db.session.get(PurchaseOrder, po_id)
+    """Generate the purchase order PDF only after a matching invoice is recorded."""
+    po = PurchaseOrder.query.options(joinedload(PurchaseOrder.supplier)).filter_by(id=po_id).first()
     if not po:
         return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
-    if len(PurchaseOrderItem.query.with_entities(PurchaseOrderItem.id).filter_by(
-        purchase_order_id=po_id).limit(ORDER_LINE_LIMIT + 1).all()) > ORDER_LINE_LIMIT:
+    invoice = db.session.get(PurchaseInvoice, po_id, options=[defer(PurchaseInvoice.snapshot)])
+    if not invoice:
+        return jsonify(success=False, message='Record the purchase invoice before printing this purchase order.'), 409
+    items = PurchaseOrderItem.query.filter_by(purchase_order_id=po_id).options(
+        joinedload(PurchaseOrderItem.product).joinedload(Product.unit_ref)
+    ).order_by(PurchaseOrderItem.id).limit(ORDER_LINE_LIMIT + 1).all()
+    if len(items) > ORDER_LINE_LIMIT:
         raise InventoryQueryError('This legacy order exceeds the 500-line print limit.', 413)
-    po = PurchaseOrder.query.options(selectinload(PurchaseOrder.items).joinedload(
-        PurchaseOrderItem.product)).filter_by(id=po_id).first()
-    
+
     buffer = io.BytesIO()
     branch = db.session.get(Branch, po.branch_id) if po.branch_id else None
     template = get_po_template(branch)
     logo_filename = get_branch_setting(PO_TEMPLATE_LOGO_SETTING, '', po.branch_id)
     page_width, page_height = (dimension * mm for dimension in po_template_page_size(template))
     logo_path = os.path.join(app.config['PO_LOGO_FOLDER'], logo_filename) if logo_filename else None
-    letterhead = purchase_order_letterhead_context(po)
+    letterhead = purchase_order_letterhead_context(po, invoice.currency)
     margin = template['page_inset_mm'] * mm
 
-    doc = SimpleDocTemplate(buffer, pagesize=(page_width, page_height),
+    doc = SimpleDocTemplate(buffer, pagesize=(page_width, page_height), title=f'Purchase Order {po.po_number}',
                            rightMargin=margin, leftMargin=margin,
                            topMargin=margin, bottomMargin=20*mm)
-    styles = getSampleStyleSheet()
     elements = [
         PurchaseOrderTemplateHeader(template, letterhead),
-        Spacer(1, 6 * mm),
+        Spacer(1, 8),
     ]
-    
-    # PO Info
-    info_data = [
-        ['PO Number:', po.po_number],
-        ['Date:', po.created_at.strftime('%Y-%m-%d')],
-        ['Status:', po.status.upper()],
-    ]
-    info_data.append(['Product Branch:', purchase_order_product_branch_label(po)])
-    if po.expected_delivery_date:
-        info_data.append(['Expected Delivery:', po.expected_delivery_date.strftime('%Y-%m-%d')])
-    
-    info_table = Table(info_data, colWidths=[80, 200])
-    info_table.setStyle(TableStyle([
-        ('FONT', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-    ]))
-    elements.append(info_table)
-    elements.append(Spacer(1, 15))
-    
-    # Supplier Info
-    elements.append(Paragraph("Supplier Information", styles['Heading2']))
-    supplier_info = [
-        ['Name:', po.supplier.name if po.supplier else 'N/A'],
-        ['Contact:', po.supplier.contact_person if po.supplier and po.supplier.contact_person else '-'],
-        ['Phone:', po.supplier.phone if po.supplier and po.supplier.phone else '-'],
-        ['Email:', po.supplier.email if po.supplier and po.supplier.email else '-'],
-    ]
-    supplier_table = Table(supplier_info, colWidths=[80, 200])
-    supplier_table.setStyle(TableStyle([
-        ('FONT', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
-    ]))
-    elements.append(supplier_table)
-    elements.append(Spacer(1, 15))
-    
-    # Items Table
-    elements.append(Paragraph("Items", styles['Heading2']))
-    items_header = ['Product Name', 'SKU', 'Qty', 'Unit Cost', 'Total']
-    items_data = [items_header]
-    
-    for item in po.items:
-        line_total = item.ordered_qty * item.unit_cost
-        items_data.append([
-            item.product.name if item.product else 'Unknown',
-            Paragraph(html.escape(item.product.sku or '') if item.product else '', styles['Normal']),
-            str(item.ordered_qty),
-            format_currency(item.unit_cost),
-            format_currency(line_total)
-        ])
-    
-    # Add total row
-    items_data.append(['', '', '', 'TOTAL:', format_currency(po.total_amount)])
-    
-    items_table = Table(items_data, colWidths=[150, 80, 40, 70, 70])
-    items_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-        ('FONT', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONT', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('GRID', (0, 0), (-1, -2), 1, colors.black),
-    ]))
-    elements.append(items_table)
-    
-    # Notes
-    if po.notes:
-        elements.append(Spacer(1, 15))
-        elements.append(Paragraph("Notes", styles['Heading2']))
-        elements.append(Paragraph(po.notes, styles['Normal']))
-    
-    # Footer: the saved template stamps the client's note and page numbers on
-    # every page, so multi-page orders keep the same letterhead identity.
+    supplier = po.supplier
+    lines = []
+    for item in items:
+        product = item.product
+        cost = safe_to_decimal(item.unit_cost)
+        lines.append((product.name if product else 'Unknown product', product.sku if product else None,
+                      item.ordered_qty, product.unit_ref.symbol if product and product.unit_ref else None,
+                      f'{round_money(cost):,.2f}', f'{round_money(cost * item.ordered_qty):,.2f}'))
+
+    elements.extend(purchase_order_body(
+        doc.width - 12,  # SimpleDocTemplate frames have 6pt padding on each side.
+        details=[('PO number', po.po_number), ('Order date', letterhead['po_date']),
+                 ('Expected delivery', letterhead['expected_delivery'] or 'Not specified'),
+                 ('Order status', purchase_order_status_label(po.status)),
+                 ('Product branch', purchase_order_product_branch_label(po, items))],
+        buyer=[('Company', letterhead['brand_name']), ('Ordering branch', letterhead['branch_name']),
+               ('Address', letterhead['branch_address']), ('Phone', letterhead['branch_phone']),
+               ('Email', letterhead['branch_email'])],
+        supplier=[('Company', supplier.name if supplier else 'Unknown supplier'),
+                  ('Contact', supplier.contact_person if supplier else None),
+                  ('Address', supplier.address if supplier else None),
+                  ('Phone', supplier.phone if supplier else None), ('Email', supplier.email if supplier else None),
+                  ('Tax ID', supplier.tax_id if supplier else None),
+                  ('Payment terms on file', supplier.payment_terms if supplier else None)],
+        invoice=[('Supplier invoice no.', invoice.supplier_reference), ('Invoice date', invoice.invoice_date.isoformat()),
+                 ('Matched total', f'{Decimal(invoice.total_minor) / 100:,.2f} {invoice.currency}')],
+        lines=lines, currency=invoice.currency, total=f'{round_money(po.total_amount):,.2f}', notes=po.notes,
+    ))
+
     def stamp_footer(canvas, document):
         draw_po_template_footer(canvas, document, template, letterhead)
 
+    def stamp_later_page(canvas, document):
+        draw_po_continuation(canvas, document, po.po_number)
+        stamp_footer(canvas, document)
+
     # afterPage runs after all flowables, so the logo may cover text and tables.
     doc.afterPage = lambda: draw_po_template_logo(doc.canv, doc, template, logo_path)
-    doc.build(elements, onFirstPage=stamp_footer, onLaterPages=stamp_footer)
+    doc.build(elements, onFirstPage=stamp_footer, onLaterPages=stamp_later_page)
     buffer.seek(0)
     
     response = make_response(buffer.getvalue())
     response.headers['Content-Type'] = 'application/pdf'
     response.headers['Content-Disposition'] = f'inline; filename=PO_{po.po_number}.pdf'
+    response.headers['Cache-Control'] = 'private, no-store'
     return response
 
 # Supplier API Endpoints

@@ -86,9 +86,13 @@ class PurchaseReceivingTests(unittest.TestCase):
         m, client = self.m, self.client()
         uri = f'/api/purchase_orders/{self.po}'
         self.assertEqual(self.invoice().status_code, 409)
+        blocked = client.get(uri + '/print')
+        self.assertEqual(blocked.status_code, 409)
+        self.assertIn('Record the purchase invoice', blocked.json['message'])
         part = self.receive(4, idempotency_key='part').json
         self.assertEqual(part['status'], 'partially_received')
         self.assertEqual(self.invoice().status_code, 409)
+        self.assertEqual(client.get(uri + '/print').status_code, 409)
         self.assertEqual(client.post(uri + '/cancel', json={}).status_code, 409)
         self.assertEqual(self.receive(4, idempotency_key='part').json['grn_number'], part['grn_number'])
         full = self.receive(6, idempotency_key='full').json
@@ -100,6 +104,7 @@ class PurchaseReceivingTests(unittest.TestCase):
         self.assertEqual(older['items'][0]['actor_id'], self.user)
         self.assertEqual(self.invoice(total_amount='29.99').status_code, 409)
         self.assertEqual(self.invoice(total_amount='NaN').status_code, 400)
+        self.assertEqual(client.get(uri + '/print').status_code, 409)
         self.assertEqual(self.client('cashier').get(uri + '/receipts').status_code, 403)
         self.assertEqual(self.client('cashier').post(uri + '/invoice', json={}).status_code, 403)
 
@@ -110,6 +115,10 @@ class PurchaseReceivingTests(unittest.TestCase):
         invoice = client.get(uri + '/invoice').json['invoice']
         self.assertEqual(invoice['items'][0]['quantity'], 10)
         self.assertEqual(invoice['total_amount'], '30.00')
+        pdf = client.get(uri + '/print')
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(pdf.mimetype, 'application/pdf')
+        self.assertIn('no-store', pdf.headers['Cache-Control'])
         order = client.get('/api/purchase_orders', query_string={'status': 'invoiced', 'view': 'register'}).json['items'][0]
         self.assertEqual(order['status'], 'received')
         self.assertEqual(order['invoice']['supplier_reference'], 'BILL-100')

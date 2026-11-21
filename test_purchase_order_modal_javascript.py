@@ -23,13 +23,14 @@ def test_invoice_form_renders_conflict_and_can_retry():
 const assert = require('node:assert/strict');
 let purchaseDocumentRequest = 0;
 const button = {disabled: false};
+const printButton = {};
 const error = {textContent: ''};
 let submit, postCount = 0, refreshes = 0;
 const form = {
   addEventListener(_, callback) { submit = callback; },
   querySelector(selector) { return selector === 'button' ? button : error; },
 };
-const content = {querySelector: () => form};
+const content = {querySelector: selector => selector === '[data-print-po]' ? printButton : form};
 const title = {};
 const document = {getElementById(id) { return id.endsWith('content') ? content : title; }};
 const bootstrap = {Modal: {getOrCreateInstance: () => ({show() {}})}};
@@ -38,6 +39,8 @@ const escapeHtml = (value) => String(value).replaceAll('<', '&lt;');
 const formatCurrency = String;
 const loadPurchaseOrders = () => { refreshes++; };
 const showToast = () => {};
+let printed;
+const printPurchaseOrderDirect = id => { printed = id; };
 const FormData = class { [Symbol.iterator]() { return Object.entries({supplier_reference: '<REF>', invoice_date: '2026-11-18', total_amount: '30.00'})[Symbol.iterator](); } };
 const invoice = {supplier_reference: '<REF>', invoice_date: '2026-11-18', total_amount: '30.00',
   currency: 'USD', po_number: 'PO-1', supplier_name: 'Supplier', items: []};
@@ -54,14 +57,62 @@ const fetch = async (url, options) => {
   await submit({preventDefault() {}});
   assert.equal(error.textContent, 'Total does not match');
   assert.equal(button.disabled, false);
+  assert.doesNotMatch(content.innerHTML, /data-print-po/);
   await submit({preventDefault() {}});
   await new Promise(setImmediate);
   assert.equal(title.textContent, 'Purchase Invoice');
   assert.match(content.innerHTML, /&lt;REF>/);
   assert.equal(refreshes, 1);
+  printButton.onclick();
+  assert.equal(printed, 1);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
     result = subprocess.run([NODE, "-"], input=script, text=True, encoding="utf-8", capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def test_po_details_print_waits_for_the_current_invoiced_order():
+    script = _function(SOURCE, 'viewPurchaseOrderDetails') + """
+const assert = require('node:assert/strict');
+let purchaseOrderDetailsRequest = 0;
+let printed;
+const printPurchaseOrderDirect = id => { printed = id; };
+const elements = {};
+const document = {getElementById: id => elements[id] ||= {}};
+const bootstrap = {Modal: {getOrCreateInstance: () => ({show() {}})}};
+const inventoryIdentity = () => 'manager/branch';
+const escapeHtml = String, formatCurrency = String;
+const pending = {};
+const fetch = url => new Promise(resolve => { pending[url.split('/').pop()] = resolve; });
+const finish = (id, invoice) => pending[id]({ok: true, json: async () => ({
+  id, status: 'received', created_at: '2026-11-18', items: [], invoice,
+})});
+(async () => {
+  const print = document.getElementById('po-print-btn');
+  const note = document.getElementById('po-print-note');
+  const old = viewPurchaseOrderDetails(1);
+  assert.equal(print.hidden, true);
+  const fresh = viewPurchaseOrderDetails(2);
+  finish(2, null);
+  await fresh;
+  assert.equal(print.hidden, true);
+  assert.equal(note.hidden, false);
+  finish(1, {supplier_reference: 'INV-1'});
+  await old;
+  assert.equal(print.hidden, true);
+  const invoiced = viewPurchaseOrderDetails(3);
+  finish(3, {supplier_reference: 'INV-3'});
+  await invoiced;
+  assert.equal(print.hidden, false);
+  assert.equal(note.hidden, true);
+  print.onclick();
+  assert.equal(printed, 3);
+  viewPurchaseOrderDetails(4);
+  assert.equal(print.hidden, true);
+  assert.equal(print.onclick, null);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run([NODE, '-'], input=script, text=True, encoding='utf-8', capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
 
 

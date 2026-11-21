@@ -585,6 +585,7 @@ An admin account is auto-created if missing:
 - Approval workflow with status tracking
 - Record one GRN per accepted delivery batch; partial receipts update warehouse stock but must be completed before invoicing
 - Record one matched supplier invoice per fully received PO, without creating a payment or posting stock again
+- Print the individual PO only after its supplier invoice is recorded. The PDF includes the invoice reference, order and supplier details, line items, and totals. It is still a purchase order, not an invoice.
 - Cancel unreceived orders with reason logging; orders linked to a GRN or invoice are protected from hard deletion
 - Download the filtered register as a branded PDF or Excel workbook (Excel adds a line-item sheet)
 

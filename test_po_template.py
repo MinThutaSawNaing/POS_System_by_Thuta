@@ -404,25 +404,37 @@ class PoTemplateApiTests(unittest.TestCase):
         )
         self.assertEqual(switched.status_code, 409)
 
-    def printed_order_id(self):
+    def printed_order_id(self, line_count=1):
+        from datetime import datetime
+
         module = self.module
         with self.app.app_context():
             supplier = module.Supplier(name="Golden Rice", contact_person="Daw Mya",
-                                       phone="+95 9 111", branch_id=self.a)
-            product = module.Product(name="Rice bag", price=10, cost=8, stock=2,
-                                     branch_id=self.a)
-            module.db.session.add_all([supplier, product])
+                                       phone="+95 9 111", address="24 Market Road",
+                                       payment_terms="Net 30", tax_id="TAX-123", branch_id=self.a)
+            unit = module.Unit(name="Bag", symbol="bag", unit_type="count")
+            product = module.Product(name="Rice & grain <bulk>", sku="RICE-01", price=10, cost=8, stock=2,
+                                     branch_id=self.a, unit_ref=unit)
+            module.db.session.add_all([supplier, product, unit])
             module.db.session.flush()
             order = module.PurchaseOrder(po_number="PO-TPL-1", supplier_id=supplier.id,
-                                         status="draft", total_amount=16,
+                                         status="received", total_amount=16 * line_count,
+                                         expected_delivery_date=datetime(2026, 11, 17),
+                                         notes="Store & handle <carefully>\nKeep dry.",
                                          created_by=self.user, branch_id=self.a)
             module.db.session.add(order)
             module.db.session.flush()
-            module.db.session.add(module.PurchaseOrderItem(
+            module.db.session.add_all(module.PurchaseOrderItem(
                 purchase_order_id=order.id, product_id=product.id,
-                ordered_qty=2, unit_cost=8))
+                ordered_qty=2, received_qty=2, unit_cost=8) for _ in range(line_count))
             module.db.session.commit()
-            return order.id
+            po_id = order.id
+        invoice = self.client().post(f"/api/purchase_orders/{po_id}/invoice", json={
+            'supplier_reference': 'INV-TPL-44', 'invoice_date': '2026-11-18',
+            'total_amount': f'{16 * line_count}.00',
+        })
+        self.assertEqual(invoice.status_code, 201, invoice.json)
+        return po_id
 
     def test_printed_purchase_order_uses_the_saved_letterhead(self):
         po_id = self.printed_order_id()
@@ -465,6 +477,27 @@ class PoTemplateApiTests(unittest.TestCase):
         self.assertIsNotNone(media_box)
         self.assertAlmostEqual(float(media_box[1]), 215.9 * mm, places=2)
         self.assertAlmostEqual(float(media_box[2]), 279.4 * mm, places=2)
+
+    def test_long_order_prints_invoice_reference_and_repeats_item_header(self):
+        from unittest.mock import patch
+        from reportlab import rl_config
+
+        po_id = self.printed_order_id(line_count=65)
+        client = self.client()
+        self.assertEqual(self.save_template(client, page_size='Letter').status_code, 200)
+        with patch.object(rl_config, 'pageCompression', 0), patch.object(self.module, 'get_currency_code', return_value='MMK'):
+            response = client.get(f'/api/purchase_orders/{po_id}/print')
+        self.assertEqual(response.status_code, 200)
+        pdf = response.data
+        # ReportLab may emit escaped angle brackets as separate PDF text runs.
+        pdf = pdf.replace(b') Tj (', b'')
+        for text in (b'INV-TPL-44', b'2026-11-18', b'2026-11-17', b'24 Market Road', b'Net 30',
+                     b'TAX-123', b'Rice & grain <bulk>', b'RICE-01', b'(bag)', b'1,040.00 USD',
+                     b'Store & handle <carefully>', b'Keep dry.', b'This is an internal document',
+                     b'PURCHASE ORDER  |  PO-TPL-1  |  Continued', b'Page 2'):
+            self.assertTrue(text in pdf, f'Missing printed text: {text!r}')
+        self.assertGreater(pdf.count(b'Item description'), 1)
+        self.assertEqual(pdf.count(b'Order total'), 1)
 
     def test_logo_geometry_round_trips_and_prints_as_a_foreground_overlay(self):
         from unittest.mock import patch

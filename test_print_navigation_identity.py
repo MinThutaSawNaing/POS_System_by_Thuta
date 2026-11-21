@@ -77,7 +77,7 @@ def test_dashboard_navigation_real_helpers():
     source = (Path(__file__).parent / 'templates/dashboard.html').read_text(encoding='utf-8')
     names = ['dashboardIdentityUrl', 'loadUrlInPwaPrintFrame', 'openReportDownload',
              'openReceiptWindow', 'openReturnExchangeReceipt', 'printDeliverySlip',
-             'openDeliveryReportWindow', 'printDebtReceipt', 'printPurchaseOrder',
+             'openDeliveryReportWindow', 'printDebtReceipt',
              'printPurchaseOrderDirect']
     helpers = '\n'.join(_function(source, name) for name in names)
     out = _run_node_script('''
@@ -95,7 +95,7 @@ function createPwaPrintFrame() { return frame; }
 function blockStaleDashboard() {dashboardSessionStale = true;}
 function isStandalonePWA() {return standalone;}
 function showToast() {}
-let currentDebtId = 1, currentPOId = 2;
+let currentDebtId = 1;
 ''' + helpers + '''
 const external = dashboardIdentityUrl('https://outside.test/api/export');
 const override = dashboardIdentityUrl('/api/export?pos_user_id=999&pos_role=boss&format=xlsx#top');
@@ -104,7 +104,7 @@ openReturnExchangeReceipt('return');
 printDeliverySlip(3);
 openDeliveryReportWindow();
 openReportDownload('/api/warehouse/export?format=xlsx');
-printDebtReceipt(); printPurchaseOrder(); printPurchaseOrderDirect(4);
+printDebtReceipt(); printPurchaseOrderDirect(4);
 standalone = true;
 openReceiptWindow('sale', true); openReturnExchangeReceipt('return'); printDeliverySlip(3);
 const count = calls.length;
@@ -120,7 +120,7 @@ console.log(JSON.stringify({external, override, calls, count, removed, stale: da
     assert out['override'] == '/api/export?pos_user_id=7&pos_role=cashier&format=xlsx&pos_branch_id=3#top'
     assert len(out['calls']) == out['count']
     navigations = [url for url in out['calls'] if url != 'about:blank']
-    assert len(navigations) == 11
+    assert len(navigations) == 10
     assert all('pos_user_id=7' in url and 'pos_role=cashier' in url and 'pos_branch_id=3' in url
                for url in navigations)
 
