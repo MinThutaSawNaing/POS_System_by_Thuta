@@ -62,6 +62,44 @@ def test_product_table_is_an_accessible_independent_scroll_region():
     assert 'top: 0;' in header_css
 
 
+def test_catalog_scope_comes_between_search_and_actions():
+    section = SOURCE.split('<!-- Products Section -->', 1)[1].split('<!-- Branch Inventory Section -->', 1)[0]
+    assert section.index('id="products-search-hint"') < section.index('id="products-catalog-scope"') < section.index('id="products-branch-actions"')
+    assert 'Total Current Products: <strong id="products-total-count">' in section
+
+
+@pytest.mark.skipif(shutil.which('node') is None, reason='Node.js is required')
+def test_product_total_ignores_an_older_scope_response():
+    helper = _function(SOURCE, 'loadProductTotal')
+    result = run_products_script(r"""
+const assert = require('node:assert/strict');
+const count = {dataset: {}, textContent: '—'};
+const document = {getElementById: () => count};
+const pending = [];
+function fetch(url) { return new Promise(resolve => pending.push({url, resolve})); }
+function reply(index, total) { pending[index].resolve({ok: true, json: async () => ({total_products: total})}); }
+""" + helper + r"""
+(async () => {
+  let selected = 'all';
+  const old = loadProductTotal(true, () => selected === 'all');
+  selected = 'current';
+  const latest = loadProductTotal(false, () => selected === 'current');
+  assert.deepEqual(pending.map(r => r.url), ['/api/products/summary?catalog_scope=all', '/api/products/summary']);
+  reply(1, 1);
+  await latest;
+  reply(0, 2);
+  await old;
+  assert.equal(count.textContent, '1');
+  const zero = loadProductTotal(false, () => true);
+  reply(2, 0);
+  await zero;
+  assert.equal(count.textContent, '0');
+  console.log(JSON.stringify({passed: true}));
+})().catch(error => { console.error(error); process.exit(1); });
+""")
+    assert result['passed']
+
+
 @pytest.mark.skipif(shutil.which('node') is None, reason='Node.js is required')
 def test_products_requests_thirty_rows_and_renders_each_server_page():
     state = re.search(r'const pageState = \{.*?\};', SOURCE, re.S).group()

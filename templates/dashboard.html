@@ -268,6 +268,13 @@
 
       .sidebar .nav-link.active i { color: #78a9ff; }
 
+      .sidebar .nav-link.branch-catalog-link:is(:hover, :focus-visible) {
+        background-color: #146c43;
+        color: #fff;
+      }
+
+      .sidebar .nav-link.branch-catalog-link:is(:hover, :focus-visible) i { color: inherit; }
+
       .sidebar .nav-link i {
         width: 22px;
         margin-right: 0.65rem;
@@ -2042,12 +2049,12 @@
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('branch-inventory')">
+          <a class="nav-link branch-catalog-link" href="#" onclick="showSection('branch-inventory')">
             <i class="bi bi-boxes" aria-hidden="true"></i> Branch Inventory
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link" href="#" onclick="showSection('categories')">
+          <a class="nav-link branch-catalog-link" href="#" onclick="showSection('categories')">
             <i class="bi bi-tags"></i>Categories
           </a>
         </li>
@@ -2592,8 +2599,10 @@
 
         <div class="card">
           <div class="card-body">
-            <div class="row mb-3">
-              <div class="col-12 col-md-5">
+            <p class="mb-3" role="status" aria-live="polite">Total Current Products: <strong id="products-total-count">—</strong></p>
+            <div class="row g-3 mb-3">
+              <div class="col-12 col-lg">
+                <label for="products-search" class="form-label mb-1">Search products</label>
                 <input
                   type="text"
                   id="products-search"
@@ -2602,16 +2611,16 @@
                   aria-describedby="products-search-hint"
                 />
                 <small id="products-search-hint" class="text-muted">Search matches the beginning of a name, SKU, barcode or category.</small>
-                <div class="mt-2" data-capability="admin">
-                  <label for="products-catalog-scope" class="form-label mb-1">Catalog scope</label>
-                  <select id="products-catalog-scope" class="form-select" onchange="changeProductCatalogScope()">
-                    <option value="current">Current branch</option>
-                    <option value="all">All active branches</option>
-                  </select>
-                  <small id="products-shared-hint" class="d-none text-muted">Read-only catalog lookup. Switch to the product’s owning branch to edit, export, or print labels.</small>
-                </div>
               </div>
-              <div id="products-branch-actions" class="col-12 col-md-7 d-flex flex-wrap gap-2 justify-content-md-end align-items-start">
+              <div class="col-12 col-sm-5 col-lg-3" data-capability="admin">
+                <label for="products-catalog-scope" class="form-label mb-1">Catalog scope</label>
+                <select id="products-catalog-scope" class="form-select" onchange="changeProductCatalogScope()">
+                  <option value="current">Current branch</option>
+                  <option value="all">All active branches</option>
+                </select>
+                <small id="products-shared-hint" class="d-none text-muted">Read-only catalog lookup. Switch to the product’s owning branch to edit, export, or print labels.</small>
+              </div>
+              <div id="products-branch-actions" class="col-12 col-sm-auto d-flex flex-wrap gap-2 ms-lg-auto align-items-start pt-lg-4">
                 <button class="btn btn-success" data-capability="catalog.write" data-bs-toggle="modal" data-bs-target="#importProductsModal">
                   <i class="bi bi-upload"></i> Import Excel
                 </button>
@@ -18428,6 +18437,23 @@
         );
       }
 
+      async function loadProductTotal(allBranches, isCurrent) {
+        const count = document.getElementById("products-total-count");
+        const scope = allBranches ? "all" : "current";
+        if (count.dataset.catalogScope !== scope) {
+          count.dataset.catalogScope = scope;
+          count.textContent = "—";
+        }
+        try {
+          const response = await fetch(allBranches ? "/api/products/summary?catalog_scope=all" : "/api/products/summary");
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const { total_products: total } = await response.json();
+          if (isCurrent()) count.textContent = Number.isSafeInteger(total) && total >= 0 ? total.toLocaleString() : "Unavailable";
+        } catch {
+          if (isCurrent()) count.textContent = "Unavailable";
+        }
+      }
+
       function loadProducts() {
         const productsTable = document.getElementById("products-table");
         productsTable.innerHTML = `
@@ -18454,6 +18480,9 @@
         if (query) params.set("q", query);
         const request = cursorPaging
           ? beginInventoryPage("products", params, "products-pagination", loadProducts) : null;
+        if (request && typeof loadProductTotal === "function") {
+          loadProductTotal(params.get("catalog_scope") === "all", request.current);
+        }
 
         return fetch(`/api/products?${params.toString()}`)
           .then((response) => {

@@ -1296,6 +1296,7 @@ CASHIER_API_METHODS = {
     'api_categories': {'GET'}, 'api_single_category': {'GET'},
     'api_units': {'GET'}, 'api_units_convert': {'GET'},
     'api_products': {'GET'}, 'export_product_catalog': {'GET'},
+    'api_product_summary': {'GET'},
     'api_branch_inventory': {'GET'},
     'api_single_product': {'GET'}, 'api_search_products': {'GET'},
     'api_create_sale': {'POST'}, 'api_sales': {'GET'}, 'api_single_sale': {'GET'},
@@ -5202,9 +5203,16 @@ def product_lookup_candidates(search, branch_id=None):
 def api_product_summary():
     if 'user_id' not in session:
         return jsonify(error='Unauthorized'), 401
-    total, low_stock = db.session.query(func.count(Product.id), func.coalesce(func.sum(
+    query = db.session.query(func.count(Product.id), func.coalesce(func.sum(
         case((Product.stock < LOW_STOCK_THRESHOLD, 1), else_=0)), 0)
-    ).filter(Product.branch_id == get_current_branch_id()).one()
+    )
+    if request.args.get('catalog_scope') == 'all':
+        if session.get('role') not in ('manager', 'boss'):
+            return jsonify(message='Manager access required'), 403
+        query = query.join(Branch, Product.branch_id == Branch.id).filter(Branch.is_active.is_(True))
+    else:
+        query = query.filter(Product.branch_id == get_current_branch_id())
+    total, low_stock = query.one()
     return jsonify(total_products=total, low_stock=low_stock)
 
 

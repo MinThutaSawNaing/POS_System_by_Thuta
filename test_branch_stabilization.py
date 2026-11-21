@@ -121,6 +121,24 @@ class BranchStabilizationTests(unittest.TestCase):
             params, cursor=first['next_cursor'], stock='out')).status_code, 400)
         self.assertEqual(client.get('/api/branch_inventory?q=Z_&stock=out').json['items'][0]['stock'], 0)
 
+    def test_product_summary_matches_catalog_scope_not_the_search(self):
+        m = self.module
+        with self.app.app_context():
+            inactive = m.Branch(name='Closed', code='C', is_active=False)
+            m.db.session.add(inactive)
+            m.db.session.flush()
+            m.db.session.add(m.Product(name='Archived location product', price=10, stock=0, branch_id=inactive.id))
+            m.db.session.commit()
+
+        path = '/api/products/summary'
+        manager = self.client()
+        self.assertEqual(manager.get(path).json['total_products'], 1)
+        self.assertEqual(manager.get(path + '?catalog_scope=all&q=NoMatch').json['total_products'], 2)
+        cashier = self.client(branch=self.b, role='cashier')
+        self.assertEqual(cashier.get(path).json['total_products'], 1)
+        self.assertEqual(cashier.get(path + '?catalog_scope=all').status_code, 403)
+        self.assertEqual(self.app.test_client().get(path).status_code, 401)
+
     def test_shared_product_management_keeps_branch_records_distinct(self):
         path = '/api/products?view=management&catalog_scope=all&q=Same&per_page=1'
         manager = self.client()
