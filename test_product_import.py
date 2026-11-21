@@ -208,6 +208,46 @@ class ProductImportTests(unittest.TestCase):
         for path in ('/api/products/differences', '/api/products/export?catalog_scope=all'):
             self.assertEqual(self.client.get(path).status_code, 403)
 
+    def test_difference_monitor_compares_only_selected_active_branches(self):
+        third = Branch(name='Third', code='THIRD')
+        excluded = Branch(name='Excluded', code='EXCL')
+        inactive = Branch(name='Closed', code='CLOSED', is_active=False)
+        db.session.add_all([third, excluded, inactive])
+        db.session.commit()
+        self.product(name='Target only', barcode='T', branch_id=self.other.id, catalog_id='target-only')
+        self.product(name='Comparison only', barcode='C', branch_id=third.id, catalog_id='comparison-only')
+        self.product(name='Not selected', barcode='X', branch_id=excluded.id, catalog_id='not-selected')
+        path = '/api/products/differences'
+        options = self.client.get(path, query_string={'options': 1}).get_json()
+        self.assertEqual(options['current_branch'], self.branch.id)
+        self.assertEqual({branch['id'] for branch in options['branches']},
+                         {self.branch.id, self.other.id, third.id, excluded.id})
+        query = [('target_branch', self.other.id), ('compare_branch', self.branch.id), ('compare_branch', third.id)]
+        response = self.client.get(path, query_string=query)
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data['baseline'], self.other.id)
+        self.assertEqual(data['counts'], {str(self.other.id): 1, str(self.branch.id): 0, str(third.id): 1})
+        self.assertEqual(data['summary'], dict(missing_from_target=1, missing_from_comparisons=1, needs_review=0))
+        self.assertEqual({item['name'] for item in data['items']}, {'Target only', 'Comparison only'})
+        with self.client.session_transaction() as session:
+            self.assertEqual(session['branch_id'], self.branch.id)
+        for invalid in (query[:1], query + [('compare_branch', inactive.id)], query + [('compare_branch', self.other.id)]):
+            self.assertEqual(self.client.get(path, query_string=invalid).status_code, 400)
+
+    def test_difference_monitor_flags_identifier_conflicts_and_unverified_matches(self):
+        self.product(name='Target label', barcode='ABC', catalog_id='clone')
+        self.product(name='Other label', barcode='DEF', catalog_id='clone', branch_id=self.other.id)
+        self.product(name='Unlabeled', barcode=None, catalog_id='unrelated')
+        self.product(name='Unlabeled', barcode=None, catalog_id='other-unrelated', branch_id=self.other.id)
+        response = self.client.get(f'/api/products/differences?target_branch={self.branch.id}&compare_branch={self.other.id}')
+        data = response.get_json()
+        self.assertEqual(data['summary'], dict(missing_from_target=0, missing_from_comparisons=0, needs_review=3))
+        conflict = next(row for row in data['items'] if row['conflict'])
+        self.assertEqual(conflict['name'], 'Target label')
+        self.assertEqual([record['barcode'] for record in conflict['records']], ['ABC', 'DEF'])
+        self.assertEqual(sum(row['unverified'] for row in data['items']), 2)
+
     def product(self, **fields):
         defaults = dict(name='Tea', barcode='T', price=10, cost=4, stock=17,
                         photo_filename='keep.png', catalog_id='keep-catalog', branch_id=self.branch.id)

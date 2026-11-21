@@ -5518,20 +5518,37 @@ def api_product_differences():
     baseline = get_current_branch_id()
     if baseline not in names:
         return jsonify(message='No active branch assigned'), 403
-    other = request.args.get('compare_branch', '')
-    if other and (not other.isascii() or not other.isdecimal() or len(other) > 10 or
-                  int(other) not in names or int(other) == baseline):
-        return jsonify(message='Select another active branch'), 400
-    target_ids = [baseline, int(other)] if other else list(names)
+    if request.args.get('options') == '1':
+        return jsonify(current_branch=baseline, branches=[
+            {'id': branch.id, 'name': branch.name, 'code': branch.code} for branch in branches])
+
+    def parse_branch(value):
+        if value.isascii() and value.isdecimal() and len(value) <= 10 and int(value) in names:
+            return int(value)
+        return None
+
+    target = request.args.get('target_branch')
+    comparisons = request.args.getlist('compare_branch')
+    if target is not None or comparisons:
+        baseline = parse_branch(target) if target is not None else baseline
+        chosen = list(dict.fromkeys(map(parse_branch, comparisons)))
+        if baseline is None or not chosen or None in chosen or baseline in chosen:
+            return jsonify(message='Choose an active target branch and at least one different active comparison branch.'), 400
+    else:
+        # Keep the original API behavior for dashboards already open during deployment.
+        chosen = [branch_id for branch_id in names if branch_id != baseline]
+    target_ids = [baseline, *chosen]
     rows = (db.session.query(Product.id, Product.branch_id, Product.catalog_id, Product.barcode,
                              Product.sku, Product.name)
             .filter(Product.branch_id.in_(target_ids)).order_by(Product.id).all())
     from catalog_differences import compare_catalogs
     result = compare_catalogs(rows, target_ids)
-    page = bounded_integer('page', 1, 1000000)
+    total = len(result['differences'])
+    page = min(bounded_integer('page', 1, 1000000), max(1, (total + 49) // 50))
     start = (page - 1) * 50
-    return jsonify(baseline=baseline, branches=names, counts=result['counts'],
-                   total=len(result['differences']), page=page,
+    return jsonify(baseline=baseline, branches={i: names[i] for i in target_ids} if target is not None else names,
+                   counts=result['counts'],
+                   summary=result['summary'], total=total, page=page,
                    items=result['differences'][start:start + 50])
 
 
