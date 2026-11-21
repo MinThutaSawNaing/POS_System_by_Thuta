@@ -151,6 +151,63 @@ class ProductImportTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_json())
         return content, response.get_json()
 
+    def test_all_branch_import_is_atomic_and_keeps_existing_stock(self):
+        original = self.product()
+        inactive = Branch(name='Closed', code='CLOSED', is_active=False)
+        db.session.add(inactive)
+        db.session.commit()
+        content, preview = self.preview([['Name', 'Barcode', 'Price', 'Stock'], ['Tea', 'T', 20, 99]],
+                                        catalog_scope='all', duplicate_mode='update')
+        self.assertEqual(preview['preview']['summary'], {'create': 1, 'update': 1, 'skip': 0, 'error': 0})
+        self.assertEqual({row['branch'] for row in preview['preview']['rows']}, {'Local', 'Other'})
+        token = preview['preview_token']
+        self.assertEqual(self.post('commit', content, duplicate_mode='update', preview_token=token).status_code, 409)
+        self.assertEqual(Product.query.count(), 1)
+        response = self.post('commit', content, catalog_scope='all', duplicate_mode='update', preview_token=token)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual((original.stock, original.price, original.catalog_id), (17, 20, 'keep-catalog'))
+        copied = Product.query.filter_by(branch_id=self.other.id).one()
+        self.assertEqual((copied.stock, copied.catalog_id), (0, original.catalog_id))
+        self.assertEqual(Product.query.filter_by(branch_id=inactive.id).count(), 0)
+
+    def test_new_barcode_less_copies_share_warehouse_catalog_identity(self):
+        content, preview = self.preview([['Name', 'SKU', 'Price'], ['Tea', 'T-SKU', 20]], catalog_scope='all')
+        result = self.post('commit', content, catalog_scope='all', preview_token=preview['preview_token'])
+        self.assertEqual(result.status_code, 200, result.get_json())
+        self.assertEqual(Product.query.count(), 2)
+        self.assertEqual(len({p.catalog_id for p in Product.query.all()}), 1)
+
+    def test_scoped_export_can_be_previewed_without_copying_rows_between_branches(self):
+        self.product(name='Tea', barcode='00023')
+        self.product(name='Coffee', barcode='00024', branch_id=self.other.id)
+        export = self.client.get('/api/products/export?format=xlsx&catalog_scope=all')
+        self.assertEqual(export.status_code, 200)
+        preview = self.post('preview', export.data, catalog_scope='all')
+        self.assertEqual(preview.status_code, 200, preview.get_json())
+        actions = preview.get_json()['preview']['rows']
+        self.assertCountEqual([(row['branch'], row['barcode'], row['action']) for row in actions],
+                              [('Local', '00023', 'skip'), ('Other', '00024', 'skip')])
+        self.assertEqual(self.post('preview', export.data).status_code, 400)
+        pdf = self.client.get('/api/products/export?format=pdf&catalog_scope=all&q=cof&search_mode=prefix')
+        self.assertEqual(pdf.status_code, 200)
+        self.assertTrue(pdf.data.startswith(b'%PDF'))
+
+    def test_difference_monitor_finds_missing_products_even_with_equal_counts(self):
+        self.product(name='Shared', barcode='A')
+        self.product(name='Shared renamed', barcode='A', branch_id=self.other.id, catalog_id='shared-other')
+        self.product(name='Only at Local', barcode='B', catalog_id='local-only')
+        self.product(name='Only at Other', barcode='C', branch_id=self.other.id, catalog_id='other-only')
+        result = self.client.get(f'/api/products/differences?compare_branch={self.other.id}')
+        self.assertEqual(result.status_code, 200)
+        data = result.get_json()
+        self.assertEqual(data['counts'], {str(self.branch.id): 2, str(self.other.id): 2})
+        self.assertEqual([(r['name'], r['missing']) for r in data['items']],
+                         [('Only at Local', [self.other.id]), ('Only at Other', [self.branch.id])])
+        with self.client.session_transaction() as session:
+            session['role'] = 'cashier'
+        for path in ('/api/products/differences', '/api/products/export?catalog_scope=all'):
+            self.assertEqual(self.client.get(path).status_code, 403)
+
     def product(self, **fields):
         defaults = dict(name='Tea', barcode='T', price=10, cost=4, stock=17,
                         photo_filename='keep.png', catalog_id='keep-catalog', branch_id=self.branch.id)

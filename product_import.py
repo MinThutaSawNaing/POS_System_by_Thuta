@@ -11,6 +11,7 @@ import io
 import json
 import posixpath
 import re
+import uuid
 import zlib
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
@@ -249,7 +250,8 @@ def _table(rows, supplied):
     # footer. Never interpret a client product merely named "Total" as a footer.
     report_columns = ['Barcode', 'Product Name', 'Category', 'Price', 'Stock', 'Unit', 'Tax rate']
     own_report = (header[0] == 4 and rows[0][1][0][0] == 'Product List'
-                  and columns in (report_columns, ['Barcode', 'SKU', *report_columns[1:]]))
+                  and columns in (report_columns, ['Barcode', 'SKU', *report_columns[1:]],
+                                  ['Branch Code', 'Branch', 'Barcode', 'SKU', *report_columns[1:]]))
     if own_report:
         if body:
             _, last = body[-1]
@@ -398,7 +400,7 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
         if len(repeated) > 1:
             for errors in repeated:
                 errors.append('Repeated file identity (name, barcode or SKU)')
-    plans, result = [], []
+    plans, result, matched_catalogs = [], [], {}
     resolved_rows = defaultdict(list)
     for row, values, errors in prepared:
         name, barcode = row['name'], row['barcode']
@@ -475,6 +477,8 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
             row['message'] = '; '.join(dict.fromkeys(errors))
         else:
             row['action'] = action
+            if existing is not None and existing.catalog_id:
+                matched_catalogs[row['row']] = existing.catalog_id
             row['message'] = {'create': 'Create product (stock zero)', 'update': 'Update supplied nonblank catalog fields', 'skip': 'Existing product skipped'}[action]
             if not barcode and not sku and action == 'skip':
                 row['message'] = 'Existing name matched; name-only rows are never updated'
@@ -485,7 +489,7 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
                 row['changes'] = changes.copy()
                 if photo:
                     row['photo'] = picture
-                plans.append((action, existing, barcode, changes, category, photo))
+                plans.append((row['row'], action, existing, barcode, changes, category, photo))
         result.append(row)
     # Distinct supplied identifiers can still refer to the same stored product.
     # Reject every such row instead of silently applying the last update twice.
@@ -495,9 +499,9 @@ def _plan(columns, mapping, rows, products, categories, units, mode, create_cate
             row['action'] = 'error'
             row['message'] = (row['message'] + '; Repeated file target product').strip('; ')
             row.pop('changes', None)
-    plans = [plan for plan in plans if plan[1] is None or plan[1].id not in repeated_targets]
+    plans = [plan for plan in plans if plan[2] is None or plan[2].id not in repeated_targets]
     summary = {action: sum(r['action'] == action for r in result) for action in ('create', 'update', 'skip', 'error')}
-    return {'rows': result, 'summary': summary}, list(dict.fromkeys(warnings)), plans
+    return {'rows': result, 'summary': summary}, list(dict.fromkeys(warnings)), plans, matched_catalogs
 
 
 def register_product_import(app, db, models):
@@ -578,6 +582,9 @@ def register_product_import(app, db, models):
             else:
                 rows, pictures = _xlsx(data)
             columns, mapping, rows = _table(rows, supplied)
+            scope = request.form.get('catalog_scope', 'current')
+            if scope not in ('current', 'all'):
+                raise ValueError('Invalid catalog scope')
             if commit:
                 try:
                     signed = signer.loads(request.form.get('preview_token', ''), max_age=900)
@@ -586,20 +593,64 @@ def register_product_import(app, db, models):
                 # Drop authorization reads before acquiring the SQLite writer lock.
                 db.session.rollback()
                 db.session.execute(text('BEGIN IMMEDIATE'))
-            products = Product.query.filter_by(branch_id=branch_id).order_by(Product.id).all()
-            categories = Category.query.filter_by(branch_id=branch_id).order_by(Category.id).all()
+            targets = Branch.query.filter_by(is_active=True)
+            if scope == 'current':
+                targets = targets.filter_by(id=branch_id)
+            targets = targets.order_by(Branch.id).all()
+            if branch_id not in {branch.id for branch in targets}:
+                raise ValueError('No active branch assigned')
+            branch_codes = {branch.code.strip().casefold(): branch.id for branch in targets}
+            branch_column = next((i for i, name in enumerate(columns) if _norm(name) == 'branch code'), None)
+            assigned = defaultdict(list)
+            if branch_column is not None:
+                for number, cells in rows:
+                    value, formula, *_ = cells[branch_column] if branch_column < len(cells) else ('', False)
+                    target = branch_codes.get(value.strip().casefold())
+                    if formula or target is None:
+                        raise ValueError(f'Row {number}: Branch Code must identify a branch in the selected catalog scope.')
+                    assigned[target].append((number, cells))
+            elif len(rows) * len(targets) > 20000:
+                raise ValueError('This import would apply more than 20,000 branch rows. Split the spreadsheet into smaller files.')
+            products_by_branch, categories_by_branch = defaultdict(list), defaultdict(list)
+            target_ids = [branch.id for branch in targets]
+            for model, grouped in ((Product, products_by_branch), (Category, categories_by_branch)):
+                for record in model.query.filter(model.branch_id.in_(target_ids)).order_by(model.id):
+                    grouped[record.branch_id].append(record)
             units = Unit.query.order_by(Unit.id).all()
             snapshot = [[{c.name: str(getattr(obj, c.name)) for c in obj.__table__.columns}
-                         for obj in objects] for objects in (products, categories, units)]
-            context = {'branch': branch_id, 'user': session['user_id'], 'role': session['role'],
+                         for obj in objects] for objects in (targets, *products_by_branch.values(),
+                                                            *categories_by_branch.values(), units)]
+            context = {'branch': branch_id, 'scope': scope, 'user': session['user_id'], 'role': session['role'],
                        'file': hashlib.sha256(data).hexdigest(), 'mapping': mapping, 'mode': mode,
                        'create_categories': create_categories,
                        'state': hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()}
             if commit and signed != context:
                 db.session.rollback()
                 return jsonify(success=False, message='Preview is stale or does not match this request. Preview again.'), 409
-            preview, warnings, plans = _plan(columns, mapping, rows, products, categories, units,
-                                             mode, create_categories, pictures)
+            preview = {'summary': dict.fromkeys(('create', 'update', 'skip', 'error'), 0), 'rows': []}
+            warnings, plans = [], []
+            matched_catalogs = defaultdict(set)
+            for branch in targets:
+                branch_rows = rows if branch_column is None else assigned[branch.id]
+                if not branch_rows:
+                    continue
+                result, notices, changes, matches = _plan(columns, mapping, branch_rows, products_by_branch[branch.id],
+                                                          categories_by_branch[branch.id], units, mode, create_categories, pictures)
+                for number, catalog_id in matches.items():
+                    matched_catalogs[number].add(catalog_id)
+                for action, count in result['summary'].items():
+                    preview['summary'][action] += count
+                if scope == 'all':
+                    for row in result['rows']:
+                        row['branch'] = branch.name
+                preview['rows'].extend(result['rows'])
+                warnings.extend(notices)
+                plans.extend((branch.id, *change) for change in changes)
+            warnings = list(dict.fromkeys(warnings))
+            if scope == 'all' and len(preview['rows']) > 500:
+                preview['rows'].sort(key=lambda row: row['action'] != 'error')
+                preview['rows'] = preview['rows'][:500]
+                warnings.insert(0, 'Showing the first 500 actions, with errors first. Counts include every branch action.')
             if not pictures and data[:2] == b'PK' and _in_cell_pictures(data):
                 warnings.append('Pictures placed inside cells are not supported. Paste each one as a '
                                 'floating picture in its row, inside the mapped photo column.')
@@ -610,16 +661,19 @@ def register_product_import(app, db, models):
                 db.session.rollback()
                 return jsonify(success=False, message='Resolve every preview error before importing.',
                                columns=columns, mapping=mapping, preview=preview, warnings=warnings), 400
-            category_children = {(c.parent_id, _norm(c.name)): c for c in categories}
-            for action, existing, barcode, changes, category, photo in plans:
+            category_children = {(c.branch_id, c.parent_id, _norm(c.name)): c
+                                 for categories in categories_by_branch.values() for c in categories}
+            existing_catalogs = {branch: {p.catalog_id for p in products} for branch, products in products_by_branch.items()}
+            new_catalogs = {}
+            for target_id, number, action, existing, barcode, changes, category, photo in plans:
                 if changes.get('category'):
                     if category is None:
                         parent_id = None
                         for part in _category_parts(changes['category']):
-                            key = (parent_id, _norm(part))
+                            key = (target_id, parent_id, _norm(part))
                             category = category_children.get(key)
                             if category is None:
-                                category = Category(name=part, branch_id=branch_id,
+                                category = Category(name=part, branch_id=target_id,
                                                     parent_id=parent_id, is_active=True)
                                 db.session.add(category)
                                 db.session.flush()
@@ -637,7 +691,17 @@ def register_product_import(app, db, models):
                         replaced.append(existing.photo_filename)
                     changes['photo_filename'] = stored[photo]
                 if action == 'create':
-                    db.session.add(Product(branch_id=branch_id, barcode=barcode or None, stock=0, **changes))
+                    if scope == 'all' and branch_column is None:
+                        # Warehouse transfers use the durable ID for barcode-less copies.
+                        # Reuse a single unambiguous existing identity; never edit old IDs.
+                        matches = matched_catalogs[number]
+                        catalog_id = new_catalogs.get(number)
+                        if catalog_id is None:
+                            catalog_id = new_catalogs[number] = next(iter(matches)) if len(matches) == 1 else uuid.uuid4().hex
+                        if catalog_id not in existing_catalogs.get(target_id, ()):
+                            changes['catalog_id'] = catalog_id
+                            existing_catalogs.setdefault(target_id, set()).add(catalog_id)
+                    db.session.add(Product(branch_id=target_id, barcode=barcode or None, stock=0, **changes))
                 else:
                     for key, value in changes.items():
                         setattr(existing, key, value)

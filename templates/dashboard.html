@@ -268,12 +268,12 @@
 
       .sidebar .nav-link.active i { color: #78a9ff; }
 
-      .sidebar .nav-link.branch-catalog-link:is(:hover, :focus-visible) {
+      #branch-inventory-table > tr:hover > td {
+        --bs-table-bg-state: #146c43;
+        --bs-table-color-state: #fff;
         background-color: #146c43;
         color: #fff;
       }
-
-      .sidebar .nav-link.branch-catalog-link:is(:hover, :focus-visible) i { color: inherit; }
 
       .sidebar .nav-link i {
         width: 22px;
@@ -2049,12 +2049,12 @@
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link branch-catalog-link" href="#" onclick="showSection('branch-inventory')">
+          <a class="nav-link" href="#" onclick="showSection('branch-inventory')">
             <i class="bi bi-boxes" aria-hidden="true"></i> Branch Inventory
           </a>
         </li>
         <li class="nav-item">
-          <a class="nav-link branch-catalog-link" href="#" onclick="showSection('categories')">
+          <a class="nav-link" href="#" onclick="showSection('categories')">
             <i class="bi bi-tags"></i>Categories
           </a>
         </li>
@@ -2618,9 +2618,12 @@
                   <option value="current">Current branch</option>
                   <option value="all">All active branches</option>
                 </select>
-                <small id="products-shared-hint" class="d-none text-muted">Read-only catalog lookup. Switch to the product’s owning branch to edit, export, or print labels.</small>
+                <small id="products-shared-hint" class="d-none text-muted">Import and export across active branches. Switch to a product’s owning branch to edit it individually or print labels.</small>
               </div>
               <div id="products-branch-actions" class="col-12 col-sm-auto d-flex flex-wrap gap-2 ms-lg-auto align-items-start pt-lg-4">
+                <button type="button" class="btn btn-outline-primary" data-capability="admin" data-bs-toggle="modal" data-bs-target="#productDifferencesModal">
+                  <i class="bi bi-arrow-left-right"></i> Difference Monitor
+                </button>
                 <button class="btn btn-success" data-capability="catalog.write" data-bs-toggle="modal" data-bs-target="#importProductsModal">
                   <i class="bi bi-upload"></i> Import Excel
                 </button>
@@ -7949,6 +7952,34 @@
       </div>
     </div>
 
+    <div class="modal fade" id="productDifferencesModal" tabindex="-1" aria-labelledby="product-differences-title" aria-hidden="true">
+      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="product-differences-title">Difference Monitor</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <label class="form-label" for="product-differences-branch">Compare current branch with</label>
+            <select class="form-select w-auto mb-3" id="product-differences-branch"></select>
+            <p class="small text-muted">Compares which products each branch carries, not stock or price. Matches by shared catalog ID, barcode, or SKU when there is no barcode. Products without a shared identifier are listed separately.</p>
+            <p id="product-differences-counts" class="small"></p>
+            <p id="product-differences-status" role="status"></p>
+            <div class="table-responsive">
+              <table class="table table-striped align-middle">
+                <thead><tr><th scope="col">Product</th><th scope="col">Barcode</th><th scope="col">SKU</th><th scope="col">Present in</th><th scope="col">Missing from</th><th scope="col">Duplicates in</th></tr></thead>
+                <tbody id="product-differences-rows"></tbody>
+              </table>
+            </div>
+            <div class="d-flex gap-2">
+              <button type="button" class="btn btn-outline-secondary" id="product-differences-prev" disabled>Previous</button>
+              <button type="button" class="btn btn-outline-secondary" id="product-differences-next" disabled>Next</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Product import writes only after a validated preview and confirmation. -->
     <div class="modal fade" id="importProductsModal" tabindex="-1" aria-labelledby="product-import-title" aria-hidden="true">
       <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
@@ -7959,6 +7990,7 @@
           </div>
           <div class="modal-body">
             <p>Import into <strong id="product-import-branch"></strong>. Preview first; nothing is saved until you confirm.</p>
+            <p id="product-import-all-help" class="small d-none">A spreadsheet with a Branch Code column imports each row into that branch. Without it, each row is applied to every active branch. Preview shows the destination of each action.</p>
             <div class="alert alert-info small">
               <strong>Stock is protected.</strong> This imports catalog details only. Existing stock is kept and new products start at zero.
               Use Warehouse / Purchase &amp; Receiving to add stock. Blank spreadsheet cells never erase existing values.
@@ -7970,7 +8002,7 @@
                 <div id="product-import-file-help" class="form-text">Excel .xlsx or UTF-8 CSV, up to 15 MB and 2,000 products. For .xls, save as .xlsx first. Use the first data sheet; keep barcodes as text to preserve leading zeros. Insert each product picture into the Photo column of its row to import photos too.</div>
               </div>
               <div class="col-12 col-md-6">
-                <label class="form-label" for="product-import-mode">2. When a barcode already exists in this branch</label>
+                <label class="form-label" for="product-import-mode">2. When a product already exists in the destination branch</label>
                 <select class="form-select" id="product-import-mode">
                   <option value="skip">Skip existing products (recommended)</option>
                   <option value="update">Update supplied catalog fields; keep stock and set photos where a picture is provided</option>
@@ -7981,8 +8013,8 @@
             <button type="button" class="btn btn-link px-0 mt-2" id="product-import-template-btn"><i class="bi bi-download me-1"></i>Download Excel template</button>
             <div class="form-check mt-2">
               <input class="form-check-input" type="checkbox" id="product-import-create-categories">
-              <label class="form-check-label" for="product-import-create-categories">Create missing categories in this branch</label>
-              <div class="form-text">Use / for nested categories, e.g. Shirt/Man/Streets/Tshirt/Green. Each level allows up to 50 characters. Check this to create missing levels in this branch; leave unchecked to require existing categories. New category paths will appear in the preview before saving.</div>
+              <label class="form-check-label" for="product-import-create-categories">Create missing categories in destination branches</label>
+              <div class="form-text">Use / for nested categories, e.g. Shirt/Man/Streets/Tshirt/Green. Each level allows up to 50 characters. Leave unchecked to require existing categories. New category paths will appear in the preview before saving.</div>
             </div>
             <div id="product-import-mapping" class="d-none border rounded p-3 mt-3">
               <h6>3. Match your spreadsheet columns</h6>
@@ -7999,7 +8031,7 @@
               <p class="small">Review the actions below. Fix all error rows in Excel and upload again before importing. Duplicate rows within the file are never silently applied.</p>
               <div class="table-responsive" style="max-height: 22rem;">
                 <table class="table table-sm table-striped align-middle">
-                  <thead><tr><th>Excel row</th><th>Product</th><th>Barcode</th><th>SKU</th><th>Action</th><th>Details</th></tr></thead>
+                  <thead><tr><th>Excel row</th><th>Branch</th><th>Product</th><th>Barcode</th><th>SKU</th><th>Action</th><th>Details</th></tr></thead>
                   <tbody id="product-import-rows"></tbody>
                 </table>
               </div>
@@ -8164,7 +8196,7 @@
       // workspace deliberate and prevents stale navigation from invoking admin loaders.
       const CASHIER_SECTIONS = new Set(["pos", "products", "branch-inventory", "categories", "sales", "returns", "deliveries", "reports"]);
       const MANAGER_CAPABILITIES = new Set(["catalog.write", "deliveries.write", "labels", "debts", "branches.switch", "admin"]);
-      const MANAGER_MODAL_IDS = new Set(["addProductModal", "editProductModal", "importProductsModal", "addCategoryModal", "editCategoryModal", "barcodeLabelModal", "addDebtModal", "makePaymentModal", "debtDetailsModal", "addCommunicationModal", "createDeliveryModal", "updateDeliveryModal", "addCouponModal"]);
+      const MANAGER_MODAL_IDS = new Set(["addProductModal", "editProductModal", "importProductsModal", "productDifferencesModal", "addCategoryModal", "editCategoryModal", "barcodeLabelModal", "addDebtModal", "makePaymentModal", "debtDetailsModal", "addCommunicationModal", "createDeliveryModal", "updateDeliveryModal", "addCouponModal"]);
 
       function hasCapability(capability) {
         if (capability.startsWith("section.")) {
@@ -13188,7 +13220,7 @@
         const productWord = affected === 1 ? "product" : "products";
         return showConfirmDialogAsync({
           title: "Confirm product import",
-          message: `Import ${affected} ${productWord} into the active branch?`,
+          message: summary.allBranches ? `Apply ${affected} product action(s) across the previewed branches?` : `Import ${affected} ${productWord} into the active branch?`,
           confirmLabel: `Import ${affected} ${productWord}`,
           cancelLabel: "Keep reviewing",
           variant: "success",
@@ -18311,7 +18343,6 @@
       function changeProductCatalogScope() {
         const sharedProductCatalog = document.getElementById("products-catalog-scope").value === "all";
         document.getElementById("products-shared-hint").classList.toggle("d-none", !sharedProductCatalog);
-        document.getElementById("products-branch-actions").classList.toggle("d-none", sharedProductCatalog);
         clearProductSelection();
         pageState.products = 1;
         return loadProducts();
@@ -18520,8 +18551,12 @@
       function exportProductList(format) {
         const params = new URLSearchParams();
         params.set("format", format === "xlsx" ? "xlsx" : "pdf");
+        if (document.getElementById("products-catalog-scope")?.value === "all") params.set("catalog_scope", "all");
         const search = (document.getElementById("products-search")?.value || "").trim();
-        if (search) params.set("q", search);
+        if (search) {
+          params.set("q", search);
+          params.set("search_mode", "prefix");
+        }
         return openReportDownload(`/api/products/export?${params.toString()}`);
       }
 
@@ -25061,7 +25096,8 @@
 
     <script src="/public/customer-display-publisher.js"></script>
     <script src="/public/myanmyanpay.js"></script>
-    <script src="/public/product-import.js"></script>
+    <script src="/public/product-import.js?v=branch-scope"></script>
+    <script src="/public/product-differences.js"></script>
     <script src="/public/email-security.js"></script>
     <!-- AI Agent Widget (manager/owner only; cashiers have no assistant access) -->
     {% if session.role in ('manager', 'boss') %}

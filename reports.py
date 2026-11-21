@@ -493,9 +493,12 @@ def build_product_catalog_report(
     filters_text: str = "",
     currency_suffix: str = "$",
     generated_at: Any = None,
+    include_branch: bool = False,
 ) -> dict[str, Any]:
     """Build a simple catalog list for checking products outside the dashboard."""
     rows = [{
+        "branch": record.get("branch"),
+        "branch_code": record.get("branch_code"),
         "barcode": record.get("barcode"),
         "sku": record.get("sku"),
         "product_name": str(record.get("product_name") or ""),
@@ -511,6 +514,8 @@ def build_product_catalog_report(
         sheet_name="Products",
         file_stem="product_list",
         columns=(
+            *((column("branch_code", "Branch Code", width=14), column("branch", "Branch", width=18))
+              if include_branch else ()),
             column("barcode", "Barcode", width=18),
             column("sku", "SKU", width=18),
             column("product_name", "Product Name", width=32),

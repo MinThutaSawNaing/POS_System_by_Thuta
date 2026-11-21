@@ -24,7 +24,8 @@
     }
     function payload(saved) {
       return {file: saved.file, mapping: JSON.parse(saved.mapping),
-        duplicate_mode: saved.duplicate_mode, create_categories: saved.create_categories};
+        duplicate_mode: saved.duplicate_mode, create_categories: saved.create_categories,
+        ...(saved.scope.startsWith("all:") ? {catalog_scope: "all"} : {})};
     }
     async function inspect() {
       if (busy) return;
@@ -55,7 +56,7 @@
       // window or starting two imports.
       confirming = true; render();
       let confirmed = false;
-      try { confirmed = await env.confirm(message, {...summary}); }
+      try { confirmed = await env.confirm(message, {...summary, ...(snapshot.scope.startsWith("all:") ? {allBranches: true} : {})}); }
       finally { confirming = false; }
       if (!confirmed || !canCommit()) { render(); return; }
       const saved = snapshot, signedToken = token, ownRevision = revision;
@@ -85,9 +86,10 @@
   const fields = {name: "Product name *", barcode: "Barcode", sku: "SKU (optional)", price: "Selling price *",
     cost: "Cost", category: "Category", unit: "Unit", tax_rate: "Tax rate (%)",
     photo: "Photo (picture in the cell)"};
+  const allBranches = () => el("products-catalog-scope")?.value === "all" && hasCapability("admin");
   const scope = () => typeof currentBranch !== "undefined" && currentBranch?.id &&
     !dashboardSessionStale && !dashboardBranchStale && !branchSwitchInFlight &&
-    hasCapability("catalog.write") ? String(currentBranch.id) : null;
+    hasCapability("catalog.write") ? `${allBranches() ? "all:" : ""}${currentBranch.id}` : null;
   const mapping = () => {
     const result = {};
     Object.keys(fields).forEach(key => {
@@ -162,7 +164,7 @@
         const changes = Object.entries(row.changes || {}).map(([key, value]) =>
           `${fields[key] || key}: ${value}`).join("; ");
         const detail = [row.message, changes, row.photo ? `photo: ${row.photo}` : ""].filter(Boolean).join(" — ");
-        [row.row, row.name, row.barcode, row.sku, row.action, detail].forEach(value => {
+        [row.row, row.branch || currentBranch.name, row.name, row.barcode, row.sku, row.action, detail].forEach(value => {
           const td = doc.createElement("td"); td.textContent = String(value ?? ""); tr.appendChild(td);
         });
         if (row.action === "error") tr.className = "table-danger";
@@ -192,7 +194,8 @@
   });
   modal.addEventListener("show.bs.modal", event => {
     if (!scope()) { event.preventDefault(); return; }
-    el("product-import-branch").textContent = currentBranch.name || String(currentBranch.id);
+    el("product-import-branch").textContent = allBranches() ? "All active branches" : (currentBranch.name || String(currentBranch.id));
+    el("product-import-all-help").classList.toggle("d-none", !allBranches());
     importer.invalidate();
   });
   modal.addEventListener("hide.bs.modal", event => {

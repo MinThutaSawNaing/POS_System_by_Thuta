@@ -5509,9 +5509,35 @@ def api_products():
             return jsonify(success=False, message='Barcode or SKU already in use in this branch'), 409
         return jsonify({'success': True, 'message': 'Product added'}), 201
 
+@app.get('/api/products/differences')
+def api_product_differences():
+    if not session.get('user_id') or session.get('role') not in ('manager', 'boss'):
+        return jsonify(message='Manager access required'), 403
+    branches = Branch.query.filter_by(is_active=True).order_by(Branch.name, Branch.id).all()
+    names = {branch.id: branch.name for branch in branches}
+    baseline = get_current_branch_id()
+    if baseline not in names:
+        return jsonify(message='No active branch assigned'), 403
+    other = request.args.get('compare_branch', '')
+    if other and (not other.isascii() or not other.isdecimal() or len(other) > 10 or
+                  int(other) not in names or int(other) == baseline):
+        return jsonify(message='Select another active branch'), 400
+    target_ids = [baseline, int(other)] if other else list(names)
+    rows = (db.session.query(Product.id, Product.branch_id, Product.catalog_id, Product.barcode,
+                             Product.sku, Product.name)
+            .filter(Product.branch_id.in_(target_ids)).order_by(Product.id).all())
+    from catalog_differences import compare_catalogs
+    result = compare_catalogs(rows, target_ids)
+    page = bounded_integer('page', 1, 1000000)
+    start = (page - 1) * 50
+    return jsonify(baseline=baseline, branches=names, counts=result['counts'],
+                   total=len(result['differences']), page=page,
+                   items=result['differences'][start:start + 50])
+
+
 @app.route('/api/products/export', methods=['GET'])
 def export_product_catalog():
-    """Download the active branch's product catalog as a PDF or Excel file."""
+    """Download the requested product catalog scope as PDF or Excel."""
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
 
@@ -5521,7 +5547,14 @@ def export_product_catalog():
         return jsonify({'success': False, 'message': 'No active branch assigned'}), 403
 
     search = (request.args.get('q') or '').strip()
-    query = Product.query.filter(Product.branch_id == branch_id)
+    all_branches = request.args.get('catalog_scope') == 'all'
+    if all_branches and session.get('role') not in ('manager', 'boss'):
+        return jsonify(success=False, message='Manager access required'), 403
+    branch_names = {branch_id: (branch.name, branch.code)}
+    if all_branches:
+        branch_names = {row.id: (row.name, row.code) for row in db.session.query(Branch.id, Branch.name, Branch.code)
+                        .filter(Branch.is_active.is_(True))}
+    query = Product.query.filter(Product.branch_id.in_(branch_names))
     # The Products tab can export a multi-selection: only those ids are included.
     selected_ids = []
     raw_ids = (request.args.get('ids') or '').strip()
@@ -5540,7 +5573,8 @@ def export_product_catalog():
             }), 400
         query = query.filter(Product.id.in_(selected_ids))
     if search and request.args.get('search_mode') == 'prefix':
-        query = query.filter(Product.id.in_(product_prefix_ids(search, branch_id, include_category=True)))
+        query = query.filter(Product.id.in_(product_prefix_ids(search, branch_id if not all_branches else None,
+                                                               include_category=True, base=query)))
     elif search:
         like_search = f'%{search}%'
         query = query.filter(or_(
@@ -5557,6 +5591,8 @@ def export_product_catalog():
         joinedload(Product.category_ref), joinedload(Product.unit_ref)
     ).order_by(Product.name.asc(), Product.id.asc()).all()
     records = [{
+        'branch': branch_names[product.branch_id][0],
+        'branch_code': branch_names[product.branch_id][1],
         'barcode': product.barcode,
         'sku': product.sku,
         'product_name': product.name,
@@ -5570,7 +5606,8 @@ def export_product_catalog():
     report = build_product_catalog_report(
         records,
         brand=get_receipt_identity(branch),
-        branch_name=branch.name,
+        branch_name='All active branches' if all_branches else branch.name,
+        include_branch=all_branches,
         generated_by=session.get('username') or '',
         filters_text=describe_filters({
             'Search': search,
