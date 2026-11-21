@@ -11654,15 +11654,15 @@
           const complete = !!catalogVersion || !!previous?.catalog_complete || !!previous?.catalog_version;
           if (!catalogVersion && complete && Array.isArray(previous?.data)) {
             const merged = new Map(previous.data.map(product => [String(product.id), product]));
-            let changed = false;
             products.forEach(product => {
               const old = merged.get(String(product.id));
               const updated = {...old, ...product};
-              if (JSON.stringify(old) !== JSON.stringify(updated)) changed = true;
               merged.set(String(product.id), updated);
             });
             products = Array.from(merged.values());
-            if (!changed) catalogVersion = previous.catalog_version;
+            // A page refresh (including changed stock after a sale) is not a
+            // bulk download. Only the version endpoint can mark it stale.
+            catalogVersion = previous.catalog_version;
           }
           try {
             localStorage.setItem(key, JSON.stringify({cached_at: new Date().toISOString(),
@@ -11684,10 +11684,12 @@
         const button = document.getElementById("pos-offline-load");
         if (!button) return;
         const entry = offlineCacheGet(cachedProductsKey());
-        const ready = !!entry?.catalog_version && Array.isArray(entry.data) &&
-          offlineCatalogVersion?.branchId === currentBranch?.id &&
-          offlineCatalogVersion.version === entry.catalog_version &&
-          offlineCatalogVersion.count === entry.data.length;
+        const saved = !!entry?.catalog_version && Array.isArray(entry.data);
+        const checked = offlineCatalogVersion?.branchId === currentBranch?.id;
+        const stale = saved && checked &&
+          (offlineCatalogVersion.version !== entry.catalog_version ||
+           offlineCatalogVersion.count !== entry.data.length);
+        const ready = saved && !stale;
         button.disabled = !!offlineProductSync || ready;
         button.style.opacity = ready ? "0.5" : "1";
         button.setAttribute("aria-busy", offlineProductSync ? "true" : "false");
@@ -11695,7 +11697,10 @@
           ? '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Loading products…'
           : "Load All Products for Offline Mode";
         document.getElementById("pos-offline-status").textContent = message ||
-          (ready ? `All ${entry.data.length} products saved and up to date.` : "Load this branch’s full catalog for offline use.");
+          (stale ? "Admin made changes to products. Please re-click again to update offline products." :
+           ready ? (checked ? `All ${entry.data.length} products saved and up to date.` :
+             `All ${entry.data.length} products saved on this device. Checking for updates when online.`) :
+           "Load this branch’s full catalog for offline use.");
       }
 
       async function fetchOfflineCatalogVersion(branchId) {
@@ -11717,9 +11722,12 @@
         offlineCatalogCheck = check;
         try {
           const data = await fetchOfflineCatalogVersion(branchId);
-          if (posCartScopeCurrent(branchId)) offlineCatalogVersion = {branchId, ...data};
+          if (offlineCatalogCheck === check && !offlineProductSync && posCartScopeCurrent(branchId)) {
+            offlineCatalogVersion = {branchId, ...data};
+          }
         } catch (error) {
-          if (posCartScopeCurrent(branchId)) offlineCatalogVersion = null;
+          // A failed version request does not erase the last confirmed state.
+          // The saved catalog is still usable while the server is unreachable.
         } finally {
           if (offlineCatalogCheck === check) offlineCatalogCheck = null;
           renderOfflineProductButton();

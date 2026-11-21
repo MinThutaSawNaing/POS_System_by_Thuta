@@ -91,6 +91,9 @@ class PosProductPaginationTests(unittest.TestCase):
         self.assertEqual(version.headers['Cache-Control'], 'no-store')
         self.assertEqual(version.get_json()['count'], 101)
         self.assertNotEqual(initial['version'], version.get_json()['version'])
+        Product.query.filter_by(id=products[0].id).update({'stock': 3})
+        db.session.commit()
+        self.assertEqual(client.get(url).get_json()['version'], version.get_json()['version'])
         first = client.get('/api/products?view=offline&per_page=100').get_json()
         self.assertEqual(len(first['items']), 100)
         second = client.get('/api/products?view=offline&per_page=100&cursor=' +

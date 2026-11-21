@@ -93,7 +93,7 @@ rememberPOSProducts([{id: 1, price: 20, stock: 4}], 7);
 rememberPOSProducts([{id: 2, price: 30, stock: 4}], 7);
 assert.equal(getCachedProducts().length, 101);
 assert.equal(getCachedProducts().find(p => p.id === 1).price, 20);
-renderOfflineProductButton(); assert.equal(button.disabled, false);
+renderOfflineProductButton(); assert.equal(button.disabled, true);
 failStorage = true;
 rememberPOSProducts([{id: 1, price: 99, stock: 1}], 7);
 assert.equal(getCachedProducts().find(p => p.id === 1).price, 99);
@@ -113,4 +113,33 @@ await loadAllProductsForOffline();
 assert.equal(offlineCacheGet('products_7'), null);
 assert.equal(offlineCacheGet('products_8'), null);
 assert.equal(button.disabled, false);
+''')['ok']
+
+
+def test_download_remains_ready_after_browsing_restart_and_temporary_disconnect():
+    assert run_download('''
+await loadAllProductsForOffline();
+rememberPOSProducts([{id: 1, price: 20, stock: 3}], 7);
+renderOfflineProductButton();
+assert.equal(button.disabled, true);
+assert.equal(offlineCacheGet(cachedProductsKey()).catalog_version, 'v1');
+offlineCatalogVersion = null; cachedProducts = []; cachedProductsBranchId = null;
+offline = true;
+await checkOfflineProductCatalog();
+assert.equal(button.disabled, true);
+assert.match(status.textContent, /saved/);
+offline = false;
+await checkOfflineProductCatalog();
+assert.equal(button.disabled, true);
+version = 'v2';
+await checkOfflineProductCatalog();
+assert.equal(button.disabled, false);
+assert.match(status.textContent, /Admin made changes.*re-click again/);
+offline = true;
+await checkOfflineProductCatalog();
+assert.equal(button.disabled, false);
+offline = false;
+await loadAllProductsForOffline();
+assert.equal(button.disabled, true);
+assert.equal(offlineCacheGet(cachedProductsKey()).catalog_version, 'v2');
 ''')['ok']

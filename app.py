@@ -5197,8 +5197,13 @@ def api_products():
             # Hash the actual catalog, including bulk SQL/import changes. Stream
             # rows rather than instantiate the entire ORM graph in memory.
             digest = hashlib.sha256()
+            # Stock moves on every sale and must not force a full catalog
+            # download. The offline snapshot remains available; live POS reads
+            # refresh stock as products are browsed.
+            catalog_columns = [column for column in Product.__table__.columns
+                               if column.name != 'stock']
             rows = db.session.query(
-                *Product.__table__.columns, Unit.symbol, Unit.name, Category.name,
+                *catalog_columns, Unit.symbol, Unit.name, Category.name,
             ).outerjoin(Unit, Product.unit_id == Unit.id).outerjoin(
                 Category, Product.category_id == Category.id
             ).filter(Product.branch_id == branch_id).order_by(Product.id).yield_per(500)
