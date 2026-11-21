@@ -65,13 +65,105 @@ class PurchaseReceivingTests(unittest.TestCase):
             self.user, self.local, self.foreign = user.id, local.id, foreign.id
             self.po, self.item, self.product, self.supplier = po.id, item.id, product.id, supplier.id
 
-    def receive(self, quantity, role='manager', **changes):
+    def client(self, role='manager', branch=None):
         client = self.m.app.test_client()
         with client.session_transaction() as session:
-            session.update(user_id=self.user, role=role, branch_id=self.local)
+            session.update(user_id=self.user, role=role, branch_id=branch or self.local)
+        return client
+
+    def receive(self, quantity, role='manager', **changes):
+        client = self.client(role)
         data = {'items': [{'purchase_order_item_id': self.item, 'received_qty': quantity}]}
         data.update(changes)
         return client.post(f'/api/purchase_orders/{self.po}/receive', json=data)
+
+    def invoice(self, **changes):
+        data = {'supplier_reference': 'BILL-100', 'invoice_date': '2026-11-18', 'total_amount': '30.00'}
+        data.update(changes)
+        return self.client().post(f'/api/purchase_orders/{self.po}/invoice', json=data)
+
+    def test_goods_receipt_and_matched_invoice_end_to_end(self):
+        m, client = self.m, self.client()
+        uri = f'/api/purchase_orders/{self.po}'
+        self.assertEqual(self.invoice().status_code, 409)
+        part = self.receive(4, idempotency_key='part').json
+        self.assertEqual(part['status'], 'partially_received')
+        self.assertEqual(self.invoice().status_code, 409)
+        self.assertEqual(client.post(uri + '/cancel', json={}).status_code, 409)
+        self.assertEqual(self.receive(4, idempotency_key='part').json['grn_number'], part['grn_number'])
+        full = self.receive(6, idempotency_key='full').json
+        self.assertEqual(full['status'], 'received')
+        page = client.get(uri + '/receipts?per_page=1').json
+        self.assertEqual(page['items'][0]['number'], full['grn_number'])
+        older = client.get(uri + '/receipts', query_string={'per_page': 1, 'cursor': page['next_cursor']}).json
+        self.assertEqual(older['items'][0]['items'][0]['received_qty'], 4)
+        self.assertEqual(older['items'][0]['actor_id'], self.user)
+        self.assertEqual(self.invoice(total_amount='29.99').status_code, 409)
+        self.assertEqual(self.invoice(total_amount='NaN').status_code, 400)
+        self.assertEqual(self.client('cashier').get(uri + '/receipts').status_code, 403)
+        self.assertEqual(self.client('cashier').post(uri + '/invoice', json={}).status_code, 403)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(lambda _: self.invoice(), range(2)))
+        self.assertEqual(sorted(response.status_code for response in responses), [200, 201])
+        self.assertEqual(self.invoice(supplier_reference='OTHER').status_code, 409)
+        invoice = client.get(uri + '/invoice').json['invoice']
+        self.assertEqual(invoice['items'][0]['quantity'], 10)
+        self.assertEqual(invoice['total_amount'], '30.00')
+        order = client.get('/api/purchase_orders', query_string={'status': 'invoiced', 'view': 'register'}).json['items'][0]
+        self.assertEqual(order['status'], 'received')
+        self.assertEqual(order['invoice']['supplier_reference'], 'BILL-100')
+        self.assertEqual(client.get('/api/purchase_orders/summary').json['invoiced'], 1)
+        self.assertEqual(client.get('/api/purchase_orders/export?format=xlsx&status=invoiced').status_code, 200)
+        self.assertEqual(client.delete(uri, json={'confirm': True}).status_code, 409)
+        with m.app.app_context():
+            self.assertEqual(m.GoodsReceipt.query.count(), 2)
+            self.assertEqual(m.PurchaseInvoice.query.count(), 1)
+            self.assertEqual(sum(batch.quantity for batch in m.WarehouseInventory.query.all()), 10)
+            self.assertEqual(m.db.session.get(m.Product, self.product).stock, 0)
+            self.assertEqual(m.db.session.get(m.Supplier, self.supplier).total_orders, 1)
+            m.WarehouseInventory.query.delete()
+            m.db.session.commit()
+        self.assertEqual(self.client(branch=self.foreign).delete(
+            f'/api/products/{self.product}?force=1&cascade=1').status_code, 409)
+
+    def test_additive_schema_preserves_legacy_received_order(self):
+        m = self.m
+        with m.app.app_context():
+            m.PurchaseInvoice.__table__.drop(m.db.engine)
+            m.GoodsReceipt.__table__.drop(m.db.engine)
+            m.db.session.get(m.PurchaseOrder, self.po).status = 'received'
+            m.db.session.get(m.PurchaseOrderItem, self.item).received_qty = 10
+            m.db.session.add(m.WarehouseInventory(product_id=self.product, branch_id=self.foreign,
+                quantity=10, batch_number='PO-TEST', unit_cost=3))
+            m.db.session.commit()
+            m.db.create_all()
+            m.db.create_all()
+            self.assertEqual(m.GoodsReceipt.query.count(), 0)
+            self.assertEqual(m.PurchaseInvoice.query.count(), 0)
+        self.assertEqual(self.invoice().status_code, 201)
+        with m.app.app_context():
+            self.assertEqual(m.WarehouseInventory.query.one().quantity, 10)
+            self.assertEqual(m.GoodsReceipt.query.count(), 0)
+
+    def test_duplicate_supplier_invoice_reference_across_received_orders(self):
+        m = self.m
+        self.assertEqual(self.receive(10).status_code, 200)
+        self.assertEqual(self.invoice().status_code, 201)
+        with m.app.app_context():
+            order = m.PurchaseOrder(po_number='PO-SECOND', supplier_id=self.supplier,
+                status='received', total_amount=30, branch_id=self.local)
+            m.db.session.add(order)
+            m.db.session.flush()
+            m.db.session.add(m.PurchaseOrderItem(purchase_order_id=order.id, product_id=self.product,
+                ordered_qty=10, received_qty=10, unit_cost=3))
+            m.db.session.commit()
+            uri = f'/api/purchase_orders/{order.id}/invoice'
+        response = self.client().post(uri, json={'supplier_reference': 'bill-100',
+            'invoice_date': '2026-11-18', 'total_amount': '30'})
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('already recorded', response.json['message'])
+        self.assertEqual(self.client().get(uri).status_code, 404)
 
     def service_receive(self, quantity=10, *, items=None, **kwargs):
         m = self.m

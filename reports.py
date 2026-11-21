@@ -59,6 +59,7 @@ PURCHASE_ORDER_STATUS_LABELS = {
     "approved": "Approved",
     "partially_received": "Partially received",
     "received": "Received",
+    "invoiced": "Purchase Invoice",
     "cancelled": "Cancelled",
 }
 
@@ -183,6 +184,7 @@ PURCHASE_ORDER_COLUMNS = (
     column("supplier_name", "Supplier", width=26),
     column("product_branch", "Product Branch", width=20),
     column("status_label", "Status", width=16, align="center"),
+    column("supplier_invoice", "Supplier invoice", width=20),
     column("total_amount", "Amount", width=15, align="right", kind="money"),
     column("items_count", "Lines", width=8, align="right", kind="int"),
     column("total_ordered", "Ordered", width=10, align="right", kind="int"),
@@ -639,7 +641,8 @@ def build_purchase_order_report(
             "supplier_name": str(record.get("supplier_name") or "Unknown supplier"),
             "product_branch": str(record.get("product_branch") or ""),
             "status": status,
-            "status_label": purchase_order_status_label(status),
+            "status_label": purchase_order_status_label('invoiced' if record.get('invoice') else status),
+            "supplier_invoice": (record.get('invoice') or {}).get('supplier_reference'),
             "total_amount": amount,
             "items_count": int(round(number_value(record.get("items_count")))),
             "total_ordered": ordered,
@@ -659,6 +662,7 @@ def build_purchase_order_report(
             "value": f"{status_counts.get('partially_received', 0):,}",
         },
         {"label": "Received", "value": f"{status_counts.get('received', 0):,}"},
+        {"label": "Invoiced", "value": f"{sum(bool(row['supplier_invoice']) for row in rows):,}"},
         {"label": "Cancelled", "value": f"{status_counts.get('cancelled', 0):,}"},
         {"label": "Ordered units", "value": f"{total_ordered:,}"},
         {

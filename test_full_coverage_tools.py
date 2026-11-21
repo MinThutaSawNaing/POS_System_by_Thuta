@@ -11,8 +11,8 @@ import uuid
 from decimal import Decimal
 from unittest import mock
 
-from app import (AI_MODELS, app, db, Branch, Category, Product, Promotion,
-                 PurchaseOrder, PurchaseOrderItem, Sale, SaleItem, Supplier,
+from app import (AI_MODELS, app, db, Branch, Category, GoodsReceipt, Product, Promotion,
+                 PurchaseInvoice, PurchaseOrder, PurchaseOrderItem, Sale, SaleItem, Supplier,
                  User, WarehouseInventory)
 from agent_orchestrator import AgentOrchestrator
 from ai_tools import AITools
@@ -85,11 +85,9 @@ class FullCoverageToolsTestBase(unittest.TestCase):
             if product_ids:
                 Promotion.query.filter(Promotion.product_id.in_(product_ids)).delete(
                     synchronize_session=False)
-            PurchaseOrderItem.query.filter(
-                PurchaseOrderItem.purchase_order_id.in_(
-                    [po.id for po in PurchaseOrder.query.filter(
-                        PurchaseOrder.branch_id.in_(branch_ids)).all()] or [0])
-            ).delete(synchronize_session=False)
+            order_ids = db.session.query(PurchaseOrder.id).filter(PurchaseOrder.branch_id.in_(branch_ids))
+            for model in (GoodsReceipt, PurchaseInvoice, PurchaseOrderItem):
+                model.query.filter(model.purchase_order_id.in_(order_ids.statement)).delete(synchronize_session=False)
             PurchaseOrder.query.filter(PurchaseOrder.branch_id.in_(branch_ids)).delete(
                 synchronize_session=False)
             WarehouseInventory.query.filter(WarehouseInventory.branch_id.in_(branch_ids)).delete(

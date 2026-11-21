@@ -204,6 +204,10 @@ def delete_purchase_order(db, models, po_id, *, confirm=False, actor_id):
             raise _Failure('Explicit confirmation required: permanently delete purchase order history? '
                            'Stock and payments are not reversed; reports change. Send confirm=true.')
         po = _po(db, models, po_id)
+        from purchase_receiving import locked_purchase_order_ids
+        if db.session.query(db.session.query(type(po).id).filter(
+                type(po).id == po.id, type(po).id.in_(locked_purchase_order_ids(models))).exists()).scalar():
+            raise _Failure('Purchase orders with a goods receipt or invoice cannot be deleted', 409)
         for line in db.session.query(_model(models, 'PurchaseOrderItem')).filter_by(purchase_order_id=po.id):
             db.session.delete(line)
         # WarehouseInventory references the immutable batch number, not a PO FK.

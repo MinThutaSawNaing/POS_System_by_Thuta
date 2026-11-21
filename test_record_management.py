@@ -97,7 +97,7 @@ class RecordManagementTests(unittest.TestCase):
             response = client.put(f'/api/purchase_orders/{self.po}', json=value)
             self.assertEqual(response.status_code, 400, response.json)
 
-    def test_received_metadata_and_history_delete_preserve_receipts(self):
+    def test_received_metadata_preserves_linked_order_and_retry_evidence(self):
         client = self.client()
         response = client.post(f'/api/purchase_orders/{self.po}/receive', json={
             'items': [{'purchase_order_item_id': self.item, 'received_qty': 10}],
@@ -116,10 +116,11 @@ class RecordManagementTests(unittest.TestCase):
             'items': [{'product_id': self.product, 'quantity': 1, 'unit_cost': 0}]}).status_code, 409)
         for confirm in (None, False, 'true', 1):
             self.assertEqual(client.delete(f'/api/purchase_orders/{self.po}', json={'confirm': confirm}).status_code, 400)
-        self.assertEqual(client.delete(f'/api/purchase_orders/{self.po}', json={'confirm': True}).status_code, 200)
+        self.assertEqual(client.delete(f'/api/purchase_orders/{self.po}', json={'confirm': True}).status_code, 409)
         with self.m.app.app_context():
-            self.assertIsNone(self.m.db.session.get(self.m.PurchaseOrder, self.po))
-            self.assertEqual(self.m.PurchaseOrderItem.query.count(), 0)
+            self.assertIsNotNone(self.m.db.session.get(self.m.PurchaseOrder, self.po))
+            self.assertEqual(self.m.PurchaseOrderItem.query.count(), 1)
+            self.assertEqual(self.m.GoodsReceipt.query.count(), 1)
             self.assertEqual(self.m.WarehouseInventory.query.one().quantity, 10)
             self.assertEqual(self.m.ReceiptRequest.query.count(), 1)
             self.assertEqual(self.m.db.session.get(self.m.Product, self.product).stock, 0)

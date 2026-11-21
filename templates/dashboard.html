@@ -3596,7 +3596,7 @@
       <div data-capability="admin" id="purchases-section" style="display: none">
         <div class="d-flex justify-content-between align-items-center mb-3 section-header flex-wrap gap-2">
           <div class="d-flex align-items-center gap-3 flex-wrap">
-            <h2 class="mb-0">Purchase & Receiving</h2>
+            <h2 class="mb-0">Purchases</h2>
             <span class="branch-indicator">
               <i class="bi bi-file-earmark-text"></i>
               <span>All Branches</span>
@@ -3626,6 +3626,7 @@
           </div>
         </div>
 
+        <p class="text-muted small mb-3">Purchase Order → Goods Received (GRN) → Purchase Invoice</p>
         <!-- Summary Cards -->
         <div class="row mb-3 summary-cards-row">
           <div class="col-4 col-md-2 mb-2">
@@ -3663,7 +3664,7 @@
           <div class="col-4 col-md-2 mb-2">
             <div class="card bg-light summary-card">
               <div class="card-body py-2">
-                <small class="text-muted d-block" style="font-size: 0.7rem;">Received</small>
+                <small class="text-muted d-block" style="font-size: 0.7rem;">Received this month</small>
                 <h5 id="po-monthly-received" class="mb-0 text-success fs-6">0</h5>
               </div>
             </div>
@@ -3700,7 +3701,8 @@
                   <option value="pending">Pending Approval</option>
                   <option value="approved">Approved</option>
                   <option value="partially_received">Partially Received</option>
-                  <option value="received">Received</option>
+                  <option value="received">Goods Received (all)</option>
+                  <option value="invoiced">Purchase Invoice</option>
                   <option value="cancelled">Cancelled</option>
                 </select>
               </div>
@@ -7473,7 +7475,7 @@
       <div class="modal-dialog modal-lg">
         <div class="modal-content">
           <div class="modal-header bg-success text-white">
-            <h5 class="modal-title"><i class="bi bi-box-arrow-in-down me-2"></i>Receive Purchase Order</h5>
+            <h5 class="modal-title"><i class="bi bi-box-arrow-in-down me-2"></i>Record Goods Received (GRN)</h5>
             <button
               type="button"
               class="btn-close btn-close-white"
@@ -7484,7 +7486,7 @@
           <div class="modal-body">
             <div class="alert alert-info d-flex align-items-center mb-3">
               <i class="bi bi-info-circle-fill me-2"></i>
-              <span>Enter the quantities received for each item. Stock will be updated automatically.</span>
+              <span>Verify the delivery and enter only quantities accepted. Confirming creates a GRN and updates warehouse stock.</span>
             </div>
             <p class="mb-2">PO: <strong id="receive-po-number">-</strong></p>
             <p id="receive-po-retry-status" class="text-warning" role="status" hidden></p>
@@ -7501,9 +7503,21 @@
               Cancel
             </button>
             <button type="button" class="btn btn-success" onclick="submitPurchaseReceiving()">
-              <i class="bi bi-check-lg me-1"></i>Confirm Receiving
+              <i class="bi bi-check-lg me-1"></i>Confirm Goods Received
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="purchaseDocumentModal" tabindex="-1" aria-hidden="true" aria-labelledby="purchase-document-title">
+      <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="purchase-document-title"></h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body" id="purchase-document-content" aria-live="polite"></div>
         </div>
       </div>
     </div>
@@ -22682,7 +22696,8 @@
                 'cancelled': 'danger'
               };
               const badgeClass = statusColors[po.status] || 'secondary';
-              const statusLabel = po.status.replace('_', ' ').toUpperCase();
+              const statusLabel = po.invoice ? 'Purchase Invoice' :
+                (po.status === 'received' ? (po.has_goods_receipt ? 'Goods Received (GRN)' : 'Received (legacy)') : po.status_label || po.status);
               
               // Expected delivery
               const expDelivery = po.expected_delivery_date ? new Date(po.expected_delivery_date).toLocaleDateString() : '-';
@@ -22693,7 +22708,8 @@
                 <td>${escapeHtml(po.supplier_name)}</td>
                 <td class="d-none d-md-table-cell">${escapeHtml(po.product_branch || '-')}</td>
                 <td>${formatCurrency(po.total_amount || 0)}</td>
-                <td><span class="badge bg-${badgeClass}">${statusLabel}</span></td>
+                <td><span class="badge bg-${badgeClass}">${escapeHtml(statusLabel)}</span>
+                  ${po.invoice ? `<div class="small">${escapeHtml(po.invoice.supplier_reference)}</div>` : ''}</td>
                 <td>${expDelivery}</td>
                 <td>${new Date(po.created_at).toLocaleDateString()}</td>
                 <td>${po.received_items_count}/${po.items_count}</td>
@@ -22702,7 +22718,7 @@
                     <button class="btn btn-outline-info" onclick="viewPurchaseOrderDetails(${po.id})" title="View Details">
                       <i class="bi bi-eye"></i>
                     </button>
-                    ${hasManagerOrBossAccess() ? `<button class="btn btn-outline-warning" data-record-action="edit" title="Edit purchase order" aria-label="Edit purchase order"><i class="bi bi-pencil"></i></button><button class="btn btn-outline-danger" data-record-action="delete" title="Delete purchase order history" aria-label="Delete purchase order history"><i class="bi bi-trash"></i></button>` : ''}
+                    ${hasManagerOrBossAccess() ? `<button class="btn btn-outline-warning" data-record-action="edit" title="Edit purchase order" aria-label="Edit purchase order"><i class="bi bi-pencil"></i></button>${!po.has_goods_receipt && !po.invoice ? `<button class="btn btn-outline-danger" data-record-action="delete" title="Delete purchase order history" aria-label="Delete purchase order history"><i class="bi bi-trash"></i></button>` : ''}` : ''}
                     ${po.status === 'draft' ? `
                       <button class="btn btn-outline-warning" onclick="submitPurchaseOrderForApproval(${po.id})" title="Submit for Approval">
                         <i class="bi bi-send"></i>
@@ -22714,11 +22730,13 @@
                       </button>
                     ` : ''}
                     ${(po.status === 'approved' || po.status === 'partially_received' || hasPurchaseReceivingRetry(po.id)) ? `
-                      <button class="btn btn-success" onclick="openReceivePurchaseOrder(${po.id})" title="Receive Items">
+                      <button class="btn btn-success" onclick="openReceivePurchaseOrder(${po.id})" title="Record Goods Received (GRN)" aria-label="Record Goods Received (GRN)">
                         <i class="bi bi-box-arrow-in-down"></i>
                       </button>
                     ` : ''}
-                    ${po.status !== 'received' && po.status !== 'cancelled' ? `
+                    ${po.has_goods_receipt ? `<button class="btn btn-outline-success" data-record-action="grn" title="View goods receipt notes" aria-label="View goods receipt notes"><i class="bi bi-box-seam"></i></button>` : ''}
+                    ${po.status === 'received' ? `<button class="btn btn-outline-primary" data-record-action="invoice" title="${po.invoice ? 'View Purchase Invoice' : 'Create Purchase Invoice'}" aria-label="${po.invoice ? 'View Purchase Invoice' : 'Create Purchase Invoice'}"><i class="bi bi-receipt"></i></button>` : ''}
+                    ${['draft', 'pending', 'approved'].includes(po.status) ? `
                       <button class="btn btn-outline-danger" data-record-action="cancel" title="Cancel">
                         <i class="bi bi-x-lg"></i>
                       </button>
@@ -22730,6 +22748,8 @@
                 </td>
               `;
               row.querySelector('[data-record-action="edit"]')?.addEventListener("click", () => editPurchaseOrder(po.id));
+              row.querySelector('[data-record-action="grn"]')?.addEventListener("click", () => openPurchaseDocument(po, 'receipts'));
+              row.querySelector('[data-record-action="invoice"]')?.addEventListener("click", () => openPurchaseDocument(po, 'invoice'));
               row.querySelector('[data-record-action="delete"]')?.addEventListener("click", () => showRecordDeletion("purchase_orders", po.id));
               row.querySelector('[data-record-action="cancel"]')?.addEventListener("click", () => showCancelPOModal(po.id, po.po_number));
               table.appendChild(row);
@@ -22776,6 +22796,112 @@
         return openReportDownload(`/api/purchase_orders/export?${params.toString()}`);
       }
 
+      let purchaseDocumentRequest = 0;
+
+      async function openPurchaseDocument(po, type, cursor = '') {
+        const panel = document.getElementById('purchaseDocumentModal');
+        const title = document.getElementById('purchase-document-title');
+        const content = document.getElementById('purchase-document-content');
+        const modal = bootstrap.Modal.getOrCreateInstance(panel);
+        const requestId = ++purchaseDocumentRequest;
+        const identity = inventoryIdentity();
+        const current = () => requestId === purchaseDocumentRequest && identity === inventoryIdentity();
+        const url = `/api/purchase_orders/${po.id}/${type}`;
+        const request = async (target, options) => {
+          const response = await fetch(target, options);
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.message || 'Could not load purchase document');
+          return data;
+        };
+        const lineTable = (items, quantity) => `<table class="table table-sm">
+          <thead><tr><th>Product</th><th>SKU</th><th class="text-end">Quantity</th></tr></thead>
+          <tbody>${items.map(item => `<tr><td>${escapeHtml(item.product_name)}</td>
+            <td>${escapeHtml(item.sku || '-')}</td><td class="text-end">${Number(item[quantity])}</td></tr>`).join('')}</tbody></table>`;
+        const renderInvoice = (invoice) => {
+          title.textContent = 'Purchase Invoice';
+          content.innerHTML = `<dl><dt>Purchase order</dt><dd>${escapeHtml(invoice.po_number)}</dd>
+            <dt>Supplier</dt><dd>${escapeHtml(invoice.supplier_name)}</dd>
+            <dt>Supplier invoice reference</dt><dd>${escapeHtml(invoice.supplier_reference)}</dd>
+            <dt>Invoice date</dt><dd>${escapeHtml(invoice.invoice_date)}</dd>
+            <dt>Matched total</dt><dd>${escapeHtml(invoice.total_amount)} ${escapeHtml(invoice.currency)}</dd></dl>
+            ${lineTable(invoice.items, 'quantity')}`;
+        };
+        title.textContent = type === 'receipts' ? 'Goods Receipt Notes (GRNs)' : 'Purchase Invoice';
+        content.textContent = 'Loading…';
+        modal.show();
+        try {
+          if (type === 'receipts') {
+            const params = new URLSearchParams({per_page: '5'});
+            if (cursor) params.set('cursor', cursor);
+            const data = await request(`${url}?${params}`);
+            if (!current()) return;
+            content.innerHTML = data.items.map(grn => `<section class="mb-4"><h6>${escapeHtml(grn.number)}</h6>
+              <p>${escapeHtml(grn.po_number)} · ${escapeHtml(new Date(`${grn.created_at}Z`).toLocaleString())}</p>
+              ${lineTable(grn.items, 'received_qty')}</section>`).join('') || '<p>No goods receipt notes recorded.</p>';
+            if (cursor || data.has_more) {
+              const back = document.createElement('button');
+              back.className = 'btn btn-outline-secondary btn-sm me-2';
+              back.textContent = 'Newest';
+              back.disabled = !cursor;
+              back.onclick = () => openPurchaseDocument(po, type);
+              content.append(back);
+              if (data.has_more) {
+                const next = document.createElement('button');
+                next.className = 'btn btn-outline-secondary btn-sm';
+                next.textContent = 'Older receipts';
+                next.onclick = () => openPurchaseDocument(po, type, data.next_cursor);
+                content.append(next);
+              }
+            }
+            return;
+          }
+          if (po.invoice) {
+            const data = await request(url);
+            if (current()) renderInvoice(data.invoice);
+            return;
+          }
+          title.textContent = 'Create Purchase Invoice';
+          content.innerHTML = `<form>
+            <p>PO <strong>${escapeHtml(po.po_number)}</strong> · ${escapeHtml(po.supplier_name)}<br>
+              Expected total: <strong>${escapeHtml(formatCurrency(po.total_amount))}</strong></p>
+            <p class="small text-muted">Match the supplier invoice to the fully received PO. This does not post stock or record a payment.
+              ${po.has_goods_receipt ? '' : 'This order was received before GRN tracking; no historical GRN will be created.'}</p>
+            <label class="form-label d-block">Supplier invoice reference<input class="form-control" name="supplier_reference" maxlength="120" required></label>
+            <label class="form-label d-block">Supplier invoice date<input class="form-control" type="date" name="invoice_date" required></label>
+            <label class="form-label d-block">Supplier invoice total<input class="form-control" type="text" inputmode="decimal" name="total_amount" maxlength="15" placeholder="0.00" required></label>
+            <p class="text-danger small" role="alert"></p>
+            <button class="btn btn-primary" type="submit">Create Purchase Invoice</button></form>`;
+          const form = content.querySelector('form');
+          form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const button = form.querySelector('button');
+            if (!current() || button.disabled) return;
+            button.disabled = true;
+            const error = form.querySelector('[role="alert"]');
+            error.textContent = '';
+            try {
+              const saved = await request(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(Object.fromEntries(new FormData(form)))});
+              if (identity !== inventoryIdentity()) return;
+              loadPurchaseOrders();
+              if (!current()) return;
+              showToast('Purchase invoice recorded.', 'success');
+              openPurchaseDocument({...po, invoice: saved.invoice}, 'invoice');
+            } catch (err) {
+              if (current()) error.textContent = err.message;
+            } finally {
+              button.disabled = false;
+            }
+          });
+        } catch (error) {
+          if (current()) content.textContent = error.message;
+        }
+      }
+
+      document.getElementById('purchaseDocumentModal')?.addEventListener('hide.bs.modal', () => {
+        ++purchaseDocumentRequest;
+      });
+
       function viewPurchaseOrderDetails(poId) {
         const modal = new bootstrap.Modal(document.getElementById("purchaseOrderDetailsModal"));
         const content = document.getElementById("po-details-content");
@@ -22806,7 +22932,8 @@
                 </div>
                 <div class="col-md-6 text-end">
                   <h6 class="text-muted">Status</h6>
-                  <span class="badge bg-${badgeClass} fs-6">${po.status.replace('_', ' ').toUpperCase()}</span>
+                  <span class="badge bg-${badgeClass} fs-6">${escapeHtml(po.invoice ? 'Purchase Invoice' :
+                    po.status === 'received' ? (po.has_goods_receipt ? 'Goods Received (GRN)' : 'Received (legacy)') : po.status_label || po.status)}</span>
                 </div>
               </div>
               <div class="row mb-3">
@@ -23448,7 +23575,7 @@
                   showToast(data.message || "Failed to receive items", "error");
                   return;
                 }
-                showToast("Stock received successfully! Inventory has been updated.", "success");
+                showToast(data.grn_number ? `Goods receipt ${data.grn_number} recorded.` : "Goods received. Warehouse stock updated.", "success");
                 const modal = bootstrap.Modal.getInstance(document.getElementById("receivePurchaseOrderModal"));
                 if (typeof markBranchFormSaved === "function") markBranchFormSaved("receivePurchaseOrderModal");
                 modal.hide();

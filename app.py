@@ -17,7 +17,7 @@ import random
 import threading
 from sqlalchemy import inspect, text, func, event, or_, and_, case, select, union_all
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import Session as SQLAlchemySession, aliased, joinedload, selectinload
+from sqlalchemy.orm import Session as SQLAlchemySession, aliased, defer, joinedload, selectinload
 from checkout_recovery import (
     CheckoutValidationError, validate_checkout, checkout_fingerprint, finite_amount,
 )
@@ -2050,6 +2050,30 @@ class ReceiptRequest(db.Model):
     fingerprint = db.Column(db.String(64), nullable=False)
     response_json = db.Column(db.Text, nullable=False)
 
+
+class GoodsReceipt(db.Model):
+    """Immutable record of one verified stock posting (including partial receipts)."""
+    id = db.Column(db.Integer, primary_key=True)
+    number = db.Column(db.String(40), unique=True, nullable=False)
+    purchase_order_id = db.Column(db.Integer, db.ForeignKey('purchase_order.id'), nullable=False, index=True)
+    actor_id = db.Column(db.Integer, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False)
+    snapshot = db.Column(db.JSON, nullable=False)
+
+
+class PurchaseInvoice(db.Model):
+    """One supplier invoice for the fully received PO, independent of stock."""
+    purchase_order_id = db.Column(db.Integer, db.ForeignKey('purchase_order.id'), primary_key=True)
+    supplier_id = db.Column(db.Integer, db.ForeignKey('supplier.id'), nullable=False)
+    supplier_reference = db.Column(db.String(120, collation='NOCASE'), nullable=False)
+    invoice_date = db.Column(db.Date, nullable=False)
+    total_minor = db.Column(db.BigInteger, nullable=False)
+    currency = db.Column(db.String(12), nullable=False)
+    actor_id = db.Column(db.Integer, nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False)
+    snapshot = db.Column(db.JSON, nullable=False)
+    __table_args__ = (db.UniqueConstraint('supplier_id', 'supplier_reference'),)
+
 class SupplierCommunication(db.Model):
     """Track supplier communications and interactions"""
     id = db.Column(db.Integer, primary_key=True)
@@ -2420,6 +2444,7 @@ AUDIT_CATEGORY_BY_ENTITY = {
     'Product': 'Products', 'Category': 'Products', 'Unit': 'Products',
     'WarehouseInventory': 'Inventory', 'WarehouseTransfer': 'Inventory',
     'PurchaseOrder': 'Purchasing', 'PurchaseOrderItem': 'Purchasing',
+    'GoodsReceipt': 'Purchasing', 'PurchaseInvoice': 'Purchasing',
     'Supplier': 'Purchasing', 'SupplierCommunication': 'Purchasing',
     'SupplierPriceAgreement': 'Purchasing',
     'Customer': 'Customers', 'Debt': 'Customers', 'DebtPayment': 'Customers',
@@ -2430,7 +2455,7 @@ AUDIT_CATEGORY_BY_ENTITY = {
     'MemoryRegistry': 'AI Assistant', 'MemoryAudit': 'AI Assistant',
 }
 AUDIT_SENSITIVE_FIELDS = {
-    'password', 'value', 'receipt_snapshot', 'command', 'details',
+    'password', 'value', 'receipt_snapshot', 'snapshot', 'command', 'details',
     'bank_account', 'tax_id',
     'payment_breakdown', 'phone', 'email', 'address', 'delivery_address',
     'recipient_phone', 'courier_phone', 'notes', 'communication_notes',
@@ -5513,8 +5538,7 @@ def get_product_dependency_summary(product):
                    return/exchange lines are kept and only unlinked from the
                    deleted product, so reports, receipts, refunds and
                    already-returned quantities all stay accurate.
-      * 'block'  — nothing emits this today; the UI still supports it for a
-                   reference that must be handled in its own tab first.
+      * 'block'  — current warehouse stock or protected procurement records.
     """
     warehouse_items = WarehouseInventory.query.filter_by(product_id=product.id).all()
     warehouse_quantity = sum(int(item.quantity or 0) for item in warehouse_items)
@@ -5556,10 +5580,13 @@ def get_product_dependency_summary(product):
               'promotion records for this product will be removed')
     add_group('supplier_price_agreements', 'Supplier price agreements', agreements,
               'delete', 'agreed supplier prices for this product will be removed')
+    from purchase_receiving import locked_purchase_order_ids
+    protected = PurchaseOrderItem.query.filter(PurchaseOrderItem.product_id == product.id,
+        PurchaseOrderItem.purchase_order_id.in_(locked_purchase_order_ids(globals()))).count()
     add_group('purchase_order_items', 'Purchase order lines', len(purchase_order_items),
-              'delete',
-              f'lines removed from {purchase_order_count} purchase order(s); their totals '
-              'are recalculated',
+              'block' if protected else 'delete',
+              'Linked purchase orders have a goods receipt or invoice' if protected else
+              f'lines removed from {purchase_order_count} purchase order(s); their totals are recalculated',
               purchase_order_count=purchase_order_count)
     add_group('sales_history', 'Sales history lines', sales_lines, 'keep',
               'kept for reports and receipts; the lines are only unlinked from the product')
@@ -5787,6 +5814,16 @@ def api_single_product(product_id):
                 force = force or to_bool(body.get('force'), False)
                 cascade = cascade or to_bool(body.get('cascade'), False)
 
+        # Check confirmed procurement evidence under the same writer lock as receiving/invoicing.
+        db.session.rollback()
+        try:
+            db.session.execute(text('BEGIN IMMEDIATE'))
+        except OperationalError:
+            db.session.rollback()
+            return jsonify(success=False, message='Inventory is busy. Reload before retrying.'), 409
+        product = Product.query.filter_by(id=product_id, branch_id=branch_id).first()
+        if not product:
+            return jsonify(success=False, message='Product not found'), 404
         summary = get_product_dependency_summary(product)
 
         if summary['blocked_by']:
@@ -5796,7 +5833,9 @@ def api_single_product(product_id):
                 'blocked_by': summary['blocked_by'],
                 'dependency_groups': summary['groups'],
                 'product_name': product.name,
-                'message': 'Transfer this product out of the shared warehouse before deleting it',
+                'message': ('This product is linked to a purchase order with a goods receipt or invoice'
+                            if 'purchase_order_items' in summary['blocked_by'] else
+                            'Transfer this product out of the shared warehouse before deleting it'),
             }), 409
 
         if summary['removable_count'] and not cascade:
@@ -8861,7 +8900,9 @@ def purchase_orders_for_filters(search_query='', status_filter='', supplier_filt
                 (Supplier.name.ilike(like_query))
             ).join(Supplier)
 
-    if status_filter:
+    if status_filter == 'invoiced':
+        query = query.filter(PurchaseOrder.id.in_(select(PurchaseInvoice.purchase_order_id)))
+    elif status_filter:
         query = query.filter(PurchaseOrder.status == status_filter)
 
     if supplier_filter:
@@ -8899,6 +8940,9 @@ def purchase_orders_for_filters(search_query='', status_filter='', supplier_filt
 def serialize_purchase_register(orders):
     """Aggregate only the selected orders' lines, never instantiate line graphs."""
     ids = [po.id for po in orders]
+    invoices = purchase_invoice_summaries(ids)
+    receipt_ids = {po_id for (po_id,) in db.session.query(GoodsReceipt.purchase_order_id)
+        .filter(GoodsReceipt.purchase_order_id.in_(ids)).distinct()} if ids else set()
     stats = {row.purchase_order_id: row for row in db.session.query(
         PurchaseOrderItem.purchase_order_id,
         func.count(PurchaseOrderItem.id).label('items_count'),
@@ -8923,6 +8967,8 @@ def serialize_purchase_register(orders):
             'product_branch': ('Multiple branches' if stat and stat.min_branch != stat.max_branch
                                else names.get(branch_id, 'Unassigned')),
             'status': po.status, 'status_label': purchase_order_status_label(po.status),
+            'invoice': invoices.get(po.id),
+            'has_goods_receipt': po.id in receipt_ids,
             'total_amount': po.total_amount, 'notes': po.notes,
             'expected_delivery_date': po.expected_delivery_date.isoformat() if po.expected_delivery_date else None,
             'created_by': po.creator.username if po.creator else None,
@@ -8986,6 +9032,15 @@ def purchase_order_letterhead_context(po):
         'supplier_phone': (supplier.phone or '') if supplier else '',
         'total': format_currency(po.total_amount),
     }
+
+
+def purchase_invoice_summaries(ids):
+    if not ids:
+        return {}
+    from purchase_invoicing import invoice_payload
+    return {invoice.purchase_order_id: invoice_payload(invoice) for invoice in
+            PurchaseInvoice.query.options(defer(PurchaseInvoice.snapshot)).filter(
+                PurchaseInvoice.purchase_order_id.in_(ids))}
 
 
 def serialize_purchase_order(po, include_items=False):
@@ -9180,6 +9235,9 @@ def export_purchase_orders():
         supplier_name = supplier.name if supplier else supplier_filter
 
     records = [serialize_purchase_order(po, include_items=True) for po in purchase_orders]
+    invoices = purchase_invoice_summaries([po.id for po in purchase_orders])
+    for record in records:
+        record['invoice'] = invoices.get(record['id'])
     filters_text = describe_filters({
         'Search': search_query,
         'Status': purchase_order_status_label(status_filter) if status_filter else '',
@@ -9231,6 +9289,7 @@ def api_purchase_orders_summary():
         PurchaseOrder.created_at >= month_start, PurchaseOrder.status != 'cancelled'), PurchaseOrder.total_amount), else_=0)), 0)
     values = db.session.query(*(expression.label(key) for key, expression in fields.items())).one()
     result = dict(values._mapping)
+    result['invoiced'] = PurchaseInvoice.query.count()
     result['monthly_amount'] = money_float(result['monthly_amount'])
     return jsonify(result)
 
@@ -9273,6 +9332,9 @@ def api_single_purchase_order(po_id):
             'supplier_email': po.supplier.email if po.supplier else None,
             'supplier_address': po.supplier.address if po.supplier else None,
             'status': po.status,
+            'status_label': purchase_order_status_label(po.status),
+            'invoice': purchase_invoice_summaries([po.id]).get(po.id),
+            'has_goods_receipt': db.session.query(GoodsReceipt.query.filter_by(purchase_order_id=po.id).exists()).scalar(),
             'total_amount': po.total_amount,
             'expected_delivery_date': po.expected_delivery_date.isoformat() if po.expected_delivery_date else None,
             'notes': po.notes,
@@ -9337,22 +9399,37 @@ def api_submit_purchase_order(po_id):
 @manager_or_boss_required
 def api_cancel_purchase_order(po_id):
     """Cancel a purchase order"""
-    po = db.session.get(PurchaseOrder, po_id)
-    if not po:
-        return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
-    
-    if po.status in ('received', 'cancelled'):
-        return jsonify({'success': False, 'message': 'Received or already cancelled orders cannot be cancelled'}), 400
-    
-    data = request.get_json() or {}
-    reason = (data.get('reason') or '').strip() or None
-    
-    po.status = 'cancelled'
-    po.cancelled_at = datetime.utcnow()
-    po.cancelled_reason = reason
-    db.session.commit()
-    
-    return jsonify({'success': True, 'message': 'Purchase order cancelled'})
+    from purchase_receiving import cancel_purchase_order
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(success=False, message='A JSON object is required'), 400
+    result, status = cancel_purchase_order(db, globals(), po_id, data.get('reason'))
+    return jsonify(result), status
+
+
+@app.route('/api/purchase_orders/<int:po_id>/invoice', methods=['GET', 'POST'])
+@manager_or_boss_required
+def api_purchase_invoice(po_id):
+    from purchase_invoicing import create_purchase_invoice, invoice_payload
+    if request.method == 'POST':
+        result, status = create_purchase_invoice(db, globals(), po_id, request.get_json(silent=True),
+            actor_id=session.get('user_id'), get_currency=get_currency_code)
+        return jsonify(result), status
+    invoice = db.session.get(PurchaseInvoice, po_id)
+    if not invoice:
+        return jsonify(success=False, message='Purchase invoice not found'), 404
+    return jsonify(invoice=invoice_payload(invoice, include_items=True))
+
+
+@app.route('/api/purchase_orders/<int:po_id>/receipts', methods=['GET'])
+@manager_or_boss_required
+def api_purchase_order_receipts(po_id):
+    if not db.session.get(PurchaseOrder, po_id):
+        return jsonify(success=False, message='Purchase order not found'), 404
+    query = GoodsReceipt.query.filter_by(purchase_order_id=po_id)
+    rows, paging = cursor_rows(query, GoodsReceipt.id)
+    return jsonify(**paging, items=[{'number': row.number, 'created_at': row.created_at.isoformat(),
+        'actor_id': row.actor_id, **row.snapshot} for row in rows])
 
 @app.route('/api/purchase_orders/<int:po_id>/receive', methods=['POST'])
 @manager_or_boss_required
@@ -9375,7 +9452,7 @@ def api_receive_purchase_order(po_id):
 @app.route('/api/purchase_orders/<int:po_id>/print', methods=['GET'])
 @manager_or_boss_required
 def api_print_purchase_order(po_id):
-    """Generate PDF for purchase order (internal use invoice)"""
+    """Generate the original purchase order PDF, not a supplier invoice."""
     po = db.session.get(PurchaseOrder, po_id)
     if not po:
         return jsonify({'success': False, 'message': 'Purchase order not found'}), 404
@@ -10953,6 +11030,8 @@ AI_MODELS = {
     'Supplier': Supplier,
     'PurchaseOrder': PurchaseOrder,
     'PurchaseOrderItem': PurchaseOrderItem,
+    'GoodsReceipt': GoodsReceipt,
+    'PurchaseInvoice': PurchaseInvoice,
     'SupplierCommunication': SupplierCommunication,
     'SupplierPriceAgreement': SupplierPriceAgreement,
     'WarehouseInventory': WarehouseInventory,

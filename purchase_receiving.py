@@ -4,12 +4,55 @@ from datetime import datetime
 import hashlib
 import json
 import re
+from uuid import uuid4
 from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import joinedload
 
 
 MAX_RECEIPT_ITEMS = 500
+
+
+def purchasing_model(models, name):
+    """Resolve new models for older callers that pass only the original model map."""
+    return models.get(name) or next((mapper.class_ for mapper in
+        models['PurchaseOrder'].registry.mappers if mapper.class_.__name__ == name), None)
+
+
+def locked_purchase_order_ids(models):
+    """IDs whose receipt/invoice evidence must stay linked to their PO and lines."""
+    from sqlalchemy import select, union_all
+    return union_all(*(select(purchasing_model(models, name).purchase_order_id)
+                       for name in ('GoodsReceipt', 'PurchaseInvoice')))
+
+
+def cancel_purchase_order(db, models, po_id, reason):
+    """Serialize cancellation against receiving and invoice creation."""
+    if reason is not None and (not isinstance(reason, str) or len(reason.strip()) > 300):
+        return {'success': False, 'message': 'Cancellation reason must be at most 300 characters'}, 400
+    try:
+        db.session.rollback()
+        db.session.execute(text('BEGIN IMMEDIATE'))
+        po = db.session.get(models['PurchaseOrder'], po_id)
+        if not po:
+            db.session.rollback()
+            return {'success': False, 'message': 'Purchase order not found'}, 404
+        Line = models['PurchaseOrderItem']
+        if po.status not in ('draft', 'pending', 'approved') or db.session.query(
+                db.session.query(Line.id).filter(Line.purchase_order_id == po_id,
+                                                  Line.received_qty > 0).exists()).scalar():
+            db.session.rollback()
+            return {'success': False, 'message': 'Orders with receipts or already cancelled cannot be cancelled'}, 409
+        po.status = 'cancelled'
+        po.cancelled_at = datetime.utcnow()
+        po.cancelled_reason = (reason or '').strip() or None
+        result = {'success': True, 'po_id': po.id, 'po_number': po.po_number, 'status': po.status,
+                  'reason': po.cancelled_reason, 'message': 'Purchase order cancelled'}
+        db.session.commit()
+        return result, 200
+    except (IntegrityError, OperationalError):
+        db.session.rollback()
+        return {'success': False, 'message': 'Purchase order is busy. Reload before retrying.'}, 409
 
 
 def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False,
@@ -123,21 +166,30 @@ def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False,
         if not any(requested.values()):
             return fail('At least one received quantity must be positive')
 
-        received_lines = []
+        received_lines, snapshot_lines, batches = [], [], []
+        receipt_time = datetime.utcnow()
         for item_id, quantity in requested.items():
             if quantity == 0:
                 continue
             item = item_map[item_id]
             item.received_qty = (item.received_qty or 0) + quantity
-            db.session.add(WarehouseInventory(
+            batch = WarehouseInventory(
                 product_id=item.product_id, quantity=quantity,
-                batch_number=po.po_number, received_date=datetime.utcnow(),
+                batch_number=po.po_number, received_date=receipt_time,
                 unit_cost=item.unit_cost, branch_id=item.product.branch_id,
-            ))
+            )
+            db.session.add(batch)
+            batches.append(batch)
             if item.unit_cost and item.unit_cost > 0:
                 item.product.cost = item.unit_cost
             received_lines.append({'purchase_order_item_id': item_id, 'received_qty': quantity})
+            snapshot_lines.append({**received_lines[-1], 'product_id': item.product_id,
+                'product_name': item.product.name, 'sku': getattr(item.product, 'sku', None),
+                'branch_id': item.product.branch_id, 'ordered_qty': item.ordered_qty,
+                'total_received_qty': item.received_qty, 'unit_cost': str(item.unit_cost or 0)})
         db.session.flush()
+        for snapshot_line, batch in zip(snapshot_lines, batches):
+            snapshot_line['warehouse_inventory_id'] = batch.id
         po.status = ('partially_received' if has_lines(
             lines.filter(received < PurchaseOrderItem.ordered_qty)) else 'received')
         if not previously_received and po.supplier:
@@ -145,6 +197,14 @@ def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False,
         result = {'success': True, 'message': 'Receiving recorded', 'po_id': po.id,
                   'po_number': po.po_number, 'status': po.status, 'received_lines': received_lines,
                   'replayed': False}
+        GoodsReceipt = purchasing_model(models, 'GoodsReceipt')
+        number = f'GRN-{uuid4().hex.upper()}'
+        db.session.add(GoodsReceipt(number=number, purchase_order_id=po.id,
+            actor_id=actor_id, created_at=receipt_time,
+            snapshot={'po_number': po.po_number, 'supplier_id': po.supplier_id,
+                      'supplier_name': po.supplier.name if po.supplier else None,
+                      'status': po.status, 'items': snapshot_lines}))
+        result['grn_number'] = number
         if ReceiptRequest is not None:
             db.session.add(ReceiptRequest(
                 key=idempotency_key, fingerprint=fingerprint,

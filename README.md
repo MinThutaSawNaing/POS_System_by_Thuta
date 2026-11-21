@@ -568,7 +568,7 @@ An admin account is auto-created if missing:
 - Existing databases are migrated automatically for compatible schema updates.
 - The AI agent requires an API key to be configured in Settings for full functionality.
 - Barcode labels can be printed directly from the product management interface.
-- Purchase orders go through a workflow: Draft → Pending → Approved → Received.
+- In **Purchases**, create and approve a PO, verify and record the delivery as Goods Received (GRN), then create the matching Purchase Invoice.
 - Debt management includes aging analysis (0-30, 31-60, 61-90, 90+ days).
 - Warehouse transfers automatically update main stock levels when confirmed.
 - Operational records are branch-specific; suppliers, purchasing and warehouse stock are shared manager workflows. Ensure you're on the correct branch before making changes.
@@ -583,7 +583,9 @@ An admin account is auto-created if missing:
 - Multi-item support with automatic total calculation
 - Shared purchase register across branches; the creation form can select catalog products from every branch
 - Approval workflow with status tracking
-- Cancel orders with reason logging
+- Record one GRN per accepted delivery batch; partial receipts update warehouse stock but must be completed before invoicing
+- Record one matched supplier invoice per fully received PO, without creating a payment or posting stock again
+- Cancel unreceived orders with reason logging; orders linked to a GRN or invoice are protected from hard deletion
 - Download the filtered register as a branded PDF or Excel workbook (Excel adds a line-item sheet)
 
 ### Warehouse Management

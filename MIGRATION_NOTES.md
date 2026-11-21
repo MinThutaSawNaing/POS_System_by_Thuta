@@ -1,5 +1,13 @@
 # Migration notes
 
+## Purchase Order → Goods Received (GRN) → Purchase Invoice
+
+- SQLite startup creates two additive tables, `goods_receipt` and `purchase_invoice`, using the existing `db.create_all()` path. It does not rewrite PO statuses, stock, supplier totals, or receipt retry records. No historical GRNs or invoices are backfilled. Existing properly received orders can be invoiced against their recorded quantities and PO costs without reposting stock; already-cancelled orders with historical receipts need manual reconciliation.
+- Each accepted receiving batch produces one GRN in the same transaction as the warehouse posting. Previously saved receiving retries still replay their original result (without a new GRN). Partial receipts remain supported; their remaining quantities must be received before one matched invoice can be recorded. Invoice references are unique per supplier (SQLite ASCII case-insensitive). No payments, supplier payable, or accounting entries are generated.
+- Existing manager/boss permissions and shared, all-branch purchase register remain. Orders with a GRN or invoice and the products on those orders cannot be hard-deleted. Legacy orders without these records retain their existing history-deletion policy. The original PO PDF is still a PO, not an invoice.
+- Before rollout: take and verify an independent database and uploads backup; stop all writers and rehearse startup twice on a staging copy with a single updated worker. Compare order/stock/supplier totals before and after startup, then test partial and full receiving, timeout/retry, invoice matching, PDF/Excel exports, and duplicate reference rejection. Roll all writers forward together; do not use old code against an upgraded database with live GRN/invoice writes. Old code does not enforce the new history protections.
+- Once new records exist, prefer a forward fix. Restoring an old backup loses every post-backup write (including unrelated sales); reconcile those transactions before reopening. If no new workflow records have been committed, the extra tables can remain unused during a controlled code rollback; do not drop them as part of application startup.
+
 ## November 2026 password hash storage
 
 - `user.password` is now declared `VARCHAR(255)` instead of `VARCHAR(120)`.

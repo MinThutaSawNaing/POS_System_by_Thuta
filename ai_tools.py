@@ -41,6 +41,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 import pytz
 from sqlalchemy import and_, or_, text
+from sqlalchemy.exc import OperationalError
 
 MONEY_QUANT = Decimal('0.01')
 
@@ -1122,7 +1123,7 @@ _TOOL_META = {
     # --- write tools ---
     "create_purchase_order":           ("purchasing",  True, "Create a draft purchase order for one or more products from a supplier.", "small"),
     "update_purchase_order":           ("purchasing",  True, "Edit PO notes/date; replace supplier and lines only before receiving. Stock unchanged.", "small"),
-    "delete_purchase_order":           ("purchasing",  True, "Delete PO history after explicit confirmation; warehouse stock stays unchanged.", "small"),
+    "delete_purchase_order":           ("purchasing",  True, "Delete eligible PO history after explicit confirmation; orders with GRNs or invoices are protected.", "small"),
     "delete_sale_history":             ("sales",       True, "Delete an active-branch sale history record after confirmation; no restock or refund.", "small"),
     "approve_purchase_order":          ("purchasing",  True, "Approve a pending purchase order (pending -> approved).", "small"),
     "cancel_purchase_order":           ("purchasing",  True, "Cancel a draft/pending/approved purchase order with a reason.", "small"),
@@ -1838,28 +1839,9 @@ class AITools:
         
     def cancel_purchase_order(self, po_id: int, reason: str) -> Dict[str, Any]:
         """Cancel a purchase order"""
-        PurchaseOrder = self._get_model('PurchaseOrder')
-        
-        po = PurchaseOrder.query.filter_by(id=po_id).first()
-        if not po:
-            return {"error": f"Purchase order with ID {po_id} not found"}
-            
-        if po.status in ['received', 'cancelled']:
-            return {"error": f"Cannot cancel purchase order with status '{po.status}'."}
-            
-        po.status = 'cancelled'
-        po.cancelled_at = datetime.utcnow()
-        po.cancelled_reason = reason
-        self.db.session.commit()
-        
-        return {
-            "success": True,
-            "po_id": po.id,
-            "po_number": po.po_number,
-            "status": "cancelled",
-            "reason": reason,
-            "message": f"Purchase order {po.po_number} has been cancelled."
-        }
+        from purchase_receiving import cancel_purchase_order
+        result, status = cancel_purchase_order(self.db, self.models, po_id, reason)
+        return result if status == 200 else {'error': result['message']}
         
     def get_warehouse_inventory(self, product_id: int = None) -> Dict[str, Any]:
         """Get warehouse inventory status"""
@@ -3205,6 +3187,19 @@ class AITools:
         other tabs (warehouse, promotions, purchase order lines, supplier
         prices) is only removed after the user confirmed, with cascade=true.
         """
+        self.db.session.rollback()
+        try:
+            self.db.session.execute(text('BEGIN IMMEDIATE'))
+        except OperationalError:
+            self.db.session.rollback()
+            return {"error": "Inventory is busy. Reload before retrying."}
+        try:
+            return self._delete_product_locked(product_id, confirm, cascade)
+        finally:
+            self.db.session.rollback()
+
+    def _delete_product_locked(self, product_id, confirm, cascade):
+        from purchase_receiving import locked_purchase_order_ids
         Product = self._get_model('Product')
         SaleItem = self._get_model('SaleItem')
         PurchaseOrderItem = self._get_model('PurchaseOrderItem')
@@ -3217,6 +3212,10 @@ class AITools:
         product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
         if not product:
             return {"error": f"Product with ID {product_id} not found in the active branch"}
+
+        if PurchaseOrderItem.query.filter(PurchaseOrderItem.product_id == product.id,
+                PurchaseOrderItem.purchase_order_id.in_(locked_purchase_order_ids(self.models))).first():
+            return {"error": "This product is linked to a purchase order with a goods receipt or invoice"}
 
         returns_count = ReturnExchangeItem.query.filter_by(product_id=product.id).count()
 
@@ -3460,7 +3459,8 @@ class AITools:
         from purchase_receiving import receive_purchase_order
         try:
             result, status = receive_purchase_order(
-                self.db, self.models, po_id, items, receive_all=items is None)
+                self.db, self.models, po_id, items, receive_all=items is None,
+                actor_id=trusted_tool_context(self.context).get('user_id'))
             if status != 200:
                 return {"error": result['message']}
             return result

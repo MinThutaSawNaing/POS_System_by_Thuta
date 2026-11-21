@@ -18,6 +18,53 @@ SOURCE = (Path(__file__).parent / "templates" / "dashboard.html").read_text(enco
 NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(NODE is None, reason="Node.js required")
 
+def test_invoice_form_renders_conflict_and_can_retry():
+    script = _function(SOURCE, "openPurchaseDocument") + """
+const assert = require('node:assert/strict');
+let purchaseDocumentRequest = 0;
+const button = {disabled: false};
+const error = {textContent: ''};
+let submit, postCount = 0, refreshes = 0;
+const form = {
+  addEventListener(_, callback) { submit = callback; },
+  querySelector(selector) { return selector === 'button' ? button : error; },
+};
+const content = {querySelector: () => form};
+const title = {};
+const document = {getElementById(id) { return id.endsWith('content') ? content : title; }};
+const bootstrap = {Modal: {getOrCreateInstance: () => ({show() {}})}};
+const inventoryIdentity = () => 'manager/branch';
+const escapeHtml = (value) => String(value).replaceAll('<', '&lt;');
+const formatCurrency = String;
+const loadPurchaseOrders = () => { refreshes++; };
+const showToast = () => {};
+const FormData = class { [Symbol.iterator]() { return Object.entries({supplier_reference: '<REF>', invoice_date: '2026-11-18', total_amount: '30.00'})[Symbol.iterator](); } };
+const invoice = {supplier_reference: '<REF>', invoice_date: '2026-11-18', total_amount: '30.00',
+  currency: 'USD', po_number: 'PO-1', supplier_name: 'Supplier', items: []};
+const fetch = async (url, options) => {
+  assert.equal(url, '/api/purchase_orders/1/invoice');
+  if (!options) return {ok: true, json: async () => ({invoice})};
+  assert.equal(JSON.parse(options.body).total_amount, '30.00');
+  return ++postCount === 1 ? {ok: false, json: async () => ({message: 'Total does not match'})}
+    : {ok: true, json: async () => ({invoice})};
+};
+(async () => {
+  await openPurchaseDocument({id: 1, po_number: 'PO-1', supplier_name: 'Supplier', total_amount: 30}, 'invoice');
+  assert.equal(title.textContent, 'Create Purchase Invoice');
+  await submit({preventDefault() {}});
+  assert.equal(error.textContent, 'Total does not match');
+  assert.equal(button.disabled, false);
+  await submit({preventDefault() {}});
+  await new Promise(setImmediate);
+  assert.equal(title.textContent, 'Purchase Invoice');
+  assert.match(content.innerHTML, /&lt;REF>/);
+  assert.equal(refreshes, 1);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run([NODE, "-"], input=script, text=True, encoding="utf-8", capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
 HARNESS = """
 function makeButton(html) {
   return { disabled: false, innerHTML: html, tagName: "BUTTON" };
