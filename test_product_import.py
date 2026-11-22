@@ -238,8 +238,8 @@ class ProductImportTests(unittest.TestCase):
     def test_difference_monitor_flags_identifier_conflicts_and_unverified_matches(self):
         self.product(name='Target label', barcode='ABC', catalog_id='clone')
         self.product(name='Other label', barcode='DEF', catalog_id='clone', branch_id=self.other.id)
-        self.product(name='Unlabeled', barcode=None, catalog_id='unrelated')
-        self.product(name='Unlabeled', barcode=None, catalog_id='other-unrelated', branch_id=self.other.id)
+        self.product(name='Unlabeled local', barcode=None, catalog_id='unrelated')
+        self.product(name='Unlabeled other', barcode=None, catalog_id='other-unrelated', branch_id=self.other.id)
         response = self.client.get(f'/api/products/differences?target_branch={self.branch.id}&compare_branch={self.other.id}')
         data = response.get_json()
         self.assertEqual(data['summary'], dict(missing_from_target=0, missing_from_comparisons=0, needs_review=3))
@@ -247,6 +247,25 @@ class ProductImportTests(unittest.TestCase):
         self.assertEqual(conflict['name'], 'Target label')
         self.assertEqual([record['barcode'] for record in conflict['records']], ['ABC', 'DEF'])
         self.assertEqual(sum(row['unverified'] for row in data['items']), 2)
+
+    def test_difference_monitor_hides_identical_unlabeled_products_and_reports_name_matches(self):
+        # Same name and no barcode/SKU in every compared branch is the same
+        # product, so it must not be reported as a difference.
+        self.product(name='Loose Tea', barcode=None, catalog_id='loose-local')
+        self.product(name='  loose   tea ', barcode=None, catalog_id='loose-other', branch_id=self.other.id)
+        path = f'/api/products/differences?target_branch={self.branch.id}&compare_branch={self.other.id}'
+        data = self.client.get(path).get_json()
+        self.assertEqual(data['items'], [])
+        self.assertEqual(data['summary'], dict(missing_from_target=0, missing_from_comparisons=0, needs_review=0))
+        # A name-only match that is absent from one branch is reported once and
+        # still asks the manager to verify it.
+        self.product(name='Loose Coffee', barcode=None, catalog_id='coffee-local')
+        data = self.client.get(path).get_json()
+        self.assertEqual(len(data['items']), 1)
+        item = data['items'][0]
+        self.assertEqual((item['name'], item['missing'], item['unverified']),
+                         ('Loose Coffee', [self.other.id], True))
+        self.assertEqual(data['summary'], dict(missing_from_target=0, missing_from_comparisons=0, needs_review=1))
 
     def product(self, **fields):
         defaults = dict(name='Tea', barcode='T', price=10, cost=4, stock=17,

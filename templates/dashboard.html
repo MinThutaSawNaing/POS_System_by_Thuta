@@ -7953,43 +7953,74 @@
     </div>
 
     <div class="modal fade" id="productDifferencesModal" tabindex="-1" aria-labelledby="product-differences-title" aria-hidden="true">
-      <div class="modal-dialog modal-xl modal-dialog-scrollable">
+      <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title" id="product-differences-title">Difference Monitor</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          <div class="modal-header align-items-start gap-3">
+            <div class="flex-grow-1">
+              <h5 class="modal-title mb-1" id="product-differences-title"><i class="bi bi-arrow-left-right me-2"></i>Difference Monitor</h5>
+              <p class="text-muted small mb-0">Find products one branch carries and another is missing. Identical products are hidden.</p>
+            </div>
+            <button type="button" class="btn-close mt-1" data-bs-dismiss="modal" aria-label="Close"></button>
           </div>
           <div class="modal-body">
-            <form id="product-differences-form" class="mb-3" aria-describedby="product-differences-help">
+            <form id="product-differences-form" class="rounded-3 border bg-light-subtle p-3 mb-3" aria-describedby="product-differences-help">
               <div class="row g-3">
-                <div class="col-12 col-md-4">
-                  <label class="form-label fw-semibold" for="product-differences-target">1. Target branch</label>
+                <div class="col-12 col-lg-4">
+                  <label class="form-label fw-semibold mb-1" for="product-differences-target">1. Target branch</label>
                   <select class="form-select" id="product-differences-target" required disabled></select>
+                  <div class="form-text">Products this branch is missing appear as the target gaps.</div>
                 </div>
-                <fieldset class="col-12 col-md-8" id="product-differences-compare" disabled>
-                  <legend class="form-label fs-6 fw-semibold">2. Compare with one or more branches</legend>
-                  <div id="product-differences-choices" class="d-flex flex-wrap gap-2"></div>
-                  <button type="button" class="btn btn-link px-0" id="product-differences-select-all">Select all other branches</button>
-                </fieldset>
+                <div class="col-12 col-lg-8">
+                  <fieldset class="m-0 p-0 border-0" id="product-differences-compare" disabled>
+                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+                      <legend class="form-label fw-semibold fs-6 mb-0">2. Compare with one or more branches</legend>
+                      <div class="d-flex flex-wrap align-items-center gap-2">
+                        <span class="small text-muted" id="product-differences-selection">Choose at least one comparison branch</span>
+                        <button type="button" class="btn btn-link btn-sm p-0" id="product-differences-select-all">Select all</button>
+                        <button type="button" class="btn btn-link btn-sm p-0 text-secondary" id="product-differences-clear">Clear</button>
+                      </div>
+                    </div>
+                    <div id="product-differences-choices" class="d-flex flex-wrap gap-2" role="group" aria-label="Comparison branches"></div>
+                  </fieldset>
+                </div>
+                <div class="col-12 d-flex flex-wrap align-items-center justify-content-between gap-2">
+                  <p id="product-differences-help" class="small text-muted mb-0 flex-grow-1">Matches products by shared catalog ID or barcode, or by SKU when both records have no barcode. Products without any identifier are matched by name and flagged for review.</p>
+                  <button type="submit" class="btn btn-primary px-4 ms-auto" id="product-differences-run" disabled>
+                    <i class="bi bi-arrow-left-right me-1"></i>Compare catalogs
+                  </button>
+                </div>
               </div>
-              <button type="submit" class="btn btn-primary mt-2" id="product-differences-run" disabled>Compare catalogs</button>
             </form>
-            <p id="product-differences-help" class="small text-muted">Compares which products branches carry, not stock or price. Matches by shared catalog ID or barcode, or by SKU when both records have no barcode. Products needing manual verification are labeled separately.</p>
-            <p id="product-differences-status" role="status"></p>
+            <p id="product-differences-status" class="small text-muted mb-2" role="status" aria-live="polite"></p>
             <div id="product-differences-results" hidden>
               <p id="product-differences-counts" class="fw-semibold mb-1"></p>
-              <p id="product-differences-summary" class="small"></p>
-              <div class="table-responsive">
-                <table class="table table-striped align-middle">
-                  <thead><tr><th scope="col">Product</th><th scope="col">Barcode</th><th scope="col">SKU</th><th scope="col">Present in</th><th scope="col">Missing from</th><th scope="col">Result</th></tr></thead>
+              <p id="product-differences-summary" class="small text-muted mb-2"></p>
+              <div class="table-responsive border rounded-3">
+                <table class="table table-sm table-striped table-hover align-middle mb-0">
+                  <thead class="table-light">
+                    <tr>
+                      <th scope="col">Product</th>
+                      <th scope="col">Barcode</th>
+                      <th scope="col">SKU</th>
+                      <th scope="col">Present in</th>
+                      <th scope="col">Missing from</th>
+                      <th scope="col">Result</th>
+                    </tr>
+                  </thead>
                   <tbody id="product-differences-rows"></tbody>
                 </table>
               </div>
-              <div class="d-flex gap-2">
-                <button type="button" class="btn btn-outline-secondary" id="product-differences-prev" disabled>Previous</button>
-                <button type="button" class="btn btn-outline-secondary" id="product-differences-next" disabled>Next</button>
+              <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mt-3">
+                <span class="small text-muted" id="product-differences-page"></span>
+                <div class="btn-group" role="group" aria-label="Difference results pages">
+                  <button type="button" class="btn btn-outline-secondary btn-sm" id="product-differences-prev" disabled><i class="bi bi-chevron-left me-1"></i>Previous</button>
+                  <button type="button" class="btn btn-outline-secondary btn-sm" id="product-differences-next" disabled>Next<i class="bi bi-chevron-right ms-1"></i></button>
+                </div>
               </div>
             </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
           </div>
         </div>
       </div>
@@ -25112,7 +25143,7 @@
     <script src="/public/customer-display-publisher.js"></script>
     <script src="/public/myanmyanpay.js"></script>
     <script src="/public/product-import.js?v=branch-scope"></script>
-    <script src="/public/product-differences.js?v=branch-picker"></script>
+    <script src="/public/product-differences.js?v=difference-filter"></script>
     <script src="/public/email-security.js"></script>
     <!-- AI Agent Widget (manager/owner only; cashiers have no assistant access) -->
     {% if session.role in ('manager', 'boss') %}
