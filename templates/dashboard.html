@@ -7993,6 +7993,21 @@
             </form>
             <p id="product-differences-status" class="small text-muted mb-2" role="status" aria-live="polite"></p>
             <div id="product-differences-results" hidden>
+              <div class="d-flex flex-wrap align-items-center gap-2 mb-2" id="product-differences-filter-bar">
+                <span class="small fw-semibold text-uppercase text-muted">Filter</span>
+                <div class="btn-group btn-group-sm" role="group" aria-label="Filter differences">
+                  <button type="button" class="btn btn-outline-secondary active" data-difference-filter="all" aria-pressed="true">All differences</button>
+                  <button type="button" class="btn btn-outline-danger" data-difference-filter="missing_from_target" aria-pressed="false">Missing from target</button>
+                  <button type="button" class="btn btn-outline-warning" data-difference-filter="needs_review" aria-pressed="false">Needs review</button>
+                </div>
+                <div class="dropdown">
+                  <button class="btn btn-sm btn-outline-primary dropdown-toggle" type="button" id="product-differences-filter-branch" data-bs-toggle="dropdown" aria-expanded="false" disabled>
+                    <i class="bi bi-funnel me-1"></i>Show only missing in…
+                  </button>
+                  <ul class="dropdown-menu" id="product-differences-filter-branches" aria-labelledby="product-differences-filter-branch"></ul>
+                </div>
+                <span class="small text-muted" id="product-differences-filter-state"></span>
+              </div>
               <p id="product-differences-counts" class="fw-semibold mb-1"></p>
               <p id="product-differences-summary" class="small text-muted mb-2"></p>
               <div class="table-responsive border rounded-3">
@@ -8021,6 +8036,12 @@
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+            <button type="button" class="btn btn-outline-success" id="product-differences-export-xlsx" disabled title="Export the current comparison and filter to Excel">
+              <i class="bi bi-file-earmark-spreadsheet me-1"></i>Export Excel
+            </button>
+            <button type="button" class="btn btn-outline-danger" id="product-differences-export-pdf" disabled title="Export the current comparison and filter to PDF">
+              <i class="bi bi-file-earmark-pdf me-1"></i>Export PDF
+            </button>
           </div>
         </div>
       </div>
@@ -24568,7 +24589,7 @@
       function openReportDownload(url) {
         url = dashboardIdentityUrl(url);
         if (!url) return false;
-        if (/^\/api\/(products|warehouse|purchase_orders)\/export\?/.test(url) &&
+        if (/^\/api\/(products(\/differences)?|warehouse|purchase_orders)\/export\?/.test(url) &&
             typeof openBoundedInventoryExport === "function") return openBoundedInventoryExport(url);
         const reportWindow = window.open(url, "_blank");
         if (!reportWindow) {
@@ -25143,7 +25164,7 @@
     <script src="/public/customer-display-publisher.js"></script>
     <script src="/public/myanmyanpay.js"></script>
     <script src="/public/product-import.js?v=branch-scope"></script>
-    <script src="/public/product-differences.js?v=difference-filter"></script>
+    <script src="/public/product-differences.js?v=difference-filter-export"></script>
     <script src="/public/email-security.js"></script>
     <!-- AI Agent Widget (manager/owner only; cashiers have no assistant access) -->
     {% if session.role in ('manager', 'boss') %}

@@ -6,11 +6,31 @@
   const compare = el("compare"), run = el("run"), all = el("select-all"), clear = el("clear");
   const results = el("results"), rows = el("rows"), prev = el("prev"), next = el("next");
   const counts = el("counts"), summary = el("summary"), pageInfo = el("page");
+  const filterButtons = [...document.querySelectorAll("[data-difference-filter]")];
+  const branchFilter = el("filter-branch"), branchMenu = el("filter-branches"), filterState = el("filter-state");
+  const exportButtons = {xlsx: el("export-xlsx"), pdf: el("export-pdf")};
   let branches = [], page = 1, revision = 0;
+  // Reported differences missing from each branch, shown on the filter menu.
+  let countsByBranch = {};
+  // 'all' | 'missing_from_target' | 'missing_from_branch' | 'needs_review'
+  let filter = {mode: "all", branch: ""};
 
   const checkboxes = () => [...choices.querySelectorAll("input")];
   const selected = () => checkboxes().filter(input => input.checked).map(input => input.value);
   const branchLabel = branch => `${branch.name} (${branch.code})`;
+  const branchName = id => branches.find(branch => String(branch.id) === String(id))?.name || "this branch";
+  const ready = () => Boolean(target.value) && selected().length > 0;
+
+  // One place builds the comparison query so paging, filtering and the PDF/Excel
+  // download always describe exactly the same rows.
+  function differenceQuery({page: requestedPage = 1, filter: state = filter} = {}) {
+    const params = new URLSearchParams({
+      page: String(requestedPage), target_branch: String(target.value), filter: state.mode,
+    });
+    selected().forEach(id => params.append("compare_branch", id));
+    if (state.mode === "missing_from_branch") params.set("filter_branch", String(state.branch));
+    return params;
+  }
 
   function renderSelection() {
     const total = checkboxes().length;
@@ -19,11 +39,53 @@
       : "Choose at least one comparison branch";
   }
 
+  function filterDescription() {
+    if (filter.mode === "missing_from_target") return `only products missing from ${branchName(target.value)}`;
+    if (filter.mode === "missing_from_branch") return `only products missing from ${branchName(filter.branch)}`;
+    if (filter.mode === "needs_review") return "only items that need review";
+    return "every difference";
+  }
+
+  // Filters hide rows, never the overall picture: the summary above still
+  // reports every difference the comparison found.
+  function renderFilterState() {
+    filterButtons.forEach(button => {
+      const on = button.dataset.differenceFilter === filter.mode;
+      button.classList.toggle("active", on);
+      button.setAttribute("aria-pressed", String(on));
+    });
+    const ids = [target.value, ...selected()].filter(Boolean);
+    branchMenu.replaceChildren(...ids.map(id => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "dropdown-item";
+      item.dataset.branchId = id;
+      const count = Number(countsByBranch[id]);
+      item.textContent = `Show only missing in ${branchName(id)}` +
+        (Number.isFinite(count) ? ` (${count.toLocaleString()})` : "");
+      if (filter.mode === "missing_from_branch" && String(filter.branch) === String(id)) {
+        item.classList.add("active");
+      }
+      return item;
+    }));
+    branchFilter.disabled = !ids.length;
+    branchFilter.classList.toggle("active", filter.mode === "missing_from_branch");
+    filterState.textContent = `Showing ${filterDescription()}.`;
+  }
+
+  function setExportEnabled(enabled) {
+    Object.values(exportButtons).forEach(button => { if (button) button.disabled = !enabled; });
+  }
+
   function resetResults() {
     revision++;
     results.hidden = true;
-    run.disabled = !target.value || !selected().length;
+    filter = {mode: "all", branch: ""};
+    countsByBranch = {};
+    run.disabled = !ready();
+    setExportEnabled(false);
     renderSelection();
+    renderFilterState();
     status.textContent = branches.length < 2 ? "At least two active branches are needed to compare catalogs." :
       "Choose comparison branches, then select Compare catalogs.";
   }
@@ -59,6 +121,7 @@
     return data;
   }
 
+
   function renderResult(detail, item, baseline, names) {
     const issues = [];
     if (item.conflict) issues.push("Conflicting barcodes");
@@ -90,23 +153,21 @@
     detail.append(list);
   }
 
-
   async function load(requestedPage = 1) {
-    const comparisons = selected();
-    if (!target.value || !comparisons.length) return;
+    if (!ready()) return;
     const ownRevision = ++revision;
-    const params = new URLSearchParams({page: requestedPage, target_branch: target.value});
-    comparisons.forEach(id => params.append("compare_branch", id));
+    const params = differenceQuery({page: requestedPage});
     results.hidden = true;
     status.textContent = "Comparing catalogs…";
     run.disabled = true;
+    setExportEnabled(false);
     try {
       const data = await fetchData(params);
       if (ownRevision !== revision) return;
       page = data.page;
-      const name = id => data.branches[id];
+      const name = id => data.branches[id] || branchName(id);
       const names = ids => ids.map(name).join(", ") || "—";
-      counts.textContent = [String(data.baseline), ...comparisons].map(id =>
+      counts.textContent = [String(data.baseline), ...selected()].map(id =>
         `${name(id)}${Number(id) === data.baseline ? " (target)" : ""}: ${data.counts[id].toLocaleString()} products`).join(" · ");
       const totals = data.summary;
       summary.textContent = `${totals.missing_from_target} missing from target · ` +
@@ -120,24 +181,52 @@
         renderResult(detail, item, data.baseline, names);
         if (item.records.length) renderRecords(detail, item.records, name);
       }
+      const filtered = filter.mode !== "all";
       if (data.total) {
         const first = (page - 1) * 50 + 1, last = (page - 1) * 50 + data.items.length;
-        pageInfo.textContent = `Showing ${first}–${last} of ${data.total.toLocaleString()} differences`;
-        status.textContent = "Only products that differ between the selected branches are listed.";
+        pageInfo.textContent = `Showing ${first}–${last} of ${data.total.toLocaleString()} ` +
+          `${filtered ? "filtered differences" : "differences"}`;
+        status.textContent = filtered
+          ? `Filtered to ${filterDescription()}. ${data.overall_total.toLocaleString()} differences exist for these branches.`
+          : "Only products that differ between the selected branches are listed.";
       } else {
         pageInfo.textContent = "";
-        status.textContent = "No catalog differences found for these branches.";
+        status.textContent = data.overall_total
+          ? `No differences match this filter. ${data.overall_total.toLocaleString()} differences exist for these branches.`
+          : "No catalog differences found for these branches.";
       }
       prev.disabled = page <= 1;
       next.disabled = page * 50 >= data.total;
-      results.hidden = !data.total;
+      // Keep the filter bar visible when the filter hides every row.
+      results.hidden = !data.overall_total;
+      countsByBranch = data.missing_counts || {};
+      renderFilterState();
+      setExportEnabled(ready());
     } catch (error) {
       if (ownRevision === revision) status.textContent = error.message;
     } finally {
-      if (ownRevision === revision) run.disabled = !target.value || !selected().length;
+      if (ownRevision === revision) run.disabled = !ready();
     }
   }
 
+  function setFilter(mode, branch = "") {
+    filter = {mode, branch: String(branch || "")};
+    renderFilterState();
+    if (ready()) load(1);
+  }
+
+  // The download reuses the visible branch selection and filter, never the page.
+  function exportDifferences(format) {
+    if (!requireCapability("admin")) return;
+    if (!ready()) {
+      status.textContent = "Choose branches and compare catalogs before exporting.";
+      return;
+    }
+    const params = differenceQuery();
+    params.delete("page");
+    params.set("format", format === "xlsx" ? "xlsx" : "pdf");
+    return openReportDownload(`/api/products/differences/export?${params.toString()}`);
+  }
 
   modal.addEventListener("show.bs.modal", async event => {
     if (!requireCapability("admin")) { event.preventDefault(); return; }
@@ -146,7 +235,11 @@
     results.hidden = true;
     target.replaceChildren();
     choices.replaceChildren();
+    branches = [];
+    filter = {mode: "all", branch: ""};
     renderSelection();
+    renderFilterState();
+    setExportEnabled(false);
     status.textContent = "Loading active branches…";
     try {
       const data = await fetchData("options=1");
@@ -171,7 +264,18 @@
     checkboxes().forEach(input => { input.checked = false; });
     resetResults();
   });
-  el("form").addEventListener("submit", event => { event.preventDefault(); load(); });
+  filterButtons.forEach(button => button.addEventListener("click", () => setFilter(button.dataset.differenceFilter)));
+  branchMenu.addEventListener("click", event => {
+    const item = event.target.closest("[data-branch-id]");
+    if (!item) return;
+    setFilter("missing_from_branch", item.dataset.branchId);
+    if (typeof bootstrap !== "undefined" && bootstrap.Dropdown) {
+      bootstrap.Dropdown.getOrCreateInstance(branchFilter).hide();
+    }
+  });
+  exportButtons.xlsx?.addEventListener("click", () => exportDifferences("xlsx"));
+  exportButtons.pdf?.addEventListener("click", () => exportDifferences("pdf"));
+  el("form").addEventListener("submit", event => { event.preventDefault(); load(1); });
   prev.addEventListener("click", () => load(page - 1));
   next.addEventListener("click", () => load(page + 1));
 })();

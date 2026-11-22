@@ -267,6 +267,71 @@ class ProductImportTests(unittest.TestCase):
                          ('Loose Coffee', [self.other.id], True))
         self.assertEqual(data['summary'], dict(missing_from_target=0, missing_from_comparisons=0, needs_review=1))
 
+    def test_difference_monitor_filters_rows_by_branch_and_review_state(self):
+        self.product(name='Only local', barcode='B', catalog_id='local-only')
+        self.product(name='Only other', barcode='C', branch_id=self.other.id, catalog_id='other-only')
+        path = '/api/products/differences'
+        query = {'target_branch': self.branch.id, 'compare_branch': self.other.id}
+        every = self.client.get(path, query_string=query).get_json()
+        self.assertEqual((every['total'], every['overall_total']), (2, 2))
+        self.assertEqual(every['filter'], {'mode': 'all', 'branch': None})
+        self.assertEqual(every['missing_counts'], {str(self.branch.id): 1, str(self.other.id): 1})
+        self.assertEqual([row['name'] for row in every['items']], ['Only local', 'Only other'])
+
+        missing_other = self.client.get(path, query_string=dict(
+            query, filter='missing_from_branch', filter_branch=self.other.id)).get_json()
+        self.assertEqual([row['name'] for row in missing_other['items']], ['Only local'])
+        self.assertEqual((missing_other['total'], missing_other['overall_total']), (1, 2))
+        self.assertEqual(missing_other['filter'], {'mode': 'missing_from_branch', 'branch': self.other.id})
+        # Filtering narrows the rows, never the totals the summary reports.
+        self.assertEqual(missing_other['summary'], every['summary'])
+
+        missing_target = self.client.get(path, query_string=dict(
+            query, filter='missing_from_target')).get_json()
+        self.assertEqual([row['name'] for row in missing_target['items']], ['Only other'])
+
+        review = self.client.get(path, query_string=dict(query, filter='needs_review')).get_json()
+        self.assertEqual(review['items'], [])
+        self.assertEqual(review['overall_total'], 2)
+
+        for invalid in ({'filter': 'everything'}, {'filter': 'missing_from_branch'},
+                        {'filter': 'missing_from_branch', 'filter_branch': 987654}):
+            self.assertEqual(self.client.get(path, query_string=dict(query, **invalid)).status_code, 400)
+
+    def test_difference_monitor_needs_review_filter_keeps_conflicts_only(self):
+        self.product(name='Target label', barcode='ABC', catalog_id='clone')
+        self.product(name='Other label', barcode='DEF', catalog_id='clone', branch_id=self.other.id)
+        self.product(name='Only local', barcode='B', catalog_id='local-only')
+        data = self.client.get('/api/products/differences', query_string={
+            'target_branch': self.branch.id, 'compare_branch': self.other.id,
+            'filter': 'needs_review'}).get_json()
+        self.assertEqual((data['total'], data['overall_total']), (1, 2))
+        self.assertTrue(data['items'][0]['conflict'])
+
+    def test_difference_monitor_exports_the_filtered_view_as_pdf_and_excel(self):
+        self.product(name='Only local', barcode='B', catalog_id='local-only')
+        self.product(name='Only other', barcode='C', branch_id=self.other.id, catalog_id='other-only')
+        query = {'target_branch': self.branch.id, 'compare_branch': self.other.id,
+                 'filter': 'missing_from_branch', 'filter_branch': self.other.id}
+        pdf = self.client.get('/api/products/differences/export', query_string=dict(query, format='pdf'))
+        self.assertEqual(pdf.status_code, 200)
+        self.assertTrue(pdf.data.startswith(b'%PDF'))
+        self.assertIn('catalog_differences', pdf.headers['Content-Disposition'])
+        xlsx = self.client.get('/api/products/differences/export', query_string=dict(query, format='xlsx'))
+        self.assertEqual(xlsx.status_code, 200)
+        self.assertTrue(xlsx.data.startswith(b'PK'))
+        from product_import import _xlsx
+        rows = _xlsx(xlsx.data)[0]
+        text = ' '.join(cell[0] for _, cells in rows for cell in cells if cell[0])
+        self.assertIn('Only local', text)
+        self.assertNotIn('Only other', text)
+        # A download always needs an explicit, valid comparison.
+        self.assertEqual(self.client.get('/api/products/differences/export?format=pdf').status_code, 400)
+        with self.client.session_transaction() as session:
+            session['role'] = 'cashier'
+        self.assertEqual(self.client.get('/api/products/differences/export',
+                                        query_string=dict(query, format='pdf')).status_code, 403)
+
     def product(self, **fields):
         defaults = dict(name='Tea', barcode='T', price=10, cost=4, stock=17,
                         photo_filename='keep.png', catalog_id='keep-catalog', branch_id=self.branch.id)

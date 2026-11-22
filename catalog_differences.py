@@ -2,9 +2,47 @@
 from collections import Counter
 
 
+# Filters shared by the Difference Monitor API and its PDF/Excel exports.
+DIFFERENCE_FILTERS = ('all', 'missing_from_target', 'missing_from_branch', 'needs_review')
+
+
 def normalized_name(value):
     """Names are the last-resort identity for products saved without a barcode/SKU."""
     return ' '.join((value or '').split()).casefold()
+
+
+def difference_needs_review(item):
+    """Same rule the comparison uses: conflicts, duplicate records or name-only matches."""
+    return bool(item['conflict'] or item['duplicates'] or item['unverified'])
+
+
+def difference_matches(item, target, mode='all', branch_id=None):
+    """Report only the rows a manager asked to see without losing the full summary."""
+    if mode == 'missing_from_target':
+        return target in item['missing']
+    if mode == 'missing_from_branch':
+        return branch_id in item['missing']
+    if mode == 'needs_review':
+        return difference_needs_review(item)
+    return True
+
+
+def filter_differences(differences, target, mode='all', branch_id=None):
+    return [item for item in differences
+            if difference_matches(item, target, mode, branch_id)]
+
+
+def missing_counts(differences, branch_ids):
+    """How many reported differences each compared branch is missing."""
+    return {branch_id: sum(branch_id in item['missing'] for item in differences)
+            for branch_id in branch_ids}
+
+
+def difference_result_label(item, target):
+    """One-word outcome used by the table badge and the exported reports."""
+    if difference_needs_review(item):
+        return 'Needs review'
+    return 'Missing from target' if target in item['missing'] else 'Missing from comparison'
 
 
 def compare_catalogs(rows, branch_ids):

@@ -538,6 +538,63 @@ def build_product_catalog_report(
     )
 
 
+def build_catalog_differences_report(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    brand: Mapping[str, Any] | None = None,
+    branch_name: str = "",
+    generated_by: str = "",
+    filters_text: str = "",
+    summary_counts: Mapping[str, int] | None = None,
+    generated_at: Any = None,
+) -> dict[str, Any]:
+    """Branch catalogue gaps: what is missing where, plus the rows to review."""
+    rows = [{
+        "product_name": str(record.get("product_name") or ""),
+        "barcode": record.get("barcode"),
+        "sku": record.get("sku"),
+        "present_in": str(record.get("present_in") or ""),
+        "missing_from": str(record.get("missing_from") or ""),
+        "result": str(record.get("result") or ""),
+        "details": str(record.get("details") or ""),
+    } for record in records]
+    counts = dict(summary_counts or {})
+    summary = [
+        {"label": "Differences listed", "value": f"{len(rows):,}"},
+        {"label": "Missing from target", "value": f"{int(counts.get('missing_from_target', 0)):,}"},
+        {"label": "Missing from comparison branches",
+         "value": f"{int(counts.get('missing_from_comparisons', 0)):,}"},
+        {"label": "Needs review", "value": f"{int(counts.get('needs_review', 0)):,}"},
+    ]
+    return _common_report_fields(
+        title="Catalog Differences",
+        subtitle="Products one branch carries and another is missing",
+        sheet_name="Differences",
+        file_stem="catalog_differences",
+        columns=(
+            column("product_name", "Product", width=32),
+            column("barcode", "Barcode", width=18),
+            column("sku", "SKU", width=18),
+            column("present_in", "Present in", width=26),
+            column("missing_from", "Missing from", width=26),
+            column("result", "Result", width=16),
+            column("details", "Details", width=34),
+        ),
+        rows=rows,
+        totals=None,
+        summary=summary,
+        meta=_report_meta(branch_name, generated_by, filters_text, generated_at),
+        notes=[
+            "Products are matched by catalog ID or barcode, then by SKU when both "
+            "records have no barcode. Products without any identifier are matched by "
+            "name and flagged for manual review.",
+            "Only products that differ between the selected branches are listed; "
+            "identical products are hidden.",
+        ],
+        brand=brand,
+    )
+
+
 LOW_STOCK_COLUMNS = (
     column("product_name", "Product Name", width=34),
     column("barcode", "Barcode", width=18),

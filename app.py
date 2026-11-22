@@ -25,6 +25,10 @@ from inventory_paging import (
     InventoryQueryError, bounded_integer, prefix_pattern, cursor_rows,
     export_rows, bounded_search_ids, EXPORT_ROW_LIMIT, ORDER_LINE_LIMIT,
 )
+from catalog_differences import (
+    DIFFERENCE_FILTERS, compare_catalogs, difference_result_label,
+    filter_differences, missing_counts,
+)
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -64,6 +68,7 @@ from po_template import (
 )
 from reports import (
     LOW_STOCK_THRESHOLD,
+    build_catalog_differences_report,
     build_delivery_performance_report,
     build_delivery_performance_rows,
     build_product_catalog_report,
@@ -5509,6 +5514,49 @@ def api_products():
             return jsonify(success=False, message='Barcode or SKU already in use in this branch'), 409
         return jsonify({'success': True, 'message': 'Product added'}), 201
 
+def parse_compared_branch(value, names):
+    """Accept only a plain id of an active branch, never arbitrary text."""
+    if value and value.isascii() and value.isdecimal() and len(value) <= 10 and int(value) in names:
+        return int(value)
+    return None
+
+
+def resolve_catalog_comparison(names, baseline, target, comparisons, *, require_selection=False):
+    """Validate the monitor's branch selection and return (target, target_ids)."""
+    if require_selection or target is not None or comparisons:
+        target_id = parse_compared_branch(target, names) if target is not None else baseline
+        chosen = list(dict.fromkeys(parse_compared_branch(value, names) for value in comparisons))
+        if target_id is None or not chosen or None in chosen or target_id in chosen:
+            raise ValueError('Choose an active target branch and at least one different '
+                             'active comparison branch.')
+        return target_id, [target_id, *chosen]
+    # Keep the original API behavior for dashboards already open during deployment.
+    return baseline, [branch_id for branch_id in names if branch_id != baseline]
+
+
+def difference_filter_arguments(target_ids):
+    """Read the Difference Monitor filter from the query string; 400 on bad input."""
+    mode = (request.args.get('filter') or 'all').strip()
+    if mode not in DIFFERENCE_FILTERS:
+        raise ValueError('Unknown difference filter. Use all, missing_from_target, '
+                         'missing_from_branch or needs_review.')
+    filter_branch = None
+    if mode == 'missing_from_branch':
+        raw = (request.args.get('filter_branch') or '').strip()
+        if not raw.isascii() or not raw.isdecimal() or len(raw) > 10 or int(raw) not in target_ids:
+            raise ValueError('Choose one of the compared branches for the missing-items filter.')
+        filter_branch = int(raw)
+    return mode, filter_branch
+
+
+def compare_branch_catalogs(target_ids):
+    """Load only the identifiers the comparison needs, then group them."""
+    rows = (db.session.query(Product.id, Product.branch_id, Product.catalog_id, Product.barcode,
+                             Product.sku, Product.name)
+            .filter(Product.branch_id.in_(target_ids)).order_by(Product.id).all())
+    return compare_catalogs(rows, target_ids)
+
+
 @app.get('/api/products/differences')
 def api_product_differences():
     if not session.get('user_id') or session.get('role') not in ('manager', 'boss'):
@@ -5522,34 +5570,105 @@ def api_product_differences():
         return jsonify(current_branch=baseline, branches=[
             {'id': branch.id, 'name': branch.name, 'code': branch.code} for branch in branches])
 
-    def parse_branch(value):
-        if value.isascii() and value.isdecimal() and len(value) <= 10 and int(value) in names:
-            return int(value)
-        return None
-
-    target = request.args.get('target_branch')
+    target_arg = request.args.get('target_branch')
     comparisons = request.args.getlist('compare_branch')
-    if target is not None or comparisons:
-        baseline = parse_branch(target) if target is not None else baseline
-        chosen = list(dict.fromkeys(map(parse_branch, comparisons)))
-        if baseline is None or not chosen or None in chosen or baseline in chosen:
-            return jsonify(message='Choose an active target branch and at least one different active comparison branch.'), 400
-    else:
-        # Keep the original API behavior for dashboards already open during deployment.
-        chosen = [branch_id for branch_id in names if branch_id != baseline]
-    target_ids = [baseline, *chosen]
-    rows = (db.session.query(Product.id, Product.branch_id, Product.catalog_id, Product.barcode,
-                             Product.sku, Product.name)
-            .filter(Product.branch_id.in_(target_ids)).order_by(Product.id).all())
-    from catalog_differences import compare_catalogs
-    result = compare_catalogs(rows, target_ids)
-    total = len(result['differences'])
+    try:
+        target, target_ids = resolve_catalog_comparison(
+            names, baseline, target_arg, comparisons)
+        mode, filter_branch = difference_filter_arguments(target_ids)
+    except ValueError as error:
+        return jsonify(message=str(error)), 400
+    result = compare_branch_catalogs(target_ids)
+    differences = filter_differences(result['differences'], target, mode, filter_branch)
+    total = len(differences)
     page = min(bounded_integer('page', 1, 1000000), max(1, (total + 49) // 50))
     start = (page - 1) * 50
-    return jsonify(baseline=baseline, branches={i: names[i] for i in target_ids} if target is not None else names,
-                   counts=result['counts'],
-                   summary=result['summary'], total=total, page=page,
-                   items=result['differences'][start:start + 50])
+    # ``total``/``items`` follow the chosen filter, while ``summary``,
+    # ``overall_total`` and ``missing_counts`` always describe every difference
+    # so the toolbar can say how much the filter is hiding.
+    return jsonify(baseline=target,
+                   branches=({i: names[i] for i in target_ids}
+                             if target_arg is not None or comparisons else names),
+                   counts=result['counts'], summary=result['summary'],
+                   total=total, overall_total=len(result['differences']),
+                   filter=dict(mode=mode, branch=filter_branch),
+                   missing_counts=missing_counts(result['differences'], target_ids),
+                   page=page, items=differences[start:start + 50])
+
+
+@app.get('/api/products/differences/export')
+def export_product_differences():
+    """Download the Difference Monitor view as a PDF or Excel report."""
+    if not session.get('user_id') or session.get('role') not in ('manager', 'boss'):
+        return jsonify(message='Manager access required'), 403
+
+    names = {branch.id: branch.name for branch in
+             Branch.query.filter_by(is_active=True).order_by(Branch.name, Branch.id).all()}
+    baseline = get_current_branch_id()
+    if baseline not in names:
+        return jsonify(message='No active branch assigned'), 403
+    try:
+        target, target_ids = resolve_catalog_comparison(
+            names, baseline, request.args.get('target_branch'),
+            request.args.getlist('compare_branch'), require_selection=True)
+        mode, filter_branch = difference_filter_arguments(target_ids)
+    except ValueError as error:
+        return jsonify(success=False, message=str(error)), 400
+
+    result = compare_branch_catalogs(target_ids)
+    differences = filter_differences(result['differences'], target, mode, filter_branch)
+    if len(differences) > EXPORT_ROW_LIMIT:
+        return jsonify(success=False, message=(
+            f'Export exceeds {EXPORT_ROW_LIMIT:,} differences. '
+            'Choose fewer comparison branches or a narrower filter.')), 413
+
+    def branch_list(ids):
+        return ', '.join(names[branch_id] for branch_id in ids) or '—'
+
+    records = []
+    for item in differences:
+        details = []
+        if item['conflict']:
+            details.append('Conflicting barcodes')
+        if item['duplicates']:
+            details.append(f"Multiple records in {branch_list(item['duplicates'])}")
+        if item['unverified']:
+            details.append('Matched by name only; check manually')
+        records.append(dict(
+            product_name=item['name'],
+            barcode=item['barcode'],
+            sku=item['sku'],
+            present_in=branch_list(item['present']),
+            missing_from=branch_list(item['missing']),
+            result=difference_result_label(item, target),
+            details='; '.join(details),
+        ))
+
+    filter_labels = {
+        'all': '',
+        'missing_from_target': f'Missing from {names[target]}',
+        'missing_from_branch': f'Missing from {names[filter_branch]}' if filter_branch else '',
+        'needs_review': 'Needs review only',
+    }
+    report_format = normalize_report_format(request.args.get('format'))
+    report = build_catalog_differences_report(
+        records,
+        brand=get_receipt_identity(db.session.get(Branch, target)),
+        branch_name=names[target],
+        generated_by=session.get('username') or '',
+        filters_text=describe_filters({
+            'Target': names[target],
+            'Compared with': ', '.join(names[i] for i in target_ids[1:]),
+            'Filter': filter_labels[mode],
+        }),
+        summary_counts=result['summary'],
+    )
+    payload = build_report_pdf(report) if report_format == 'pdf' else build_report_xlsx(report)
+    filename = report_filename(report['file_stem'], report_format)
+    response = make_response(payload)
+    response.headers['Content-Type'] = report_content_type(report_format)
+    response.headers['Content-Disposition'] = report_disposition(filename, report_format)
+    return response
 
 
 @app.route('/api/products/export', methods=['GET'])
