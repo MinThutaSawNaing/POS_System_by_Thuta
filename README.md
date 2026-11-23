@@ -54,7 +54,7 @@ See [setup, security controls, and recovery notes](docs/email-two-factor.md) bef
   - Optional SKU stock codes, separate from barcodes, with branch-scoped uniqueness, search, imports and exports
   - Cost, category, tax rate, stock control
   - Centralized category management with color coding
-  - Per-product MOQ (minimum stock level) with a dashboard reminder panel and once-a-day email alerts to branch managers and the boss
+  - Per-product MOQ (minimum stock level) with a dashboard reminder panel, once-a-day email alerts to branch managers and the boss, and a Settings -> Inventory bulk editor for one, many, or all products with sales-based smart suggestions
   - [Previewed Excel product imports](docs/product-excel-import.md) with column matching and explicit duplicate handling
   - Multi-select in the Products tab: tick rows (the selection survives paging) and print labels, export just the selected products, move them to one category, or delete them together
 

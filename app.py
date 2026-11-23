@@ -4115,6 +4115,228 @@ def api_inventory_reminder_test():
                            f"{result['recipient']}",
                    items=result['items'], recipient=result['recipient'])
 
+MOQ_MAX = 1_000_000
+MOQ_SELECTION_LIMIT = 500
+MOQ_LOOKBACK_DEFAULT = 30
+MOQ_COVER_DEFAULT = 7
+
+
+def _moq_integer(value, low, high):
+    """Parse a bounded whole number from JSON, rejecting booleans/fractions."""
+    if value is None or value == '' or isinstance(value, bool):
+        return None
+    if isinstance(value, float) and not value.is_integer():
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if low <= number <= high else None
+
+
+def _moq_sold_quantities(product_ids, branch_id, lookback_days):
+    """Units sold per product inside the lookback window for one branch."""
+    if not product_ids:
+        return {}
+    cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+    rows = (db.session.query(SaleItem.product_id,
+                             func.coalesce(func.sum(SaleItem.quantity), 0))
+            .join(Sale, Sale.id == SaleItem.sale_id)
+            .filter(SaleItem.product_id.in_(product_ids),
+                    Sale.branch_id == branch_id,
+                    Sale.date >= cutoff)
+            .group_by(SaleItem.product_id).all())
+    return {int(product_id): int(quantity or 0) for product_id, quantity in rows}
+
+
+def _suggested_moq(sold, lookback_days, cover_days):
+    """Sales rate × days of cover, rounded up; None when nothing sold."""
+    if sold <= 0:
+        return None
+    return max(1, math.ceil(sold * cover_days / float(lookback_days)))
+
+
+@app.route('/api/settings/moq/products', methods=['GET'])
+@manager_or_boss_required
+def api_moq_products():
+    """Paged MOQ editor rows with recent-sales suggestions."""
+    branch_id = get_current_branch_id()
+    if branch_id is None:
+        return jsonify(success=False, message='No active branch selected'), 409
+    page = bounded_integer('page', 1, 100)
+    per_page = bounded_integer('per_page', 25, 100)
+    cover_days = bounded_integer('cover_days', MOQ_COVER_DEFAULT, 90)
+    lookback_days = max(bounded_integer('lookback_days', MOQ_LOOKBACK_DEFAULT, 180), 7)
+    status_filter = (request.args.get('filter') or 'all').strip()
+    if status_filter not in ('all', 'low', 'unset', 'disabled'):
+        return jsonify(success=False, message='Invalid MOQ filter'), 400
+
+    stock = func.coalesce(Product.stock, 0)
+    moq = func.coalesce(Product.reorder_point, 0)
+    query = Product.query.filter(Product.branch_id == branch_id)
+    if status_filter == 'low':
+        query = query.filter(Product.reorder_enabled.is_(True), stock <= moq)
+    elif status_filter == 'unset':
+        query = query.filter(moq <= 0)
+    elif status_filter == 'disabled':
+        query = query.filter(Product.reorder_enabled.is_not(True))
+
+    product_id = request.args.get('product_id', type=int)
+    q = (request.args.get('q') or '').strip()
+    if product_id is not None:
+        if product_id < 1:
+            return jsonify(success=False, message='Invalid product'), 400
+        query = query.filter(Product.id == product_id)
+    elif q:
+        query = query.filter(Product.id.in_(
+            product_prefix_ids(q, branch_id, page_bound=False)))
+
+    if product_id is not None:
+        rows = query.order_by(Product.id).limit(1).all()
+        total = len(rows)
+        total_pages = 1 if rows else 0
+    else:
+        paging = query.order_by(Product.name.collate('NOCASE'), Product.id).paginate(
+            page=page, per_page=per_page, error_out=False)
+        rows = paging.items
+        total = paging.total
+        total_pages = paging.pages
+
+    sold = _moq_sold_quantities([row.id for row in rows], branch_id, lookback_days)
+    items = [{
+        'id': row.id,
+        'name': row.name,
+        'sku': row.sku,
+        'barcode': row.barcode,
+        'stock': int(row.stock or 0),
+        'moq': max(int(row.reorder_point or 0), 0),
+        'reorder_quantity': max(int(row.reorder_quantity or 0), 0),
+        'reminders_enabled': bool(row.reorder_enabled),
+        'sold': sold.get(row.id, 0),
+        'suggested_moq': _suggested_moq(sold.get(row.id, 0), lookback_days, cover_days),
+    } for row in rows]
+
+    return jsonify(
+        success=True, items=items, page=page, per_page=per_page, total=total,
+        total_pages=total_pages, branch_id=branch_id,
+        summary={
+            'total_products': Product.query.filter_by(branch_id=branch_id).count(),
+            'low_count': Product.query.filter(
+                Product.branch_id == branch_id, Product.reorder_enabled.is_(True),
+                stock <= moq).count(),
+            'unset_count': Product.query.filter(
+                Product.branch_id == branch_id, moq <= 0).count(),
+            'lookback_days': lookback_days,
+            'cover_days': cover_days,
+        })
+
+
+@app.route('/api/settings/moq', methods=['POST'])
+@manager_or_boss_required
+def api_moq_update():
+    """Set MOQ for selected products, the whole branch, or by smart suggestion."""
+    branch_id = get_current_branch_id()
+    if branch_id is None:
+        return jsonify(success=False, message='No active branch selected'), 409
+    data = request.get_json(silent=True) or {}
+    if data.get('branch_id') is not None and str(data['branch_id']) != str(branch_id):
+        return jsonify(success=False,
+                       message='Active branch changed. Reload settings and try again'), 409
+    scope = data.get('scope')
+    if scope not in ('ids', 'all'):
+        return jsonify(success=False, message='Choose products or the whole branch'), 400
+    mode = data.get('mode', 'manual')
+    if mode not in ('manual', 'suggestions'):
+        return jsonify(success=False, message='Invalid MOQ mode'), 400
+
+    cover_days = _moq_integer(data.get('cover_days', MOQ_COVER_DEFAULT), 1, 90)
+    if cover_days is None:
+        cover_days = MOQ_COVER_DEFAULT
+    lookback_days = _moq_integer(data.get('lookback_days', MOQ_LOOKBACK_DEFAULT), 7, 180)
+    if lookback_days is None:
+        lookback_days = MOQ_LOOKBACK_DEFAULT
+
+    moq_value = None
+    if mode == 'manual':
+        moq_value = _moq_integer(data.get('moq'), 0, MOQ_MAX)
+        if moq_value is None:
+            return jsonify(success=False,
+                           message=f'Enter an MOQ between 0 and {MOQ_MAX:,}'), 400
+    order_qty = None
+    if data.get('reorder_quantity') not in (None, ''):
+        order_qty = _moq_integer(data.get('reorder_quantity'), 0, MOQ_MAX)
+        if order_qty is None:
+            return jsonify(success=False,
+                           message=f'Enter an order quantity between 0 and {MOQ_MAX:,}'), 400
+    reminders = None
+    if data.get('reminders_enabled') not in (None, ''):
+        reminders = to_bool(data.get('reminders_enabled'), None)
+        if reminders is None:
+            return jsonify(success=False, message='Invalid reminder choice'), 400
+
+    target = Product.query.filter(Product.branch_id == branch_id)
+    if scope == 'ids':
+        raw_ids = data.get('product_ids')
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return jsonify(success=False, message='Select at least one product'), 400
+        try:
+            product_ids = sorted({int(value) for value in raw_ids
+                                  if not isinstance(value, bool)})
+        except (TypeError, ValueError):
+            return jsonify(success=False, message='Invalid product selection'), 400
+        if (not product_ids or len(product_ids) > MOQ_SELECTION_LIMIT
+                or any(value < 1 for value in product_ids)):
+            return jsonify(
+                success=False,
+                message=f'Select between 1 and {MOQ_SELECTION_LIMIT} products'), 400
+        target = target.filter(Product.id.in_(product_ids))
+    elif to_bool(data.get('only_unset'), False):
+        target = target.filter(func.coalesce(Product.reorder_point, 0) <= 0)
+
+    if mode == 'manual':
+        changes = {'reorder_point': moq_value}
+        if order_qty is not None:
+            changes['reorder_quantity'] = order_qty
+        if reminders is not None:
+            changes['reorder_enabled'] = reminders
+        updated = target.update(changes, synchronize_session=False)
+        db.session.commit()
+        db.session.expire_all()
+        return jsonify(success=True, updated=updated, skipped=0, scope=scope,
+                       message=f'MOQ set to {moq_value} for {updated} product(s).')
+
+    product_ids = [row[0] for row in
+                   target.with_entities(Product.id).order_by(Product.id).all()]
+    if not product_ids:
+        return jsonify(success=True, updated=0, skipped=0, scope=scope,
+                       message='No products matched.')
+    sold = _moq_sold_quantities(product_ids, branch_id, lookback_days)
+    buckets = {}
+    skipped = 0
+    for product_id in product_ids:
+        suggestion = _suggested_moq(sold.get(product_id, 0), lookback_days, cover_days)
+        if suggestion is None:
+            skipped += 1
+            continue
+        buckets.setdefault(suggestion, []).append(product_id)
+    updated = 0
+    for suggestion, ids in buckets.items():
+        changes = {'reorder_point': suggestion}
+        if order_qty is not None:
+            changes['reorder_quantity'] = order_qty
+        if reminders is not None:
+            changes['reorder_enabled'] = reminders
+        updated += Product.query.filter(
+            Product.branch_id == branch_id, Product.id.in_(ids)).update(
+                changes, synchronize_session=False)
+    db.session.commit()
+    db.session.expire_all()
+    note = (f' {skipped} item(s) had no sales in the last {lookback_days} days '
+            'and were left unchanged.') if skipped else ''
+    return jsonify(success=True, updated=updated, skipped=skipped, scope=scope,
+                   message=f'Smart MOQ applied to {updated} product(s).{note}',
+                   formula={'lookback_days': lookback_days, 'cover_days': cover_days})
+
 @app.route('/api/settings/myanmyanpay', methods=['GET', 'PUT'])
 @manager_or_boss_required
 def api_payment_settings():

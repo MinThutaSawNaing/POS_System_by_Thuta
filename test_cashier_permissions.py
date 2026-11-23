@@ -155,6 +155,8 @@ DENIED = [
 ('/api/inventory/reminders', 'GET'),
 ('/api/settings/inventory-reminders', 'GET PUT'),
 ('/api/settings/inventory-reminders/test', 'POST'),
+('/api/settings/moq/products', 'GET'),
+('/api/settings/moq', 'POST'),
 ('/api/debts', 'GET POST'), ('/api/debts/1', 'GET PUT DELETE'),
 ('/api/debts/1/payment', 'POST'), ('/api/promotions', 'GET POST'),
 ('/api/promotions/1', 'GET PUT DELETE'), ('/api/logs', 'GET'),

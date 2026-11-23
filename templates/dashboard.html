@@ -4423,6 +4423,10 @@
                 <i class="bi bi-rulers"></i>
                 <span>Units<small>Measures &amp; conversions</small></span>
               </button>
+              <button type="button" class="settings-nav-item" data-group="inventory" aria-controls="settings-group-inventory" onclick="showSettingsGroup('inventory')">
+                <i class="bi bi-boxes"></i>
+                <span>Inventory<small>MOQ rules &amp; bulk set</small></span>
+              </button>
               <button type="button" class="settings-nav-item" data-group="receipt" aria-controls="settings-group-receipt" onclick="showSettingsGroup('receipt')">
                 <i class="bi bi-receipt"></i>
                 <span>Receipt &amp; branding<small>Logo, contacts, MMQR</small></span>
@@ -4616,6 +4620,148 @@
           </div>
         </div>
         </div><!-- /settings-group-units -->
+
+        <!-- Inventory MOQ rules -->
+        <div id="settings-group-inventory" class="settings-group" role="group" aria-label="Inventory MOQ rules" style="display: none">
+          <div class="card settings-card">
+            <div class="card-header">
+              <span class="settings-icon-chip"><i class="bi bi-boxes"></i></span>
+              <div class="settings-card-header-title">
+                <h5>MOQ rules</h5>
+                <span class="settings-card-subtitle">Set the minimum stock level for one product, a selection, or the whole branch</span>
+              </div>
+            </div>
+            <div class="card-body">
+              <p class="text-muted small mb-3">MOQ is the stock level that triggers the Dashboard reminder and daily email. Order quantity and reminder choice are optional — leave them unchanged unless you want to override them.</p>
+              <fieldset class="mb-3" id="moq-scope">
+                <legend class="form-label fs-6">Apply to</legend>
+                <div class="d-flex flex-column flex-lg-row gap-2">
+                  <label class="d-flex align-items-start gap-2 border rounded px-3 py-2 flex-grow-1">
+                    <input class="form-check-input m-0 mt-1" type="radio" name="moq-scope" id="moq-scope-single" value="single" checked />
+                    <span><strong>One product</strong><small class="d-block text-muted">Search and tune a single item.</small></span>
+                  </label>
+                  <label class="d-flex align-items-start gap-2 border rounded px-3 py-2 flex-grow-1">
+                    <input class="form-check-input m-0 mt-1" type="radio" name="moq-scope" id="moq-scope-multiple" value="multiple" />
+                    <span><strong>Selected products</strong><small class="d-block text-muted">Tick any number of products.</small></span>
+                  </label>
+                  <label class="d-flex align-items-start gap-2 border rounded px-3 py-2 flex-grow-1">
+                    <input class="form-check-input m-0 mt-1" type="radio" name="moq-scope" id="moq-scope-all" value="all" />
+                    <span><strong>All products</strong><small class="d-block text-muted">One rule for the whole branch.</small></span>
+                  </label>
+                </div>
+              </fieldset>
+              <div id="moq-single-panel" class="mb-3">
+                <label class="form-label" for="moq-single-product">Product</label>
+                <select class="form-select" id="moq-single-product"><option value="">Search for a product…</option></select>
+                <div id="moq-single-summary" class="small text-muted mt-2" role="status" aria-live="polite">Pick a product to see its stock, MOQ and suggested level.</div>
+              </div>
+
+              <div id="moq-multiple-panel" class="mb-3" style="display: none">
+                <div class="row g-2 align-items-end mb-2">
+                  <div class="col-12 col-lg-5">
+                    <label class="form-label" for="moq-product-search">Search products</label>
+                    <input class="form-control" id="moq-product-search" type="search" maxlength="100" placeholder="Starts with name, SKU or barcode" />
+                  </div>
+                  <div class="col-6 col-lg-3">
+                    <label class="form-label" for="moq-product-filter">Status</label>
+                    <select class="form-select" id="moq-product-filter">
+                      <option value="all">All products</option>
+                      <option value="low">At or below MOQ</option>
+                      <option value="unset">MOQ unset (0)</option>
+                      <option value="disabled">Reminders off</option>
+                    </select>
+                  </div>
+                  <div class="col-6 col-lg-2">
+                    <button type="button" class="btn btn-outline-secondary w-100" id="moq-search-btn">Search</button>
+                  </div>
+                  <div class="col-12 col-lg-2 text-lg-end">
+                    <span class="small text-muted" id="moq-selection-count">0 selected</span>
+                  </div>
+                </div>
+                <div class="table-responsive products-table-scroll" style="max-height: 22rem;">
+                  <table class="table table-sm table-hover align-middle mb-0">
+                    <thead>
+                      <tr>
+                        <th scope="col"><input class="form-check-input" type="checkbox" id="moq-select-page" aria-label="Select all products on this page" /></th>
+                        <th scope="col">Product</th>
+                        <th scope="col" class="text-end">Stock</th>
+                        <th scope="col" class="text-end">MOQ</th>
+                        <th scope="col" class="text-end d-none d-md-table-cell">Sold</th>
+                        <th scope="col" class="text-end d-none d-md-table-cell">Suggested</th>
+                      </tr>
+                    </thead>
+                    <tbody id="moq-products-table">
+                      <tr><td colspan="6" class="text-center py-3"><div class="spinner-border spinner-border-sm text-primary" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-2">
+                  <span class="small text-muted" id="moq-products-summary"></span>
+                  <button type="button" class="btn btn-sm btn-outline-secondary" id="moq-clear-selection" onclick="clearMoqSelection()">Clear selection</button>
+                </div>
+                <div id="moq-products-pagination" class="mt-2"></div>
+              </div>
+
+              <div id="moq-all-panel" class="mb-3" style="display: none">
+                <div class="alert alert-warning py-2 small mb-2">This changes <strong>every product in the active branch</strong>. Other branches are not touched.</div>
+                <div class="form-check mb-1">
+                  <input class="form-check-input" type="checkbox" id="moq-all-only-unset" />
+                  <label class="form-check-label" for="moq-all-only-unset">Only products whose MOQ is 0 or never set</label>
+                </div>
+                <div class="small text-muted" id="moq-all-summary"></div>
+              </div>
+
+
+              <div class="border-top pt-3 mt-3">
+                <div class="row g-3">
+                  <div class="col-6 col-lg-2">
+                    <label class="form-label" for="moq-value">MOQ</label>
+                    <input type="number" min="0" step="1" inputmode="numeric" class="form-control" id="moq-value" value="10" />
+                  </div>
+                  <div class="col-6 col-lg-3">
+                    <label class="form-label" for="moq-order-qty">Order quantity <span class="text-muted small">(optional)</span></label>
+                    <input type="number" min="0" step="1" inputmode="numeric" class="form-control" id="moq-order-qty" placeholder="Leave unchanged" />
+                  </div>
+                  <div class="col-6 col-lg-3">
+                    <label class="form-label" for="moq-reminders">Reminders</label>
+                    <select class="form-select" id="moq-reminders">
+                      <option value="">Leave unchanged</option>
+                      <option value="on">On</option>
+                      <option value="off">Off</option>
+                    </select>
+                  </div>
+                  <div class="col-6 col-lg-2">
+                    <label class="form-label" for="moq-cover-days">Days of cover</label>
+                    <input type="number" min="1" max="90" step="1" class="form-control" id="moq-cover-days" value="7" />
+                  </div>
+                  <div class="col-12 col-lg-2">
+                    <label class="form-label" for="moq-lookback-days">Sales window</label>
+                    <select class="form-select" id="moq-lookback-days">
+                      <option value="7">7 days</option>
+                      <option value="30" selected>30 days</option>
+                      <option value="60">60 days</option>
+                      <option value="90">90 days</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="form-text mt-2">Smart suggestion = units sold in the sales window ÷ window × days of cover, rounded up. Items with no sales in the window are left unchanged.</div>
+                <div class="d-flex flex-wrap gap-2 mt-3">
+                  <button type="button" class="btn btn-primary" id="moq-apply-btn" onclick="applyMoqSettings(false)">
+                    <i class="bi bi-check2-circle me-1"></i>Apply MOQ
+                  </button>
+                  <button type="button" class="btn btn-outline-success" id="moq-suggest-btn" onclick="applyMoqSettings(true)">
+                    <i class="bi bi-stars me-1"></i>Use smart suggestions
+                  </button>
+                  <button type="button" class="btn btn-outline-secondary" id="moq-refresh-btn" onclick="refreshMoqSettings()">
+                    <i class="bi bi-arrow-repeat me-1"></i>Refresh
+                  </button>
+                </div>
+                <div id="moq-status" class="alert alert-light border py-2 small mt-3 mb-0" role="status" aria-live="polite">Choose a scope, then apply.</div>
+              </div>
+
+            </div>
+          </div>
+        </div>
 
         <!-- Receipt & branding group -->
         <div id="settings-group-receipt" class="settings-group" role="group" aria-label="Receipt and branding" style="display: none">
@@ -10330,6 +10476,446 @@
           });
       }
       // ===== END MOQ REMINDER SETTINGS =====
+
+      // ===== SETTINGS: MOQ RULES (single / selected / all) =====
+      const MOQ_SELECTION_LIMIT = 500;
+      const moqState = {
+        initialized: false,
+        loaded: false,
+        page: 1,
+        totalPages: 1,
+        itemsById: new Map(),
+        selection: new Map(),
+        summary: {},
+        single: null,
+      };
+
+      function currentMoqScope() {
+        return document.querySelector('input[name="moq-scope"]:checked')?.value || "single";
+      }
+
+      function moqCoverDays() {
+        return Math.max(1, Math.min(parseInt(document.getElementById("moq-cover-days")?.value, 10) || 7, 90));
+      }
+
+      function moqLookbackDays() {
+        return Math.max(7, Math.min(parseInt(document.getElementById("moq-lookback-days")?.value, 10) || 30, 180));
+      }
+
+      function setMoqStatus(message, tone) {
+        const status = document.getElementById("moq-status");
+        if (!status) return;
+        status.textContent = message || "";
+        status.classList.remove("alert-light", "alert-success", "alert-warning", "alert-danger");
+        status.classList.add(tone || "alert-light");
+      }
+
+      function updateMoqScopePanels() {
+        const scope = currentMoqScope();
+        const panels = {
+          single: document.getElementById("moq-single-panel"),
+          multiple: document.getElementById("moq-multiple-panel"),
+          all: document.getElementById("moq-all-panel"),
+        };
+        Object.entries(panels).forEach(([name, panel]) => {
+          if (panel) panel.style.display = name === scope ? "" : "none";
+        });
+        updateMoqSummaries();
+      }
+
+      function updateMoqSummaries() {
+        const summary = moqState.summary || {};
+        const allSummary = document.getElementById("moq-all-summary");
+        if (allSummary) {
+          const onlyUnset = document.getElementById("moq-all-only-unset")?.checked;
+          const count = onlyUnset ? summary.unset_count : summary.total_products;
+          allSummary.textContent = onlyUnset
+            ? `Will set MOQ for ${count ?? "—"} product(s) whose MOQ is 0 or never set.`
+            : `Will set MOQ for all ${count ?? "—"} product(s) in this branch.`;
+        }
+        const productSummary = document.getElementById("moq-products-summary");
+        if (productSummary) {
+          productSummary.textContent = summary.total_products == null
+            ? ""
+            : `${summary.total_products} product(s) in this branch · ${summary.low_count ?? 0} at or below MOQ · ${summary.unset_count ?? 0} with MOQ unset.`;
+        }
+        syncMoqSelectionUi();
+      }
+
+      function syncMoqSelectionUi() {
+        const count = document.getElementById("moq-selection-count");
+        if (count) count.textContent = `${moqState.selection.size} selected`;
+        const pageIds = Array.from(moqState.itemsById.keys());
+        const selectedOnPage = pageIds.filter((id) => moqState.selection.has(id)).length;
+        const pageBox = document.getElementById("moq-select-page");
+        if (pageBox) {
+          pageBox.checked = pageIds.length > 0 && selectedOnPage === pageIds.length;
+          pageBox.indeterminate = selectedOnPage > 0 && selectedOnPage < pageIds.length;
+        }
+      }
+
+      function toggleMoqSelection(id, checked) {
+        if (checked) {
+          if (!moqState.selection.has(id) && moqState.selection.size >= MOQ_SELECTION_LIMIT) {
+            showToast(`Select up to ${MOQ_SELECTION_LIMIT} products at once`, "warning");
+            return false;
+          }
+          moqState.selection.set(id, true);
+        } else {
+          moqState.selection.delete(id);
+        }
+        syncMoqSelectionUi();
+        return true;
+      }
+
+      function toggleMoqPageSelection(checked) {
+        for (const id of moqState.itemsById.keys()) {
+          if (checked && !moqState.selection.has(id) && moqState.selection.size >= MOQ_SELECTION_LIMIT) break;
+          if (checked) moqState.selection.set(id, true);
+          else moqState.selection.delete(id);
+        }
+        renderMoqProducts(Array.from(moqState.itemsById.values()));
+      }
+
+      function clearMoqSelection() {
+        moqState.selection.clear();
+        renderMoqProducts(Array.from(moqState.itemsById.values()));
+      }
+      async function loadMoqProducts(page = 1) {
+        const table = document.getElementById("moq-products-table");
+        const query = (document.getElementById("moq-product-search")?.value || "").trim();
+        const filter = document.getElementById("moq-product-filter")?.value || "all";
+        const params = new URLSearchParams({
+          page: String(Math.max(1, page)),
+          per_page: "25",
+          cover_days: String(moqCoverDays()),
+          lookback_days: String(moqLookbackDays()),
+          filter,
+        });
+        if (query) params.set("q", query);
+        if (table) {
+          table.innerHTML = '<tr><td colspan="6" class="text-center py-3"><div class="spinner-border spinner-border-sm text-primary" role="status"><span class="visually-hidden">Loading...</span></div></td></tr>';
+        }
+        try {
+          const response = await fetch(`/api/settings/moq/products?${params}`, { cache: "no-store" });
+          const data = await response.json();
+          if (!response.ok || !data.success) throw new Error(data.message || "Could not load products");
+          moqState.page = data.page || 1;
+          moqState.totalPages = data.total_pages || 1;
+          moqState.summary = data.summary || {};
+          moqState.itemsById = new Map((data.items || []).map((item) => [item.id, item]));
+          renderMoqProducts(data.items || []);
+          renderMoqPager();
+          updateMoqSummaries();
+        } catch (error) {
+          if (table) {
+            table.innerHTML = '<tr><td colspan="6" class="text-center py-3 text-danger">Could not load products. Try Refresh.</td></tr>';
+          }
+          setMoqStatus(error.message || "Could not load products", "alert-warning");
+          console.error("Error loading MOQ products:", error);
+        }
+      }
+
+      function renderMoqProducts(items) {
+        const table = document.getElementById("moq-products-table");
+        if (!table) return;
+        table.replaceChildren();
+        if (!items.length) {
+          const row = document.createElement("tr");
+          const cell = document.createElement("td");
+          cell.colSpan = 6;
+          cell.className = "text-center py-3 text-muted";
+          cell.textContent = "No products match these filters.";
+          row.appendChild(cell);
+          table.appendChild(row);
+          syncMoqSelectionUi();
+          return;
+        }
+        items.forEach((item) => {
+          const row = document.createElement("tr");
+          const checkCell = document.createElement("td");
+          const check = document.createElement("input");
+          check.type = "checkbox";
+          check.className = "form-check-input";
+          check.checked = moqState.selection.has(item.id);
+          check.setAttribute("aria-label", `Select ${item.name}`);
+          check.addEventListener("change", () => {
+            if (!toggleMoqSelection(item.id, check.checked)) check.checked = false;
+          });
+          checkCell.appendChild(check);
+          row.appendChild(checkCell);
+
+          const nameCell = document.createElement("td");
+          const name = document.createElement("span");
+          name.textContent = item.name;
+          const meta = document.createElement("small");
+          meta.className = "d-block text-muted";
+          meta.textContent = [item.sku ? `SKU ${item.sku}` : "",
+            item.barcode ? item.barcode : ""].filter(Boolean).join(" · ") || "No SKU or barcode";
+          nameCell.appendChild(name);
+          nameCell.appendChild(meta);
+          row.appendChild(nameCell);
+
+          [item.stock, item.moq, item.sold,
+            item.suggested_moq == null ? "—" : item.suggested_moq].forEach((value, index) => {
+            const cell = document.createElement("td");
+            cell.className = "text-end" + (index === 3 ? " fw-semibold text-success" : "");
+            if (index === 0 && item.moq > 0 && item.stock <= item.moq) cell.classList.add("text-danger");
+            cell.textContent = value == null ? "—" : String(value);
+            row.appendChild(cell);
+          });
+          table.appendChild(row);
+        });
+        syncMoqSelectionUi();
+      }
+
+      function renderMoqPager() {
+        const container = document.getElementById("moq-products-pagination");
+        if (!container) return;
+        container.replaceChildren();
+        if (moqState.totalPages <= 1) return;
+        const nav = document.createElement("nav");
+        nav.setAttribute("aria-label", "MOQ product pages");
+        const list = document.createElement("ul");
+        list.className = "pagination pagination-sm mb-0";
+        const add = (label, page, disabled) => {
+          const item = document.createElement("li");
+          item.className = "page-item" + (disabled ? " disabled" : "");
+          const link = document.createElement("a");
+          link.className = "page-link";
+          link.href = "#";
+          link.textContent = label;
+          if (!disabled) {
+            link.addEventListener("click", (event) => {
+              event.preventDefault();
+              loadMoqProducts(page);
+            });
+          }
+          item.appendChild(link);
+          list.appendChild(item);
+        };
+        add("Previous", moqState.page - 1, moqState.page <= 1);
+        const info = document.createElement("li");
+        info.className = "page-item disabled";
+        const span = document.createElement("span");
+        span.className = "page-link";
+        span.textContent = `Page ${moqState.page} of ${moqState.totalPages}`;
+        info.appendChild(span);
+        list.appendChild(info);
+        add("Next", moqState.page + 1, moqState.page >= moqState.totalPages);
+        nav.appendChild(list);
+        container.appendChild(nav);
+      }
+      async function loadMoqSingleProduct(id) {
+        const summary = document.getElementById("moq-single-summary");
+        if (!id) {
+          moqState.single = null;
+          if (summary) summary.textContent = "Pick a product to see its stock, MOQ and suggested level.";
+          return;
+        }
+        const params = new URLSearchParams({
+          product_id: String(id),
+          cover_days: String(moqCoverDays()),
+          lookback_days: String(moqLookbackDays()),
+        });
+        if (summary) summary.textContent = "Loading product…";
+        try {
+          const response = await fetch(`/api/settings/moq/products?${params}`, { cache: "no-store" });
+          const data = await response.json();
+          if (!response.ok || !data.success) throw new Error(data.message || "Could not load product");
+          const item = (data.items || [])[0];
+          if (!item) {
+            moqState.single = null;
+            if (summary) summary.textContent = "That product is no longer in this branch.";
+            return;
+          }
+          moqState.single = item;
+          const suggested = item.suggested_moq == null ? "—" : item.suggested_moq;
+          if (summary) {
+            summary.textContent = `Stock ${item.stock} · Current MOQ ${item.moq} · Order qty ${item.reorder_quantity || "—"} · Reminders ${item.reminders_enabled ? "on" : "off"} · Sold ${item.sold} in ${moqLookbackDays()}d · Suggested ${suggested}`;
+          }
+          const value = document.getElementById("moq-value");
+          if (value) value.value = String(item.moq);
+          const order = document.getElementById("moq-order-qty");
+          if (order) order.placeholder = `Current: ${item.reorder_quantity || 0}`;
+        } catch (error) {
+          moqState.single = null;
+          if (summary) summary.textContent = "Could not load that product. Try again.";
+          console.error("Error loading MOQ product:", error);
+        }
+      }
+
+      function initMoqSettingsUi() {
+        if (moqState.initialized) return;
+        moqState.initialized = true;
+        const select = document.getElementById("moq-single-product");
+        if (select) {
+          makeRemoteInventorySelect(select, "/api/products?view=lookup", "Product", "branch");
+          select.addEventListener("change", () => loadMoqSingleProduct(select.value));
+        }
+        document.querySelectorAll('input[name="moq-scope"]').forEach((radio) => {
+          radio.addEventListener("change", updateMoqScopePanels);
+        });
+        document.getElementById("moq-search-btn")?.addEventListener("click", () => loadMoqProducts(1));
+        document.getElementById("moq-product-search")?.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            loadMoqProducts(1);
+          }
+        });
+        document.getElementById("moq-product-filter")?.addEventListener("change", () => loadMoqProducts(1));
+        document.getElementById("moq-select-page")?.addEventListener(
+          "change", (event) => toggleMoqPageSelection(event.target.checked));
+        document.getElementById("moq-all-only-unset")?.addEventListener("change", updateMoqSummaries);
+        for (const id of ["moq-cover-days", "moq-lookback-days"]) {
+          document.getElementById(id)?.addEventListener("change", () => {
+            if (currentMoqScope() === "multiple") loadMoqProducts(moqState.page);
+            else if (currentMoqScope() === "single" && moqState.single) {
+              loadMoqSingleProduct(moqState.single.id);
+            }
+          });
+        }
+      }
+
+      function loadMoqSettings(force) {
+        initMoqSettingsUi();
+        updateMoqScopePanels();
+        if (!force && moqState.loaded) return;
+        moqState.loaded = true;
+        return loadMoqProducts(1);
+      }
+
+      function refreshMoqSettings() {
+        moqState.loaded = true;
+        loadMoqProducts(moqState.page);
+        if (currentMoqScope() === "single" && moqState.single) {
+          loadMoqSingleProduct(moqState.single.id);
+        }
+        setMoqStatus("Refreshed.", "alert-light");
+      }
+      async function applyMoqSettings(useSuggestions) {
+        if (!requireCapability("admin")) return;
+        const scope = currentMoqScope();
+        const payload = {
+          scope: scope === "all" ? "all" : "ids",
+          mode: useSuggestions ? "suggestions" : "manual",
+          branch_id: currentBranch?.id,
+          cover_days: moqCoverDays(),
+          lookback_days: moqLookbackDays(),
+        };
+        let targetLabel = "";
+        if (scope === "single") {
+          const id = Number(document.getElementById("moq-single-product")?.value);
+          if (!id) {
+            showToast("Pick a product first", "warning");
+            return;
+          }
+          payload.product_ids = [id];
+          targetLabel = moqState.single?.name || "the selected product";
+        } else if (scope === "multiple") {
+          const ids = Array.from(moqState.selection.keys());
+          if (!ids.length) {
+            showToast("Tick at least one product", "warning");
+            return;
+          }
+          payload.product_ids = ids;
+          targetLabel = `${ids.length} selected product(s)`;
+        } else {
+          payload.only_unset = Boolean(document.getElementById("moq-all-only-unset")?.checked);
+          const count = payload.only_unset
+            ? moqState.summary?.unset_count
+            : moqState.summary?.total_products;
+          targetLabel = payload.only_unset
+            ? `${count ?? "the"} product(s) with MOQ unset`
+            : `all ${count ?? "the"} product(s) in this branch`;
+        }
+
+        const orderText = (document.getElementById("moq-order-qty")?.value || "").trim();
+        if (orderText !== "") {
+          const qty = Number(orderText);
+          if (!Number.isInteger(qty) || qty < 0) {
+            showToast("Order quantity must be a whole number of 0 or more", "warning");
+            return;
+          }
+          payload.reorder_quantity = qty;
+        }
+        const reminders = document.getElementById("moq-reminders")?.value || "";
+        if (reminders === "on") payload.reminders_enabled = true;
+        if (reminders === "off") payload.reminders_enabled = false;
+
+        let message;
+        if (useSuggestions) {
+          message = `Set each item to its suggested level for ${targetLabel}? The suggestion uses sales ` +
+            `from the last ${payload.lookback_days} days and ${payload.cover_days} days of cover. ` +
+            "Items with no sales are left unchanged.";
+        } else {
+          const moqText = (document.getElementById("moq-value")?.value || "").trim();
+          const moq = Number(moqText);
+          if (moqText === "" || !Number.isInteger(moq) || moq < 0) {
+            showToast("Enter a whole MOQ of 0 or more", "warning");
+            return;
+          }
+          payload.moq = moq;
+          message = `Set MOQ to ${moq} for ${targetLabel}?`;
+          if (payload.reorder_quantity !== undefined) {
+            message += ` Order quantity will change to ${payload.reorder_quantity}.`;
+          }
+          if (payload.reminders_enabled !== undefined) {
+            message += payload.reminders_enabled ? " Reminders will be on." : " Reminders will be off.";
+          }
+        }
+
+        const confirmed = await showConfirmDialogAsync({
+          title: useSuggestions ? "Apply smart MOQ?" : "Apply MOQ?",
+          message,
+          confirmLabel: useSuggestions ? "Apply suggestions" : "Apply MOQ",
+          variant: "warning",
+          icon: "bi-boxes",
+        });
+        if (!confirmed) return;
+
+        const buttons = [document.getElementById("moq-apply-btn"),
+          document.getElementById("moq-suggest-btn")].filter(Boolean);
+        const originals = buttons.map((button) => button.innerHTML);
+        buttons.forEach((button) => { button.disabled = true; });
+        const active = useSuggestions
+          ? document.getElementById("moq-suggest-btn")
+          : document.getElementById("moq-apply-btn");
+        if (active) {
+          active.innerHTML = '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span> Applying...';
+        }
+        try {
+          const response = await fetch("/api/settings/moq", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) throw new Error(data.message || "Could not apply MOQ");
+          setMoqStatus(data.message, "alert-success");
+          showToast(data.message, "success");
+          moqState.selection.clear();
+          if (typeof invalidateProductsCache === "function") invalidateProductsCache();
+          await loadMoqProducts(1);
+          if (moqState.single) await loadMoqSingleProduct(moqState.single.id);
+          if (typeof currentSection !== "undefined" && currentSection === "dashboard") {
+            loadDashboardStats();
+          }
+        } catch (error) {
+          setMoqStatus(error.message || "Could not apply MOQ", "alert-danger");
+          showToast(error.message || "Could not apply MOQ", "error");
+          console.error("Error applying MOQ:", error);
+        } finally {
+          buttons.forEach((button, index) => {
+            button.disabled = false;
+            button.innerHTML = originals[index];
+          });
+        }
+      }
+      // ===== END MOQ RULES SETTINGS =====
+
+
+
 
       // ===== BRANCH MANAGEMENT FUNCTIONS =====
       let currentBranch = null;
@@ -18393,6 +18979,7 @@
         if (groupId === "payments" && typeof loadPaymentSettings === "function") loadPaymentSettings();
         if (groupId === "email" && window.EmailSecurity) EmailSecurity.loadSettings();
         if (groupId === "email") loadInventoryReminderSettings(true);
+        if (groupId === "inventory") loadMoqSettings(true);
         if (groupId === "po-template") {
           bindPoTemplateEditor();
           loadPoTemplateLogo();
