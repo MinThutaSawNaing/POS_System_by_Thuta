@@ -267,3 +267,20 @@ tables and renames each `<table>_float_backup` back to `<table>`.
 5. Note: SQLAlchemy models in `app.py` still declare `db.Float`. SQLite does
    not enforce column types strictly, so runtime behavior is unchanged;
    updating the model declarations to `db.Numeric(12, 2)` can follow later.
+
+## MOQ low-stock reminders
+
+- No `ALTER TABLE`, backfill, or maintenance window is required. The existing
+  startup `db.create_all()` path adds one additive table,
+  `inventory_reminder_log`, which records which product was emailed to a branch
+  on which store-local date. It deliberately has no foreign keys, so deleting a
+  product or branch never fails on reminder history and old code can ignore it.
+- Each product's existing `reorder_point` is the MOQ. Existing rows keep their
+  stored value (default `10`) and `reorder_enabled` flag, so reminders begin
+  immediately after deployment; the upgrade rewrites no product row.
+- Email recipients reuse existing user emails and the Resend SMTP settings; no
+  new credentials are introduced. The store switch lives in **Settings -> Email
+  -> Low-stock reminder emails** (app setting `inventory_reminder_email`);
+  `INVENTORY_REMINDER_ENABLED=0` remains a deployment-level kill switch.
+- Rolling back to older code leaves the table unused; do not drop it during a
+  rollback.

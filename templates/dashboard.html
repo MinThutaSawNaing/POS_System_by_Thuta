@@ -2209,6 +2209,43 @@
           </div>
         </div>
 
+        <!-- MOQ reminders: items at or below their own minimum stock level. -->
+        <div class="card border-warning mb-3 d-none" id="inventory-reminder-card" role="region" aria-labelledby="inventory-reminder-title">
+          <div class="card-header bg-warning-subtle d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <h5 class="mb-0" id="inventory-reminder-title">
+              <i class="bi bi-exclamation-triangle me-2" aria-hidden="true"></i>Low stock at or below MOQ
+              <span class="badge bg-warning text-dark ms-1" id="inventory-reminder-count">0</span>
+            </h5>
+            <div class="d-flex flex-wrap gap-2">
+              <button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadInventoryReminders()">
+                <i class="bi bi-arrow-repeat me-1" aria-hidden="true"></i>Refresh
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-dark" onclick="dismissInventoryReminders()" aria-label="Dismiss low stock reminders">
+                <i class="bi bi-x-lg me-1" aria-hidden="true"></i>Dismiss
+              </button>
+            </div>
+          </div>
+          <div class="card-body">
+            <p class="small text-muted mb-2" id="inventory-reminder-note"></p>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th scope="col">Product</th>
+                    <th scope="col" class="text-end">On hand</th>
+                    <th scope="col" class="text-end">MOQ</th>
+                    <th scope="col" class="text-end">Suggested order</th>
+                  </tr>
+                </thead>
+                <tbody id="inventory-reminder-table"></tbody>
+              </table>
+            </div>
+            <p class="small text-muted mb-0 mt-2">
+              Branch managers and the boss also receive one email a day while these items stay low.
+            </p>
+          </div>
+        </div>
+
         <div class="row mt-4">
           <div class="col-12 col-lg-8 mb-3">
             <div class="card">
@@ -2732,7 +2769,7 @@
                 <select class="form-select" id="branch-inventory-stock" onchange="resetBranchInventoryPage()">
                   <option value="all">All stock levels</option>
                   <option value="in_stock">In stock</option>
-                  <option value="low">Low stock</option>
+                  <option value="low">Low stock (≤5 units)</option>
                   <option value="out">Out of stock</option>
                 </select>
               </div>
@@ -5011,6 +5048,45 @@
               </div>
             </div>
           </div>
+          <div class="card settings-card mt-3" id="inventory-reminder-settings-card">
+            <div class="card-header">
+              <span class="settings-icon-chip"><i class="bi bi-bell"></i></span>
+              <div class="settings-card-header-title">
+                <h5>Low-stock reminder emails</h5>
+                <span class="settings-card-subtitle">MOQ alerts for branch managers and the boss</span>
+              </div>
+            </div>
+            <div class="card-body">
+              <p class="text-muted small mb-3">The Dashboard panel always lists items at or below their MOQ. Choose whether the daily email is sent as well.</p>
+              <fieldset class="mb-3" id="inventory-reminder-email-choice">
+                <legend class="form-label fs-6">Daily MOQ reminders</legend>
+                <div class="d-flex flex-column flex-sm-row gap-2">
+                  <label class="d-flex align-items-center gap-2 border rounded px-3 py-2 flex-grow-1">
+                    <input class="form-check-input m-0" type="radio" name="inventory-reminder-email" id="inventory-reminder-email-on" value="1" checked />
+                    <span><strong>On</strong><small class="d-block text-muted">Email managers and the boss once a day.</small></span>
+                  </label>
+                  <label class="d-flex align-items-center gap-2 border rounded px-3 py-2 flex-grow-1">
+                    <input class="form-check-input m-0" type="radio" name="inventory-reminder-email" id="inventory-reminder-email-off" value="0" />
+                    <span><strong>Off</strong><small class="d-block text-muted">Dashboard panel only; no reminder emails.</small></span>
+                  </label>
+                </div>
+              </fieldset>
+              <div id="inventory-reminder-settings-status" class="alert alert-light border py-2 small mb-3" role="status" aria-live="polite">Open this group to check the current choice.</div>
+              <button type="button" class="btn btn-primary" id="save-inventory-reminder-settings-btn" onclick="saveInventoryReminderSettings()">
+                <i class="bi bi-save me-1"></i>Save reminder setting
+              </button>
+              <div class="border-top pt-3 mt-3">
+                <label class="form-label" for="inventory-reminder-test-email">Send a test reminder</label>
+                <div class="input-group">
+                  <input type="email" class="form-control" id="inventory-reminder-test-email" maxlength="254" placeholder="you@example.com" autocomplete="off" spellcheck="false" />
+                  <button type="button" class="btn btn-outline-primary" id="send-inventory-reminder-test-btn" onclick="sendInventoryReminderTest()">
+                    <i class="bi bi-send me-1"></i>Send test
+                  </button>
+                </div>
+                <div class="form-text">Uses the real reminder template for this branch's current low-stock items. It does not change who receives the daily email.</div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- AI assistant group -->
@@ -5460,6 +5536,22 @@
                   <small class="text-muted">Managed via Warehouse</small>
                 </div>
               </div>
+              <div class="row">
+                <div class="col-12 col-sm-6 mb-3">
+                  <label class="form-label" for="add-moq">MOQ (low-stock level)</label>
+                  <input type="number" min="0" step="1" inputmode="numeric" class="form-control" id="add-moq" value="10" />
+                  <div class="form-text">Remind me when stock is at or below this number.</div>
+                </div>
+                <div class="col-12 col-sm-6 mb-3">
+                  <label class="form-label" for="add-reorder-qty">Order quantity</label>
+                  <input type="number" min="0" step="1" inputmode="numeric" class="form-control" id="add-reorder-qty" value="50" />
+                  <div class="form-text">Suggested quantity to buy when restocking.</div>
+                </div>
+              </div>
+              <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" id="add-reorder-enabled" checked />
+                <label class="form-check-label" for="add-reorder-enabled">Send low-stock reminders for this item</label>
+              </div>
               <input type="hidden" id="add-stock-hidden" value="0" />
               <div class="mb-3">
                 <label class="form-label">Category</label>
@@ -5608,6 +5700,22 @@
                     id="edit-tax-rate"
                   />
                 </div>
+              </div>
+              <div class="row">
+                <div class="col-12 col-sm-6 mb-3">
+                  <label class="form-label" for="edit-moq">MOQ (low-stock level)</label>
+                  <input type="number" min="0" step="1" inputmode="numeric" class="form-control" id="edit-moq" value="10" />
+                  <div class="form-text">Remind me when stock is at or below this number.</div>
+                </div>
+                <div class="col-12 col-sm-6 mb-3">
+                  <label class="form-label" for="edit-reorder-qty">Order quantity</label>
+                  <input type="number" min="0" step="1" inputmode="numeric" class="form-control" id="edit-reorder-qty" value="50" />
+                  <div class="form-text">Suggested quantity to buy when restocking.</div>
+                </div>
+              </div>
+              <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" id="edit-reorder-enabled" checked />
+                <label class="form-check-label" for="edit-reorder-enabled">Send low-stock reminders for this item</label>
               </div>
               <div class="mb-3">
                 <label class="form-label">Category</label>
@@ -10090,6 +10198,139 @@
         );
       }
 
+      // ===== MOQ REMINDER SETTINGS =====
+      function setInventoryReminderSettingsStatus(message, tone) {
+        const status = document.getElementById("inventory-reminder-settings-status");
+        if (!status) return;
+        status.textContent = message || "";
+        status.classList.remove("alert-light", "alert-success", "alert-warning");
+        status.classList.add(tone || "alert-light");
+      }
+
+      function loadInventoryReminderSettings(force) {
+        const on = document.getElementById("inventory-reminder-email-on");
+        if (!on) return Promise.resolve();
+        if (!force && on.dataset.loaded === "true") return Promise.resolve();
+        return fetch("/api/settings/inventory-reminders", { cache: "no-store" })
+          .then((response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+          })
+          .then((data) => {
+            on.dataset.loaded = "true";
+            document.getElementById(
+              data.enabled === false ? "inventory-reminder-email-off" : "inventory-reminder-email-on"
+            ).checked = true;
+            const mailNote =
+              data.mail_ready === false
+                ? " Email delivery is not configured yet, so nothing can be sent."
+                : "";
+            setInventoryReminderSettingsStatus(
+              data.enabled === false
+                ? "Reminder emails are off. The dashboard panel still lists low items." + mailNote
+                : "Reminder emails are on. Managers and the boss get one email a day per low item." + mailNote,
+              data.enabled === false || data.mail_ready === false ? "alert-warning" : "alert-success"
+            );
+            const testInput = document.getElementById("inventory-reminder-test-email");
+            if (testInput && !testInput.value && data.account_email) {
+              testInput.value = data.account_email;
+            }
+          })
+          .catch((error) => {
+            setInventoryReminderSettingsStatus(
+              "Could not load the reminder setting. Try Refresh.",
+              "alert-warning"
+            );
+            console.error("Error loading reminder setting:", error);
+          });
+      }
+      function saveInventoryReminderSettings() {
+        if (!requireCapability("admin")) return;
+        const on = document.getElementById("inventory-reminder-email-on");
+        if (!on) return;
+        const enabled = on.checked;
+        const button = document.getElementById("save-inventory-reminder-settings-btn");
+        const original = button?.innerHTML;
+        if (button) {
+          button.disabled = true;
+          button.innerHTML =
+            '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span> Saving...';
+        }
+        fetch("/api/settings/inventory-reminders", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled }),
+        })
+          .then(async (response) => {
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+              throw new Error(data.message || "Failed to save reminder setting");
+            }
+            document.getElementById(
+              data.enabled ? "inventory-reminder-email-on" : "inventory-reminder-email-off"
+            ).checked = true;
+            setInventoryReminderSettingsStatus(
+              data.enabled
+                ? "Reminder emails are on. Managers and the boss get one email a day per low item." +
+                  (data.mail_ready ? "" : " Email delivery is not configured yet.")
+                : "Reminder emails are off. The dashboard panel still lists low items.",
+              data.enabled && data.mail_ready ? "alert-success" : "alert-warning"
+            );
+            showToast(data.message || "Reminder setting saved", "success");
+          })
+          .catch((error) => {
+            console.error("Error saving reminder setting:", error);
+            showToast(error.message || "Failed to save reminder setting", "error");
+          })
+          .finally(() => {
+            if (button) {
+              button.disabled = false;
+              button.innerHTML = original;
+            }
+          });
+      }
+
+      function sendInventoryReminderTest() {
+        if (!requireCapability("admin")) return;
+        const input = document.getElementById("inventory-reminder-test-email");
+        const button = document.getElementById("send-inventory-reminder-test-btn");
+        const email = (input?.value || "").trim();
+        if (!email) {
+          showToast("Enter the email address for the test", "warning");
+          input?.focus();
+          return;
+        }
+        const original = button?.innerHTML;
+        if (button) {
+          button.disabled = true;
+          button.innerHTML =
+            '<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span> Sending...';
+        }
+        fetch("/api/settings/inventory-reminders/test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email }),
+        })
+          .then(async (response) => {
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+              throw new Error(data.message || "Could not send the test email");
+            }
+            showToast(data.message || "Test reminder sent", "success");
+          })
+          .catch((error) => {
+            console.error("Error sending reminder test:", error);
+            showToast(error.message || "Could not send the test email", "error");
+          })
+          .finally(() => {
+            if (button) {
+              button.disabled = false;
+              button.innerHTML = original;
+            }
+          });
+      }
+      // ===== END MOQ REMINDER SETTINGS =====
+
       // ===== BRANCH MANAGEMENT FUNCTIONS =====
       let currentBranch = null;
       let branchesList = [];
@@ -14378,11 +14619,11 @@
           if (!response.ok) throw new Error(data.message || "Product summary unavailable");
           if (inventoryIdentity() !== productIdentity) return;
           document.getElementById("total-products").textContent = data.total_products;
-          document.getElementById("low-stock-count").textContent = data.low_stock;
+          // "low-stock-count" is owned by loadInventoryReminders(): it counts
+          // items at or below their own MOQ, not a fixed catalog threshold.
         }).catch(() => {
           if (inventoryIdentity() !== productIdentity) return;
           document.getElementById("total-products").textContent = "N/A";
-          document.getElementById("low-stock-count").textContent = "N/A";
         });
 
         // Recent transactions (last 24 hours) - FIXED
@@ -14412,7 +14653,119 @@
 
         // Load top products - USING CACHED PRODUCTS
         loadTopProducts();
+
+        // Per-item MOQ reminders (panel + low-stock count).
+        loadInventoryReminders();
       }
+
+      // ===== MOQ LOW-STOCK REMINDERS =====
+      // The panel mirrors what the email poller reports. Dismissal is stored
+      // against the current stock snapshot, so a fresh change brings it back.
+      const INVENTORY_REMINDER_DISMISS_KEY = "inventoryReminderDismissedFingerprint";
+
+      function inventoryReminderFingerprint(items) {
+        return (items || [])
+          .map((item) => `${item.product_id}:${item.current_stock}`)
+          .join("|");
+      }
+
+      function inventoryReminderDismissedFingerprint() {
+        try {
+          return sessionStorage.getItem(INVENTORY_REMINDER_DISMISS_KEY) || "";
+        } catch {
+          return "";
+        }
+      }
+
+      function dismissInventoryReminders() {
+        const card = document.getElementById("inventory-reminder-card");
+        const fingerprint = card?.dataset.fingerprint || "";
+        if (fingerprint) {
+          try {
+            sessionStorage.setItem(INVENTORY_REMINDER_DISMISS_KEY, fingerprint);
+          } catch {
+            /* Private mode: the dismissal just is not remembered. */
+          }
+        }
+        if (card) card.classList.add("d-none");
+      }
+
+      function renderInventoryReminders(data) {
+        const card = document.getElementById("inventory-reminder-card");
+        const table = document.getElementById("inventory-reminder-table");
+        const count = document.getElementById("inventory-reminder-count");
+        const note = document.getElementById("inventory-reminder-note");
+        const lowCount = document.getElementById("low-stock-count");
+        if (!card || !table) return;
+        const items = Array.isArray(data.items) ? data.items : [];
+        if (lowCount) lowCount.textContent = String(items.length);
+        table.replaceChildren();
+        const fingerprint = inventoryReminderFingerprint(items);
+        card.dataset.fingerprint = fingerprint;
+        if (!items.length) {
+          card.classList.add("d-none");
+          if (note) note.textContent = "";
+          return;
+        }
+        items.forEach((item) => {
+          const row = document.createElement("tr");
+          const nameCell = document.createElement("td");
+          const name = document.createElement("span");
+          name.textContent = item.name || "Unnamed product";
+          nameCell.appendChild(name);
+          if (item.sku) {
+            const sku = document.createElement("small");
+            sku.className = "d-block text-muted";
+            sku.textContent = `SKU: ${item.sku}`;
+            nameCell.appendChild(sku);
+          }
+          row.appendChild(nameCell);
+          [item.current_stock, item.moq, item.suggested_qty].forEach((value, index) => {
+            const cell = document.createElement("td");
+            cell.className =
+              "text-end" +
+              (index === 0 && Number(value) <= 0 ? " text-danger fw-semibold" : "");
+            cell.textContent = value == null ? "—" : String(value);
+            row.appendChild(cell);
+          });
+          table.appendChild(row);
+        });
+        if (count) count.textContent = String(items.length);
+        if (note) {
+          const outOfStock = Number(data.summary?.out_of_stock_count || 0);
+          const email = data.email || {};
+          const mailNote =
+            email.enabled === false
+              ? "Email reminders are switched off; this panel still lists every low item."
+              : email.ready
+              ? "Managers and the boss also receive one email a day while these items stay low."
+              : "Email reminders need Resend SMTP settings before they can be sent.";
+          note.textContent = `${outOfStock} out of stock. ${mailNote}`;
+        }
+        card.classList.toggle(
+          "d-none",
+          inventoryReminderDismissedFingerprint() === fingerprint
+        );
+      }
+
+      function loadInventoryReminders() {
+        const card = document.getElementById("inventory-reminder-card");
+        if (!card || !hasCapability("section.dashboard")) return Promise.resolve();
+        return fetch("/api/inventory/reminders", { cache: "no-store" })
+          .then((response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+          })
+          .then((data) => {
+            renderInventoryReminders(data || {});
+          })
+          .catch((error) => {
+            const lowCount = document.getElementById("low-stock-count");
+            if (lowCount) lowCount.textContent = "N/A";
+            console.error("Error loading inventory reminders:", error);
+          });
+      }
+      // ===== END MOQ LOW-STOCK REMINDERS =====
 
       function initDashboardChart() {
         const ctx = document.getElementById("dashboardChart").getContext("2d");
@@ -18039,6 +18392,7 @@
         // value saved on another device is visible without a reload.
         if (groupId === "payments" && typeof loadPaymentSettings === "function") loadPaymentSettings();
         if (groupId === "email" && window.EmailSecurity) EmailSecurity.loadSettings();
+        if (groupId === "email") loadInventoryReminderSettings(true);
         if (groupId === "po-template") {
           bindPoTemplateEditor();
           loadPoTemplateLogo();
@@ -18505,6 +18859,13 @@
           const branchLabel = isShared ? `<small class="d-block text-muted">${escapeHtml(product.branch_name)}</small>` : "";
           const actions = isShared ? "" : `<button class="btn btn-sm btn-primary me-1" onclick="editProduct(${product.id})">
             <i class="bi bi-pencil"></i></button>${deleteButton}`;
+          // The MOQ badge is manager data; cashier payloads omit it, so the
+          // guard keeps their table unchanged.
+          const moq = Number(product.reorder_point);
+          const remindersOn = product.reorder_enabled !== false && product.reorder_enabled !== undefined;
+          const lowStockBadge = Number.isFinite(moq) && remindersOn && Number(product.stock) <= moq
+            ? ` <span class="badge bg-warning text-dark" title="At or below MOQ (${moq})">MOQ</span>`
+            : "";
           row.innerHTML = `
                                   <td class="products-select-cell">${selection}</td>
                                   <td>${getProductPhotoHtml(product.photo_url, product.name, "product-thumb")}</td>
@@ -18512,7 +18873,7 @@
                                   <td class="text-break">${escapeHtml(product.sku || "—")}</td>
                                   <td>${escapeHtml(product.name)}${branchLabel}</td>
                                   <td>$${product.price.toFixed(2)}</td>
-                                  <td>${product.stock}</td>
+                                  <td>${product.stock}${lowStockBadge}</td>
                                   <td class="d-none d-md-table-cell">${product.unit_symbol ? escapeHtml(product.unit_symbol) : "—"}</td>
                                   <td>${escapeHtml(product.category || "N/A")}</td>
                                   <td ${hasCapability("catalog.write") ? "" : "hidden"}>${actions}</td>
@@ -18643,6 +19004,16 @@
         const unitId = document.getElementById("add-product-unit").value;
         const taxRate =
           parseFloat(document.getElementById("add-tax-rate").value) || 0;
+        const moq = Math.max(
+          parseInt(document.getElementById("add-moq").value, 10) || 0,
+          0
+        );
+        const reorderQuantity = Math.max(
+          parseInt(document.getElementById("add-reorder-qty").value, 10) || 0,
+          0
+        );
+        const reorderEnabled =
+          document.getElementById("add-reorder-enabled").checked;
         const photoFile = document.getElementById("add-photo").files[0];
 
         if (!name || isNaN(price)) {
@@ -18660,6 +19031,9 @@
         productData.append("category_id", categoryId || "");
         productData.append("unit_id", unitId || "");
         productData.append("tax_rate", String(taxRate));
+        productData.append("reorder_point", String(moq));
+        productData.append("reorder_quantity", String(reorderQuantity));
+        productData.append("reorder_enabled", reorderEnabled ? "true" : "false");
         if (photoFile) {
           productData.append("photo", photoFile);
         }
@@ -18726,6 +19100,12 @@
             }
             unitSelect.value = product.unit_id || "";
             document.getElementById("edit-tax-rate").value = product.tax_rate;
+            document.getElementById("edit-moq").value =
+              product.reorder_point == null ? 10 : product.reorder_point;
+            document.getElementById("edit-reorder-qty").value =
+              product.reorder_quantity == null ? 50 : product.reorder_quantity;
+            document.getElementById("edit-reorder-enabled").checked =
+              product.reorder_enabled !== false;
             document.getElementById("edit-remove-photo").checked = false;
             document.getElementById("edit-photo").value = "";
 
@@ -18772,6 +19152,16 @@
         const unitId = document.getElementById("edit-product-unit").value;
         const taxRate =
           parseFloat(document.getElementById("edit-tax-rate").value) || 0;
+        const moq = Math.max(
+          parseInt(document.getElementById("edit-moq").value, 10) || 0,
+          0
+        );
+        const reorderQuantity = Math.max(
+          parseInt(document.getElementById("edit-reorder-qty").value, 10) || 0,
+          0
+        );
+        const reorderEnabled =
+          document.getElementById("edit-reorder-enabled").checked;
         const photoFile = document.getElementById("edit-photo").files[0];
         const removePhoto = document.getElementById("edit-remove-photo").checked;
 
@@ -18790,6 +19180,9 @@
         productData.append("category_id", categoryId || "");
         productData.append("unit_id", unitId || "");
         productData.append("tax_rate", String(taxRate));
+        productData.append("reorder_point", String(moq));
+        productData.append("reorder_quantity", String(reorderQuantity));
+        productData.append("reorder_enabled", reorderEnabled ? "true" : "false");
         productData.append("remove_photo", removePhoto ? "true" : "false");
         if (photoFile) {
           productData.append("photo", photoFile);

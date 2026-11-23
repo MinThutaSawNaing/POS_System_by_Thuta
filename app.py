@@ -940,47 +940,26 @@ def to_bool(value, default=False):
     return default
 
 def build_inventory_alert_payload(branch_id=None):
-    low_stock_items = []
-    out_of_stock_count = 0
-
-    query = Product.query
-    if branch_id:
-        query = query.filter_by(branch_id=branch_id)
-    
-    products = query.order_by(Product.name.asc()).all()
-    for product in products:
-        current_stock = int(product.stock or 0)
-        reorder_point = max(int(product.reorder_point or 0), 0)
-        reorder_quantity = max(int(product.reorder_quantity or 0), 0)
-        reorder_enabled = bool(product.reorder_enabled)
-
-        if current_stock <= 0:
-            out_of_stock_count += 1
-
-        if not reorder_enabled or current_stock > reorder_point:
-            continue
-
-        suggested_qty = reorder_quantity
-        if suggested_qty <= 0:
-            suggested_qty = max(reorder_point - current_stock, 1)
-
-        low_stock_items.append({
-            'product_id': product.id,
-            'name': product.name,
-            'barcode': product.barcode,
-            'sku': product.sku,
-            'category': product.category,
-            'current_stock': current_stock,
-            'reorder_point': reorder_point,
-            'reorder_quantity': reorder_quantity,
-            'suggested_qty': suggested_qty
-        })
-
+    """Low-stock rows shared by alerts, suggested POs and the MOQ reminders."""
+    data = inventory_reminders.payload(branch_id)
+    items = data.get('items') or []
+    low_stock_items = [{
+        'product_id': item['product_id'],
+        'name': item['name'],
+        'barcode': item['barcode'],
+        'sku': item['sku'],
+        'category': item['category'],
+        'current_stock': item['current_stock'],
+        'reorder_point': item['reorder_point'],
+        'reorder_quantity': item['reorder_quantity'],
+        'suggested_qty': item['suggested_qty'],
+    } for item in items]
+    summary = data.get('summary') or {}
     return {
         'summary': {
-            'total_products': len(products),
-            'low_stock_count': len(low_stock_items),
-            'out_of_stock_count': out_of_stock_count
+            'total_products': summary.get('total_products', 0),
+            'low_stock_count': summary.get('low_stock_count', len(low_stock_items)),
+            'out_of_stock_count': summary.get('out_of_stock_count', 0),
         },
         'low_stock_items': low_stock_items,
         'suggested_purchase_order': {
@@ -3112,7 +3091,7 @@ from payment_routes import register_payment_routes
 PaymentIntent, PaymentWebhookEvent = register_payment_routes(app, db, globals())
 
 # Register the small email-auth boundary (including its tables) before create_all.
-from email_auth import register_email_auth, EmailAuthError
+from email_auth import register_email_auth, EmailAuthError, normalize_email
 email_auth = register_email_auth(app, db, globals())
 EmailChallenge = email_auth.Challenge
 EmailSendEvent = email_auth.SendEvent
@@ -3121,6 +3100,11 @@ EmailSendEvent = email_auth.SendEvent
 # create_all below provisions them without an ALTER-TABLE migration.
 from report_scheduler import register_report_scheduler
 report_scheduler = register_report_scheduler(app, db, globals())
+
+# Per-item MOQ reminders (dashboard payload + once-a-day email). Its table is
+# new, so create_all below provisions it without an ALTER-TABLE migration.
+from inventory_reminders import register_inventory_reminders, ReminderError
+inventory_reminders = register_inventory_reminders(app, db, globals())
 
 # Create database tables and admin user
 with app.app_context():
@@ -4088,6 +4072,49 @@ def api_settings():
     
     return jsonify({'success': False, 'message': 'No valid settings provided'}), 400
 
+@app.route('/api/settings/inventory-reminders', methods=['GET', 'PUT'])
+@manager_or_boss_required
+def api_inventory_reminder_settings():
+    """Read or switch the daily MOQ reminder email for the whole store."""
+    if request.method == 'GET':
+        status = inventory_reminders.mail_status()
+        user = db.session.get(User, session['user_id'])
+        return jsonify(success=True, enabled=status['enabled'],
+                       mail_ready=status['ready'],
+                       account_email=(user.email or '') if user else '')
+    data = request.get_json(silent=True) or {}
+    enabled = to_bool(data.get('enabled'), None)
+    if enabled is None:
+        return jsonify(success=False,
+                       message='Choose whether reminder emails are sent'), 400
+    set_setting(inventory_reminders.setting_key, '1' if enabled else '0')
+    status = inventory_reminders.mail_status()
+    return jsonify(success=True, enabled=status['enabled'],
+                   mail_ready=status['ready'],
+                   message=('Reminder emails are on' if status['enabled']
+                            else 'Reminder emails are off'))
+
+@app.route('/api/settings/inventory-reminders/test', methods=['POST'])
+@manager_or_boss_required
+def api_inventory_reminder_test():
+    """Email the real MOQ reminder template to one address for verification."""
+    branch_id = get_current_branch_id()
+    if branch_id is None:
+        return jsonify(success=False, message='No active branch selected'), 409
+    data = request.get_json(silent=True) or {}
+    try:
+        recipient = normalize_email(data.get('email'))
+    except ValueError:
+        return jsonify(success=False, message='Enter a valid email address'), 400
+    try:
+        result = inventory_reminders.send_test(branch_id, recipient)
+    except ReminderError as failure:
+        return jsonify(success=False, message=failure.message), failure.status
+    return jsonify(success=True,
+                   message=f"Test reminder for {result['items']} low item(s) sent to "
+                           f"{result['recipient']}",
+                   items=result['items'], recipient=result['recipient'])
+
 @app.route('/api/settings/myanmyanpay', methods=['GET', 'PUT'])
 @manager_or_boss_required
 def api_payment_settings():
@@ -4439,6 +4466,15 @@ def api_set_default_branch(branch_id):
 @manager_required
 def api_inventory_alerts():
     return jsonify(build_inventory_alert_payload(get_current_branch_id()))
+
+@app.route('/api/inventory/reminders', methods=['GET'])
+@manager_or_boss_required
+def api_inventory_reminders():
+    """Live MOQ reminder list; the same rows feed the daily email."""
+    branch_id = get_current_branch_id()
+    if branch_id is None:
+        return jsonify({'error': 'No active branch selected'}), 409
+    return jsonify(inventory_reminders.payload(branch_id))
 
 @app.route('/api/inventory/suggested_purchase_order', methods=['POST'])
 @manager_required
@@ -11628,6 +11664,10 @@ register_product_import(app, db, globals())
 # Loli's report schedules are delivered by one daemon poller inside this
 # process. It no-ops under pytest/Testing and when AI_SCHEDULER_ENABLED is off.
 report_scheduler.start()
+
+# MOQ reminders share the same deployment model: one poller, no-op in tests and
+# when INVENTORY_REMINDER_ENABLED is off.
+inventory_reminders.start()
 
 
 @app.route('/api/coupons', methods=['GET', 'POST'])
