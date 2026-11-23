@@ -2246,6 +2246,17 @@
           </div>
         </div>
 
+        <!-- Shown when the low-stock panel is dismissed, so it can always be restored. -->
+        <div class="alert alert-warning d-none align-items-center justify-content-between flex-wrap gap-2 mb-3" id="inventory-reminder-restore" role="status">
+          <span>
+            <i class="bi bi-bell-slash me-2" aria-hidden="true"></i>
+            Low stock reminders are hidden. <strong id="inventory-reminder-restore-count">0</strong> item(s) at or below MOQ.
+          </span>
+          <button type="button" class="btn btn-sm btn-warning" onclick="showInventoryReminders()">
+            <i class="bi bi-eye me-1" aria-hidden="true"></i>Show reminders
+          </button>
+        </div>
+
         <div class="row mt-4">
           <div class="col-12 col-lg-8 mb-3">
             <div class="card">
@@ -15274,6 +15285,30 @@
           }
         }
         if (card) card.classList.add("d-none");
+        const restore = document.getElementById("inventory-reminder-restore");
+        const restoreCount = document.getElementById("inventory-reminder-restore-count");
+        if (restoreCount) {
+          restoreCount.textContent =
+            document.getElementById("inventory-reminder-count")?.textContent || "0";
+        }
+        if (restore) {
+          restore.classList.remove("d-none");
+          restore.classList.add("d-flex");
+        }
+      }
+
+      function showInventoryReminders() {
+        try {
+          sessionStorage.removeItem(INVENTORY_REMINDER_DISMISS_KEY);
+        } catch {
+          /* Nothing to clear in private mode. */
+        }
+        document.getElementById("inventory-reminder-card")?.classList.remove("d-none");
+        const restore = document.getElementById("inventory-reminder-restore");
+        if (restore) {
+          restore.classList.add("d-none");
+          restore.classList.remove("d-flex");
+        }
       }
 
       function renderInventoryReminders(data) {
@@ -15291,6 +15326,11 @@
         if (!items.length) {
           card.classList.add("d-none");
           if (note) note.textContent = "";
+          const restore = document.getElementById("inventory-reminder-restore");
+          if (restore) {
+            restore.classList.add("d-none");
+            restore.classList.remove("d-flex");
+          }
           return;
         }
         items.forEach((item) => {
@@ -15328,10 +15368,15 @@
               : "Email reminders need Resend SMTP settings before they can be sent.";
           note.textContent = `${outOfStock} out of stock. ${mailNote}`;
         }
-        card.classList.toggle(
-          "d-none",
-          inventoryReminderDismissedFingerprint() === fingerprint
-        );
+        const dismissed = inventoryReminderDismissedFingerprint() === fingerprint;
+        card.classList.toggle("d-none", dismissed);
+        const restore = document.getElementById("inventory-reminder-restore");
+        const restoreCount = document.getElementById("inventory-reminder-restore-count");
+        if (restore) {
+          restore.classList.toggle("d-none", !dismissed);
+          restore.classList.toggle("d-flex", dismissed);
+        }
+        if (dismissed && restoreCount) restoreCount.textContent = String(items.length);
       }
 
       function loadInventoryReminders() {
