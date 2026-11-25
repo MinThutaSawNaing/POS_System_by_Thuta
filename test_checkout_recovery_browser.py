@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 from threading import Barrier, Event, Thread
+from time import monotonic
 from urllib.parse import parse_qs
 
 import pytest
@@ -45,7 +46,9 @@ def test_four_real_browser_profiles_reload_lost_response_and_concurrent_sync(wor
             start_response('200 OK', [('Content-Type', 'text/plain')])
             return [b'ok']
         if path == '/_checkout_gate':
-            gate.wait(timeout=35)
+            # Four independent Chromium processes can start slowly on a shared
+            # CI runner; do not mistake startup contention for a checkout error.
+            gate.wait(timeout=90)
             start_response('200 OK', [('Content-Type', 'text/plain')])
             return [b'ready']
         if path != '/_checkout_test':
@@ -126,7 +129,13 @@ function checkoutJournal(){return OfflineCheckout.create({storage:localStorage,u
             f'http://127.0.0.1:{server.server_port}/_checkout_test?branch={code}',
         ], stdout=log, stderr=log)
         try:
-            assert completed[code].wait(timeout=65), 'Browser did not finish: ' + code
+            deadline = monotonic() + 150
+            while not completed[code].wait(timeout=min(2, max(0, deadline - monotonic()))):
+                if process.poll() is not None or monotonic() >= deadline:
+                    log.flush()
+                    output = (tmp_path / (code + '.log')).read_text(encoding='utf-8', errors='replace')
+                    pytest.fail(f'Browser did not finish: {code} (exit={process.poll()}); '
+                                f'other results={list(outcomes)}; browser log tail:\n{output[-4000:]}')
             result = outcomes[code]
             assert not result.get('error'), result
             return result
