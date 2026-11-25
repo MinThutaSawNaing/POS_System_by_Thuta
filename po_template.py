@@ -414,13 +414,43 @@ def purchase_order_body(width, *, details, buyer, supplier, invoice, lines, curr
     return elements
 
 
-def draw_po_continuation(canvas, document, po_number):
+def draw_po_continuation(canvas, document, po_number, label='PURCHASE ORDER'):
     """Identify detached continuation pages without repeating the full letterhead."""
     canvas.saveState()
     try:
         canvas.setFillColor(colors.HexColor('#475569'))
         canvas.setFont('Helvetica-Bold', 9)
         canvas.drawString(document.leftMargin + 6, document.pagesize[1] - 11 * mm,
-                          f'PURCHASE ORDER  |  {_pdf_safe_text(po_number)}  |  Continued')
+                          f'{_pdf_safe_text(label)}  |  {_pdf_safe_text(po_number)}  |  Continued')
     finally:
         canvas.restoreState()
+
+
+def stock_verification_body(width, *, details, columns, rows, note):
+    """Shared, ink-friendly count table for GRNs and branch inventory sheets."""
+    body = ParagraphStyle('Stock count body', fontName='Helvetica', fontSize=8,
+                          leading=11, textColor=colors.HexColor('#111827'))
+    small = ParagraphStyle('Stock count heading', parent=body, fontName='Helvetica-Bold',
+                           fontSize=9, spaceAfter=8)
+    header = ParagraphStyle('Stock count column', parent=body, fontName='Helvetica-Bold',
+                            textColor=colors.white)
+    safe = lambda value, style=body: Paragraph(escape(str(value if value is not None else '-')), style)
+    band, shade = colors.HexColor('#0f172a'), colors.HexColor('#f1f5f9')
+    meta = Table([[safe(label, small), safe(value)] for label, value in details],
+                 colWidths=[width * .27, width * .73], style=[
+                     ('BACKGROUND', (0, 0), (-1, -1), shade),
+                     ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                     ('TOPPADDING', (0, 0), (-1, -1), 5),
+                     ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                 ])
+    grid = [[safe(label, header) for label in columns]]
+    grid.extend([safe(value) for value in row] for row in rows)
+    table = LongTable(grid, colWidths=[width / len(columns)] * len(columns), repeatRows=1,
+                      style=[('BACKGROUND', (0, 0), (-1, 0), band),
+                             ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, shade]),
+                             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                             ('TOPPADDING', (0, 0), (-1, -1), 7),
+                             ('BOTTOMPADDING', (0, 0), (-1, -1), 7),
+                             ('LINEBELOW', (0, 1), (-1, -1), .3, colors.HexColor('#cbd5e1'))])
+    return [meta, Spacer(1, 14), safe(note, small), table, Spacer(1, 24),
+            safe('Counted by: ____________________    Checked by: ____________________    Date: __________')]

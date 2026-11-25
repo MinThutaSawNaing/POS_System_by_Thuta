@@ -7,6 +7,7 @@ import os
 import re
 import uuid
 import io
+import copy
 import json
 import time
 import struct
@@ -65,6 +66,7 @@ from po_template import (
     normalize_po_template,
     po_template_page_size,
     purchase_order_body,
+    stock_verification_body,
 )
 from reports import (
     LOW_STOCK_THRESHOLD,
@@ -3939,6 +3941,7 @@ def api_settings():
             'branch_id': branch_id,
             'currency_code': get_currency_code(),
             'currency_suffix': get_currency_suffix(),
+            'automated_offline_fetch': get_branch_setting('automated_offline_fetch', 'off', branch_id) == 'on',
             'receipt_paper_size': get_receipt_paper_size(branch),
             'label_geometry': get_label_geometry(branch),
             'receipt_customization': get_receipt_customization_settings(branch),
@@ -3955,6 +3958,13 @@ def api_settings():
         return jsonify({'success': False, 'message': 'Active branch changed. Reload settings and try again'}), 409
     
     updated_settings = {}
+
+    if 'automated_offline_fetch' in data:
+        if type(data['automated_offline_fetch']) is not bool:
+            return jsonify({'success': False, 'message': 'Invalid automated offline fetch mode'}), 400
+        updated_settings[branch_setting_key(branch_id, 'automated_offline_fetch')] = (
+            'on' if data['automated_offline_fetch'] else 'off'
+        )
 
     # Handle currency code update
     currency_code = data.get('currency_code')
@@ -4027,6 +4037,7 @@ def api_settings():
             'branch_id': branch_id,
             'currency_code': effective_currency,
             'currency_suffix': get_currency_suffix(effective_currency),
+            'automated_offline_fetch': get_branch_setting('automated_offline_fetch', 'off', branch_id) == 'on',
             'receipt_paper_size': get_receipt_paper_size(branch),
             'label_geometry': get_label_geometry(branch),
             'receipt_customization': get_receipt_customization_settings(branch),
@@ -5477,6 +5488,81 @@ def api_product_summary():
         query = query.filter(Product.branch_id == get_current_branch_id())
     total, low_stock = query.one()
     return jsonify(total_products=total, low_stock=low_stock)
+
+
+def verification_pdf(branch, title, reference, details, columns, rows, note):
+    """Use the same saved branch letterhead, logo, footer and page size as the PO."""
+    template = copy.deepcopy(get_po_template(branch))
+    for element in template['elements']:
+        if element.get('id') == 'title':
+            element['text'] = title.upper()
+        elif element.get('id') == 'reference':
+            element['text'] = reference
+    context = {'brand_name': (get_branch_setting('receipt_brand_name', '', branch.id) or '').strip() or branch.name,
+               'branch_name': branch.name, 'branch_address': branch.address or '',
+               'branch_phone': branch.phone or '', 'branch_email': branch.email or ''}
+    filename = get_branch_setting(PO_TEMPLATE_LOGO_SETTING, '', branch.id)
+    logo = os.path.join(app.config['PO_LOGO_FOLDER'], filename) if filename else None
+    width, height = (size * mm for size in po_template_page_size(template))
+    margin = template['page_inset_mm'] * mm
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=(width, height), title=f'{title} {reference}',
+                            leftMargin=margin, rightMargin=margin, topMargin=margin, bottomMargin=20 * mm)
+    story = [PurchaseOrderTemplateHeader(template, context), Spacer(1, 8)]
+    story.extend(stock_verification_body(doc.width - 12, details=details, columns=columns,
+                                         rows=rows, note=note))
+
+    def first_page(canvas, document):
+        draw_po_template_footer(canvas, document, template, context)
+
+    def later_page(canvas, document):
+        draw_po_continuation(canvas, document, reference, label=title.upper())
+        first_page(canvas, document)
+
+    doc.afterPage = lambda: draw_po_template_logo(doc.canv, doc, template, logo)
+    doc.build(story, onFirstPage=first_page, onLaterPages=later_page)
+    response = make_response(buffer.getvalue())
+    response.headers['Content-Type'] = 'application/pdf'
+    response.headers['Content-Disposition'] = f'inline; filename="{title.replace(" ", "_")}.pdf"'
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
+@app.route('/api/branch_inventory/print', methods=['GET'])
+def api_print_branch_inventory():
+    if 'user_id' not in session:
+        return jsonify(error='Unauthorized'), 401
+    # Reuse the scoped, filtered inventory API rather than duplicating its permissions.
+    result = api_branch_inventory()
+    if not hasattr(result, 'get_json'):
+        return result
+    payload = result.get_json()
+    if result.status_code != 200:
+        return result
+    # cursor_rows is paginated: walk the same scoped query using bounded pages.
+    location = db.session.get(Branch, payload['location_id'])
+    stock = func.coalesce(Product.stock, 0)
+    query = db.session.query(Product.id, Product.name, Product.sku, Product.barcode,
+        stock.label('stock'), Unit.symbol.label('unit_symbol')).outerjoin(Unit, Product.unit_id == Unit.id)
+    query = query.filter(Product.branch_id == location.id)
+    status = request.args.get('stock', 'all')
+    if status == 'in_stock': query = query.filter(stock > 0)
+    elif status == 'low': query = query.filter(stock > 0, stock < LOW_STOCK_THRESHOLD)
+    elif status == 'out': query = query.filter(stock <= 0)
+    search = (request.args.get('q') or '').strip()
+    if search:
+        query = query.filter(Product.id.in_(product_prefix_ids(search, page_bound=False, base=query)))
+    items = query.order_by(Product.id).limit(EXPORT_ROW_LIMIT + 1).all()
+    if len(items) > EXPORT_ROW_LIMIT:
+        raise InventoryQueryError('Too many products to print. Narrow your filters.', 413)
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+    return verification_pdf(location, 'Branch Inventory', f'{location.name}  |  {now}',
+        [('Branch', location.name), ('Snapshot', now), ('Stock filter', status),
+         ('Search', search or 'All products'), ('Products', len(items))],
+        ('#', 'Product', 'SKU / Barcode', 'System qty', 'Unit', 'Physical count'),
+        [(index, item.name, f'{item.sku or "-"} / {item.barcode or "-"}',
+          item.stock, item.unit_symbol or '-', '________') for index, item in enumerate(items, 1)],
+        'PHYSICAL STOCK VERIFICATION  |  Write the counted quantity in the last column')
 
 
 @app.route('/api/branch_inventory', methods=['GET'])
@@ -9922,8 +10008,32 @@ def api_purchase_order_receipts(po_id):
         return jsonify(success=False, message='Purchase order not found'), 404
     query = GoodsReceipt.query.filter_by(purchase_order_id=po_id)
     rows, paging = cursor_rows(query, GoodsReceipt.id)
-    return jsonify(**paging, items=[{'number': row.number, 'created_at': row.created_at.isoformat(),
+    return jsonify(**paging, items=[{'id': row.id, 'number': row.number, 'created_at': row.created_at.isoformat(),
         'actor_id': row.actor_id, **row.snapshot} for row in rows])
+
+@app.route('/api/purchase_orders/<int:po_id>/receipts/<int:receipt_id>/print', methods=['GET'])
+@manager_or_boss_required
+def api_print_goods_receipt(po_id, receipt_id):
+    receipt = GoodsReceipt.query.filter_by(id=receipt_id, purchase_order_id=po_id).first()
+    if receipt is None:
+        return jsonify(success=False, message='Goods receipt not found'), 404
+    po = db.session.get(PurchaseOrder, po_id)
+    branch = db.session.get(Branch, po.branch_id) if po and po.branch_id else None
+    if branch is None:
+        return jsonify(success=False, message='Ordering branch not found'), 404
+    snapshot = receipt.snapshot or {}
+    lines = snapshot.get('items') or []
+    return verification_pdf(branch, 'Goods Receipt', receipt.number,
+        [('Receipt number', receipt.number), ('Purchase order', snapshot.get('po_number') or po.po_number),
+         ('Supplier', snapshot.get('supplier_name') or '-'),
+         ('Received at', receipt.created_at.strftime('%Y-%m-%d %H:%M UTC')),
+         ('Ordering branch', branch.name)],
+        ('#', 'Product', 'SKU', 'Ordered', 'Received', 'Physical count'),
+        [(index, line.get('product_name') or '-', line.get('sku') or '-',
+          line.get('ordered_qty') or 0, line.get('received_qty') or 0, '________')
+         for index, line in enumerate(lines, 1)],
+        'GOODS RECEIPT VERIFICATION  |  Compare received units against physical stock')
+
 
 @app.route('/api/purchase_orders/<int:po_id>/receive', methods=['POST'])
 @manager_or_boss_required

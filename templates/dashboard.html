@@ -2766,6 +2766,9 @@
           <button type="button" class="btn btn-outline-secondary" onclick="loadBranchInventory()">
             <i class="bi bi-arrow-repeat" aria-hidden="true"></i> Refresh
           </button>
+          <button type="button" class="btn btn-outline-primary" onclick="printBranchInventory()" aria-label="Print filtered branch inventory">
+            <i class="bi bi-printer" aria-hidden="true"></i> Print stock count
+          </button>
         </div>
         <div class="card">
           <div class="card-body">
@@ -3852,10 +3855,18 @@
 
         <div class="card">
           <div class="card-body">
+            <div class="d-flex align-items-center gap-2 flex-wrap mb-3" aria-label="Purchase order bulk actions">
+              <span id="po-selection-count" role="status" aria-live="polite">0 selected on this page</span>
+              <button type="button" class="btn btn-sm btn-outline-primary" id="po-bulk-submit" onclick="bulkPurchaseOrders('submit')" disabled>Submit selected drafts</button>
+              <button type="button" class="btn btn-sm btn-outline-success" id="po-bulk-approve" onclick="bulkPurchaseOrders('approve')" disabled>Approve selected</button>
+              <button type="button" class="btn btn-sm btn-outline-danger" id="po-bulk-cancel" onclick="bulkPurchaseOrders('cancel')" disabled>Cancel selected</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearPurchaseOrderSelection()">Clear selection</button>
+            </div>
             <div class="table-responsive">
               <table class="table table-striped table-hover">
                 <thead>
                   <tr>
+                    <th scope="col"><input type="checkbox" id="po-select-page" class="form-check-input" aria-label="Select purchase orders on this page" onchange="togglePurchaseOrderPage(this.checked)"></th>
                     <th>PO #</th>
                     <th class="d-none d-md-table-cell">Supplier</th>
                     <th class="d-none d-md-table-cell">Product Branch</th>
@@ -3869,7 +3880,7 @@
                 </thead>
                 <tbody id="purchase-orders-table">
                   <tr>
-                    <td colspan="9" class="text-center py-4">
+                    <td colspan="10" class="text-center py-4">
                       <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
                       </div>
@@ -4520,6 +4531,14 @@
                 <option value="MMK">Myanmar Kyat (MMK)</option>
                 <option value="THB">Thai Baht (THB)</option>
               </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label" for="settings-automated-offline-fetch">Automated Offline Fetch Mode</label>
+              <select class="form-select" id="settings-automated-offline-fetch">
+                <option value="off">Off</option>
+                <option value="on">On</option>
+              </select>
+              <div class="form-text">When on, previously downloaded catalogs update on this device after a confirmed catalog change. Use the POS button for the first download.</div>
             </div>
             <div class="mb-3">
               <label class="form-label">Language / ဘာသာစကား</label>
@@ -7712,6 +7731,7 @@
           <div class="modal-header"><h5 class="modal-title" id="edit-po-title">Edit Purchase Order</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
           <div class="modal-body">
             <p id="edit-po-number" class="fw-semibold"></p>
+            <p class="small text-muted">Save changes updates this PO and keeps its number. To place a separate order, create a new PO instead. Once goods are received, only notes and expected delivery can change.</p>
             <div id="edit-po-receipt-notice" class="alert alert-info">After receipt, only notes and expected delivery can be changed. Stock and payments are not changed by this editor.</div>
             <div class="mb-3"><label for="edit-po-supplier" class="form-label">Supplier</label><select id="edit-po-supplier" class="form-select" required></select></div>
             <div class="mb-3"><label for="edit-po-expected" class="form-label">Expected delivery date</label><input id="edit-po-expected" class="form-control" type="date"></div>
@@ -8698,6 +8718,8 @@
         }
         const generalSaveButton = document.getElementById("save-general-settings-btn");
         if (generalSaveButton) generalSaveButton.disabled = !hasManagerAccess();
+        const autoFetchSelect = document.getElementById("settings-automated-offline-fetch");
+        if (autoFetchSelect) autoFetchSelect.disabled = !hasManagerAccess();
 
         document.querySelectorAll('input[name="receipt-paper-size"]').forEach((input) => {
           input.checked = input.value === APP_SETTINGS.receiptPaperSize;
@@ -8759,14 +8781,18 @@
       }
 
       function loadSettings() {
-        fetch("/api/settings")
+        return fetch("/api/settings", {cache: "no-store"})
           .then((response) => {
             if (!response.ok) throw new Error("Unable to load settings");
             return response.json();
           })
           .then((data) => {
-            if (currentBranch?.id && String(data.branch_id) !== String(currentBranch.id)) return;
+            if (!currentBranch?.id || String(data.branch_id) !== String(currentBranch.id)) return;
+            automatedOfflineFetchBranchId = data.branch_id;
+            automatedOfflineFetchEnabled = data.automated_offline_fetch === true;
             APP_SETTINGS.posName = data.pos_name || APP_SETTINGS.posName;
+            const autoFetchSelect = document.getElementById("settings-automated-offline-fetch");
+            if (autoFetchSelect) autoFetchSelect.value = data.automated_offline_fetch === true ? "on" : "off";
             APP_SETTINGS.currencyCode = data.currency_code || APP_SETTINGS.currencyCode;
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(APP_SETTINGS.currencyCode);
             APP_SETTINGS.receiptPaperSize = data.receipt_paper_size || APP_SETTINGS.receiptPaperSize;
@@ -8784,6 +8810,7 @@
             }
             applySettingsUI();
             offlineCacheSet(settingsCacheKey(data.branch_id), data);
+            if (currentSection === "pos") checkOfflineProductCatalog();
             if (hasCapability("admin")) {
               loadAISettings();
               if (typeof loadPaymentSettings === "function") loadPaymentSettings();
@@ -10342,15 +10369,19 @@
       function saveSettings() {
         const currencyCode = document.getElementById("settings-currency-code")?.value;
         const language = document.getElementById("settings-language")?.value;
-        if (!currencyCode || !language) return;
+        const automatedFetch = document.getElementById("settings-automated-offline-fetch")?.value;
+        if (!currencyCode || !language || !["on", "off"].includes(automatedFetch)) return;
         return saveSettingsPayload(
-          { currency_code: currencyCode },
+          { currency_code: currencyCode, automated_offline_fetch: automatedFetch === "on" },
           "save-general-settings-btn",
           "General settings saved",
           (data) => {
             APP_SETTINGS.currencyCode = data.currency_code;
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(data.currency_code);
+            automatedOfflineFetchBranchId = data.branch_id;
+            automatedOfflineFetchEnabled = data.automated_offline_fetch === true;
             changeLanguage(language, { silent: true });
+            if (currentSection === "pos") checkOfflineProductCatalog();
           }
         );
       }
@@ -12727,6 +12758,9 @@
       let offlineProductSync = null;
       let offlineCatalogCheck = null;
       let offlineCatalogVersion = null;
+      // Only a fresh settings response for this branch may enable background writes.
+      let automatedOfflineFetchBranchId = null;
+      let automatedOfflineFetchEnabled = false;
 
       function renderOfflineProductButton(message = "") {
         const button = document.getElementById("pos-offline-load");
@@ -12737,7 +12771,7 @@
         const stale = saved && checked &&
           (offlineCatalogVersion.version !== entry.catalog_version ||
            offlineCatalogVersion.count !== entry.data.length);
-        const ready = saved && !stale;
+        const ready = saved && !stale && (!offlineCatalogCheck || checked);
         button.disabled = !!offlineProductSync || ready;
         button.style.opacity = ready ? "0.5" : "1";
         button.setAttribute("aria-busy", offlineProductSync ? "true" : "false");
@@ -12763,28 +12797,53 @@
       async function checkOfflineProductCatalog() {
         renderOfflineProductButton();
         const branchId = currentBranch?.id;
-        if (!posCartScopeCurrent(branchId) || posIsOffline() || offlineProductSync || offlineCatalogCheck) return;
+        if (!posCartScopeCurrent(branchId) || posIsOffline() || offlineProductSync) return;
+        if (offlineCatalogCheck?.branchId === branchId) return offlineCatalogCheck.promise;
         const entry = offlineCacheGet(cachedProductsKey());
         if (!entry?.catalog_complete && !entry?.catalog_version) return;
-        const check = {};
+        const check = {branchId};
         offlineCatalogCheck = check;
+        let verified = false;
         try {
-          const data = await fetchOfflineCatalogVersion(branchId);
+          check.promise = fetchOfflineCatalogVersion(branchId);
+          const data = await check.promise;
           if (offlineCatalogCheck === check && !offlineProductSync && posCartScopeCurrent(branchId)) {
             offlineCatalogVersion = {branchId, ...data};
+            verified = true;
           }
         } catch (error) {
           // A failed version request does not erase the last confirmed state.
           // The saved catalog is still usable while the server is unreachable.
         } finally {
           if (offlineCatalogCheck === check) offlineCatalogCheck = null;
-          renderOfflineProductButton();
+          if (posCartScopeCurrent(branchId)) renderOfflineProductButton();
+          const latest = offlineCacheGet(cachedProductsKey());
+          if (verified && posCartScopeCurrent(branchId) && !posIsOffline() && !offlineProductSync &&
+              automatedOfflineFetchBranchId === branchId && automatedOfflineFetchEnabled &&
+              latest?.catalog_complete && Array.isArray(latest.data) &&
+              offlineCatalogVersion?.branchId === branchId &&
+              (latest.catalog_version !== offlineCatalogVersion.version ||
+               latest.data.length !== offlineCatalogVersion.count)) {
+            // The downloader rechecks the version before and after every page.
+            void loadAllProductsForOffline(true);
+          }
         }
       }
 
-      async function loadAllProductsForOffline() {
+      async function loadAllProductsForOffline(automatic = false) {
         const branchId = currentBranch?.id;
         if (offlineProductSync || !posCartScopeCurrent(branchId)) return;
+        if (offlineCatalogCheck?.branchId === branchId) {
+          try { await offlineCatalogCheck.promise; } catch (error) { /* The download verifies independently. */ }
+          if (offlineProductSync || !posCartScopeCurrent(branchId)) return;
+        }
+        const saved = offlineCacheGet(cachedProductsKey());
+        if (saved?.catalog_version && offlineCatalogVersion?.branchId === branchId &&
+            saved.catalog_version === offlineCatalogVersion.version &&
+            saved.data?.length === offlineCatalogVersion.count) {
+          renderOfflineProductButton();
+          return;
+        }
         if (posIsOffline()) {
           renderOfflineProductButton("Reconnect to load all products. Existing saved products are still available.");
           return;
@@ -12816,6 +12875,9 @@
           } while (cursor);
           const after = await fetchOfflineCatalogVersion(branchId);
           if (!posCartScopeCurrent(branchId)) throw new Error("Branch or account changed. Please retry.");
+          if (automatic && (automatedOfflineFetchBranchId !== branchId || !automatedOfflineFetchEnabled)) {
+            throw new Error("Automatic download was turned off.");
+          }
           if (before.version !== after.version || products.size !== after.count) throw new Error("Catalog changed during loading. Please retry.");
           const rows = Array.from(products.values());
           if (!saveCachedProducts(rows, after.version)) throw new Error("Device storage is full or unavailable. Free up space and retry.");
@@ -19406,6 +19468,15 @@
         return loadBranchInventory();
       }
 
+      function printBranchInventory() {
+        const params = new URLSearchParams({stock: document.getElementById('branch-inventory-stock').value});
+        const location = document.getElementById('branch-inventory-location').value || currentBranch?.id;
+        if (location) params.set('location_id', location);
+        const search = document.getElementById('branch-inventory-search').value.trim();
+        if (search) params.set('q', search);
+        return openReportDownload(`/api/branch_inventory/print?${params}`);
+      }
+
       async function loadBranchInventory() {
         const location = document.getElementById("branch-inventory-location");
         const status = document.getElementById("branch-inventory-status");
@@ -23926,11 +23997,74 @@
         finally { recordManagementSaving = false; button.disabled = false; button.textContent = "Permanently delete history"; }
       }
 
+      const selectedPurchaseOrders = new Map();
+      let purchaseOrderBulkBusy = false;
+
+      function updatePurchaseOrderSelection() {
+        const boxes = [...document.querySelectorAll('#purchase-orders-table .po-row-select')];
+        const selected = [...selectedPurchaseOrders.values()];
+        const all = document.getElementById('po-select-page');
+        all.checked = boxes.length > 0 && boxes.every(box => box.checked);
+        all.indeterminate = boxes.some(box => box.checked) && !all.checked;
+        document.getElementById('po-selection-count').textContent = `${selected.length} selected on this page`;
+        document.getElementById('po-bulk-submit').disabled = purchaseOrderBulkBusy || !selected.some(po => po.status === 'draft');
+        document.getElementById('po-bulk-approve').disabled = purchaseOrderBulkBusy || !selected.some(po => ['draft', 'pending'].includes(po.status));
+        document.getElementById('po-bulk-cancel').disabled = purchaseOrderBulkBusy || !selected.some(po => ['draft', 'pending', 'approved'].includes(po.status));
+      }
+
+      function clearPurchaseOrderSelection() {
+        selectedPurchaseOrders.clear();
+        document.querySelectorAll('#purchase-orders-table .po-row-select').forEach(box => { box.checked = false; });
+        updatePurchaseOrderSelection();
+      }
+
+      function togglePurchaseOrderPage(checked) {
+        document.querySelectorAll('#purchase-orders-table .po-row-select').forEach(box => {
+          box.checked = checked;
+          box.dispatchEvent(new Event('change'));
+        });
+        updatePurchaseOrderSelection();
+      }
+
+      async function bulkPurchaseOrders(action) {
+        if (purchaseOrderBulkBusy || !hasManagerOrBossAccess()) return;
+        const eligible = {submit: ['draft'], approve: ['draft', 'pending'], cancel: ['draft', 'pending', 'approved']}[action];
+        if (!eligible) return;
+        const orders = [...selectedPurchaseOrders.values()].filter(po => eligible.includes(po.status));
+        if (!orders.length) return;
+        const reason = action === 'cancel' ? prompt(`Reason for cancelling ${orders.length} purchase order(s)?`) : null;
+        if (action === 'cancel' && reason === null) return;
+        if (!confirm(`${action === 'cancel' ? 'Cancel' : action === 'approve' ? 'Approve' : 'Submit'} ${orders.length} eligible purchase order(s)? Ineligible selections will be skipped.`)) return;
+        const identity = inventoryIdentity();
+        purchaseOrderBulkBusy = true;
+        updatePurchaseOrderSelection();
+        let success = 0;
+        const failures = [];
+        for (const po of orders) {
+          if (identity !== inventoryIdentity()) break;
+          try {
+            const response = await fetch(`/api/purchase_orders/${po.id}/${action}`, {
+              method: 'POST', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify(action === 'cancel' ? {reason: reason.trim()} : {})
+            });
+            const result = await response.json();
+            if (!response.ok || result.success === false) throw new Error(result.message || `HTTP ${response.status}`);
+            success++;
+          } catch (error) { failures.push(`${po.po_number}: ${error.message}`); }
+        }
+        purchaseOrderBulkBusy = false;
+        clearPurchaseOrderSelection();
+        if (identity !== inventoryIdentity()) return;
+        showToast(`${success} ${action} succeeded; ${failures.length} failed.${failures.length ? ' ' + failures.slice(0, 3).join('; ') : ''}`, failures.length ? 'warning' : 'success');
+        loadPurchaseOrders();
+      }
+
       function loadPurchaseOrders() {
+        if (typeof clearPurchaseOrderSelection === 'function') clearPurchaseOrderSelection();
         const table = document.getElementById("purchase-orders-table");
         table.innerHTML = `
           <tr>
-            <td colspan="9" class="text-center py-4">
+            <td colspan="10" class="text-center py-4">
               <div class="spinner-border text-primary" role="status"></div>
             </td>
           </tr>
@@ -23976,7 +24110,7 @@
             table.innerHTML = "";
 
             if (data.items.length === 0) {
-              table.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-muted">No purchase orders found.</td></tr>';
+              table.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-muted">No purchase orders found.</td></tr>';
               return;
             }
 
@@ -23999,6 +24133,7 @@
               
               const row = document.createElement("tr");
               row.innerHTML = `
+                <td><input type="checkbox" class="form-check-input po-row-select" aria-label="Select purchase order ${escapeHtml(po.po_number)}"></td>
                 <td><strong>${escapeHtml(po.po_number)}</strong></td>
                 <td>${escapeHtml(po.supplier_name)}</td>
                 <td class="d-none d-md-table-cell">${escapeHtml(po.product_branch || '-')}</td>
@@ -24043,6 +24178,11 @@
                 </td>
               `;
               row.querySelector('[data-record-action="edit"]')?.addEventListener("click", () => editPurchaseOrder(po.id));
+              row.querySelector('.po-row-select').addEventListener('change', event => {
+                if (event.target.checked) selectedPurchaseOrders.set(po.id, po);
+                else selectedPurchaseOrders.delete(po.id);
+                updatePurchaseOrderSelection();
+              });
               row.querySelector('[data-record-action="grn"]')?.addEventListener("click", () => openPurchaseDocument(po, 'receipts'));
               row.querySelector('[data-record-action="invoice"]')?.addEventListener("click", () => openPurchaseDocument(po, 'invoice'));
               row.querySelector('[data-record-action="delete"]')?.addEventListener("click", () => showRecordDeletion("purchase_orders", po.id));
@@ -24056,7 +24196,7 @@
             console.error("Error loading purchase orders:", err);
             if (!request.current()) return;
             request.fail();
-            table.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-danger">Failed to load purchase orders.</td></tr>';
+            table.innerHTML = '<tr><td colspan="10" class="text-center py-4 text-danger">Failed to load purchase orders.</td></tr>';
           });
       }
 
@@ -24136,9 +24276,12 @@
             if (cursor) params.set('cursor', cursor);
             const data = await request(`${url}?${params}`);
             if (!current()) return;
-            content.innerHTML = data.items.map(grn => `<section class="mb-4"><h6>${escapeHtml(grn.number)}</h6>
+            content.innerHTML = data.items.map(grn => `<section class="mb-4"><div class="d-flex justify-content-between align-items-center gap-2"><h6>${escapeHtml(grn.number)}</h6><button type="button" class="btn btn-outline-primary btn-sm" data-print-grn="${Number(grn.id)}" aria-label="Print goods receipt ${escapeHtml(grn.number)}"><i class="bi bi-printer" aria-hidden="true"></i> Print GRN</button></div>
               <p>${escapeHtml(grn.po_number)} · ${escapeHtml(new Date(`${grn.created_at}Z`).toLocaleString())}</p>
               ${lineTable(grn.items, 'received_qty')}</section>`).join('') || '<p>No goods receipt notes recorded.</p>';
+            content.querySelectorAll('[data-print-grn]').forEach(button => button.addEventListener('click', () => {
+              if (current()) openReportDownload(`/api/purchase_orders/${po.id}/receipts/${button.dataset.printGrn}/print`);
+            }));
             if (cursor || data.has_more) {
               const back = document.createElement('button');
               back.className = 'btn btn-outline-secondary btn-sm me-2';

@@ -24,6 +24,7 @@ const localStorage = {getItem: k => storage[k] || null,
 const CACHE_USER_ID = 3, CACHE_USER_ROLE = 'cashier', PRODUCT_CACHE_KEY = 'products';
 let currentBranch = {id: 7}, cachedProducts = [], cachedProductsBranchId = null, productsCacheTimestamp = 0;
 let offlineProductSync = null, offlineCatalogCheck = null, offlineCatalogVersion = null;
+ let automatedOfflineFetchBranchId = null, automatedOfflineFetchEnabled = false;
 let offline = false, version = 'v1', count = 101, pages = 0, failure = false, mutate = false;
 const button = {style: {}, setAttribute() {}}, status = {};
 const document = {getElementById: id => id === 'pos-offline-load' ? button : status};
@@ -165,3 +166,43 @@ assert.match(status.textContent, /All 101 products saved/);
 assert.equal(button.disabled, true);
 assert.equal(pages, 2); // No second bulk download.
 ''', extra)['ok']
+
+
+def test_automatic_mode_waits_for_verified_stale_complete_snapshot_and_deduplicates():
+    assert run_download('''
+automatedOfflineFetchEnabled = true; automatedOfflineFetchBranchId = 7;
+await checkOfflineProductCatalog();
+assert.equal(pages, 0); // First download remains manual.
+await loadAllProductsForOffline();
+assert.equal(pages, 2);
+await checkOfflineProductCatalog();
+assert.equal(pages, 2); // Up to date: no background download.
+version = 'v2';
+await Promise.all([checkOfflineProductCatalog(), checkOfflineProductCatalog()]);
+while (offlineProductSync) await new Promise(resolve => setTimeout(resolve, 0));
+assert.equal(pages, 4);
+assert.equal(offlineCacheGet(cachedProductsKey()).catalog_version, 'v2');
+await checkOfflineProductCatalog();
+assert.equal(pages, 4);
+''')['ok']
+
+
+def test_startup_verification_and_manual_click_share_one_check():
+    assert run_download('''
+await loadAllProductsForOffline();
+version = 'v2';
+let resolveCheck;
+const originalFetch = fetch;
+fetch = async (...args) => {
+  if (args[0].includes('offline-version') && !resolveCheck) {
+    await new Promise(resolve => { resolveCheck = resolve; });
+  }
+  return originalFetch(...args);
+};
+const check = checkOfflineProductCatalog();
+const click = loadAllProductsForOffline();
+assert.equal(pages, 2);
+resolveCheck();
+await Promise.all([check, click]);
+assert.equal(pages, 4);
+''')['ok']

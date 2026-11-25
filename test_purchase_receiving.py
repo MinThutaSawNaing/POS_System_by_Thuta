@@ -82,6 +82,28 @@ class PurchaseReceivingTests(unittest.TestCase):
         data.update(changes)
         return self.client().post(f'/api/purchase_orders/{self.po}/invoice', json=data)
 
+    def test_verification_prints_are_scoped_and_pdf(self):
+        client = self.client()
+        inventory = client.get(f'/api/branch_inventory/print?location_id={self.foreign}&q=RECEIVE')
+        self.assertEqual(inventory.status_code, 200)
+        self.assertEqual(inventory.mimetype, 'application/pdf')
+        self.assertTrue(inventory.data.startswith(b'%PDF-'))
+        self.assertIn('no-store', inventory.headers['Cache-Control'])
+        self.assertEqual(self.client('cashier').get(
+            f'/api/branch_inventory/print?location_id={self.foreign}').status_code, 403)
+        self.assertEqual(client.get('/api/branch_inventory/print?stock=invalid').status_code, 400)
+
+        number = self.receive(4).json['grn_number']
+        receipt = client.get(f'/api/purchase_orders/{self.po}/receipts').json['items'][0]
+        self.assertEqual(receipt['number'], number)
+        path = f'/api/purchase_orders/{self.po}/receipts/{receipt["id"]}/print'
+        printed = client.get(path)
+        self.assertEqual(printed.status_code, 200)
+        self.assertTrue(printed.data.startswith(b'%PDF-'))
+        self.assertIn('no-store', printed.headers['Cache-Control'])
+        self.assertEqual(client.get(f'/api/purchase_orders/999/receipts/{receipt["id"]}/print').status_code, 404)
+        self.assertEqual(self.client('cashier').get(path).status_code, 403)
+
     def test_branch_inventory_reflects_transfer_not_receipt_or_invoice(self):
         client = self.client()
         path = '/api/branch_inventory?q=RECEIVE'
