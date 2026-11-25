@@ -8719,7 +8719,10 @@
         const generalSaveButton = document.getElementById("save-general-settings-btn");
         if (generalSaveButton) generalSaveButton.disabled = !hasManagerAccess();
         const autoFetchSelect = document.getElementById("settings-automated-offline-fetch");
-        if (autoFetchSelect) autoFetchSelect.disabled = !hasManagerAccess();
+        if (autoFetchSelect) {
+          autoFetchSelect.value = APP_SETTINGS.automatedOfflineFetch ? "on" : "off";
+          autoFetchSelect.disabled = !hasManagerAccess();
+        }
 
         document.querySelectorAll('input[name="receipt-paper-size"]').forEach((input) => {
           input.checked = input.value === APP_SETTINGS.receiptPaperSize;
@@ -8790,9 +8793,8 @@
             if (!currentBranch?.id || String(data.branch_id) !== String(currentBranch.id)) return;
             automatedOfflineFetchBranchId = data.branch_id;
             automatedOfflineFetchEnabled = data.automated_offline_fetch === true;
+            APP_SETTINGS.automatedOfflineFetch = automatedOfflineFetchEnabled;
             APP_SETTINGS.posName = data.pos_name || APP_SETTINGS.posName;
-            const autoFetchSelect = document.getElementById("settings-automated-offline-fetch");
-            if (autoFetchSelect) autoFetchSelect.value = data.automated_offline_fetch === true ? "on" : "off";
             APP_SETTINGS.currencyCode = data.currency_code || APP_SETTINGS.currencyCode;
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(APP_SETTINGS.currencyCode);
             APP_SETTINGS.receiptPaperSize = data.receipt_paper_size || APP_SETTINGS.receiptPaperSize;
@@ -8810,7 +8812,7 @@
             }
             applySettingsUI();
             offlineCacheSet(settingsCacheKey(data.branch_id), data);
-            if (currentSection === "pos") checkOfflineProductCatalog();
+            if (currentSection === "pos" && typeof checkOfflineProductCatalog === "function") checkOfflineProductCatalog();
             if (hasCapability("admin")) {
               loadAISettings();
               if (typeof loadPaymentSettings === "function") loadPaymentSettings();
@@ -10380,6 +10382,7 @@
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(data.currency_code);
             automatedOfflineFetchBranchId = data.branch_id;
             automatedOfflineFetchEnabled = data.automated_offline_fetch === true;
+            APP_SETTINGS.automatedOfflineFetch = automatedOfflineFetchEnabled;
             changeLanguage(language, { silent: true });
             if (currentSection === "pos") checkOfflineProductCatalog();
           }

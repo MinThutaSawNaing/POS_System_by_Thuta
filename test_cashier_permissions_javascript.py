@@ -192,7 +192,7 @@ function loadAISettings() { aiLoads++; }
 function loadPaymentSettings() { paymentLoads++; }
 fetch = async (url, options) => {
   requests.push({url, method: options?.method || 'GET'});
-  return {ok: true, json: async () => ({branch_id: currentBranch.id, pos_name: 'Shop', receipt_paper_size: '80mm'})};
+  return {ok: true, json: async () => ({branch_id: currentBranch.id, pos_name: 'Shop', receipt_paper_size: '80mm', automated_offline_fetch: true})};
 };
 """)
     assert out["requests"] == [{"url": "/api/settings", "method": "GET"}]
@@ -201,6 +201,7 @@ fetch = async (url, options) => {
     assert out["applied"] == 1
     assert out["APP_SETTINGS"]["posName"] == "Shop"
     assert out["APP_SETTINGS"]["receiptPaperSize"] == "80mm"
+    assert out["APP_SETTINGS"]["automatedOfflineFetch"] is True
 
 
 @pytest.mark.parametrize("role", ["cashier", "manager", "boss"])
