@@ -151,6 +151,57 @@ class RecordManagementTests(unittest.TestCase):
             self.assertEqual(self.m.db.session.get(self.m.Product, self.product).stock, 0)
             self.assertGreater(self.m.AuditLog.query.filter_by(entity_type='Sale', action='delete').count(), 0)
 
+    def test_sale_restock_is_atomic_and_branch_scoped(self):
+        m = self.m
+        with m.app.app_context():
+            product = m.db.session.get(m.Product, self.product)
+            product.branch_id, product.stock = self.local, 4
+            m.db.session.commit()
+        self.sale('RESTOCK-ME')
+        client = self.client()
+        response = client.delete('/api/sales/RESTOCK-ME', json={'confirm': True, 'restock': True})
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertTrue(response.json['restocked'])
+        with m.app.app_context():
+            self.assertEqual(m.db.session.get(m.Product, self.product).stock, 5)
+            self.assertEqual(m.Sale.query.count(), 0)
+        self.sale('NO-RESTOCK')
+        response = client.delete('/api/sales/NO-RESTOCK', json={'confirm': True, 'restock': False})
+        self.assertEqual(response.status_code, 200, response.json)
+        with m.app.app_context():
+            self.assertEqual(m.db.session.get(m.Product, self.product).stock, 5)
+        self.sale('BAD-RESTOCK')
+        with m.app.app_context():
+            m.db.session.get(m.Product, self.product).branch_id = self.foreign
+            m.db.session.commit()
+        response = client.delete('/api/sales/BAD-RESTOCK', json={'confirm': True, 'restock': True})
+        self.assertEqual(response.status_code, 409, response.json)
+        with m.app.app_context():
+            self.assertEqual(m.Sale.query.filter_by(transaction_id='BAD-RESTOCK').count(), 1)
+            self.assertEqual(m.db.session.get(m.Product, self.product).stock, 5)
+
+    def test_invoice_delete_keeps_receipts_and_is_manager_only(self):
+        m = self.m
+        client = self.client()
+        self.assertEqual(client.post(f'/api/purchase_orders/{self.po}/receive', json={
+            'items': [{'purchase_order_item_id': self.item, 'received_qty': 10}],
+            'idempotency_key': 'invoice-delete-test'}).status_code, 200)
+        invoice_data = {'supplier_reference': 'BILL-DELETE', 'invoice_date': '2026-11-18', 'total_amount': '30.00'}
+        self.assertEqual(client.post(f'/api/purchase_orders/{self.po}/invoice', json=invoice_data).status_code, 201)
+        url = f'/api/purchase_orders/{self.po}/invoice'
+        self.assertEqual(self.client('cashier').delete(url, json={'confirm': True}).status_code, 403)
+        self.assertEqual(self.client().delete(url, json={'confirm': 'true'}).status_code, 400)
+        response = self.client().delete(url, json={'confirm': True})
+        self.assertEqual(response.status_code, 200, response.json)
+        with m.app.app_context():
+            self.assertIsNone(m.db.session.get(m.PurchaseInvoice, self.po))
+            self.assertIsNotNone(m.db.session.get(m.PurchaseOrder, self.po))
+            self.assertEqual(m.GoodsReceipt.query.count(), 1)
+            self.assertEqual(m.WarehouseInventory.query.one().quantity, 10)
+            self.assertEqual(m.AuditLog.query.filter_by(entity_type='PurchaseInvoice', action='delete').count(), 1)
+        self.assertEqual(self.client().delete(url, json={'confirm': True}).status_code, 404)
+        self.assertEqual(client.post(url, json=invoice_data).status_code, 201)
+
     def test_replay_and_delete_serialize_before_idempotency_reads(self):
         """Pause a replay between guard reads; deletion must not slip between them."""
         m = self.m

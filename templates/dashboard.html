@@ -7766,7 +7766,7 @@
     <div class="modal fade" id="deleteRecordModal" tabindex="-1" aria-labelledby="delete-record-title" aria-hidden="true">
       <div class="modal-dialog"><div class="modal-content">
         <div class="modal-header"><h5 class="modal-title" id="delete-record-title">Permanently delete history?</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
-        <div class="modal-body"><p id="delete-record-label" class="fw-semibold text-break"></p><div class="alert alert-danger">This permanently removes the record from history and reports. It does not reverse stock movements or payments. This cannot be undone.</div><p class="text-muted">Sales linked to returns, debts, deliveries or other records may not be deletable. Use the appropriate reversal workflow if you need to reverse a transaction.</p></div>
+        <div class="modal-body"><p id="delete-record-label" class="fw-semibold text-break"></p><div class="alert alert-danger">This permanently removes the record from history and reports. It does not reverse stock movements or payments automatically. This cannot be undone.</div><div id="delete-sale-stock-choice" hidden><p class="fw-semibold">Do you want to put the sold items into stock again?</p><label class="d-block mb-2"><input type="radio" name="delete-sale-restock" value="yes"> Yes, return sold items to stock</label><label class="d-block mb-2"><input type="radio" name="delete-sale-restock" value="no"> No, leave stock unchanged</label><p class="text-danger small" id="delete-sale-stock-error" role="alert"></p></div><p class="text-muted">Sales linked to returns, debts, deliveries or other records may not be deletable. Purchase orders with goods receipts or invoices cannot be deleted; invoices can be deleted separately without reversing stock.</p></div>
         <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Keep record</button><button id="delete-record-confirm" type="button" class="btn btn-danger" onclick="confirmRecordDeletion()">Permanently delete history</button></div>
       </div></div>
     </div>
@@ -24011,9 +24011,12 @@
       }
 
       function showRecordDeletion(kind, id) {
-        if (!hasManagerOrBossAccess() || recordManagementSaving || !["sales", "purchase_orders"].includes(kind)) return;
+        if (!hasManagerOrBossAccess() || recordManagementSaving || !["sales", "purchase_orders", "purchase_invoices"].includes(kind)) return;
         deletingRecord = {kind, id, identity: inventoryIdentity()};
-        document.getElementById("delete-record-label").textContent = `${kind === "sales" ? "Sale" : "Purchase order"}: ${id}`;
+        document.getElementById("delete-record-label").textContent = `${kind === "sales" ? "Sale" : kind === "purchase_invoices" ? "Purchase invoice for PO" : "Purchase order"}: ${id}`;
+        document.getElementById("delete-sale-stock-choice").hidden = kind !== "sales";
+        document.querySelectorAll('input[name="delete-sale-restock"]').forEach(input => { input.checked = false; });
+        document.getElementById("delete-sale-stock-error").textContent = "";
         bootstrap.Modal.getOrCreateInstance(document.getElementById("deleteRecordModal")).show();
       }
 
@@ -24021,18 +24024,24 @@
         if (!hasManagerOrBossAccess() || !deletingRecord || recordManagementSaving) return;
         if (deletingRecord.identity !== inventoryIdentity()) { showToast("Branch changed. Reopen the record before deleting.", "warning"); return; }
         const record = deletingRecord;
+        const stockChoice = record.kind === "sales" ? document.querySelector('input[name="delete-sale-restock"]:checked') : null;
+        if (record.kind === "sales" && !stockChoice) {
+          document.getElementById("delete-sale-stock-error").textContent = "Choose whether to return sold items to stock.";
+          return;
+        }
         const button = document.getElementById("delete-record-confirm");
         recordManagementSaving = true;
         button.disabled = true;
         button.textContent = "Deleting...";
         try {
-          const response = await fetch(`/api/${record.kind}/${encodeURIComponent(record.id)}`, {method: "DELETE", headers: {"Content-Type": "application/json"}, body: JSON.stringify({confirm: true})});
+          const url = record.kind === "purchase_invoices" ? `/api/purchase_orders/${encodeURIComponent(record.id)}/invoice` : `/api/${record.kind}/${encodeURIComponent(record.id)}`;
+          const response = await fetch(url, {method: "DELETE", headers: {"Content-Type": "application/json"}, body: JSON.stringify(record.kind === "sales" ? {confirm: true, restock: stockChoice.value === "yes"} : {confirm: true})});
           const data = await response.json();
           if (!response.ok || data.success === false) throw new Error(data.message || "Unable to delete history");
           bootstrap.Modal.getInstance(document.getElementById("deleteRecordModal"))?.hide();
           deletingRecord = null;
-          showToast("History permanently deleted. Stock and payments were not reversed.", "success");
-          refreshManagedRecords(record.kind);
+          showToast(data.message || "History permanently deleted.", "success");
+          refreshManagedRecords(record.kind === "purchase_invoices" ? "purchase_orders" : record.kind);
         } catch (error) { showToast(error.message, "error"); }
         finally { recordManagementSaving = false; button.disabled = false; button.textContent = "Permanently delete history"; }
       }
@@ -24206,6 +24215,7 @@
                     ` : ''}
                     ${po.has_goods_receipt ? `<button class="btn btn-outline-success" data-record-action="grn" title="View goods receipt notes" aria-label="View goods receipt notes"><i class="bi bi-box-seam"></i></button>` : ''}
                     ${po.status === 'received' ? `<button class="btn btn-outline-primary" data-record-action="invoice" title="${po.invoice ? 'View Purchase Invoice' : 'Create Purchase Invoice'}" aria-label="${po.invoice ? 'View Purchase Invoice' : 'Create Purchase Invoice'}"><i class="bi bi-receipt"></i></button>` : ''}
+                    ${po.invoice && hasManagerOrBossAccess() ? `<button class="btn btn-outline-danger" data-record-action="delete-invoice" title="Delete purchase invoice" aria-label="Delete purchase invoice"><i class="bi bi-receipt-cutoff"></i></button>` : ''}
                     ${['draft', 'pending', 'approved'].includes(po.status) ? `
                       <button class="btn btn-outline-danger" data-record-action="cancel" title="Cancel">
                         <i class="bi bi-x-lg"></i>
@@ -24226,6 +24236,7 @@
               row.querySelector('[data-record-action="grn"]')?.addEventListener("click", () => openPurchaseDocument(po, 'receipts'));
               row.querySelector('[data-record-action="invoice"]')?.addEventListener("click", () => openPurchaseDocument(po, 'invoice'));
               row.querySelector('[data-record-action="delete"]')?.addEventListener("click", () => showRecordDeletion("purchase_orders", po.id));
+              row.querySelector('[data-record-action="delete-invoice"]')?.addEventListener("click", () => showRecordDeletion("purchase_invoices", po.id));
               row.querySelector('[data-record-action="cancel"]')?.addEventListener("click", () => showCancelPOModal(po.id, po.po_number));
               table.appendChild(row);
             });

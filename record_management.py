@@ -3,10 +3,11 @@
 Public functions return (JSON-safe payload, HTTP status), own their transaction,
 and require a persisted manager/boss actor. Call with a clean session: like the
 receiving service, these operations roll back any prior transaction before
-acquiring the writer lock. No stock, payment, supplier statistics, or durable
-retry ledgers are reversed. ``items`` on edit is a full replacement (max 500).
-Models may be passed from the app/AI context; dependency checks also consult the
-SQLAlchemy registry so omitting a model cannot bypass financial safety checks.
+acquiring the writer lock. Payments, supplier statistics and durable retry ledgers
+are not reversed. Sale stock can optionally be restored. ``items`` on edit is a
+full replacement (max 500). Models may be passed from the app/AI context;
+dependency checks also consult the SQLAlchemy registry so omitting a model
+cannot bypass financial safety checks.
 """
 
 from datetime import datetime, timezone
@@ -63,7 +64,7 @@ def _operation(db, models, actor_id, work):
                 actor_role=actor.role, branch_id=getattr(actor, 'branch_id', None),
                 category='sales' if is_sale else 'purchases',
                 action='delete' if deleting else 'update',
-                entity_type='Sale' if is_sale else 'PurchaseOrder',
+                entity_type='Sale' if is_sale else result.get('entity_type', 'PurchaseOrder'),
                 entity_id=str(result.get('transaction_id', result.get('purchase_order_id'))),
                 summary=result['message']))
         db.session.commit()
@@ -218,12 +219,30 @@ def delete_purchase_order(db, models, po_id, *, confirm=False, actor_id):
     return _operation(db, models, actor_id, work)
 
 
-def delete_sale(db, models, transaction_id, *, branch_id, confirm=False, actor_id):
+def delete_purchase_invoice(db, models, po_id, *, confirm=False, actor_id):
+    """Remove only a supplier invoice; keep its received PO and goods receipts."""
+    def work():
+        if confirm is not True:
+            raise _Failure('Explicit confirmation required: permanently delete purchase invoice? '
+                           'Goods receipts, stock and payments are unchanged. Send confirm=true.')
+        po = _po(db, models, po_id)
+        invoice = db.session.get(_model(models, 'PurchaseInvoice'), po.id)
+        if invoice is None:
+            raise _Failure('Purchase invoice not found', 404)
+        db.session.delete(invoice)
+        return {'message': 'Purchase invoice deleted; goods receipts and stock unchanged',
+                'purchase_order_id': po.id, 'entity_type': 'PurchaseInvoice', 'changed_fields': ['deleted']}
+    return _operation(db, models, actor_id, work)
+
+
+def delete_sale(db, models, transaction_id, *, branch_id, confirm=False, restock=False, actor_id):
     """Delete active-branch sale history, blocking linked financial/delivery workflows."""
     def work():
         if confirm is not True:
             raise _Failure('Explicit confirmation required: permanently delete sale history? '
-                           'Stock and payments are not reversed; reports change. Send confirm=true.')
+                           'Choose whether to restock sold items. Send confirm=true.')
+        if type(restock) is not bool:
+            raise _Failure('Choose whether to return sold items to stock: send restock=true or restock=false.')
         if branch_id is None:
             raise _Failure('Active branch required', 403)
         if not isinstance(transaction_id, str) or not transaction_id.strip():
@@ -249,13 +268,22 @@ def delete_sale(db, models, transaction_id, *, branch_id, confirm=False, actor_i
         for label, query in checks:
             if query.first() is not None:
                 raise _Failure(f'Cannot delete sale linked to {label}; linked workflows must be retained', 409)
-        for item in db.session.query(Item).filter_by(sale_id=sale.id):
+        items = db.session.query(Item).filter_by(sale_id=sale.id).all()
+        if restock:
+            Product = _model(models, 'Product')
+            for item in items:
+                product = db.session.get(Product, item.product_id) if item.product_id else None
+                if product is None or product.branch_id != sale.branch_id or item.quantity <= 0:
+                    raise _Failure('Cannot restock sale: product is missing, belongs to another branch, or quantity is invalid', 409)
+                product.stock = (product.stock or 0) + item.quantity
+        for item in items:
             db.session.delete(item)
         # Sale.transaction_id was the offline idempotency guard. Keep a durable
         # tombstone so an old queued sync cannot deduct stock a second time.
         Tombstone = _model(models, 'DeletedSaleRequest')
         db.session.add(Tombstone(transaction_id=sale.transaction_id, branch_id=sale.branch_id))
         db.session.delete(sale)
-        return {'message': 'Sale history deleted; stock and payments unchanged',
+        return {'message': 'Sale history deleted; sold items returned to stock' if restock else
+                'Sale history deleted; stock and payments unchanged', 'restocked': restock,
                 'transaction_id': transaction_id, 'changed_fields': ['deleted']}
     return _operation(db, models, actor_id, work)

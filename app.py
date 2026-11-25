@@ -6862,6 +6862,7 @@ def api_delete_sale_history(transaction_id):
     result, status = delete_sale(db, globals(), transaction_id,
         branch_id=get_current_branch_id(),
         confirm=data.get('confirm', False) if isinstance(data, dict) else False,
+        restock=data.get('restock', False) if isinstance(data, dict) else False,
         actor_id=session.get('user_id'))
     return jsonify(result), status
 
@@ -9989,13 +9990,20 @@ def api_cancel_purchase_order(po_id):
     return jsonify(result), status
 
 
-@app.route('/api/purchase_orders/<int:po_id>/invoice', methods=['GET', 'POST'])
+@app.route('/api/purchase_orders/<int:po_id>/invoice', methods=['GET', 'POST', 'DELETE'])
 @manager_or_boss_required
 def api_purchase_invoice(po_id):
     from purchase_invoicing import create_purchase_invoice, invoice_payload
     if request.method == 'POST':
         result, status = create_purchase_invoice(db, globals(), po_id, request.get_json(silent=True),
             actor_id=session.get('user_id'), get_currency=get_currency_code)
+        return jsonify(result), status
+    if request.method == 'DELETE':
+        from record_management import delete_purchase_invoice
+        data = request.get_json(silent=True)
+        result, status = delete_purchase_invoice(db, globals(), po_id,
+            confirm=data.get('confirm', False) if isinstance(data, dict) else False,
+            actor_id=session.get('user_id'))
         return jsonify(result), status
     invoice = db.session.get(PurchaseInvoice, po_id)
     if not invoice:

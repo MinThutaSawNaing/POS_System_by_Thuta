@@ -20,12 +20,13 @@ let allowed = true, recordManagementSaving = false;
 let editingPurchaseOrder = {id: 7, identity: "branch-a", locked: false};
 let deletingRecord = null;
 const fields = {};
-const field = id => fields[id] ||= {value: "", disabled: false, textContent: ""};
+const field = id => fields[id] ||= {value: "", disabled: false, textContent: "", hidden: false};
+let stockChoice = {value: "no", checked: false};
 field("edit-po-supplier").value = "4";
 field("edit-po-notes").value = " note ";
 field("edit-po-expected").value = "2026-12-01";
 const line = {querySelector: s => ({value: s.includes("product") ? "31" : s.includes("quantity") ? "2" : "4.25"})};
-globalThis.document = {getElementById: id => id === "edit-po-form" ? {reportValidity: () => true} : field(id), querySelectorAll: () => [line]};
+globalThis.document = {getElementById: id => id === "edit-po-form" ? {reportValidity: () => true} : field(id), querySelectorAll: selector => selector.includes('delete-sale-restock') ? [stockChoice] : [line], querySelector: selector => selector.includes('delete-sale-restock') && stockChoice.checked ? stockChoice : null};
 let hidden = 0, shown = 0;
 globalThis.bootstrap = {Modal: {getInstance: () => ({hide: () => hidden++}), getOrCreateInstance: () => ({show: () => shown++})}};
 const requests = [], toasts = [], refreshes = [];
@@ -83,17 +84,31 @@ def test_editor_uses_explicit_placeholders_and_resets_supplier_search():
 
 
 def test_sale_delete_confirms_and_encodes_identifier():
-    out = run_js('''showRecordDeletion("sales", "x/'<script>"); await confirmRecordDeletion(); console.log(JSON.stringify({requests, refreshes, label: field("delete-record-label").textContent, hidden}));''')
+    out = run_js('''showRecordDeletion("sales", "x/'<script>"); stockChoice.checked = true; await confirmRecordDeletion(); console.log(JSON.stringify({requests, refreshes, label: field("delete-record-label").textContent, hidden}));''')
     assert out["requests"][0]["url"] == "/api/sales/x%2F'%3Cscript%3E"
     assert out["requests"][0]["method"] == "DELETE"
-    assert json.loads(out["requests"][0]["body"]) == {"confirm": True}
+    assert json.loads(out["requests"][0]["body"]) == {"confirm": True, "restock": False}
     assert out["label"] == "Sale: x/'<script>"
     assert out["refreshes"] == ["sales"]
 
 
+def test_sale_restock_choice_is_required_and_invoice_delete_uses_po_endpoint():
+    out = run_js('''showRecordDeletion("sales", "sale-1"); await confirmRecordDeletion();
+const warning = field("delete-sale-stock-error").textContent;
+stockChoice.value = "yes"; stockChoice.checked = true; await confirmRecordDeletion();
+showRecordDeletion("purchase_invoices", 7); await confirmRecordDeletion();
+console.log(JSON.stringify({warning, requests, refreshes, stockHidden: field("delete-sale-stock-choice").hidden}));''')
+    assert "Choose" in out["warning"]
+    assert json.loads(out["requests"][0]["body"]) == {"confirm": True, "restock": True}
+    assert out["requests"][1]["url"] == "/api/purchase_orders/7/invoice"
+    assert json.loads(out["requests"][1]["body"]) == {"confirm": True}
+    assert out["refreshes"] == ["sales", "purchase_orders"]
+    assert out["stockHidden"] is True
+
+
 @pytest.mark.parametrize("operation", ["delete", "edit"])
 def test_conflict_retains_modal_restores_button_and_does_not_refresh(operation):
-    action = 'showRecordDeletion("sales", "linked"); await confirmRecordDeletion();' if operation == "delete" else 'await savePurchaseOrderEdit();'
+    action = 'showRecordDeletion("sales", "linked"); stockChoice.checked = true; await confirmRecordDeletion();' if operation == "delete" else 'await savePurchaseOrderEdit();'
     out = run_js('''response = {ok: false, status: 409, json: async () => ({message: "Linked record cannot be deleted"})};''' + action + '''console.log(JSON.stringify({hidden, refreshes, toasts, saving: recordManagementSaving}));''')
     assert out["hidden"] == 0
     assert out["refreshes"] == []
