@@ -104,6 +104,34 @@ class PurchaseReceivingTests(unittest.TestCase):
         self.assertEqual(client.get(f'/api/purchase_orders/999/receipts/{receipt["id"]}/print').status_code, 404)
         self.assertEqual(self.client('cashier').get(path).status_code, 403)
 
+    def test_goods_receipt_header_renders_actual_po_number_and_order_date(self):
+        from po_template import PurchaseOrderTemplateHeader, render_po_template_text
+
+        client = self.client()
+        self.assertEqual(self.receive(4).status_code, 200)
+        receipt = client.get(f'/api/purchase_orders/{self.po}/receipts').json['items'][0]
+        path = f'/api/purchase_orders/{self.po}/receipts/{receipt["id"]}/print'
+        with self.m.app.app_context():
+            po = self.m.db.session.get(self.m.PurchaseOrder, self.po)
+            expected_date = po.created_at.strftime('%Y-%m-%d')
+            expected_number = po.po_number
+        rendered = []
+        draw_text = PurchaseOrderTemplateHeader._draw_text
+
+        def record_text(header, canvas, element):
+            rendered.append(render_po_template_text(element.get('text'), header.context))
+            return draw_text(header, canvas, element)
+
+        with patch.object(PurchaseOrderTemplateHeader, '_draw_text', record_text):
+            response = client.get(path)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data.startswith(b'%PDF-'))
+        reference = next(text for text in rendered if text.startswith('PO '))
+        self.assertIn(expected_number, reference)
+        self.assertIn(expected_date, reference)
+        self.assertNotIn('{{po_number}}', reference)
+        self.assertNotIn('{{po_date}}', reference)
+
     def test_branch_inventory_reflects_transfer_not_receipt_or_invoice(self):
         client = self.client()
         path = '/api/branch_inventory?q=RECEIVE'

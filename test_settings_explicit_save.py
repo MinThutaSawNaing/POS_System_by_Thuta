@@ -9,6 +9,7 @@ DASHBOARD = Path('templates/dashboard.html').read_text(encoding='utf-8')
 def test_each_independent_configuration_card_has_a_save_button():
     expected = {
         'save-general-settings-btn': 'saveSettings()',
+        'save-automated-offline-fetch-btn': 'saveAutomatedOfflineFetch()',
         'save-receipt-customization-btn': 'saveReceiptCustomization()',
         'save-mmqr-btn': 'saveMMQRConfiguration()',
         'save-receipt-printer-btn': 'saveReceiptPrinterSettings()',
@@ -18,6 +19,17 @@ def test_each_independent_configuration_card_has_a_save_button():
     for button_id, handler in expected.items():
         assert f'id="{button_id}"' in DASHBOARD
         assert f'onclick="{handler}"' in DASHBOARD
+
+
+def test_offline_mode_has_a_discoverable_settings_group_and_pos_indicator():
+    assert 'data-group="offline"' in DASHBOARD
+    assert 'id="settings-group-offline"' in DASHBOARD
+    assert 'id="settings-automated-offline-fetch"' in DASHBOARD
+    assert 'id="pos-offline-mode"' in DASHBOARD
+    general_save = DASHBOARD.split('function saveSettings()', 1)[1].split('function saveAutomatedOfflineFetch()', 1)[0]
+    assert 'automated_offline_fetch' not in general_save
+    offline_save = DASHBOARD.split('function saveAutomatedOfflineFetch()', 1)[1].split('// ===== MOQ', 1)[0]
+    assert 'automated_offline_fetch' in offline_save
 
 
 def test_language_selection_does_not_save_immediately():

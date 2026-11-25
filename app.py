@@ -5490,7 +5490,7 @@ def api_product_summary():
     return jsonify(total_products=total, low_stock=low_stock)
 
 
-def verification_pdf(branch, title, reference, details, columns, rows, note):
+def verification_pdf(branch, title, reference, details, columns, rows, note, header_context=None):
     """Use the same saved branch letterhead, logo, footer and page size as the PO."""
     template = copy.deepcopy(get_po_template(branch))
     for element in template['elements']:
@@ -5501,6 +5501,8 @@ def verification_pdf(branch, title, reference, details, columns, rows, note):
     context = {'brand_name': (get_branch_setting('receipt_brand_name', '', branch.id) or '').strip() or branch.name,
                'branch_name': branch.name, 'branch_address': branch.address or '',
                'branch_phone': branch.phone or '', 'branch_email': branch.email or ''}
+    if header_context:
+        context.update(header_context)
     filename = get_branch_setting(PO_TEMPLATE_LOGO_SETTING, '', branch.id)
     logo = os.path.join(app.config['PO_LOGO_FOLDER'], filename) if filename else None
     width, height = (size * mm for size in po_template_page_size(template))
@@ -10032,7 +10034,9 @@ def api_print_goods_receipt(po_id, receipt_id):
         [(index, line.get('product_name') or '-', line.get('sku') or '-',
           line.get('ordered_qty') or 0, line.get('received_qty') or 0, '________')
          for index, line in enumerate(lines, 1)],
-        'GOODS RECEIPT VERIFICATION  |  Compare received units against physical stock')
+        'GOODS RECEIPT VERIFICATION  |  Compare received units against physical stock',
+        header_context={'po_number': snapshot.get('po_number') or po.po_number,
+                        'po_date': po.created_at.strftime('%Y-%m-%d') if po.created_at else ''})
 
 
 @app.route('/api/purchase_orders/<int:po_id>/receive', methods=['POST'])

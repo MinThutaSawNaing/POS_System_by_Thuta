@@ -2331,6 +2331,7 @@
                 onclick="loadAllProductsForOffline()" aria-describedby="pos-offline-status">
                 Load All Products for Offline Mode
               </button>
+              <span id="pos-offline-mode" class="small text-muted align-self-center" role="status">Automated offline fetch: Off</span>
               <button
                 type="button"
                 class="btn btn-outline-secondary pos-quick-action"
@@ -4449,6 +4450,10 @@
                 <i class="bi bi-boxes"></i>
                 <span>Inventory<small>MOQ rules &amp; bulk set</small></span>
               </button>
+              <button type="button" class="settings-nav-item" data-group="offline" aria-controls="settings-group-offline" onclick="showSettingsGroup('offline')">
+                <i class="bi bi-cloud-arrow-down"></i>
+                <span>Offline mode<small>Automatic catalog updates</small></span>
+              </button>
               <button type="button" class="settings-nav-item" data-group="receipt" aria-controls="settings-group-receipt" onclick="showSettingsGroup('receipt')">
                 <i class="bi bi-receipt"></i>
                 <span>Receipt &amp; branding<small>Logo, contacts, MMQR</small></span>
@@ -4533,14 +4538,6 @@
               </select>
             </div>
             <div class="mb-3">
-              <label class="form-label" for="settings-automated-offline-fetch">Automated Offline Fetch Mode</label>
-              <select class="form-select" id="settings-automated-offline-fetch">
-                <option value="off">Off</option>
-                <option value="on">On</option>
-              </select>
-              <div class="form-text">When on, previously downloaded catalogs update on this device after a confirmed catalog change. Use the POS button for the first download.</div>
-            </div>
-            <div class="mb-3">
               <label class="form-label">Language / ဘာသာစကား</label>
               <select class="form-select" id="settings-language">
                 <option value="en">English</option>
@@ -4588,6 +4585,29 @@
           </div>
         </div>
         </div><!-- /settings-group-store -->
+
+        <div id="settings-group-offline" class="settings-group" role="group" aria-label="Offline mode" style="display: none">
+          <div class="card settings-card">
+            <div class="card-header">
+              <span class="settings-icon-chip"><i class="bi bi-cloud-arrow-down"></i></span>
+              <div class="settings-card-header-title">
+                <h5>Automated Offline Fetch Mode</h5>
+                <span class="settings-card-subtitle">Keep this branch's saved product catalog up to date</span>
+              </div>
+            </div>
+            <div class="card-body">
+              <label class="form-label" for="settings-automated-offline-fetch">Automated Offline Fetch Mode</label>
+              <select class="form-select" id="settings-automated-offline-fetch">
+                <option value="off">Off</option>
+                <option value="on">On</option>
+              </select>
+              <div class="form-text mb-3">Applies to the active branch. First use the "Load All Products for Offline Mode" button in POS on each device. When enabled, previously loaded products refresh after a confirmed catalog change while online.</div>
+              <button type="button" class="btn btn-primary" id="save-automated-offline-fetch-btn" onclick="saveAutomatedOfflineFetch()">
+                <i class="bi bi-save"></i> Save Offline Mode
+              </button>
+            </div>
+          </div>
+        </div><!-- /settings-group-offline -->
 
         <!-- Units group -->
         <div id="settings-group-units" class="settings-group" role="group" aria-label="Units of measurement" style="display: none">
@@ -8723,6 +8743,10 @@
           autoFetchSelect.value = APP_SETTINGS.automatedOfflineFetch ? "on" : "off";
           autoFetchSelect.disabled = !hasManagerAccess();
         }
+        const offlineSaveButton = document.getElementById("save-automated-offline-fetch-btn");
+        if (offlineSaveButton) offlineSaveButton.disabled = !hasManagerAccess();
+        const offlineMode = document.getElementById("pos-offline-mode");
+        if (offlineMode) offlineMode.textContent = `Automated offline fetch: ${APP_SETTINGS.automatedOfflineFetch ? "On" : "Off"}`;
 
         document.querySelectorAll('input[name="receipt-paper-size"]').forEach((input) => {
           input.checked = input.value === APP_SETTINGS.receiptPaperSize;
@@ -10371,19 +10395,32 @@
       function saveSettings() {
         const currencyCode = document.getElementById("settings-currency-code")?.value;
         const language = document.getElementById("settings-language")?.value;
-        const automatedFetch = document.getElementById("settings-automated-offline-fetch")?.value;
-        if (!currencyCode || !language || !["on", "off"].includes(automatedFetch)) return;
+        if (!currencyCode || !language) return;
         return saveSettingsPayload(
-          { currency_code: currencyCode, automated_offline_fetch: automatedFetch === "on" },
+          { currency_code: currencyCode },
           "save-general-settings-btn",
           "General settings saved",
           (data) => {
             APP_SETTINGS.currencyCode = data.currency_code;
             APP_SETTINGS.currencySuffix = data.currency_suffix || currencySuffixFromCode(data.currency_code);
+            changeLanguage(language, { silent: true });
+          }
+        );
+      }
+
+      function saveAutomatedOfflineFetch() {
+        const mode = document.getElementById("settings-automated-offline-fetch")?.value;
+        if (!["on", "off"].includes(mode)) return;
+        return saveSettingsPayload(
+          { automated_offline_fetch: mode === "on" },
+          "save-automated-offline-fetch-btn",
+          "Offline mode saved",
+          (data) => {
             automatedOfflineFetchBranchId = data.branch_id;
             automatedOfflineFetchEnabled = data.automated_offline_fetch === true;
             APP_SETTINGS.automatedOfflineFetch = automatedOfflineFetchEnabled;
-            changeLanguage(language, { silent: true });
+            const offlineMode = document.getElementById("pos-offline-mode");
+            if (offlineMode) offlineMode.textContent = `Automated offline fetch: ${automatedOfflineFetchEnabled ? "On" : "Off"}`;
             if (currentSection === "pos") checkOfflineProductCatalog();
           }
         );
