@@ -153,6 +153,7 @@ function updateBranchIndicators() {}
 function toggleReportScopeControls() {}
 function updateBranchSaveButton() {}
 function hasCapability() { return false; }
+function refreshAutomatedOfflineFetchOnStartup() {}
 ''' + _function(SOURCE, 'bindCurrentBranchUI')
     assert run_download('''
 await loadAllProductsForOffline();

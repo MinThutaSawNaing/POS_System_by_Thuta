@@ -8809,6 +8809,7 @@
         normalizeCurrencyDisplay();
       }
 
+      let startupSettingsRequest = null;
       function loadSettings() {
         return fetch("/api/settings", {cache: "no-store"})
           .then((response) => {
@@ -8872,6 +8873,54 @@
               showToast("Offline — using cached settings", "warning");
             }
             applySettingsUI();
+          });
+      }
+
+      // Refresh the indicator after branch resolution; the first settings request
+      // can finish before currentBranch is known and discard its response.
+      function refreshAutomatedOfflineFetchOnStartup() {
+        const branchId = currentBranch?.id;
+        if (branchId == null || dashboardBranchStale || dashboardSessionStale) return;
+        let modeBeforeRequest;
+        let fresh = false;
+        return Promise.resolve(startupSettingsRequest)
+          .then(() => {
+            if (String(currentBranch?.id) !== String(branchId) ||
+                dashboardBranchStale || dashboardSessionStale) return null;
+            modeBeforeRequest = APP_SETTINGS.automatedOfflineFetch;
+            return fetch("/api/settings", {cache: "no-store"});
+          })
+          .then((response) => {
+            if (!response) return null;
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+          })
+          .then((data) => {
+            if (String(data?.branch_id) !== String(branchId)) return;
+            fresh = true;
+            return data;
+          })
+          .catch((error) => {
+            console.warn("Unable to refresh automated offline fetch status:", error);
+            if (typeof APP_SETTINGS.automatedOfflineFetch === "boolean") return null;
+            return offlineCacheGet(settingsCacheKey(branchId))?.data;
+          })
+          .then((data) => {
+            if (String(currentBranch?.id) !== String(branchId) ||
+                dashboardBranchStale || dashboardSessionStale ||
+                APP_SETTINGS.automatedOfflineFetch !== modeBeforeRequest ||
+                String(data?.branch_id) !== String(branchId) ||
+                typeof data.automated_offline_fetch !== "boolean") return;
+            APP_SETTINGS.automatedOfflineFetch = data.automated_offline_fetch;
+            if (fresh) {
+              automatedOfflineFetchBranchId = data.branch_id;
+              automatedOfflineFetchEnabled = data.automated_offline_fetch;
+              offlineCacheSet(settingsCacheKey(branchId), data);
+            }
+            const indicator = document.getElementById("pos-offline-mode");
+            if (indicator) indicator.textContent = `Automated offline fetch: ${data.automated_offline_fetch ? "On" : "Off"}`;
+            const select = document.getElementById("settings-automated-offline-fetch");
+            if (select) select.value = data.automated_offline_fetch ? "on" : "off";
           });
       }
 
@@ -11236,6 +11285,7 @@
         updateBranchIndicators(current);
         toggleReportScopeControls();
         updateBranchSaveButton();
+        refreshAutomatedOfflineFetchOnStartup();
         if (hasCapability("catalog.write")) loadCategoryDropdowns();
         if (currentSection === "pos") checkOfflineProductCatalog();
       }
@@ -11250,6 +11300,7 @@
             return;
           }
           currentBranch = cached.data;
+          refreshAutomatedOfflineFetchOnStartup();
           const selector = document.getElementById("branch-selector");
           if (selector) selector.value = currentBranch.id;
           updateBranchIndicators(currentBranch);
@@ -13327,7 +13378,7 @@
         applyWorkspacePermissions();
         applySettingsUI();
         loadAIAvatarPreference();
-        loadSettings();
+        startupSettingsRequest = loadSettings();
         if (hasCapability("catalog.write")) loadUnits();
         loadBranchSelector();
         startCurrencyObserver();
