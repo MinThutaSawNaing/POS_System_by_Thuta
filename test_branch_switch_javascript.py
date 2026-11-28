@@ -126,6 +126,7 @@ function checkOfflineProductCatalog() { posLoads++; }
 function updateBranchIndicators() {}
 function toggleReportScopeControls() {}
 function updateBranchSaveButton() {}
+function refreshAutomatedOfflineFetchOnStartup() {}
 """ + helpers + r"""
 bindCurrentBranchUI({id: 2, name: 'Ready'});
 assert.equal(reloads, 1);
