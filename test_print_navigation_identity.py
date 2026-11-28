@@ -75,54 +75,67 @@ def test_backend_rendered_report_uses_trusted_session(world):
 @pytest.mark.skipif(shutil.which('node') is None, reason='Node required')
 def test_dashboard_navigation_real_helpers():
     source = (Path(__file__).parent / 'templates/dashboard.html').read_text(encoding='utf-8')
-    names = ['dashboardIdentityUrl', 'loadUrlInPwaPrintFrame', 'openReportDownload',
-             'openReceiptWindow', 'openReturnExchangeReceipt', 'printDeliverySlip',
-             'openDeliveryReportWindow', 'printDebtReceipt',
+    names = ['dashboardIdentityUrl', 'navigatePrintFrame', 'loadUrlInPrintFrame',
+             'openReportDownload', 'openReceiptWindow', 'openReturnExchangeReceipt',
+             'printDeliverySlip', 'openDeliveryReportWindow', 'printDebtReceipt',
              'printPurchaseOrderDirect']
     helpers = '\n'.join(_function(source, name) for name in names)
     out = _run_node_script('''
 const CACHE_USER_ID = 7, CACHE_USER_ROLE = 'cashier';
 const currentBranch = {id: 3};
-let dashboardSessionStale = false, standalone = false;
-let calls = [];
+let dashboardSessionStale = false;
+let calls = [], frames = [];
 const window = {location: {href:'https://pos.test/', origin:'https://pos.test'},
  open: (url) => { calls.push(url); return {location:{replace: url => calls.push(url)}, opener:null}; }};
-let frameLoad, removed = false;
-const frame = {addEventListener: (event, handler) => frameLoad = handler,
- contentDocument: {body: {textContent: '{}'}}, remove: () => removed = true,
- set src(url) {calls.push(url)}};
-function createPwaPrintFrame() { return frame; }
+function createPrintFrame() {
+ const frame = {
+  addEventListener(event, handler) { if (event === 'load') this.load = handler; },
+  removeEventListener(event) { if (event === 'load') this.load = null; },
+  remove() { this.removed = true; },
+  contentDocument: {body: {textContent: ''}},
+  contentWindow: {location: {href: 'about:blank'}},
+  set src(url) {
+   calls.push(url);
+   this.url = url;
+   this.contentWindow.location.href = new URL(url, window.location.href).href;
+  },
+ };
+ frames.push(frame);
+ return frame;
+}
+function cleanupPrintFrame(frame) { frame.remove(); }
+function printPrintFrame() { return Promise.resolve(); }
 function blockStaleDashboard() {dashboardSessionStale = true;}
-function isStandalonePWA() {return standalone;}
 function showToast() {}
 let currentDebtId = 1;
 ''' + helpers + '''
 const external = dashboardIdentityUrl('https://outside.test/api/export');
 const override = dashboardIdentityUrl('/api/export?pos_user_id=999&pos_role=boss&format=xlsx#top');
-openReceiptWindow('sale', true);
+openReceiptWindow('sale');
 openReturnExchangeReceipt('return');
 printDeliverySlip(3);
 openDeliveryReportWindow();
 openReportDownload('/api/warehouse/export?format=xlsx');
 printDebtReceipt(); printPurchaseOrderDirect(4);
-standalone = true;
-openReceiptWindow('sale', true); openReturnExchangeReceipt('return'); printDeliverySlip(3);
+openReceiptWindow('sale'); openReturnExchangeReceipt('return'); printDeliverySlip(3);
 const count = calls.length;
-frame.contentDocument.body.textContent = '{"code":"stale_session"}';
-frameLoad();
+const lastFrame = frames[frames.length - 1];
+lastFrame.contentDocument.body.textContent = '{"code":"stale_session"}';
+lastFrame.load();
 openReceiptWindow('sale'); openReturnExchangeReceipt('return'); printDeliverySlip(3);
 openDeliveryReportWindow(); openReportDownload('/api/warehouse/export');
-loadUrlInPwaPrintFrame('/api/sales/sale/print');
-console.log(JSON.stringify({external, override, calls, count, removed, stale: dashboardSessionStale}));
+loadUrlInPrintFrame('/api/sales/sale/print');
+console.log(JSON.stringify({external, override, calls, count, removed: lastFrame.removed, stale: dashboardSessionStale}));
 ''')
     assert out['removed'] and out['stale']
     assert out['external'] is None
     assert out['override'] == '/api/export?pos_user_id=7&pos_role=cashier&format=xlsx&pos_branch_id=3#top'
     assert len(out['calls']) == out['count']
-    navigations = [url for url in out['calls'] if url != 'about:blank']
+    navigations = out['calls']
     assert len(navigations) == 10
     assert all('pos_user_id=7' in url and 'pos_role=cashier' in url and 'pos_branch_id=3' in url
                for url in navigations)
+    assert all('autoprint' not in url for url in navigations if '/print' in url)
 
 
 @pytest.mark.skipif(shutil.which('node') is None, reason='Node required')

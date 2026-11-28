@@ -125,6 +125,7 @@
         const content = document.getElementById("receipt-content");
         const printButton = document.getElementById("print-button");
         let ready = false;
+        let printing = false;
 
         function preparePage() {
           const heightPx = Math.max(0, content.scrollHeight);
@@ -135,9 +136,15 @@
         }
 
         async function printReceipt() {
-          preparePage();
-          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-          window.print();
+          if (printing) return;
+          printing = true;
+          try {
+            preparePage();
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            window.print();
+          } finally {
+            printing = false;
+          }
         }
 
         printButton.addEventListener("click", printReceipt);

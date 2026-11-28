@@ -55,7 +55,6 @@ const toasts = [];
 const sectionsShown = [];
 const invalidated = [];
 const loads = [];
-const standalone = __STANDALONE__;
 const pageState = { returns: 1 };
 const pageSize = { returns: 10 };
 const CACHE_USER_ID = 7, CACHE_USER_ROLE = 'manager';
@@ -78,8 +77,7 @@ function showToast(message, kind) { toasts.push({ message, kind }); }
 function invalidateCacheGroups(groups) { invalidated.push(groups); }
 function loadReturns() { loads.push(true); }
 function showSection(id) { sectionsShown.push(id); }
-function isStandalonePWA() { return standalone; }
-function loadUrlInPwaPrintFrame(url) { opened.push({ pwaFrame: url }); return true; }
+function loadUrlInPrintFrame(url) { opened.push({ printFrame: dashboardIdentityUrl(url) }); return true; }
 __HELPERS__
 
 const today = yangonToday();
@@ -105,7 +103,7 @@ console.log(JSON.stringify({
 """
 
 
-def _run(field_values=None, standalone=False):
+def _run(field_values=None):
     source = DASHBOARD.read_text(encoding="utf-8")
     helpers = "\n".join(
         _function(source, name)
@@ -116,7 +114,6 @@ def _run(field_values=None, standalone=False):
         )
     )
     script = HARNESS.replace("__FIELDS__", json.dumps(field_values or {}))
-    script = script.replace("__STANDALONE__", "true" if standalone else "false")
     script = script.replace("__HELPERS__", helpers)
     return _run_node_script(script)
 
@@ -187,17 +184,12 @@ def test_presets_set_and_clear_the_range():
     assert out["invalidated"], "applying a preset must invalidate the returns cache"
 
 
-def test_receipt_button_opens_the_print_url():
+def test_receipt_button_opens_the_hidden_print_url():
     out = _run()
-    replaced = [e["replaced"] for e in out["opened"] if "replaced" in e]
-    assert replaced and replaced[0] == "/api/returns_exchanges/wf-1/print?autoprint=1&pos_user_id=7&pos_role=manager&pos_branch_id=3"
+    frames = [e["printFrame"] for e in out["opened"] if "printFrame" in e]
+    assert frames == ["/api/returns_exchanges/wf-1/print?pos_user_id=7&pos_role=manager&pos_branch_id=3"]
     assert out["results"]["receipt"] is True
-
-
-def test_receipt_uses_pwa_frame_in_standalone_mode():
-    out = _run(standalone=True)
-    frames = [e["pwaFrame"] for e in out["opened"] if "pwaFrame" in e]
-    assert frames == ["/api/returns_exchanges/wf-1/print?autoprint=1&pos_user_id=7&pos_role=manager&pos_branch_id=3"]
+    assert not any("replaced" in entry for entry in out["opened"])
 
 
 def test_sales_row_routes_to_returns_tab_with_the_transaction():

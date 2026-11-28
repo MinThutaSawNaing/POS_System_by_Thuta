@@ -232,14 +232,11 @@ globalThis.localStorage = {{
   setItem: (k, v) => {{ storage[k] = String(v); }},
 }};
 let printedHtml = "";
+let printCalls = 0;
 let serverReceiptCalls = [];
-globalThis.window = {{
-  open: () => ({{
-    opener: null,
-    document: {{ write: (html) => {{ printedHtml += html; }}, close: () => {{}} }},
-    close: () => {{}},
-  }}),
-}};
+const receiptDocument = {{ open() {{}}, write: (html) => {{ printedHtml += html; }}, close() {{}} }};
+function createPrintFrame() {{ return {{ contentDocument: receiptDocument }}; }}
+function printPrintFrame() {{ printCalls++; return Promise.resolve(); }}
 function showToast() {{}}
 function openReceiptWindow(id) {{ serverReceiptCalls.push(id); return true; }}
 let currentSaleTransactionId = null;
@@ -285,7 +282,7 @@ console.log(JSON.stringify({{
   htmlHasItem: queuedHtml.includes("Coffee"),
   htmlHasBranch: queuedHtml.includes("Main Branch"),
   htmlMarksPendingSync: queuedHtml.includes("OFFLINE SALE"),
-  htmlAutoPrints: queuedHtml.includes("window.print()"),
+  parentOwnsPrinting: printCalls === 1 && !queuedHtml.includes("window.print()"),
   htmlEscapedQuote: queuedHtml.includes("&quot;") || !queuedHtml.includes("<script>alert"),
   serverRouteAfterSync: serverReceiptCalls,
 }}));
@@ -297,12 +294,12 @@ console.log(JSON.stringify({{
     assert out["htmlHasItem"] is True
     assert out["htmlHasBranch"] is True
     assert out["htmlMarksPendingSync"] is True
-    assert out["htmlAutoPrints"] is True
+    assert out["parentOwnsPrinting"] is True
     assert out["serverRouteAfterSync"] == ["offline-txn-1"]
 
 
 def test_offline_receipt_escapes_hostile_product_names():
-    """The offline receipt writes raw HTML into a new window, so every
+    """The offline receipt writes raw HTML into a hidden frame, so every
     interpolated value must be escaped to remain inert."""
     source = DASHBOARD.read_text(encoding="utf-8")
     helpers = "\n".join(
@@ -321,9 +318,9 @@ globalThis.localStorage = {{
   setItem: (k, v) => {{ storage[k] = String(v); }},
 }};
 let printed = "";
-globalThis.window = {{
-  open: () => ({{ opener: null, document: {{ write: (h) => {{ printed += h; }}, close: () => {{}} }}, close: () => {{}} }}),
-}};
+const receiptDocument = {{ open() {{}}, write: (html) => {{ printed += html; }}, close() {{}} }};
+function createPrintFrame() {{ return {{ contentDocument: receiptDocument }}; }}
+function printPrintFrame() {{ return Promise.resolve(); }}
 function showToast() {{}}
 function openReceiptWindow() {{ return true; }}
 let currentSaleTransactionId = null;
@@ -356,7 +353,7 @@ console.log(JSON.stringify({{
   hasRawImgTag: printed.includes("<img src=x"),
   hasRawScriptTag: printed.includes("<script>alert"),
   escapedAngle: printed.includes("&lt;img"),
-  // Only the receipt's own print script may exist.
+  // The parent frame owns printing, so the receipt HTML contains no script.
   scriptTagCount: (printed.match(/<script/gi) || []).length,
 }}));
 """
@@ -365,7 +362,7 @@ console.log(JSON.stringify({{
     assert out["escapedAngle"] is True
     assert out["hasRawImgTag"] is False
     assert out["hasRawScriptTag"] is False
-    assert out["scriptTagCount"] == 1
+    assert out["scriptTagCount"] == 0
 
 def test_offline_receipt_id_fits_thermal_paper():
     """The queued-sale receipt printed the full 36-character UUID.
@@ -393,9 +390,9 @@ globalThis.localStorage = {{
   setItem: (k, v) => {{ storage[k] = String(v); }},
 }};
 let printed = "";
-globalThis.window = {{
-  open: () => ({{ opener: null, document: {{ write: (h) => {{ printed += h; }}, close: () => {{}} }}, close: () => {{}} }}),
-}};
+const receiptDocument = {{ open() {{}}, write: (html) => {{ printed += html; }}, close() {{}} }};
+function createPrintFrame() {{ return {{ contentDocument: receiptDocument }}; }}
+function printPrintFrame() {{ return Promise.resolve(); }}
 function showToast() {{}}
 function openReceiptWindow() {{ return true; }}
 let currentSaleTransactionId = null;

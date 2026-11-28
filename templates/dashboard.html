@@ -14479,9 +14479,9 @@
         if (currentSaleTransactionId) {
           const offlineReceipt = getPendingOfflineReceipt(currentSaleTransactionId);
           if (offlineReceipt) {
-            return openOfflineReceiptWindow(offlineReceipt, true);
+            return openOfflineReceiptWindow(offlineReceipt);
           }
-          openReceiptWindow(currentSaleTransactionId, true);
+          openReceiptWindow(currentSaleTransactionId);
         }
       }
 
@@ -14497,17 +14497,21 @@
         return normalized ? normalized.slice(-8).toUpperCase() : "UNKNOWN";
       }
 
-      function isStandalonePWA() {
-        return window.matchMedia?.("(display-mode: standalone)").matches === true
-          || window.navigator.standalone === true;
-      }
+      const printFrameCleanups = new WeakMap();
+      let activePrintFrame = null;
 
-      function createPwaPrintFrame() {
+      function createPrintFrame() {
+        if (activePrintFrame) {
+          showToast("A print job is already being prepared. Please try again in a moment.", "warning");
+          return null;
+        }
         const frame = document.createElement("iframe");
-        frame.className = "pwa-print-frame";
-        frame.name = `pwa-print-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        frame.className = "pos-print-frame";
+        frame.name = `pos-print-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         frame.title = "Print document";
         frame.setAttribute("aria-hidden", "true");
+        frame.setAttribute("referrerpolicy", "same-origin");
+        frame.tabIndex = -1;
         Object.assign(frame.style, {
           position: "fixed",
           right: "0",
@@ -14518,22 +14522,67 @@
           opacity: "0",
           pointerEvents: "none",
         });
-        document.body.appendChild(frame);
 
         let removed = false;
         const cleanup = () => {
           if (removed) return;
           removed = true;
+          clearTimeout(cleanupTimer);
           frame.remove();
+          if (activePrintFrame === frame) activePrintFrame = null;
+          window.focus?.();
         };
-        const registerAfterPrintCleanup = () => {
-          frame.contentWindow?.addEventListener("afterprint", cleanup, { once: true });
-        };
-        registerAfterPrintCleanup();
-        frame.addEventListener("load", registerAfterPrintCleanup);
-        // Some mobile engines do not dispatch afterprint from child frames.
-        setTimeout(cleanup, 120000);
+        const cleanupTimer = setTimeout(cleanup, 120000);
+        printFrameCleanups.set(frame, cleanup);
+        document.body.appendChild(frame);
+        activePrintFrame = frame;
         return frame;
+      }
+
+      function cleanupPrintFrame(frame) {
+        const cleanup = printFrameCleanups.get(frame);
+        if (cleanup) cleanup();
+        else frame.remove();
+      }
+
+      async function waitForPrintLayout(printWindow) {
+        const printDocument = printWindow.document;
+        const assets = [];
+        if (printDocument?.fonts?.ready) {
+          assets.push(Promise.resolve(printDocument.fonts.ready).catch(() => {}));
+        }
+        Array.from(printDocument?.images || []).forEach((image) => {
+          if (image.complete) return;
+          if (image.decode) assets.push(image.decode().catch(() => {}));
+        });
+        if (assets.length) {
+          let timeout;
+          await Promise.race([
+            Promise.all(assets),
+            new Promise((resolve) => { timeout = setTimeout(resolve, 4000); }),
+          ]);
+          clearTimeout(timeout);
+        }
+        await new Promise((resolve) => {
+          const nextFrame = () => window.requestAnimationFrame(resolve);
+          if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(nextFrame);
+          else setTimeout(resolve, 32);
+        });
+      }
+
+      async function printPrintFrame(frame) {
+        const printWindow = frame.contentWindow;
+        if (!printWindow) throw new Error("The print document could not be opened.");
+        printWindow.addEventListener("afterprint", () => cleanupPrintFrame(frame), { once: true });
+        try {
+          await waitForPrintLayout(printWindow);
+          printWindow.focus?.();
+          printWindow.print();
+          if (activePrintFrame === frame) activePrintFrame = null;
+        } catch (error) {
+          cleanupPrintFrame(frame);
+          throw error;
+        }
       }
 
       // Navigation cannot carry fetch headers. Bind it to this rendered tab,
@@ -14553,35 +14602,62 @@
         }
       }
 
-      function loadUrlInPwaPrintFrame(url) {
-        url = dashboardIdentityUrl(url);
-        if (!url) return false;
-        const frame = createPwaPrintFrame();
-        frame.addEventListener("load", () => {
+      function navigatePrintFrame(frame, navigate) {
+        let started = false;
+        function fail(error) {
+          frame.removeEventListener("load", handleLoad);
+          cleanupPrintFrame(frame);
+          console.error("Failed to print document:", error);
+          showToast(error.message || "Failed to prepare the document for printing.", "error");
+        }
+        async function handleLoad() {
+          if (!started || frame.contentWindow?.location?.href === "about:blank") return;
+          frame.removeEventListener("load", handleLoad);
           try {
-            const result = JSON.parse(frame.contentDocument.body.textContent);
-            if (result.code === "stale_session") {
+            const text = frame.contentDocument?.body?.textContent?.trim() || "";
+            let result = null;
+            try { result = JSON.parse(text); } catch (error) { result = null; }
+            if (result?.code === "stale_session") {
               blockStaleDashboard();
-              frame.remove();
+              cleanupPrintFrame(frame);
+              return;
             }
+            if (result && (result.success === false || result.error)) {
+              throw new Error(result.message || result.error || "The document could not be prepared.");
+            }
+            await printPrintFrame(frame);
           } catch (error) {
-            // Normal receipt HTML is not JSON; it handles its own printing.
+            fail(error);
           }
-        });
-        frame.src = url;
-        return true;
-      }
-
-      function openOfflineReceiptWindow(receipt, autoPrint = false) {
-        const printFrame = typeof isStandalonePWA === "function" && isStandalonePWA()
-          ? createPwaPrintFrame()
-          : null;
-        const shouldAutoPrint = autoPrint || Boolean(printFrame);
-        const receiptWindow = printFrame?.contentWindow || window.open("about:blank", "_blank");
-        if (!receiptWindow) {
-          showToast("Receipt window was blocked. Allow popups for this POS and try again.", "warning");
+        }
+        frame.addEventListener("load", handleLoad);
+        frame.addEventListener("error", () => fail(new Error("The print document could not be loaded.")), { once: true });
+        started = true;
+        try {
+          navigate();
+          return true;
+        } catch (error) {
+          fail(error);
           return false;
         }
+      }
+
+      function loadUrlInPrintFrame(url) {
+        url = dashboardIdentityUrl(url);
+        if (!url) return false;
+        const target = new URL(url, window.location.href);
+        // The parent frame owns printing so the document never opens two dialogs.
+        target.searchParams.delete("autoprint");
+        const frame = createPrintFrame();
+        if (!frame) return false;
+        return navigatePrintFrame(frame, () => {
+          frame.src = target.pathname + target.search + target.hash;
+        });
+      }
+
+      function openOfflineReceiptWindow(receipt) {
+        const printFrame = createPrintFrame();
+        if (!printFrame) return false;
 
         const escape = escapeHtml;
         const money = (value) => formatOfflineReceiptMoney(value, receipt.currencySuffix);
@@ -14605,23 +14681,21 @@
         ` : "";
 
         try {
-          receiptWindow.opener = null;
-          receiptWindow.document.write(`<!doctype html>
+          const receiptDocument = printFrame.contentDocument;
+          receiptDocument.open();
+          receiptDocument.write(`<!doctype html>
             <html><head><meta charset="utf-8"><title>Offline Receipt ${escape(receiptNumber)}</title>
             <style>
               @page { size: ${receipt.paperWidthMm}mm auto; margin: 0; }
-              * { box-sizing: border-box; } body { margin: 0; background: #eee; color: #111; font: 600 12px/1.35 "Courier New", monospace; }
-              .toolbar { position: sticky; top: 0; padding: 10px; text-align: center; background: #343a40; } button { padding: 8px 14px; border: 0; border-radius: 4px; cursor: pointer; }
-              .receipt { width: ${receipt.paperWidthMm}mm; min-height: 40mm; margin: 12px auto; padding: 4mm; overflow: hidden; background: #fff; }
+              * { box-sizing: border-box; } body { margin: 0; background: #fff; color: #111; font: 600 12px/1.35 "Courier New", monospace; }
+              .receipt { width: ${receipt.paperWidthMm}mm; min-height: 40mm; margin: 0 auto; padding: 4mm; overflow: hidden; background: #fff; }
               .center { text-align: center; } h1 { margin: 0; font: 800 18px Arial, sans-serif; } .muted { color: #555; font-size: .9em; }
               hr { border: 0; border-top: 1px dashed #111; margin: 7px 0; } .item { margin: 0 0 7px; break-inside: avoid; }
               .item-name { font-weight: 800; overflow-wrap: anywhere; } .item-detail, .row { display: flex; justify-content: space-between; gap: 8px; padding-left: 4px; }
               .item-detail span:last-child { text-align: right; white-space: nowrap; } .grand { font-size: 1.12em; font-weight: 900; }
               .row span:first-child { flex: 0 0 auto; }
               .row span:last-child { min-width: 0; text-align: right; overflow-wrap: anywhere; }
-              @media print { body { background: #fff; } .toolbar { display: none; } .receipt { margin: 0; box-shadow: none; } }
             </style></head><body>
-            <div class="toolbar"><button onclick="window.print()">Print Receipt</button></div>
             <main class="receipt">
               <header class="center"><h1>${escape(receipt.posName)}</h1>${branch}<div class="muted">${contact}</div></header>
               <hr><div class="row"><span>Receipt</span><span>${escape(receiptNumber)}</span></div>
@@ -14641,48 +14715,28 @@
               <div class="row grand"><span>TOTAL</span><span>${money(receipt.total)}</span></div>${cashRows}${splitRows}
               <hr><footer class="center">Thank you for your purchase.<br>Please keep your receipt.</footer>
             </main>
-            <script>window.addEventListener("load", function () { ${shouldAutoPrint ? "window.print();" : ""} });<\/script>
             </body></html>`);
-          receiptWindow.document.close();
+          receiptDocument.close();
+          printPrintFrame(printFrame).catch((error) => {
+            console.error("Failed to print offline receipt:", error);
+            showToast("Failed to print the offline receipt. Please try again.", "error");
+          });
           return true;
         } catch (error) {
-          if (printFrame) printFrame.remove();
-          else receiptWindow.close();
+          cleanupPrintFrame(printFrame);
           console.error("Failed to create offline receipt:", error);
           showToast("Failed to create the offline receipt. Please try again.", "error");
           return false;
         }
       }
 
-      function openReceiptWindow(transactionId, autoPrint = false) {
+      function openReceiptWindow(transactionId) {
         const normalizedId = String(transactionId || "").trim();
         if (!normalizedId) {
           showToast("Receipt transaction ID is missing", "error");
           return false;
         }
-
-        const standalone = isStandalonePWA();
-        const suffix = autoPrint || standalone ? "?autoprint=1" : "";
-        const url = dashboardIdentityUrl(`/api/sales/${encodeURIComponent(normalizedId)}/print${suffix}`);
-        if (!url) return false;
-        if (standalone) {
-          return loadUrlInPwaPrintFrame(url);
-        }
-        const receiptWindow = window.open("about:blank", "_blank");
-        if (!receiptWindow) {
-          showToast("Receipt window was blocked. Allow popups for this POS and try again.", "warning");
-          return false;
-        }
-        try {
-          receiptWindow.opener = null;
-          receiptWindow.location.replace(url);
-        } catch (error) {
-          receiptWindow.close();
-          console.error("Failed to open receipt window:", error);
-          showToast("Failed to open the receipt. Please try again.", "error");
-          return false;
-        }
-        return true;
+        return loadUrlInPrintFrame(`/api/sales/${encodeURIComponent(normalizedId)}/print`);
       }
 
       // ============================================
@@ -18377,7 +18431,7 @@
 
       function generateBarcodeLabels() {
         if (!requireCapability("labels")) return;
-        const printUrl = dashboardIdentityUrl("/api/products/barcode_labels/print?autoprint=1");
+        const printUrl = dashboardIdentityUrl("/api/products/barcode_labels/print");
         if (!printUrl) return false;
         const selectedProducts = [];
         const quantities = {};
@@ -18397,15 +18451,15 @@
           return;
         }
 
-        // Open the thermal label sheet (32x19 mm labels, 3 per row) in a
-        // print-ready window. A hidden form POST carries the selection because
-        // long label runs would exceed URL query-string limits.
+        // A hidden form POST carries the selection because long label runs
+        // would exceed URL query-string limits.
         try {
-          const pwaPrintFrame = isStandalonePWA() ? createPwaPrintFrame() : null;
+          const printFrame = createPrintFrame();
+          if (!printFrame) return false;
           const form = document.createElement("form");
           form.method = "POST";
           form.action = printUrl;
-          form.target = pwaPrintFrame?.name || "_blank";
+          form.target = printFrame.name;
 
           const idsInput = document.createElement("input");
           idsInput.type = "hidden";
@@ -18419,8 +18473,9 @@
 
           form.append(idsInput, quantitiesInput);
           document.body.appendChild(form);
-          form.submit();
+          const submitted = navigatePrintFrame(printFrame, () => form.submit());
           form.remove();
+          if (!submitted) return false;
 
           // Close the modal
           const modal = bootstrap.Modal.getInstance(
@@ -19591,7 +19646,7 @@
         if (location) params.set('location_id', location);
         const search = document.getElementById('branch-inventory-search').value.trim();
         if (search) params.set('q', search);
-        return openReportDownload(`/api/branch_inventory/print?${params}`);
+        return loadUrlInPrintFrame(`/api/branch_inventory/print?${params}`);
       }
 
       async function loadBranchInventory() {
@@ -20395,26 +20450,7 @@
           showToast("Workflow ID is missing", "error");
           return false;
         }
-        const url = dashboardIdentityUrl(`/api/returns_exchanges/${encodeURIComponent(normalizedId)}/print?autoprint=1`);
-        if (!url) return false;
-        if (isStandalonePWA()) {
-          return loadUrlInPwaPrintFrame(url);
-        }
-        const receiptWindow = window.open("about:blank", "_blank");
-        if (!receiptWindow) {
-          showToast("Receipt window was blocked. Allow popups for this POS and try again.", "warning");
-          return false;
-        }
-        try {
-          receiptWindow.opener = null;
-          receiptWindow.location.replace(url);
-        } catch (error) {
-          receiptWindow.close();
-          console.error("Failed to open return/exchange receipt:", error);
-          showToast("Failed to open the receipt. Please try again.", "error");
-          return false;
-        }
-        return true;
+        return loadUrlInPrintFrame(`/api/returns_exchanges/${encodeURIComponent(normalizedId)}/print`);
       }
 
       function exportReturns(format) {
@@ -20610,7 +20646,7 @@
       function printReceipt() {
         const transactionId =
           document.getElementById("sale-id-display").textContent;
-        if (openReceiptWindow(transactionId, false)) {
+        if (openReceiptWindow(transactionId)) {
           const modal = bootstrap.Modal.getInstance(
             document.getElementById("saleDetailsModal")
           );
@@ -23195,7 +23231,7 @@
 
       function printDebtReceipt() {
         if (currentDebtId) {
-          return openReportDownload(`/api/debts/${currentDebtId}/print`);
+          return loadUrlInPrintFrame(`/api/debts/${currentDebtId}/print`);
         }
       }
 
@@ -24661,7 +24697,7 @@
               <p>${escapeHtml(grn.po_number)} · ${escapeHtml(new Date(`${grn.created_at}Z`).toLocaleString())}</p>
               ${lineTable(grn.items, 'received_qty')}</section>`).join('') || '<p>No goods receipt notes recorded.</p>';
             content.querySelectorAll('[data-print-grn]').forEach(button => button.addEventListener('click', () => {
-              if (current()) openReportDownload(`/api/purchase_orders/${po.id}/receipts/${button.dataset.printGrn}/print`);
+              if (current()) loadUrlInPrintFrame(`/api/purchase_orders/${po.id}/receipts/${button.dataset.printGrn}/print`);
             }));
             if (cursor || data.has_more) {
               const back = document.createElement('button');
@@ -24997,7 +25033,7 @@
       }
 
       function printPurchaseOrderDirect(poId) {
-        return openReportDownload(`/api/purchase_orders/${poId}/print`);
+        return loadUrlInPrintFrame(`/api/purchase_orders/${poId}/print`);
       }
 
       // The Create PO modal is static markup, so its submit button has to be
@@ -25992,27 +26028,9 @@
       function printDeliverySlip(deliveryId) {
         if (!deliveryId) {
           showToast("Delivery ID is missing", "error");
-          return;
+          return false;
         }
-        const url = dashboardIdentityUrl(`/api/deliveries/${encodeURIComponent(deliveryId)}/print?autoprint=1`);
-        if (!url) return false;
-        if (isStandalonePWA()) {
-          loadUrlInPwaPrintFrame(url);
-          return;
-        }
-        const slipWindow = window.open("about:blank", "_blank");
-        if (!slipWindow) {
-          showToast("Print window was blocked. Allow popups for this POS and try again.", "warning");
-          return;
-        }
-        try {
-          slipWindow.opener = null;
-          slipWindow.location.replace(url);
-        } catch (error) {
-          slipWindow.close();
-          console.error("Failed to open delivery slip window:", error);
-          showToast("Failed to open the delivery slip. Please try again.", "error");
-        }
+        return loadUrlInPrintFrame(`/api/deliveries/${encodeURIComponent(deliveryId)}/print`);
       }
 
       // ==================== Delivery Performance Report ====================

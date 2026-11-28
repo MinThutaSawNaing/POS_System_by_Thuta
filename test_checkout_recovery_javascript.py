@@ -416,7 +416,9 @@ assert.equal(posts.length,1);
 def test_saved_receipt_copy_distinguishes_unknown_online_from_acknowledged():
     run('''
 let printed='';
-Object.assign(globalThis,{window:{open:()=>({document:{write:s=>printed=s,close:()=>{}},close:()=>{}})},
+const receiptDocument={open:()=>{},write:s=>printed=s,close:()=>{}};
+Object.assign(globalThis,{createPrintFrame:()=>({contentDocument:receiptDocument}),
+ printPrintFrame:()=>Promise.resolve(),cleanupPrintFrame:()=>{},
  escapeHtml:s=>String(s),formatOfflineReceiptMoney:v=>String(v),formatOfflineReceiptNumber:s=>s,
  showToast:()=>{}});
 const saved={...receipt,items:[],transactionId:'receipt-id',paperWidthMm:58,

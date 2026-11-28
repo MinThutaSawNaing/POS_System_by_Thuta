@@ -107,10 +107,17 @@
       (() => {
         const autoPrint = {{ 'true' if auto_print else 'false' }};
         const printButton = document.getElementById("print-button");
+        let printing = false;
 
         async function printLabels() {
-          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-          window.print();
+          if (printing) return;
+          printing = true;
+          try {
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            window.print();
+          } finally {
+            printing = false;
+          }
         }
 
         printButton.addEventListener("click", printLabels);
