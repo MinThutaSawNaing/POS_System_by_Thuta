@@ -4,6 +4,7 @@ import subprocess
 
 
 SOURCE = Path(__file__).with_name('public') / 'accounting.js'
+ACCOUNTING_TEMPLATE = Path(__file__).with_name('templates') / 'accounting.html'
 
 
 def _function(source, name):
@@ -238,3 +239,35 @@ console.log(JSON.stringify(events));
         {'type': 'pos-connection-status', 'status': 'online', 'text': 'Online mode detected'},
         {'type': 'pos-connection-status', 'status': 'offline', 'text': 'Offline mode detected'},
     ]
+
+
+def test_accounting_layout_scopes_table_and_grid_safeguards():
+    source = ACCOUNTING_TEMPLATE.read_text(encoding='utf-8')
+
+    assert '#accounting-section .row > *' in source
+    assert 'min-width: 0; max-width: 100%;' in source
+    assert '#accounting-section .table-responsive { max-height: none; scrollbar-gutter: auto; }' in source
+    assert '#accounting-section .table-responsive thead th { position: static; box-shadow: none; }' in source
+    assert '#accounting-section .table th:not(.accounting-money) { white-space: normal; }' in source
+    assert '#accounting-section .accounting-money { text-align: right; white-space: nowrap; }' in source
+
+
+def test_accounting_navigation_and_filters_keep_space_on_narrow_screens():
+    source = ACCOUNTING_TEMPLATE.read_text(encoding='utf-8')
+
+    assert 'class="nav nav-tabs flex-nowrap overflow-auto mb-3"' in source
+    assert '#accounting-tabs .nav-link { flex: 0 0 auto; }' in source
+    assert source.count('class="col-12 col-sm-6 col-lg-3"') == 2
+    assert 'class="col-12 col-sm-auto"><button type="submit" class="btn btn-outline-primary w-100">' in source
+    assert 'class="alert alert-warning mt-3"' in source
+
+
+def test_accounting_dynamic_form_actions_have_explicit_spacing():
+    source = SOURCE.read_text(encoding='utf-8')
+
+    assert 'lookup.classList.add("mt-3");' in _function(source, 'supplierFields')
+    assert '"btn btn-outline-secondary mt-2"' in _function(source, 'removableLine')
+    journal = _function(source, 'newJournal')
+    assert 'const lineActions = node("div", null, "d-flex flex-wrap gap-2 mb-3");' in journal
+    assert 'fields.append(lines, lineActions, totals);' in journal
+    assert '"d-flex flex-wrap gap-2 mt-2 mb-3"' in _function(source, 'purchaseReturn')

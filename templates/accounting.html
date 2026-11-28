@@ -1,10 +1,16 @@
 <section id="accounting-section" data-capability="admin" style="display: none" aria-labelledby="accounting-title">
   <style>
-    #accounting-section .btn, #accounting-section .form-control, #accounting-section .form-select { min-height: 44px; }
+    #accounting-section .btn, #accounting-section .form-control, #accounting-section .form-select { min-height: 44px; min-width: 0; max-width: 100%; }
+    #accounting-section .btn { white-space: normal; overflow-wrap: anywhere; }
+    #accounting-section .card, #accounting-section .row > *, #accounting-section .table-responsive { min-width: 0; }
     #accounting-section .table { font-variant-numeric: tabular-nums; }
-    #accounting-section .table th { white-space: nowrap; }
+    #accounting-section .table th:not(.accounting-money) { white-space: normal; }
+    #accounting-section .table th, #accounting-section .table td, #accounting-section .table caption { overflow-wrap: break-word; }
     #accounting-section .accounting-money { text-align: right; white-space: nowrap; }
+    #accounting-section .table-responsive { max-height: none; scrollbar-gutter: auto; }
+    #accounting-section .table-responsive thead th { position: static; box-shadow: none; }
     #accounting-section .accounting-lines > fieldset { min-width: 0; }
+    #accounting-tabs .nav-link { flex: 0 0 auto; }
     #accounting-section [hidden] { display: none !important; }
   </style>
   <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
@@ -25,7 +31,7 @@
       <h3 class="h5">Review before activating accounting</h3>
       <p>Activation starts today. Review existing product catalog and warehouse batch costs first: these become the opening FIFO costs. Zero-cost stock may prevent activation until corrected in the existing inventory workflows. This screen does not change those costs.</p>
       <div id="accounting-opening-summary"></div>
-      <div id="accounting-opening-warnings" class="alert alert-warning" hidden></div>
+      <div id="accounting-opening-warnings" class="alert alert-warning mt-3" hidden></div>
       <form id="accounting-setup-form" autocomplete="off">
         <fieldset id="accounting-setup-fields">
           <legend class="h6 mt-3">Actual opening balances</legend>
@@ -66,7 +72,7 @@
         </div>
       </div>
     </div>
-    <div id="accounting-tabs" class="nav nav-tabs flex-wrap mb-3" role="tablist" aria-label="Accounting workspace">
+    <div id="accounting-tabs" class="nav nav-tabs flex-nowrap overflow-auto mb-3" role="tablist" aria-label="Accounting workspace">
       {% for key, label in [('statements', 'Statements'), ('journals', 'Journals'), ('expenses', 'Expenses'), ('assets', 'Assets'), ('receivables', 'Receivables'), ('payables', 'Payables'), ('inventory', 'Inventory'), ('invoices', 'Invoices')] %}
       <button type="button" id="accounting-tab-{{ key }}" class="nav-link{% if loop.first %} active{% endif %}" role="tab" aria-selected="{{ 'true' if loop.first else 'false' }}" aria-controls="accounting-panel" tabindex="{{ '0' if loop.first else '-1' }}" data-accounting-tab="{{ key }}">{{ label }}</button>
       {% endfor %}
@@ -81,15 +87,15 @@
               <label for="accounting-kind" class="form-label">Report type</label>
               <select id="accounting-kind" class="form-select"></select>
             </div>
-            <div id="accounting-start-group" class="col-6 col-lg-3">
+            <div id="accounting-start-group" class="col-12 col-sm-6 col-lg-3">
               <label for="accounting-start" class="form-label">From</label>
               <input id="accounting-start" type="date" class="form-control" required>
             </div>
-            <div id="accounting-end-group" class="col-6 col-lg-3">
+            <div id="accounting-end-group" class="col-12 col-sm-6 col-lg-3">
               <label for="accounting-end" class="form-label">Through</label>
               <input id="accounting-end" type="date" class="form-control" required>
             </div>
-            <div class="col-auto"><button type="submit" class="btn btn-outline-primary">Apply filters</button></div>
+            <div class="col-12 col-sm-auto"><button type="submit" class="btn btn-outline-primary w-100">Apply filters</button></div>
           </form>
           <div id="accounting-toolbar" class="d-flex flex-wrap gap-2"></div>
         </div>

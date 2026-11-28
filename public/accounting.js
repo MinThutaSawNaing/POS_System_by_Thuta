@@ -250,6 +250,7 @@
         if (current(t) && seq === sequence && box.isConnected) { status.textContent = failure.message; status.setAttribute("role", "alert"); }
       } finally { if (seq === sequence) lookup.disabled = false; }
     });
+    lookup.classList.add("mt-3");
     search.addEventListener("input", () => { sequence++; lookup.disabled = false; options(select, [], "Search again"); });
     search.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); lookup.click(); } });
     select.addEventListener("change", () => { if (select.value) { supplierId.value = select.value; supplierId.dispatchEvent(new Event("input", {bubbles: true})); } });
@@ -260,7 +261,7 @@
     const fields = node("fieldset", null, "border rounded p-3 mb-3");
     fields.append(node("legend", title, "float-none w-auto px-2 h6"));
     const row = node("div", null, "row g-3 align-items-end");
-    const remove = button(`Remove ${title.toLowerCase()}`, () => { fields.remove(); container.dispatchEvent(new Event("input", {bubbles: true})); });
+    const remove = button(`Remove ${title.toLowerCase()}`, () => { fields.remove(); container.dispatchEvent(new Event("input", {bubbles: true})); }, "btn btn-outline-secondary mt-2");
     fields.append(row, remove); container.append(fields); return {fields, row};
   }
   function addOpeningLine() {
@@ -453,7 +454,7 @@
   function newJournal() {
     openEditor("Post manual journal", "Control accounts are excluded. Every location must balance separately; a debit in one shop cannot balance a credit in another.", "/journals", (row, fields) => {
       const controls = {date: dated(row), memo: field(row, "memo", "Memo / reason")};
-      const lines = node("div", null, "accounting-lines mt-3"), totals = node("p", "", "fw-semibold");
+      const lines = node("div", null, "accounting-lines mt-3"), totals = node("p", "", "fw-semibold mb-0");
       totals.setAttribute("role", "status"); totals.setAttribute("aria-live", "polite");
       const update = () => {
         try {
@@ -473,7 +474,9 @@
         field(line, "account", "Account (non-control)", "text", "", accountOptions());
         field(line, "debit", "Debit", "money", "0.00"); field(line, "credit", "Credit", "money", "0.00"); update();
       };
-      fields.append(lines, button("Add journal line", add), totals); lines.addEventListener("input", update); add(); add();
+      const lineActions = node("div", null, "d-flex flex-wrap gap-2 mb-3");
+      lineActions.append(button("Add journal line", add));
+      fields.append(lines, lineActions, totals); lines.addEventListener("input", update); add(); add();
       controls.lines = lines; return controls;
     }, c => {
       const sums = new Map();
@@ -549,7 +552,7 @@
       const moreButton = button("Next batches", () => { cursor = next; lookup(true); }); moreButton.disabled = true;
       search.addEventListener("input", () => { sequence++; next = null; find.disabled = false; moreButton.disabled = true; options(batchChoice, [], "Search again"); });
       search.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); find.click(); } });
-      const tools = node("div", null, "d-flex flex-wrap gap-2 mb-3"); tools.append(find, moreButton,
+      const tools = node("div", null, "d-flex flex-wrap gap-2 mt-2 mb-3"); tools.append(find, moreButton,
         button("Add selected batch", () => { if (batchChoice.value) add(batchChoice.value); else { status.textContent = "Choose a batch first."; status.setAttribute("role", "alert"); } }),
         button("Add batch ID manually", () => add()));
       fields.append(searchRow, status, tools, lines);
