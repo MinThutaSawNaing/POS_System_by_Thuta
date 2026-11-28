@@ -4,8 +4,8 @@ Contract under test (see docs/AGENT_EXTENSION.md):
   * process_command returns {"success", "message", "plan", "step_results"};
     each step_result has {step, tool, status in {"ok", "failed", "skipped"},
     result|error}.
-  * Plans are capped at 5 steps; invalid plans retry once, then fall back to
-    single-shot execution.
+  * Plans are capped at 5 steps; invalid plans retry once. A write request never
+    falls back to unvalidated single-shot execution.
   * "$from": "stepN.path" argument references are resolved between steps.
   * Execution fails fast: after a failed step every later step is "skipped".
   * There is no permission/approval layer: mutating tools execute in the same
@@ -121,50 +121,127 @@ class PlanExecuteTestBase(unittest.TestCase):
 
 
 class PlanValidationTests(PlanExecuteTestBase):
-    """Plan validation: size cap, unknown tools, malformed JSON fallback."""
+    """Invalid plans must not escape into unvalidated tool execution."""
 
     def test_plan_with_more_than_five_steps_is_rejected(self):
         steps = [{"step": f"s{i}", "tool": "get_inventory_status", "args": {}}
                  for i in range(6)]
-        fallback = api_response(content="Done in one shot.")
-        with self.script(plan_response("big plan", steps), fallback), \
+        with self.script(plan_response("big plan", steps)), \
              mock.patch.object(self.orchestrator, "_execute_tools_with_context",
-                               side_effect=self.fake_execute_ok):
+                               side_effect=self.fake_execute_ok) as execute:
             result = self.orchestrator.process_command("do six things", user_id=1)
 
-        self.assertTrue(result["success"])
-        self.assertIn("plan", result)
-        self.assertLessEqual(len(result.get("plan") or []), 5)
+        self.assertFalse(result["success"])
+        self.assertIn("no changes were made", result["message"].lower())
+        execute.assert_not_called()
+        self.assertEqual(len(self.chat_payloads), 1)
 
     def test_unknown_tool_name_in_plan_is_rejected(self):
         steps = [{"step": "s1", "tool": "delete_everything", "args": {}}]
-        fallback = api_response(content="Falling back.")
-        with self.script(plan_response("bad tool", steps), fallback), \
+        with self.script(plan_response("bad tool", steps)), \
              mock.patch.object(self.orchestrator, "_execute_tools_with_context",
-                               side_effect=self.fake_execute_ok):
+                               side_effect=self.fake_execute_ok) as execute:
             result = self.orchestrator.process_command("use a fake tool", user_id=1)
 
-        self.assertTrue(result["success"])  # graceful fallback, not a crash
-        statuses = [sr.get("status") for sr in result.get("step_results", [])]
-        self.assertNotIn(None, statuses)  # no unvalidated step was executed
+        self.assertFalse(result["success"])
+        execute.assert_not_called()
+        self.assertEqual(result["step_results"], [])
 
-    def test_malformed_plan_json_retries_once_then_falls_back(self):
+    def test_malformed_plan_json_retries_once_without_running_tools(self):
         malformed = api_response(tool_calls=[{
             "id": "c1", "name": "propose_plan", "arguments": "{not valid json",
         }])
         retry = plan_response("still broken", "not-a-list", call_id="c2")
-        fallback = api_response(content="Single-shot answer instead.")
 
-        with self.script(malformed, retry, fallback), \
+        with self.script(malformed, retry), \
              mock.patch.object(self.orchestrator, "_execute_tools_with_context",
-                               side_effect=self.fake_execute_ok):
+                               side_effect=self.fake_execute_ok) as execute:
             result = self.orchestrator.process_command(
                 "garbage plan please", user_id=1)
 
+        self.assertFalse(result["success"])
+        execute.assert_not_called()
+        self.assertEqual(len(self.chat_payloads), 2)
+        retry_prompt = self.chat_payloads[1]["messages"][-1]["content"]
+        self.assertIn("not valid JSON", retry_prompt)
+
+    def test_truncated_plan_never_falls_back_to_writes(self):
+        truncated = api_response(tool_calls=[{
+            "id": "c1", "name": "propose_plan",
+            "arguments": {"steps": [{"tool": "create_purchase_order", "args": {
+                "supplier_id": 1, "items": [{"product_id": 5, "quantity": 10}]}}]},
+        }], finish_reason="length")
+        with self.script(truncated), \
+             mock.patch.object(self.orchestrator, "_execute_tools_with_context",
+                               side_effect=self.fake_execute_ok) as execute:
+            result = self.orchestrator.process_command("order 10 cola", user_id=1)
+
+        self.assertFalse(result["success"])
+        execute.assert_not_called()
+        self.assertEqual(len(self.chat_payloads), 1)
+        self.assertGreater(self.chat_payloads[0]["max_tokens"], 900)
+
+    def test_clarification_plan_asks_without_running_tools(self):
+        clarification = api_response(tool_calls=[{
+            "id": "c1", "name": "propose_plan",
+            "arguments": {"description": "Supplier is required", "steps": [],
+                          "needs_clarification": True,
+                          "question": "Which supplier should I order from?"},
+        }])
+        with self.script(clarification), \
+             mock.patch.object(self.orchestrator, "_execute_tools_with_context",
+                               side_effect=self.fake_execute_ok) as execute:
+            result = self.orchestrator.process_command(
+                "Create a purchase order for cola", user_id=1)
+
         self.assertTrue(result["success"])
-        self.assertIn("couldn't retrieve enough verified data", result["message"])
-        # A verified data request cannot use ungrounded prose as its fallback.
-        self.assertEqual(len(self.chat_payloads), 4)
+        self.assertEqual(result["message"], "Which supplier should I order from?")
+        self.assertTrue(result["plan"]["needs_clarification"])
+        self.assertEqual(result["step_results"], [])
+        execute.assert_not_called()
+
+
+class ComplexRequestRoutingTests(PlanExecuteTestBase):
+    def test_low_stock_order_request_reaches_the_validated_planner(self):
+        steps = [
+            {"step": "check stock", "tool": "get_low_stock_items", "args": {}},
+            {"step": "create order", "tool": "create_purchase_order", "args": {
+                "supplier_id": 1,
+                "items": [{"product_id": 5, "quantity": 10}]}},
+        ]
+        low_stock = mock.Mock(return_value={"items": [{"product_id": 5}]})
+        create_order = mock.Mock(return_value={"success": True, "po_number": "PO-1"})
+        with self.script(plan_response("check and order", steps)), \
+             mock.patch.dict(self.orchestrator.agent.tool_functions, {
+                 "get_low_stock_items": low_stock,
+                 "create_purchase_order": create_order,
+             }):
+            result = self.orchestrator.process_command(
+                "Check low stock and create purchase orders for them", user_id=1)
+
+        self.assertTrue(result["success"], result)
+        self.assertEqual([step["tool"] for step in result["plan"]["steps"]],
+                         ["get_low_stock_items", "create_purchase_order"])
+        low_stock.assert_called_once()
+        create_order.assert_called_once()
+        self.assertEqual(result["step_results"][-1]["status"], "ok")
+
+
+class PlanHistoryTests(PlanExecuteTestBase):
+    def test_single_step_plan_leaves_no_orphan_tool_history(self):
+        steps = [{"step": "inventory", "tool": "get_inventory_status", "args": {}}]
+        inventory = mock.Mock(return_value={"total_products": 0, "inventory": []})
+        with self.script(plan_response("read inventory", steps),
+                         api_response(content="Ready for the next question.")), \
+             mock.patch.dict(self.orchestrator.agent.tool_functions,
+                             {"get_inventory_status": inventory}):
+            result = self.orchestrator.process_command("show inventory report", user_id=1)
+            self.assertTrue(result["success"], result)
+            self.orchestrator.agent.chat(message="What next?")
+
+        roles = [message["role"] for message in self.chat_payloads[-1]["messages"]]
+        self.assertNotIn("tool", roles)
+        self.assertEqual(roles[-1], "user")
 
 
 class FromReferenceResolutionTests(PlanExecuteTestBase):

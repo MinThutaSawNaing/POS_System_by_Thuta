@@ -117,8 +117,11 @@ class TemperatureContractTests(SmartsTestBase):
 
     def test_data_query_decodes_at_low_temperature(self):
         no_tool_call = ChatResponse(content="", tool_calls=[], finish_reason="stop")
-        result, temperatures = self._run_command(
-            "how much Cola stock do we have", [no_tool_call, no_tool_call])
+        with mock.patch.object(self.orchestrator, '_verify_tool_intent', return_value={
+                'intent': 'tools', 'tools': ['get_inventory_status'],
+                'missing': [], 'message': ''}):
+            result, temperatures = self._run_command(
+                "how much Cola stock do we have", [no_tool_call, no_tool_call])
         self.assertTrue(result["success"])
         # First call AND forced retry both run deterministically cold.
         self.assertEqual(temperatures[0], 0.2)

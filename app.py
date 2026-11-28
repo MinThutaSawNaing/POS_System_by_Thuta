@@ -4099,18 +4099,31 @@ def api_inventory_reminder_settings():
         user = db.session.get(User, session['user_id'])
         return jsonify(success=True, enabled=status['enabled'],
                        mail_ready=status['ready'],
+                       send_time=inventory_reminders.send_time(),
+                       timezone=inventory_reminders.timezone,
                        account_email=(user.email or '') if user else '')
     data = request.get_json(silent=True) or {}
     enabled = to_bool(data.get('enabled'), None)
     if enabled is None:
         return jsonify(success=False,
                        message='Choose whether reminder emails are sent'), 400
-    set_setting(inventory_reminders.setting_key, '1' if enabled else '0')
+    send_time_supplied = 'send_time' in data
+    if send_time_supplied:
+        try:
+            send_time = inventory_reminders.normalize_send_time(data['send_time'])
+        except ReminderError as failure:
+            return jsonify(success=False, message=failure.message), failure.status
+    else:
+        send_time = inventory_reminders.send_time()
+    set_setting(inventory_reminders.setting_key, '1' if enabled else '0', commit=False)
+    if send_time_supplied:
+        set_setting(inventory_reminders.send_time_setting, send_time, commit=False)
+    db.session.commit()
     status = inventory_reminders.mail_status()
     return jsonify(success=True, enabled=status['enabled'],
-                   mail_ready=status['ready'],
-                   message=('Reminder emails are on' if status['enabled']
-                            else 'Reminder emails are off'))
+                   mail_ready=status['ready'], send_time=send_time,
+                   timezone=inventory_reminders.timezone,
+                   message='Reminder settings saved')
 
 @app.route('/api/settings/inventory-reminders/test', methods=['POST'])
 @manager_or_boss_required

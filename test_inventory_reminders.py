@@ -6,7 +6,7 @@ nothing can touch workspace data or leave the machine.
 """
 
 import importlib.util
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import shutil
@@ -18,6 +18,7 @@ from flask import Flask
 import pytest
 
 import email_auth
+import inventory_reminders
 
 
 MANAGER_EMAIL = 'manager@example.com'
@@ -267,6 +268,7 @@ def test_settings_switch_stops_and_starts_reminder_emails(world):
     before = manager.get('/api/settings/inventory-reminders')
     assert before.status_code == 200
     assert before.get_json() == {'success': True, 'enabled': True, 'mail_ready': True,
+                                 'send_time': '09:00', 'timezone': 'Asia/Yangon',
                                  'account_email': MANAGER_EMAIL}
 
     off = manager.put('/api/settings/inventory-reminders', json={'enabled': False})
@@ -292,6 +294,132 @@ def test_settings_switch_stops_and_starts_reminder_emails(world):
                        json={'enabled': False}).status_code == 403
 
 
+def test_send_time_validation_is_strict():
+    for value in ('00:00', '09:00', '23:59'):
+        assert inventory_reminders.normalize_send_time(value) == value
+    for value in (None, '', '9:00', '09:0', '09:00:00', '24:00', '23:60',
+                  ' 09:00', '09:00 ', 'aa:bb', 900, True):
+        with pytest.raises(inventory_reminders.ReminderError) as failure:
+            inventory_reminders.normalize_send_time(value)
+        assert failure.value.status == 400
+
+
+def test_reminder_time_saves_persists_and_survives_enabled_only_updates(world):
+    manager = client_for(world.m, world.ids['manager'], 'manager', world.ids['branch'])
+    with world.app.app_context():
+        with patch.object(world.m, 'set_setting', wraps=world.m.set_setting) as setter:
+            saved = manager.put('/api/settings/inventory-reminders', json={
+                'enabled': False, 'send_time': '17:25',
+            })
+        assert [entry.args for entry in setter.call_args_list] == [
+            ('inventory_reminder_email', '0'),
+            ('inventory_reminder_send_time', '17:25'),
+        ]
+        assert all(entry.kwargs == {'commit': False} for entry in setter.call_args_list)
+        assert world.m.get_setting('inventory_reminder_email') == '0'
+        assert world.m.get_setting('inventory_reminder_send_time') == '17:25'
+    assert saved.status_code == 200
+    assert saved.get_json() == {
+        'success': True, 'enabled': False, 'mail_ready': True,
+        'send_time': '17:25', 'timezone': 'Asia/Yangon',
+        'message': 'Reminder settings saved',
+    }
+
+    fetched = manager.get('/api/settings/inventory-reminders')
+    assert fetched.status_code == 200
+    assert fetched.get_json()['send_time'] == '17:25'
+    assert fetched.get_json()['timezone'] == 'Asia/Yangon'
+
+    enabled_only = manager.put('/api/settings/inventory-reminders', json={'enabled': True})
+    assert enabled_only.status_code == 200
+    assert enabled_only.get_json()['enabled'] is True
+    assert enabled_only.get_json()['send_time'] == '17:25'
+    with world.app.app_context():
+        assert world.m.get_setting('inventory_reminder_email') == '1'
+        assert world.m.get_setting('inventory_reminder_send_time') == '17:25'
+
+
+def test_invalid_reminder_times_return_400_without_partial_writes(world):
+    manager = client_for(world.m, world.ids['manager'], 'manager', world.ids['branch'])
+    with world.app.app_context():
+        world.m.set_setting('inventory_reminder_email', '1')
+        world.m.set_setting('inventory_reminder_send_time', '14:35')
+        for value in (None, '', '9:00', '09:0', '24:00', '23:60',
+                      '09:00:00', ' 09:00', '09:00 ', 900):
+            with patch.object(world.m, 'set_setting', wraps=world.m.set_setting) as setter:
+                response = manager.put('/api/settings/inventory-reminders', json={
+                    'enabled': False, 'send_time': value,
+                })
+            assert response.status_code == 400, value
+            assert response.get_json()['success'] is False
+            assert 'HH:MM' in response.get_json()['message']
+            setter.assert_not_called()
+            assert world.m.get_setting('inventory_reminder_email') == '1'
+            assert world.m.get_setting('inventory_reminder_send_time') == '14:35'
+    assert world.sent == []
+
+
+def test_invalid_stored_send_time_safely_uses_default(world):
+    manager = client_for(world.m, world.ids['manager'], 'manager', world.ids['branch'])
+    with world.app.app_context():
+        world.m.set_setting('inventory_reminder_send_time', '24:00')
+        assert world.service.send_time() == '09:00'
+        assert world.service.run(now=datetime(2026, 3, 2, 8, 59)) == []
+        assert len(world.service.run(now=datetime(2026, 3, 2, 9, 0))) == 2
+    response = manager.get('/api/settings/inventory-reminders')
+    assert response.status_code == 200
+    assert response.get_json()['send_time'] == '09:00'
+    assert len(world.sent) == 2
+
+
+def test_daily_run_waits_for_local_minute_then_deduplicates_by_day(world):
+    with world.app.app_context():
+        world.m.set_setting('inventory_reminder_send_time', '10:15')
+        assert world.service.run(now=datetime(2026, 3, 2, 10, 14, 59)) == []
+        assert world.sent == []
+        assert world.service.models['InventoryReminderLog'].query.count() == 0
+
+        assert [row['status'] for row in world.service.run(
+            now=datetime(2026, 3, 2, 10, 15))] == ['sent', 'sent']
+        assert len(world.sent) == 2
+        assert world.service.models['InventoryReminderLog'].query.count() == 3
+        assert world.service.run(now=datetime(2026, 3, 2, 23, 59)) == []
+        assert len(world.sent) == 2
+
+        assert world.service.run(now=datetime(2026, 3, 3, 10, 14, 59)) == []
+        assert len(world.sent) == 2
+        assert len(world.service.run(now=datetime(2026, 3, 3, 10, 15))) == 2
+        assert len(world.sent) == 4
+        assert world.service.models['InventoryReminderLog'].query.count() == 6
+
+
+def test_run_converts_aware_datetimes_to_the_business_timezone(world):
+    with world.app.app_context():
+        world.m.set_setting('inventory_reminder_send_time', '09:00')
+        before = datetime(2026, 3, 2, 2, 29, tzinfo=timezone.utc)
+        assert world.service.run(now=before) == []
+        at_minute = datetime(2026, 3, 2, 2, 30, tzinfo=timezone.utc)
+        assert len(world.service.run(now=at_minute)) == 2
+    assert len(world.sent) == 2
+
+
+def test_send_time_changes_apply_to_the_next_tick_without_restart(world):
+    service = world.service
+    with world.app.app_context():
+        world.m.set_setting('inventory_reminder_send_time', '11:00')
+        assert service.run(now=datetime(2026, 3, 2, 10, 59)) == []
+        world.m.set_setting('inventory_reminder_send_time', '09:30')
+        assert len(service.run(now=datetime(2026, 3, 2, 9, 30))) == 2
+        assert len(world.sent) == 2
+
+        world.m.set_setting('inventory_reminder_send_time', '23:59')
+        assert service.run(now=datetime(2026, 3, 3, 9, 30)) == []
+        assert len(world.sent) == 2
+        world.m.set_setting('inventory_reminder_send_time', '08:00')
+        assert len(service.run(now=datetime(2026, 3, 3, 9, 30))) == 2
+        assert len(world.sent) == 4
+
+
 def test_test_send_emails_the_real_template_to_one_address(world):
     manager = client_for(world.m, world.ids['manager'], 'manager', world.ids['branch'])
     response = manager.post('/api/settings/inventory-reminders/test',
@@ -304,10 +432,16 @@ def test_test_send_emails_the_real_template_to_one_address(world):
     mail = world.sent[0]
     assert mail['to'] == ['owner@example.com']
     assert 'Cola' in mail['text'] and 'Milk' in mail['text']
-    # A test never consumes the scheduled reminder for the day.
+    # A test bypasses the schedule without consuming the daily reminder.
     with world.app.app_context():
+        world.m.set_setting('inventory_reminder_send_time', '18:00')
         assert world.service.models['InventoryReminderLog'].query.count() == 0
+        assert world.service.run(now=datetime(2026, 3, 2, 8, 59)) == []
+        assert world.service.models['InventoryReminderLog'].query.count() == 0
+        assert len(world.sent) == 1
+        world.m.set_setting('inventory_reminder_send_time', '09:00')
         assert len(world.service.run(now=datetime(2026, 3, 2, 9, 0))) == 2
+    assert len(world.sent) == 3
 
     assert manager.post('/api/settings/inventory-reminders/test',
                         json={'email': 'not-an-email'}).status_code == 400
@@ -328,10 +462,16 @@ def test_dashboard_exposes_moq_controls_and_the_reminder_panel():
             'id="inventory-reminder-table"', '/api/inventory/reminders',
             'function loadInventoryReminders', 'function dismissInventoryReminders',
             'id="inventory-reminder-email-on"', 'id="inventory-reminder-email-off"',
-            'id="save-inventory-reminder-settings-btn"',
+            'id="inventory-reminder-send-time"', 'type="time"', 'value="09:00" required',
+            'Asia/Yangon', 'first check at or after this time',
+            'id="save-inventory-reminder-settings-btn"', 'Save reminder settings',
             'id="inventory-reminder-test-email"',
             'function saveInventoryReminderSettings', 'function sendInventoryReminderTest',
-            '/api/settings/inventory-reminders',
+            '// ===== MOQ REMINDER SETTINGS =====',
+            'function inventoryReminderScheduleNote', 'send_time: sendTime',
+            'if (!sendTime)', 'Choose a daily reminder send time',
+            'data.send_time || "09:00"', 'data.timezone || "Asia/Yangon"',
+            'Daily send time:', '/api/settings/inventory-reminders',
             'productData.append("reorder_point"'):
         assert snippet in html, snippet
 
@@ -356,12 +496,17 @@ def test_reminder_javascript_parses_and_fingerprints_stock_changes():
                     return source[match.start():index + 1]
         raise AssertionError(f'JavaScript function {name} has an unbalanced body')
 
+    assert 'sendTimeInput.value = data.send_time' in function('loadInventoryReminderSettings')
+    assert 'inventoryReminderScheduleNote(data)' in function('loadInventoryReminderSettings')
+    assert 'sendTimeInput.value = data.send_time' in function('saveInventoryReminderSettings')
+    assert 'inventoryReminderScheduleNote(data)' in function('saveInventoryReminderSettings')
+
     script = '\n'.join(function(name) for name in (
         'inventoryReminderFingerprint', 'inventoryReminderDismissedFingerprint',
         'dismissInventoryReminders', 'renderInventoryReminders',
         'loadInventoryReminders', 'setInventoryReminderSettingsStatus',
-        'loadInventoryReminderSettings', 'saveInventoryReminderSettings',
-        'sendInventoryReminderTest')) + '''
+        'inventoryReminderScheduleNote', 'loadInventoryReminderSettings',
+        'saveInventoryReminderSettings', 'sendInventoryReminderTest')) + '''
 console.log(inventoryReminderFingerprint([
   {product_id: 1, current_stock: 2},
   {product_id: 2, current_stock: 0}

@@ -11,7 +11,7 @@ from unittest import mock
 
 import agent_orchestrator
 from agent_orchestrator import AgentOrchestrator
-from ai_agent import AIAgent, ChatResponse, ToolCall
+from ai_agent import AIAgent, ChatResponse, Message, ToolCall
 from ai_tool_guard import coerce_number, guard_tool_call, schema_parameters
 
 
@@ -72,6 +72,61 @@ class GuardUnitTests(unittest.TestCase):
                      {'days': '30 '}):
             with self.subTest(args=args):
                 self.assertTrue(guard_tool_call('report', args, ['report'], params).ok)
+
+    def test_nested_array_items_are_validated_before_execution(self):
+        params = {'update_purchase_order': {
+            'properties': {
+                'po_id': {'type': 'integer', 'minimum': 1},
+                'items': {'type': 'array', 'minItems': 1, 'items': {
+                    'type': 'object',
+                    'properties': {
+                        'product_id': {'type': 'integer', 'minimum': 1},
+                        'quantity': {'type': 'integer', 'minimum': 1},
+                        'unit_cost': {'type': 'number', 'minimum': 0},
+                    },
+                    'required': ['product_id', 'quantity', 'unit_cost'],
+                    'additionalProperties': False,
+                }},
+            },
+            'required': ['po_id'],
+        }}
+        invalid = (
+            [],
+            [{'product_id': 1, 'quantity': 2}],
+            [{'product_id': 1, 'quantity': True, 'unit_cost': 3}],
+            [{'product_id': 1, 'quantity': 0, 'unit_cost': 3}],
+            [{'product_id': 1, 'quantity': 2, 'unit_cost': -1}],
+            [{'product_id': 1, 'quantity': 2, 'unit_cost': 3, 'extra': 'no'}],
+        )
+        for items in invalid:
+            with self.subTest(items=items):
+                result = guard_tool_call('update_purchase_order',
+                                         {'po_id': 7, 'items': items},
+                                         ['update_purchase_order'], params)
+                self.assertFalse(result.ok)
+                self.assertIn('items', result.error)
+
+        valid = guard_tool_call('update_purchase_order', {
+            'po_id': '7', 'items': [{'product_id': '1', 'quantity': '2',
+                                     'unit_cost': '3.50'}],
+        }, ['update_purchase_order'], params)
+        self.assertTrue(valid.ok, valid.error)
+        self.assertEqual(valid.arguments, {
+            'po_id': 7, 'items': [{'product_id': 1, 'quantity': 2,
+                                   'unit_cost': 3.5}],
+        })
+
+    def test_schema_valued_additional_properties_are_checked(self):
+        params = {'return_items': {'properties': {
+            'legacy_costs': {'type': 'object', 'additionalProperties': {'type': 'string'}},
+        }}}
+        valid = guard_tool_call('return_items', {'legacy_costs': {'10': '2.50'}},
+                                ['return_items'], params)
+        self.assertTrue(valid.ok, valid.error)
+        invalid = guard_tool_call('return_items', {'legacy_costs': {'10': 2.5}},
+                                  ['return_items'], params)
+        self.assertFalse(invalid.ok)
+        self.assertIn('legacy_costs.10', invalid.error)
 
     def test_arguments_must_be_a_json_object(self):
         self.assertFalse(guard_tool_call(
@@ -242,6 +297,30 @@ class OrchestratorHallucinationTests(unittest.TestCase):
         self.assertIn("does not", result["message"])
         self.assertEqual(len(calls), 2)
 
+    def test_mixed_batch_keeps_real_results_and_reports_rejected_calls(self):
+        mixed = ChatResponse(content="", tool_calls=[
+            ToolCall(id="good-1", function_name="get_inventory_status", arguments={}),
+            ToolCall(id="bad-1", function_name="get_sales_forecast", arguments={}),
+        ], finish_reason="tool_calls")
+        repair = ChatResponse(content="", tool_calls=[], finish_reason="stop")
+        calls, fake_chat = self._script([mixed, repair])
+
+        with mock.patch.object(self.orchestrator.agent, "chat", side_effect=fake_chat), \
+             mock.patch.dict(self.orchestrator.agent.tool_functions,
+                             {"get_inventory_status": lambda **kwargs: INVENTORY}):
+            result = self.orchestrator.process_command(
+                "how much cola stock do we have", user_id=1)
+
+        self.assertFalse(result["success"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(result["tool_results"]), 1)
+        self.assertEqual(result["tool_results"][0]["function_name"],
+                         "get_inventory_status")
+        self.assertIn("Cola", result["message"])
+        self.assertIn("47", result["message"])
+        self.assertIn("not run", result["message"].lower())
+        self.assertNotIn("nothing was run", result["message"].lower())
+
     def test_tool_not_offered_for_this_turn_is_never_executed(self):
         called = []
         self.orchestrator.agent.tool_functions["delete_product"] = (
@@ -299,6 +378,55 @@ class OrchestratorHallucinationTests(unittest.TestCase):
         self.assertIsNone(steps)
         self.assertIn("days", error)
         self.assertFalse(fatal)
+
+
+class HistoryTrimmingTests(unittest.TestCase):
+    def setUp(self):
+        self.agent = AIAgent(api_key="test-key")
+        self.agent.set_system_prompt("System")
+
+    def test_complete_tool_exchange_is_kept_when_it_fits(self):
+        self.agent.add_user_message("Check stock")
+        self.agent.add_assistant_message("", [{
+            "id": "call-1", "type": "function",
+            "function": {"name": "get_inventory_status", "arguments": "{}"},
+        }])
+        self.agent.add_tool_result("call-1", '{"total_products": 0}')
+
+        self.agent.trim_history(2)
+
+        self.assertEqual([message.role for message in self.agent.conversation_history],
+                         ["system", "assistant", "tool"])
+        self.assertEqual(self.agent.conversation_history[-1].tool_call_id, "call-1")
+
+    def test_incomplete_tool_exchange_is_removed_entirely(self):
+        self.agent.add_user_message("Check two things")
+        self.agent.add_assistant_message("", [
+            {"id": "call-1", "type": "function",
+             "function": {"name": "get_inventory_status", "arguments": "{}"}},
+            {"id": "call-2", "type": "function",
+             "function": {"name": "get_supplier_list", "arguments": "{}"}},
+        ])
+        self.agent.add_tool_result("call-1", '{"total_products": 0}')
+
+        self.agent.trim_history(2)
+
+        self.assertEqual([message.role for message in self.agent.conversation_history],
+                         ["system"])
+
+    def test_orphan_tool_result_is_not_retained(self):
+        self.agent.conversation_history.extend([
+            Message(role="user", content="old request"),
+            Message(role="assistant", content="old answer"),
+            Message(role="tool", content="orphan", tool_call_id="missing"),
+            Message(role="user", content="new request"),
+        ])
+
+        self.agent.trim_history(2)
+
+        self.assertEqual([message.role for message in self.agent.conversation_history],
+                         ["system", "user"])
+        self.assertEqual(self.agent.conversation_history[-1].content, "new request")
 
 
 class AgentExecutionGuardTests(unittest.TestCase):

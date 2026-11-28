@@ -94,7 +94,8 @@ What still protects the data:
   the dashboard omits the widget and the AI Memory tab for cashiers.
 - **Argument validation** (`ai_tool_guard.py`) runs before any database code:
   unknown tools, undocumented arguments, wrong JSON types, enums and numeric
-  bounds are rejected with a corrective message the model can fix once.
+  bounds are rejected with a corrective message the model can fix once. Nested
+  array items and object fields are validated recursively.
 - **Tool-layer business guards** still refuse impossible operations
   (`delete_product` cascade/confirm rules, `delete_supplier` with open POs,
   `delete_customer` with debt), independent of the agent.
@@ -110,7 +111,8 @@ What still protects the data:
   complete natural-language authorization system.
 - **Truthful outcomes**: nested tool errors and `success=false` fail the step.
   Mutation summaries are formatted from actual results, never narrated by the
-  model. Planned user requests and replies both remain in conversation history.
+  model. Planned user requests remain in conversation history; planning chatter
+  and large deterministic tool payloads stay out of it.
 - **Email scope**: `email_report` sends supported report attachments, optionally
   with a note. It is not a standalone custom-message sender; do not substitute
   an inventory report for a request to tell someone about a change.
@@ -176,7 +178,7 @@ remaining brake on a destructive step.
 {
     "success": bool,
     "message": str,          # final user-facing answer
-    "plan": [...],           # validated plan steps (max 5)
+    "plan": dict | None,     # validated plan (effective step cap applies)
     "step_results": [
         {"step": str, "tool": str,
          "status": "ok" | "failed" | "skipped",
@@ -186,10 +188,12 @@ remaining brake on a destructive step.
 ```
 
 Rules:
-- Plans longer than 5 steps are rejected.
-- An invalid plan is retried once with the model; on second failure the
-  orchestrator falls back to single-shot execution and still returns a
-  success-shaped dict.
+- Plans longer than the effective step limit are rejected.
+- An invalid plan is retried once with the model. If it is still invalid, write
+  requests fail closed with no changes; read-only requests may use the validated
+  single-shot tool path.
+- An ambiguous request may return a clarification-only plan with no steps and no
+  tool execution.
 - `$from`: `"stepN.<key>"` argument references are resolved from earlier step
   outputs between steps (e.g. `{"supplier_id": {"$from":
   "step1.suppliers.0.supplier_id"}}`). Raw `$from` markers must never reach

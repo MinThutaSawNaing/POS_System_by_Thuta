@@ -92,11 +92,39 @@ class AIAgent:
         if len(conversation) <= max_messages:
             return
 
-        retained = conversation[-max_messages:]
-        # A tool result without its preceding assistant tool call is not a valid API
-        # conversation. Start at the first ordinary user/assistant message instead.
-        while retained and retained[0].role == "tool":
-            retained.pop(0)
+        def valid_exchange(messages):
+            pending = set()
+            for message in messages:
+                if message.role == "tool":
+                    if (not pending or not isinstance(message.tool_call_id, str)
+                            or message.tool_call_id not in pending):
+                        return False
+                    pending.remove(message.tool_call_id)
+                    continue
+                if pending:
+                    return False
+                if message.tool_calls:
+                    if not isinstance(message.tool_calls, list):
+                        return False
+                    call_ids = []
+                    for call in message.tool_calls:
+                        if (not isinstance(call, dict)
+                                or not isinstance(call.get("id"), str)
+                                or not call["id"]):
+                            return False
+                        call_ids.append(call["id"])
+                    if len(call_ids) != len(set(call_ids)):
+                        return False
+                    pending = set(call_ids)
+            return not pending
+
+        retained = []
+        first = max(0, len(conversation) - max_messages)
+        for start in range(first, len(conversation)):
+            candidate = conversation[start:]
+            if valid_exchange(candidate):
+                retained = candidate
+                break
         self.conversation_history = system_messages + retained
         
     def register_tool(self, name: str, description: str, parameters: Dict, function: Callable):

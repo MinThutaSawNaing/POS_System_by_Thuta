@@ -12,6 +12,7 @@ foreign keys: deleting a product must not break the reminder history.
 
 import datetime as dt
 import os
+import re
 import sys
 import threading
 from types import SimpleNamespace
@@ -23,6 +24,8 @@ from report_scheduler import BUSINESS_TIMEZONE
 DEFAULT_INTERVAL_SECONDS = 300
 MAX_EMAIL_RECIPIENTS = 20
 REMINDER_SETTING = 'inventory_reminder_email'
+REMINDER_SEND_TIME_SETTING = 'inventory_reminder_send_time'
+DEFAULT_SEND_TIME = '09:00'
 
 
 class ReminderError(Exception):
@@ -31,6 +34,15 @@ class ReminderError(Exception):
     def __init__(self, message, status=400):
         super().__init__(message)
         self.message, self.status = message, status
+
+
+def normalize_send_time(value):
+    """Return a strict ``HH:MM`` wall-clock time or raise ``ReminderError``."""
+    if not isinstance(value, str) or re.fullmatch(
+            r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', value) is None:
+        raise ReminderError(
+            'Enter a valid daily send time in HH:MM format (00:00 through 23:59).')
+    return value
 
 
 def _escape(value):
@@ -136,6 +148,13 @@ def register_inventory_reminders(app, db, pos):
         value = str(_setting(REMINDER_SETTING, '1') or '1').strip().lower()
         return value not in ('0', 'false', 'off', 'no')
 
+    def _send_time():
+        try:
+            return normalize_send_time(
+                _setting(REMINDER_SEND_TIME_SETTING, DEFAULT_SEND_TIME))
+        except ReminderError:
+            return DEFAULT_SEND_TIME
+
     def mail_status():
         try:
             ready = bool(email_auth.mail_config(pos.get('get_setting')).valid)
@@ -217,13 +236,19 @@ def register_inventory_reminders(app, db, pos):
         return sorted(addresses)[:MAX_EMAIL_RECIPIENTS]
 
     def run(now=None):
-        """Email each branch's newly-low items once per calendar day."""
+        """Send due reminders, reading the configured time on every tick."""
         results = []
         if not _email_enabled() or Models.Product is None or Models.Branch is None:
             return results
         if not mail_status()['ready']:
             return results
-        now = now or dt.datetime.now(BUSINESS_TIMEZONE)
+        if now is None:
+            now = dt.datetime.now(BUSINESS_TIMEZONE)
+        elif now.tzinfo is not None:
+            now = now.astimezone(BUSINESS_TIMEZONE)
+        send_hour, send_minute = map(int, _send_time().split(':'))
+        if (now.hour, now.minute) < (send_hour, send_minute):
+            return results
         today = now.date()
         for branch in Models.Branch.query.filter_by(is_active=True).order_by(
                 Models.Branch.id).all():
@@ -339,6 +364,11 @@ def register_inventory_reminders(app, db, pos):
     return SimpleNamespace(
         models={'InventoryReminderLog': InventoryReminderLog},
         setting_key=REMINDER_SETTING,
+        send_time_setting=REMINDER_SEND_TIME_SETTING,
+        default_send_time=DEFAULT_SEND_TIME,
+        timezone=BUSINESS_TIMEZONE.zone,
+        normalize_send_time=normalize_send_time,
+        send_time=_send_time,
         items=low_stock_items,
         payload=payload,
         recipients=recipients,

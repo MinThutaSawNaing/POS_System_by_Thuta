@@ -54,7 +54,16 @@ stock.
 
 ## Email behaviour
 
+- The daily send time is configurable in **Settings -> Email -> Low-stock
+  reminder emails**. It is stored in the global `inventory_reminder_send_time`
+  app setting, defaults to `09:00`, and always uses `Asia/Yangon`
+  (`BUSINESS_TIMEZONE`). Values must be strict 24-hour `HH:MM` times from
+  `00:00` through `23:59`; an invalid stored value safely falls back to `09:00`.
 - The poller runs every `INVENTORY_REMINDER_INTERVAL` seconds (default `300`).
+  It sends nothing before the selected local minute, then sends at the first
+  poll at or after that time. With the default interval, delivery can be up to
+  five minutes later than the chosen time. A saved time change applies on the
+  next poll without restarting the app.
 - Each product is emailed **at most once per store-local calendar day**
   (`Asia/Yangon`, matching report schedules); the `inventory_reminder_log` table
   records `(product_id, branch_id, date)`, so a restart never repeats a reminder.
@@ -67,9 +76,11 @@ stock.
 
 ## Settings and endpoint
 
-Open **Settings -> Email -> Low-stock reminder emails** and choose **On** or
-**Off**, then press **Save reminder setting**. The choice is stored in the
-`inventory_reminder_email` app setting and applies to every branch.
+Open **Settings -> Email -> Low-stock reminder emails**, choose **On** or
+**Off** and a **Daily send time**, then press **Save reminder settings**. The
+choice is stored in `inventory_reminder_email` and the time in
+`inventory_reminder_send_time`; both apply to every branch. Saving only the
+On/Off choice keeps the existing daily time.
 
 - **On** (default): managers and the boss receive the daily email.
 - **Off**: no reminder email is sent; the dashboard panel and low-stock count
@@ -77,8 +88,9 @@ Open **Settings -> Email -> Low-stock reminder emails** and choose **On** or
 
 The same card has **Send a test reminder**: enter an address and the app emails
 the *real* reminder template for the active branch's current low-stock items to
-that one address. It is a verification tool only — it does not change the daily
-recipients and does not consume that day's scheduled reminder.
+that one address. It sends immediately, even before the configured daily time.
+It is a verification tool only — it does not change the daily recipients and
+does not create a daily log entry or consume that day's scheduled reminder.
 
 ### MOQ management endpoints
 
@@ -97,7 +109,8 @@ recipients and does not consume that day's scheduled reminder.
 
 | Name | Default | Purpose |
 | --- | --- | --- |
-| Settings -> Email -> Low-stock reminder emails | On | Store-wide switch for the daily email. |
+| Settings -> Email -> Low-stock reminder emails | On, `09:00` Asia/Yangon | Store-wide switch and daily send time. |
+| `inventory_reminder_send_time` | `09:00` | Global app setting for the strict `HH:MM` daily send time. |
 | `INVENTORY_REMINDER_ENABLED` | `1` | Deployment-level kill switch; `0` disables email even if the setting is On. |
 | `INVENTORY_REMINDER_INTERVAL` | `300` | Poller interval in seconds (minimum 30). |
 

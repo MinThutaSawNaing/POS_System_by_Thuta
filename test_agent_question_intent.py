@@ -42,7 +42,10 @@ class QuestionIntentTests(SmartsTestBase):
     def test_followup_price_question_still_requires_live_data(self):
         self.orchestrator.agent.add_user_message("What is in my inventory?")
         self.orchestrator.agent.add_assistant_message("There are several products.")
-        with mock.patch.object(self.orchestrator.agent, "chat",
+        with mock.patch.object(self.orchestrator, '_verify_tool_intent', return_value={
+                'intent': 'tools', 'tools': ['get_inventory_status'],
+                'missing': [], 'message': ''}), \
+             mock.patch.object(self.orchestrator.agent, "chat",
                                return_value=ChatResponse(content="An invented product costs 9000.")) as chat:
             result = self.orchestrator.process_command("I want to know the most expensive one.")
         self.assertEqual(chat.call_count, 2)
@@ -113,7 +116,10 @@ class QuestionIntentTests(SmartsTestBase):
                                {"name": "Cheap", "price": "100.00"}])
         response = ChatResponse(content="", tool_calls=[ToolCall(
             id="read", function_name="get_inventory_status", arguments={})])
-        with mock.patch.object(self.orchestrator.agent, "chat", return_value=response), \
+        with mock.patch.object(self.orchestrator, '_verify_tool_intent', return_value={
+                'intent': 'tools', 'tools': ['get_inventory_status'],
+                'missing': [], 'message': ''}), \
+             mock.patch.object(self.orchestrator.agent, "chat", return_value=response), \
              mock.patch.object(self.orchestrator, "_execute_tools_with_context", return_value=data):
             result = self.orchestrator.process_command("Which product is the most expensive in my inventory?")
         self.assertTrue(result["success"])

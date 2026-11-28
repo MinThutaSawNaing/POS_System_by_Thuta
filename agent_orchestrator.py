@@ -1061,27 +1061,18 @@ class AgentOrchestrator:
             # required for every memory write.
             base_prompt = self._set_prompt_with_memory(self._build_memory_context(command, user_id))
             
-            # Check for multi-step task plans first
-            task_plan = self._parse_task_plan(command)
-            if task_plan:
-                print(f"[AI Agent] Multi-step task plan detected: {task_plan.description}")
-                plan_result = self._execute_task_plan(task_plan)
-                self.session_context["last_query"] = command
-                self._log_interaction(user_id, command, plan_result["message"], 
-                                    ["task_plan"] if plan_result["success"] else ["task_plan_failed"])
-                return self._with_contract(plan_result)
-            
             # ---- PHASE A/B: PLAN-THEN-EXECUTE --------------------------------
             # Snapshot the conversation so planning chatter (plan attempts,
             # compacted-result summaries) never pollutes the ordinary chat
             # history with large tool payloads.
             history_snapshot = list(self.agent.conversation_history)
+            planning_required = self._should_plan(command)
             plan = None
-            if self._should_plan(command):
+            if planning_required:
                 try:
                     plan = self._plan_command(command)
                 except Exception as exc:
-                    print(f"[AI Agent] Planning failed, falling back to single-shot: {exc}")
+                    print(f"[AI Agent] Planning failed: {exc}")
                     plan = None
 
             if plan is not None:
@@ -1097,9 +1088,18 @@ class AgentOrchestrator:
                         "plan": plan,
                     })
 
-            # Planning unavailable or invalid after retry: restore the exact
-            # pre-plan conversation and use today's single-shot path.
             self.agent.conversation_history = history_snapshot
+            write_requested = self._contains_write_intent(command) or any(
+                _TOOL_METADATA.get(name, {}).get('mutates')
+                for name in (self._verified_tool_names or ()))
+            if planning_required and write_requested:
+                message = ("I couldn't validate a safe plan for that request, so no "
+                           "changes were made. Please rephrase it or split it into "
+                           "smaller steps.")
+                self._log_interaction(user_id, command, message, [])
+                return self._with_contract({
+                    "success": False, "error": "Planning failed", "message": message,
+                })
             print("[AI Agent] No valid plan; using single-shot execution.")
 
             # Get filtered tools for this query
@@ -1182,10 +1182,7 @@ class AgentOrchestrator:
                     tool_results, filtered_tools, temperature, command)
 
             rejected_calls = [r for r in tool_results if r.get("rejected")]
-            if rejected_calls:
-                # A rejected call produced no data; never present it as a result and
-                # never let the model's prose fill the gap.
-                tool_results = []
+            tool_results = [r for r in tool_results if not r.get("rejected")]
 
             if tool_results:
                 # Update session context with results
@@ -1220,12 +1217,14 @@ class AgentOrchestrator:
             
             if final_message is None:
                 if rejected_calls:
-                    # Be explicit about the hallucinated call: nothing ran, and no
-                    # number in this answer is real.
-                    final_message = ("I tried to use a tool that this POS system does not "
-                                     "provide, so nothing was run and I have no data to "
-                                     "report. Please rephrase the request, or tell me "
-                                     "exactly which record you need.")
+                    details = "; ".join(
+                        f"{item.get('function_name') or 'Unnamed tool'}: {item.get('error')}"
+                        for item in rejected_calls[:3])
+                    final_message = (
+                        "One or more tool calls were not run because the POS system "
+                        "does not provide or accept them. I have no verified result "
+                        f"to report. {details} Please rephrase the request."
+                    )
                 elif data_query:
                     # Never expose the model's unverified numbers for data questions.
                     final_message = ("I couldn't retrieve enough verified data to answer that "
@@ -1236,11 +1235,19 @@ class AgentOrchestrator:
                 else:
                     final_message = response.content
                     
+            if rejected_calls and tool_results and final_message:
+                details = "; ".join(
+                    f"{item.get('function_name') or 'Unnamed tool'}: {item.get('error')}"
+                    for item in rejected_calls[:3])
+                if len(rejected_calls) > 3:
+                    details += f"; and {len(rejected_calls) - 3} more"
+                final_message = f"{final_message}\n\nSome tool calls were not run: {details}"
+
             # Log the interaction (optional)
             self._log_interaction(user_id, command, final_message, tool_results)
             
             result = self._with_contract({
-                "success": True,
+                "success": not rejected_calls,
                 "message": final_message,
                 "tool_results": tool_results,
                 "usage": response.usage
@@ -1356,8 +1363,9 @@ class AgentOrchestrator:
         """Validate raw plan steps.
 
         Returns (normalized_steps, error, fatal). Fatal errors (cap exceeded,
-        unknown tool) fall back to single-shot immediately; structural errors
-        are retried once with the validation message.
+        unknown tool) stop planning immediately; structural errors are retried
+        once with the validation message. The caller decides whether a read-only
+        single-shot fallback is safe.
         """
         if not isinstance(steps, list):
             return None, f"'steps' must be a list, got {type(steps).__name__}", False
@@ -1562,22 +1570,24 @@ class AgentOrchestrator:
             if tc.get("type") != "function":
                 continue
             func = tc.get("function", {})
+            parse_error = None
             try:
                 args = json.loads(func.get("arguments", "{}"))
-            except json.JSONDecodeError:
+            except (TypeError, ValueError) as exc:
                 args = {}
+                parse_error = str(exc)
             tool_calls.append(ToolCall(id=tc.get("id", ""),
                                        function_name=func.get("name", ""),
-                                       arguments=args))
+                                       arguments=args, parse_error=parse_error))
         return ChatResponse(content=content, tool_calls=tool_calls,
                             finish_reason=choice.get("finish_reason", ""),
                             usage=data.get("usage", {}))
 
     def _plan_command(self, command: str) -> Optional[Dict[str, Any]]:
-        """PHASE A: exactly one LLM planning call, with one validation retry.
+        """PHASE A: one LLM planning call, with one validation retry.
 
-        Returns a validated plan dict, or None to signal fallback to the
-        single-shot path. Never raises for expected model misbehaviour.
+        Returns a validated plan or clarification, or None when no safe plan was
+        produced. Never raises for expected model misbehaviour.
         """
         registry = self._get_tool_registry()
         catalog = self._build_planning_catalog(registry)
@@ -1631,12 +1641,16 @@ class AgentOrchestrator:
                     f"{last_error}. Call propose_plan again with a corrected plan."
                 )
 
+            plan_tokens = min(4096, max(900, 512 + self._max_plan_steps() * 256))
             response = self._planner_chat(
                 message=message, tools=[PLAN_TOOL_SCHEMA],
-                temperature=0.2, max_tokens=900,
+                temperature=0.2, max_tokens=plan_tokens,
             )
             if response.error:
                 print(f"[AI Agent] Planning call error: {response.error}")
+                return None
+            if response.finish_reason == "length":
+                print("[AI Agent] Planning response was truncated; no tools were run.")
                 return None
 
             plan_call = next(
@@ -1645,6 +1659,9 @@ class AgentOrchestrator:
             )
             if plan_call is None:
                 last_error = "no propose_plan tool call was made"
+                continue
+            if plan_call.parse_error:
+                last_error = f"plan arguments were not valid JSON ({plan_call.parse_error})"
                 continue
 
             raw = plan_call.arguments
@@ -1656,6 +1673,25 @@ class AgentOrchestrator:
             if not isinstance(raw, dict):
                 last_error = "plan arguments were not a JSON object"
                 continue
+            needs_clarification = raw.get("needs_clarification", False)
+            if not isinstance(needs_clarification, bool):
+                last_error = "needs_clarification must be true or false"
+                continue
+            if needs_clarification:
+                question = raw.get("question")
+                if not isinstance(question, str) or not question.strip():
+                    last_error = "a clarification plan needs a non-empty question"
+                    continue
+                if raw.get("steps") != []:
+                    last_error = "a clarification plan must have an empty steps list"
+                    continue
+                return {
+                    "original_query": command,
+                    "description": raw.get("description") or "",
+                    "steps": [],
+                    "needs_clarification": True,
+                    "question": question.strip(),
+                }
 
             steps, error, fatal = self._validate_plan(raw.get("steps"), registry)
             reference_warning = None
@@ -1684,10 +1720,10 @@ class AgentOrchestrator:
             last_error = error
             if fatal:
                 # Deterministic semantic violation: no point re-asking.
-                print(f"[AI Agent] Plan rejected ({error}); falling back.")
+                print(f"[AI Agent] Plan rejected ({error}); no plan was produced.")
                 return None
 
-        print(f"[AI Agent] Plan invalid after retry ({last_error}); falling back.")
+        print(f"[AI Agent] Plan invalid after retry ({last_error}); no plan was produced.")
         return None
 
     # ---- "$from" reference resolution --------------------------------------
@@ -2139,13 +2175,13 @@ class AgentOrchestrator:
             return None
         call = next((tc for tc in response.tool_calls
                      if tc.function_name == "supply_step_arguments"), None)
-        if call is None:
+        if call is None or call.parse_error:
             return None
         args = call.arguments
         if isinstance(args, str):
             try:
                 args = json.loads(args)
-            except json.JSONDecodeError:
+            except (TypeError, ValueError):
                 return None
         if isinstance(args, dict) and isinstance(args.get("args"), dict):
             return args["args"]
@@ -2348,27 +2384,28 @@ class AgentOrchestrator:
                 "plan": plan,
             })
 
-        step_results, _executed_writes = self._execute_plan(plan)
-        failed = [sr for sr in step_results if sr["status"] in ("failed", "skipped")]
+        try:
+            step_results, _executed_writes = self._execute_plan(plan)
+            failed = [sr for sr in step_results if sr["status"] in ("failed", "skipped")]
 
-        # Trivial single-step success: skip the summary LLM call entirely and
-        # format the real tool output directly (same as the single-shot path).
-        if len(step_results) == 1 and step_results[0]["status"] == "ok":
-            sr = step_results[0]
-            message = self._format_tool_results_for_user(
-                [{"function_name": sr["tool"], "result": sr.get("result"), "error": None}],
-                command,
-            ) or f"Completed '{sr['tool']}'."
-            return self._with_contract({
-                "success": True,
-                "message": message,
-                "plan": plan,
-                "step_results": step_results,
-            })
+            # Trivial single-step success: skip the summary LLM call entirely and
+            # format the real tool output directly (same as the single-shot path).
+            if len(step_results) == 1 and step_results[0]["status"] == "ok":
+                sr = step_results[0]
+                message = self._format_tool_results_for_user(
+                    [{"function_name": sr["tool"], "result": sr.get("result"), "error": None}],
+                    command,
+                ) or f"Completed '{sr['tool']}'."
+                return self._with_contract({
+                    "success": True,
+                    "message": message,
+                    "plan": plan,
+                    "step_results": step_results,
+                })
+        finally:
+            # Restore history so deterministic payloads never leave an orphan tool message.
+            self.agent.conversation_history = history_snapshot
 
-        # Restore the pre-plan conversation so the summary call starts from a
-        # clean context; large results travel only inside the summary prompt.
-        self.agent.conversation_history = history_snapshot
         message = self._generate_plan_summary(command, plan, step_results)
 
         return self._with_contract({

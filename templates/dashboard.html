@@ -5264,7 +5264,7 @@
               </div>
             </div>
             <div class="card-body">
-              <p class="text-muted small mb-3">The Dashboard panel always lists items at or below their MOQ. Choose whether the daily email is sent as well.</p>
+              <p class="text-muted small mb-3">The Dashboard panel always lists items at or below their MOQ. Choose whether the daily email is sent and at what time.</p>
               <fieldset class="mb-3" id="inventory-reminder-email-choice">
                 <legend class="form-label fs-6">Daily MOQ reminders</legend>
                 <div class="d-flex flex-column flex-sm-row gap-2">
@@ -5278,9 +5278,14 @@
                   </label>
                 </div>
               </fieldset>
-              <div id="inventory-reminder-settings-status" class="alert alert-light border py-2 small mb-3" role="status" aria-live="polite">Open this group to check the current choice.</div>
+              <div class="mb-3">
+                <label for="inventory-reminder-send-time" class="form-label">Daily send time</label>
+                <input type="time" class="form-control" id="inventory-reminder-send-time" value="09:00" required aria-describedby="inventory-reminder-send-time-help" />
+                <div id="inventory-reminder-send-time-help" class="form-text">Asia/Yangon time. The poller checks every five minutes by default; the first check at or after this time sends any pending reminders.</div>
+              </div>
+              <div id="inventory-reminder-settings-status" class="alert alert-light border py-2 small mb-3" role="status" aria-live="polite">Open this group to check the current settings.</div>
               <button type="button" class="btn btn-primary" id="save-inventory-reminder-settings-btn" onclick="saveInventoryReminderSettings()">
-                <i class="bi bi-save me-1"></i>Save reminder setting
+                <i class="bi bi-save me-1"></i>Save reminder settings
               </button>
               <div class="border-top pt-3 mt-3">
                 <label class="form-label" for="inventory-reminder-test-email">Send a test reminder</label>
@@ -5290,7 +5295,7 @@
                     <i class="bi bi-send me-1"></i>Send test
                   </button>
                 </div>
-                <div class="form-text">Uses the real reminder template for this branch's current low-stock items. It does not change who receives the daily email.</div>
+                <div class="form-text">Uses the real reminder template for this branch's current low-stock items. It sends immediately, even before the daily time, and does not use up the daily reminder or change who receives it.</div>
               </div>
             </div>
           </div>
@@ -10502,6 +10507,12 @@
         status.classList.add(tone || "alert-light");
       }
 
+      function inventoryReminderScheduleNote(data) {
+        const sendTime = data.send_time || "09:00";
+        const timezone = data.timezone || "Asia/Yangon";
+        return ` Daily send time: ${sendTime} (${timezone}).`;
+      }
+
       function loadInventoryReminderSettings(force) {
         const on = document.getElementById("inventory-reminder-email-on");
         if (!on) return Promise.resolve();
@@ -10516,14 +10527,17 @@
             document.getElementById(
               data.enabled === false ? "inventory-reminder-email-off" : "inventory-reminder-email-on"
             ).checked = true;
+            const sendTimeInput = document.getElementById("inventory-reminder-send-time");
+            if (sendTimeInput) sendTimeInput.value = data.send_time || "09:00";
             const mailNote =
               data.mail_ready === false
                 ? " Email delivery is not configured yet, so nothing can be sent."
                 : "";
+            const scheduleNote = inventoryReminderScheduleNote(data);
             setInventoryReminderSettingsStatus(
               data.enabled === false
-                ? "Reminder emails are off. The dashboard panel still lists low items." + mailNote
-                : "Reminder emails are on. Managers and the boss get one email a day per low item." + mailNote,
+                ? "Reminder emails are off. The dashboard panel still lists low items." + mailNote + scheduleNote
+                : "Reminder emails are on. Managers and the boss get one email a day per low item." + mailNote + scheduleNote,
               data.enabled === false || data.mail_ready === false ? "alert-warning" : "alert-success"
             );
             const testInput = document.getElementById("inventory-reminder-test-email");
@@ -10533,10 +10547,10 @@
           })
           .catch((error) => {
             setInventoryReminderSettingsStatus(
-              "Could not load the reminder setting. Try Refresh.",
+              "Could not load the reminder settings. Try Refresh.",
               "alert-warning"
             );
-            console.error("Error loading reminder setting:", error);
+            console.error("Error loading reminder settings:", error);
           });
       }
       function saveInventoryReminderSettings() {
@@ -10544,6 +10558,14 @@
         const on = document.getElementById("inventory-reminder-email-on");
         if (!on) return;
         const enabled = on.checked;
+        const sendTimeInput = document.getElementById("inventory-reminder-send-time");
+        const sendTime = (sendTimeInput?.value || "").trim();
+        if (!sendTime) {
+          showToast("Choose a daily reminder send time", "warning");
+          setInventoryReminderSettingsStatus("Choose a daily send time before saving.", "alert-warning");
+          sendTimeInput?.focus();
+          return;
+        }
         const button = document.getElementById("save-inventory-reminder-settings-btn");
         const original = button?.innerHTML;
         if (button) {
@@ -10554,28 +10576,30 @@
         fetch("/api/settings/inventory-reminders", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enabled }),
+          body: JSON.stringify({ enabled, send_time: sendTime }),
         })
           .then(async (response) => {
             const data = await response.json();
             if (!response.ok || !data.success) {
-              throw new Error(data.message || "Failed to save reminder setting");
+              throw new Error(data.message || "Failed to save reminder settings");
             }
             document.getElementById(
               data.enabled ? "inventory-reminder-email-on" : "inventory-reminder-email-off"
             ).checked = true;
+            if (sendTimeInput) sendTimeInput.value = data.send_time || sendTime;
+            const scheduleNote = inventoryReminderScheduleNote(data);
             setInventoryReminderSettingsStatus(
               data.enabled
-                ? "Reminder emails are on. Managers and the boss get one email a day per low item." +
+                ? "Reminder emails are on. Managers and the boss get one email a day per low item." + scheduleNote +
                   (data.mail_ready ? "" : " Email delivery is not configured yet.")
-                : "Reminder emails are off. The dashboard panel still lists low items.",
+                : "Reminder emails are off. The dashboard panel still lists low items." + scheduleNote,
               data.enabled && data.mail_ready ? "alert-success" : "alert-warning"
             );
-            showToast(data.message || "Reminder setting saved", "success");
+            showToast(data.message || "Reminder settings saved", "success");
           })
           .catch((error) => {
-            console.error("Error saving reminder setting:", error);
-            showToast(error.message || "Failed to save reminder setting", "error");
+            console.error("Error saving reminder settings:", error);
+            showToast(error.message || "Failed to save reminder settings", "error");
           })
           .finally(() => {
             if (button) {

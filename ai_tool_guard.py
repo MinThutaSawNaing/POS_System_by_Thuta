@@ -143,6 +143,86 @@ def _tool_list(available: Sequence[str]) -> str:
     return ", ".join(shown) + suffix
 
 
+def _validate_value(value: Any, spec: Mapping[str, Any], path: str) -> tuple:
+    """Validate and clean one value against the JSON schema subset tools use."""
+    kind = spec.get('type')
+    types = kind if isinstance(kind, list) else [kind]
+    if isinstance(value, str) and ('number' in types or 'integer' in types):
+        coerced = coerce_number(value)
+        if coerced is not None and ('number' in types or isinstance(coerced, int)):
+            value = coerced
+    matches = {
+        'integer': type(value) is int,
+        'number': type(value) in (int, float),
+        'boolean': type(value) is bool,
+        'string': isinstance(value, str),
+        'object': isinstance(value, Mapping),
+        'array': isinstance(value, list),
+        'null': value is None,
+    }
+    if kind and not any(matches.get(item, True) for item in types):
+        return None, f"{path} must have JSON type {kind}{_describe_received(value)}"
+    if 'enum' in spec and value not in spec['enum']:
+        return None, f"{path} must be one of {spec['enum']}"
+    if type(value) in (int, float):
+        if 'minimum' in spec and value < spec['minimum']:
+            return None, f"{path} must be at least {spec['minimum']}"
+        if 'maximum' in spec and value > spec['maximum']:
+            return None, f"{path} must be at most {spec['maximum']}"
+
+    if isinstance(value, Mapping):
+        properties = spec.get('properties')
+        additional = spec.get('additionalProperties')
+        if isinstance(properties, Mapping):
+            allowed = set(properties)
+            missing = [key for key in spec.get('required', ())
+                       if key not in value or value[key] is None
+                       or (isinstance(value[key], str) and not value[key].strip())]
+            if missing:
+                return None, f"{path} is missing required field(s): {', '.join(missing)}"
+            unknown = sorted(str(key) for key in value if key not in allowed)
+            if unknown and additional is not True and not isinstance(additional, Mapping):
+                return None, (f"{path} has undocumented field(s): {', '.join(unknown)}. "
+                              f"Allowed fields: {', '.join(sorted(allowed)) or 'none'}")
+            cleaned = {}
+            for key, item in value.items():
+                if key in properties:
+                    result, error = _validate_value(item, properties[key], f"{path}.{key}")
+                elif isinstance(additional, Mapping):
+                    result, error = _validate_value(item, additional, f"{path}.{key}")
+                else:
+                    result, error = item, None
+                if error:
+                    return None, error
+                cleaned[key] = result
+            return cleaned, None
+        if isinstance(additional, Mapping):
+            cleaned = {}
+            for key, item in value.items():
+                result, error = _validate_value(item, additional, f"{path}.{key}")
+                if error:
+                    return None, error
+                cleaned[key] = result
+            return cleaned, None
+        return dict(value), None
+
+    if isinstance(value, list):
+        if 'minItems' in spec and len(value) < spec['minItems']:
+            return None, f"{path} must contain at least {spec['minItems']} item(s)"
+        if 'maxItems' in spec and len(value) > spec['maxItems']:
+            return None, f"{path} must contain at most {spec['maxItems']} item(s)"
+        item_spec = spec.get('items')
+        if isinstance(item_spec, Mapping):
+            cleaned = []
+            for index, item in enumerate(value):
+                result, error = _validate_value(item, item_spec, f"{path}[{index}]")
+                if error:
+                    return None, error
+                cleaned.append(result)
+            return cleaned, None
+    return value, None
+
+
 def guard_tool_call(
     name: Any,
     arguments: Any,
@@ -215,37 +295,10 @@ def guard_tool_call(
                     f"Missing required arguments for '{name}': {', '.join(missing)}. "
                     "Nothing was executed."))
             for key, value in cleaned.items():
-                spec = properties[key]
-                kind = spec.get('type')
-                types = kind if isinstance(kind, list) else [kind]
-                # A numeric parameter fed a numeric string ("5350000",
-                # "5,350,000 MMK") is the same value the planner read from a
-                # tool result, so coerce it instead of failing the step.
-                if isinstance(value, str) and ('number' in types or 'integer' in types):
-                    coerced = coerce_number(value)
-                    if coerced is not None and ('number' in types or isinstance(coerced, int)):
-                        cleaned[key] = value = coerced
-                matches = {
-                    'integer': type(value) is int,
-                    'number': type(value) in (int, float),
-                    'boolean': type(value) is bool,
-                    'string': isinstance(value, str),
-                    'object': isinstance(value, Mapping),
-                    'array': isinstance(value, list),
-                    'null': value is None,
-                }
-                error = None
-                if kind and not any(matches.get(t, True) for t in types):
-                    error = f"must have JSON type {kind}{_describe_received(value)}"
-                elif 'enum' in spec and value not in spec['enum']:
-                    error = f"must be one of {spec['enum']}"
-                elif type(value) in (int, float):
-                    if 'minimum' in spec and value < spec['minimum']:
-                        error = f"must be at least {spec['minimum']}"
-                    elif 'maximum' in spec and value > spec['maximum']:
-                        error = f"must be at most {spec['maximum']}"
+                cleaned_value, error = _validate_value(value, properties[key], key)
                 if error:
                     return GuardedToolCall(name, {}, (
                         f"Invalid argument '{key}' for '{name}': {error}. "
                         "Nothing was executed; retry with documented arguments."))
+                cleaned[key] = cleaned_value
     return GuardedToolCall(name, cleaned, None, dropped)
