@@ -43,12 +43,17 @@ def _run_handler(name, invocation, source_id, fail_fetch=False):
     import json
 
     source = DASHBOARD.read_text(encoding="utf-8")
-    helpers = _function(source, name)
-    if "function showModalAfterHiding" in source:
-        helpers = _function(source, "showModalAfterHiding") + "\n" + helpers
+    helpers = "\n".join(_function(source, helper) for helper in (
+        "showModalAfterHiding", "inventoryIdentity", "debtPaymentUsable",
+        "updateDebtPaymentControls", name,
+    ))
     script = """
 const elements = new Map(), instances = new Map(), fields = {}, pending = [];
-let currentSaleTransactionId;
+const CACHE_USER_ID = 7, CACHE_USER_ROLE = 'manager';
+const currentBranch = {id: 1};
+let currentSaleTransactionId, debtPaymentDraft = null;
+let dashboardSessionStale = false, dashboardBranchStale = false;
+let branchSwitchInFlight = false;
 const overlaps = [], toasts = [];
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
@@ -90,7 +95,7 @@ function requireCapability(capability) { return capability === 'debts'; }
 function showToast(message) { toasts.push(message); }
 console.error = () => {};
 globalThis.fetch = () => __FAIL__ ? Promise.reject(new Error('offline')) :
-  Promise.resolve({ json: () => Promise.resolve({
+  Promise.resolve({ ok: true, json: () => Promise.resolve({
     id: 7, customer_name: 'Test customer', amount: 50, balance: 25,
   }) });
 __HELPERS__

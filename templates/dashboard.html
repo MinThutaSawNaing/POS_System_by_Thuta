@@ -2068,6 +2068,13 @@
             <i class="bi bi-arrow-left-right"></i>Returns
           </a>
         </li>
+        {% if session.role in ('manager', 'boss') %}
+        <li class="nav-item">
+          <a class="nav-link" href="#" data-capability="admin" onclick="showSection('accounting')">
+            <i class="bi bi-journal-bookmark"></i>Accounting
+          </a>
+        </li>
+        {% endif %}
         <li class="nav-item">
           <a class="nav-link" href="#" onclick="showSection('reports')">
             <i class="bi bi-graph-up"></i>Reports
@@ -3092,6 +3099,8 @@
           </div>
         </div></div>
       </div>
+
+      {% include 'accounting.html' %}
 
       <!-- Reports Section -->
       <div id="reports-section" style="display: none">
@@ -6557,10 +6566,16 @@
               Net: <strong id="summary-net-total">$0.00</strong>
               <span class="ms-2" id="summary-settlement-hint"></span>
             </div>
+            {% if session.role in ('manager', 'boss') %}
+            <div class="alert alert-info mt-3 mb-0">
+              For a sale made before accounting activation, enter an accountant-reviewed recovery unit cost on each affected return line. Leave it blank for sales with recorded FIFO cost.
+            </div>
+            {% endif %}
+            <div class="alert mt-3 mb-0" id="return-exchange-status" role="alert" hidden></div>
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-            <button type="button" class="btn btn-warning" onclick="submitReturnExchange()">
+            <button type="button" class="btn btn-warning" id="return-exchange-submit" onclick="submitReturnExchange()">
               <i class="bi bi-arrow-left-right"></i> Process Return / Exchange
             </button>
           </div>
@@ -7208,13 +7223,14 @@
                 <label class="form-label">Notes</label>
                 <textarea class="form-control" id="payment-notes" rows="2"></textarea>
               </div>
+              <div id="payment-status" class="alert d-none" role="alert" tabindex="-1"></div>
             </form>
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
               Cancel
             </button>
-            <button type="button" class="btn btn-success" onclick="makePayment()">
+            <button type="button" class="btn btn-success" id="make-payment-submit" onclick="makePayment()">
               <i class="bi bi-cash"></i> Make Payment
             </button>
           </div>
@@ -11055,6 +11071,7 @@
       let branchesList = [];
 
       // ===== BRANCH UNSAVED WORK =====
+      const returnExchangeSubmission = {pending: false, uncertain: false, key: null, payload: null, identity: null};
       // Track values, not a sticky "changed" flag. Capture before the first user
       // edit so asynchronously populated edit forms are not mistaken for drafts.
       const branchDraftBaselines = new Map();
@@ -11154,6 +11171,7 @@
         if (settingsChanged) work.push("unsaved settings");
         if (pendingReceiptLogoFile) work.push("the staged receipt logo");
         if (pendingMMQRFile || pendingMMQRRemoval) work.push("staged MMQR changes");
+        if (returnExchangeSubmission.pending || returnExchangeSubmission.uncertain) work.push("an unconfirmed return/exchange");
         for (const [field, baseline] of branchDraftBaselines) {
           if (!field.isConnected) { branchDraftBaselines.delete(field); continue; }
           if (branchDraftValue(field) !== baseline) {
@@ -11288,6 +11306,7 @@
         refreshAutomatedOfflineFetchOnStartup();
         if (hasCapability("catalog.write")) loadCategoryDropdowns();
         if (currentSection === "pos") checkOfflineProductCatalog();
+        if (currentSection === "accounting" && typeof window.loadAccounting === "function") window.loadAccounting();
       }
 
       function applyCachedCurrentBranch() {
@@ -11679,6 +11698,7 @@
       let salesChart = null;
       let paymentChart = null;
       let returnExchangeSaleData = null;
+      let returnExchangeLoadToken = 0;
       const pageState = {
         products: 1,
         sales: 1,
@@ -12316,6 +12336,7 @@
         categories: () => loadCategories(),
         sales: () => loadSales(),
         returns: () => loadReturns(),
+        accounting: () => loadAccounting(),
         reports: () => { toggleReportScopeControls(); generateReport(); },
         promotions: () => { loadPromotions(); loadProductsForPromotionModal(); loadCoupons(); },
         customers: () => loadCustomers(),
@@ -12344,6 +12365,8 @@
         // reports group too.
         sales: ["sales", "reports"],
         returns: ["returns"],
+        // No cache resources: the live-only accounting workspace reloads on every entry.
+        accounting: [],
         reports: ["reports", "dashboard"],
         promotions: ["promotions", "products"],
         customers: ["customers"],
@@ -17753,6 +17776,7 @@
         if (textEl) textEl.textContent = cfg.text;
         const iconEl = document.getElementById("connection-status-icon");
         if (iconEl) iconEl.className = "bi " + cfg.icon + " status-icon";
+        window.dispatchEvent(new CustomEvent("pos-connection-status", {detail: {status}}));
       }
 
       function isBrowserOffline() {
@@ -20594,8 +20618,52 @@
         }
       }
 
+      function returnExchangeIdentity() {
+        return JSON.stringify([CACHE_USER_ID, CURRENT_USER_ROLE, currentBranch?.id,
+          dashboardSessionStale, dashboardBranchStale, branchSwitchInFlight]);
+      }
+
+      function setReturnExchangeSubmissionUI(message = "", uncertain = false) {
+        const modal = document.getElementById("returnExchangeModal");
+        const locked = returnExchangeSubmission.pending || uncertain;
+        modal.querySelectorAll(".modal-body input, .modal-body select, .modal-body button, .modal-footer button:not(#return-exchange-submit)")
+          .forEach((control) => { control.disabled = locked; });
+        const submit = document.getElementById("return-exchange-submit");
+        submit.disabled = returnExchangeSubmission.pending;
+        submit.innerHTML = uncertain
+          ? '<span class="spinner-border spinner-sm"></span> Retry the same request'
+          : '<i class="bi bi-arrow-left-right"></i> Process Return / Exchange';
+        const status = document.getElementById("return-exchange-status");
+        status.textContent = message;
+        status.hidden = !message;
+        status.classList.toggle("alert-warning", uncertain);
+        status.classList.toggle("alert-danger", !uncertain && Boolean(message));
+      }
+
+      function resetReturnExchangeSubmission() {
+        returnExchangeSubmission.pending = false;
+        returnExchangeSubmission.uncertain = false;
+        returnExchangeSubmission.key = null;
+        returnExchangeSubmission.payload = null;
+        returnExchangeSubmission.identity = null;
+        setReturnExchangeSubmissionUI();
+      }
+
+      document.getElementById("returnExchangeModal").addEventListener("hide.bs.modal", (event) => {
+        if (returnExchangeSubmission.pending || returnExchangeSubmission.uncertain) {
+          event.preventDefault();
+          showToast("Wait for this request or retry it with the retained key before closing.", "warning");
+        }
+      });
+
       function openReturnExchangeModal(transactionId) {
+        if (returnExchangeSubmission.pending || returnExchangeSubmission.uncertain) {
+          showToast("Resolve the unconfirmed return/exchange before opening another sale.", "warning");
+          return;
+        }
         const modal = new bootstrap.Modal(document.getElementById("returnExchangeModal"));
+        const load = ++returnExchangeLoadToken;
+        resetReturnExchangeSubmission();
         document.getElementById("return-exchange-sale-id").textContent = transactionId;
         document.getElementById("return-items-container").innerHTML = '<div class="text-muted">Loading original sale items...</div>';
         document.getElementById("exchange-items-container").innerHTML = "";
@@ -20607,6 +20675,7 @@
         fetch(`/api/sales/${transactionId}`)
           .then((r) => r.json())
           .then((sale) => {
+            if (load !== returnExchangeLoadToken) return;
             if (!sale || !sale.transaction_id) {
               throw new Error(sale?.message || "Sale not found");
             }
@@ -20623,7 +20692,9 @@
             refreshReturnExchangeSummary();
           })
           .catch((e) => {
-            document.getElementById("return-items-container").innerHTML = `<div class="alert alert-danger mb-0">${e.message}</div>`;
+            if (load !== returnExchangeLoadToken) return;
+            document.getElementById("return-items-container").textContent = e.message;
+            document.getElementById("return-items-container").className = "alert alert-danger mb-0";
           });
       }
 
@@ -20639,6 +20710,25 @@
           <div class="col-3"><input type="number" min="1" value="1" class="form-control return-item-qty" /></div>
           <div class="col-2"><button class="btn btn-outline-danger w-100" onclick="this.closest('.return-item-row').remove(); refreshReturnExchangeSummary();"><i class="bi bi-x"></i></button></div>
         `;
+        if (hasManagerOrBossAccess()) {
+          const costWrap = document.createElement("div");
+          costWrap.className = "col-12";
+          const costId = `return-legacy-cost-${returnExchangeLoadToken}-${document.querySelectorAll(".return-item-cost").length}`;
+          const label = document.createElement("label");
+          label.className = "form-label small mb-1";
+          label.htmlFor = costId;
+          label.textContent = "Reviewed recovery unit cost (pre-accounting sale only)";
+          const cost = document.createElement("input");
+          cost.id = costId;
+          cost.type = "text";
+          cost.inputMode = "decimal";
+          cost.pattern = "[0-9]{1,12}([.][0-9]{1,2})?";
+          cost.maxLength = 15;
+          cost.className = "form-control form-control-sm return-item-cost";
+          cost.placeholder = "Leave blank when FIFO cost exists";
+          costWrap.append(label, cost);
+          row.appendChild(costWrap);
+        }
         const select = row.querySelector(".return-item-select");
         select.innerHTML = '<option value="">Select item</option>';
         items.forEach((item) => {
@@ -20655,6 +20745,8 @@
           const qtyInput = row.querySelector(".return-item-qty");
           qtyInput.max = max;
           if (Number(qtyInput.value) > max) qtyInput.value = max;
+          const costInput = row.querySelector(".return-item-cost");
+          if (costInput) costInput.value = "";
           refreshReturnExchangeSummary();
         });
         row.querySelector(".return-item-qty").addEventListener("input", () => {
@@ -20715,6 +20807,27 @@
         return { returnItems, exchangeItems };
       }
 
+      function collectReturnLegacyCosts(returnItems) {
+        const seen = new Set();
+        const costs = {};
+        for (const row of document.querySelectorAll(".return-item-row")) {
+          const saleItemId = parseInt(row.querySelector(".return-item-select").value || "0", 10);
+          if (saleItemId <= 0) continue;
+          if (seen.has(saleItemId)) throw new Error("Combine duplicate return lines before submitting.");
+          seen.add(saleItemId);
+          const input = row.querySelector(".return-item-cost");
+          const cost = input?.value.trim() || "";
+          if (!cost) continue;
+          if (!hasManagerOrBossAccess()) throw new Error("Only a manager or boss can approve recovery costs.");
+          if (!/^[0-9]{1,12}([.][0-9]{1,2})?$/.test(cost)) {
+            throw new Error("Recovery unit costs must be non-negative amounts with at most two decimals.");
+          }
+          costs[String(saleItemId)] = cost;
+        }
+        if (!returnItems.length) throw new Error("Please add at least one return item.");
+        return costs;
+      }
+
       function refreshReturnExchangeSummary() {
         if (!returnExchangeSaleData) return;
         const { returnItems, exchangeItems } = collectReturnExchangePayload();
@@ -20749,49 +20862,100 @@
           : "(No settlement)";
       }
 
-      function submitReturnExchange() {
-        if (!returnExchangeSaleData) return;
-        const { returnItems, exchangeItems } = collectReturnExchangePayload();
-        if (!returnItems.length) {
-          showToast("Please add at least one return item.", "warning");
+      async function submitReturnExchange() {
+        if (returnExchangeSubmission.pending || !returnExchangeSaleData) return;
+        const identity = returnExchangeIdentity();
+        if (dashboardSessionStale || dashboardBranchStale || branchSwitchInFlight) {
+          showToast("Account or branch changed. Reload before submitting a return/exchange.", "warning");
+          return;
+        }
+        if (returnExchangeSubmission.uncertain && identity !== returnExchangeSubmission.identity) {
+          showToast("Account or branch changed. The previous outcome is unconfirmed; check Returns before resubmitting.", "warning");
           return;
         }
 
-        const payload = {
-          original_transaction_id: returnExchangeSaleData.transaction_id,
-          return_items: returnItems,
-          exchange_items: exchangeItems,
-          settlement_method: document.getElementById("return-exchange-settlement-method").value,
-          notes: document.getElementById("return-exchange-notes").value.trim() || null,
-        };
+        let payload = returnExchangeSubmission.payload;
+        try {
+          if (!returnExchangeSubmission.uncertain) {
+            const { returnItems, exchangeItems } = collectReturnExchangePayload();
+            const legacyCosts = collectReturnLegacyCosts(returnItems);
+            if (!globalThis.crypto?.randomUUID) throw new Error("Secure request-key generation is unavailable. Use HTTPS or localhost.");
+            payload = {
+              idempotency_key: globalThis.crypto.randomUUID(),
+              original_transaction_id: returnExchangeSaleData.transaction_id,
+              return_items: returnItems,
+              exchange_items: exchangeItems,
+              settlement_method: document.getElementById("return-exchange-settlement-method").value,
+              notes: document.getElementById("return-exchange-notes").value.trim() || null,
+              ...(Object.keys(legacyCosts).length ? {legacy_costs: legacyCosts} : {}),
+            };
+            returnExchangeSubmission.key = payload.idempotency_key;
+            returnExchangeSubmission.payload = payload;
+            returnExchangeSubmission.identity = identity;
+          }
+        } catch (error) {
+          showToast(error.message, "warning");
+          return;
+        }
 
-        fetch("/api/returns_exchanges", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        })
-          .then((r) => r.json())
-          .then((data) => {
-            if (!data.success) {
-              showToast(data.message || "Failed to process return/exchange", "error");
-              return;
-            }
-            showToast(`Workflow completed. ID: ${data.workflow_id}`, "success");
-            const modal = bootstrap.Modal.getInstance(document.getElementById("returnExchangeModal"));
-            if (typeof markBranchFormSaved === "function") markBranchFormSaved("returnExchangeModal");
-            modal.hide();
-            invalidateProductsCache();
-            sectionStateOf("returns").rendered = false;
-            loadProducts();
-            loadProductsForPOS();
-            loadSales();
-            loadDashboardStats();
-            if (currentSection === "returns") loadReturns();
-            openReturnExchangeReceipt(data.workflow_id);
-          })
-          .catch((e) => {
-            showToast(`Failed to process return/exchange: ${e.message}`, "error");
+        returnExchangeSubmission.pending = true;
+        setReturnExchangeSubmissionUI("Submitting the return/exchange…");
+        let feedback = "";
+        let confirmed = false;
+        try {
+          const response = await fetch("/api/returns_exchanges", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify(payload),
           });
+          const data = await response.json().catch(() => null);
+          if (!response.ok || !data?.success) {
+            const error = new Error(data?.message || data?.error || `Request failed (HTTP ${response.status}).`);
+            error.definite = response.status >= 400 && response.status < 500 && ![408, 409, 425, 429].includes(response.status);
+            throw error;
+          }
+          if (!data.workflow_id) throw new Error("The server did not confirm a workflow ID. The outcome is unconfirmed.");
+          if (identity !== returnExchangeIdentity()) {
+            returnExchangeSubmission.uncertain = true;
+            feedback = "The request finished after the account or branch changed. Its outcome is unconfirmed; check Returns before resubmitting.";
+            showToast(feedback, "warning");
+            return;
+          }
+          confirmed = true;
+          showToast(`Workflow completed. ID: ${data.workflow_id}`, "success");
+          resetReturnExchangeSubmission();
+          const modal = bootstrap.Modal.getInstance(document.getElementById("returnExchangeModal"));
+          if (typeof markBranchFormSaved === "function") markBranchFormSaved("returnExchangeModal");
+          modal.hide();
+          invalidateProductsCache();
+          sectionStateOf("returns").rendered = false;
+          loadProducts();
+          loadProductsForPOS();
+          loadSales();
+          loadDashboardStats();
+          if (currentSection === "returns") loadReturns();
+          openReturnExchangeReceipt(data.workflow_id);
+        } catch (error) {
+          if (confirmed) {
+            feedback = "The return/exchange was saved, but the screen could not refresh. Reload to view the completed workflow.";
+            showToast(feedback, "warning");
+            return;
+          }
+          const identityChanged = identity !== returnExchangeIdentity();
+          returnExchangeSubmission.uncertain = identityChanged || !error.definite;
+          if (returnExchangeSubmission.uncertain) {
+            feedback = "Outcome unconfirmed. The original values and request key are retained. Retry this same request; do not re-enter it elsewhere.";
+          } else {
+            returnExchangeSubmission.key = null;
+            returnExchangeSubmission.payload = null;
+            returnExchangeSubmission.identity = null;
+            feedback = error.message || "Not saved. Correct the request and retry.";
+          }
+          showToast(feedback, "error");
+        } finally {
+          returnExchangeSubmission.pending = false;
+          setReturnExchangeSubmissionUI(feedback, returnExchangeSubmission.uncertain);
+        }
       }
 
       // Reports functions
@@ -23149,67 +23313,180 @@
         );
       }
 
+      let debtPaymentDraft = null;
+
+      function debtPaymentUsable() {
+        return !(typeof dashboardSessionStale !== "undefined" && dashboardSessionStale) &&
+          !(typeof dashboardBranchStale !== "undefined" && dashboardBranchStale) &&
+          !(typeof branchSwitchInFlight !== "undefined" && branchSwitchInFlight);
+      }
+
+      function showDebtPaymentStatus(text, kind = "danger") {
+        const status = document.getElementById("payment-status");
+        status.textContent = text;
+        status.className = `alert alert-${kind}`;
+        status.hidden = false;
+      }
+
+      function updateDebtPaymentControls() {
+        const draft = debtPaymentDraft;
+        const loading = Boolean(draft?.loading);
+        const pending = Boolean(draft?.pending);
+        const uncertain = Boolean(draft?.uncertain);
+        document.getElementById("payment-amount").disabled = loading || pending || uncertain;
+        document.getElementById("payment-notes").disabled = loading || pending || uncertain;
+        const submit = document.getElementById("make-payment-submit");
+        submit.disabled = loading || pending;
+        submit.textContent = uncertain ? "Retry the same payment" : pending ? "Recording payment…" : "Make Payment";
+        document.querySelectorAll("#makePaymentModal [data-bs-dismiss='modal']").forEach((button) => {
+          button.disabled = pending || uncertain;
+        });
+      }
+
+      document.getElementById("makePaymentModal").addEventListener("hide.bs.modal", (event) => {
+        if (debtPaymentDraft?.pending || debtPaymentDraft?.uncertain) {
+          event.preventDefault();
+          showToast(debtPaymentDraft.pending ? "Wait for this payment request to finish." : "Retry the retained payment before closing this form.", "warning");
+        }
+      });
+      document.getElementById("make-payment-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        makePayment();
+      });
+      window.addEventListener("beforeunload", (event) => {
+        if (!debtPaymentDraft?.key) return;
+        event.preventDefault();
+        event.returnValue = "";
+      });
+
       function showMakePaymentModal(debtId) {
         if (!requireCapability("debts")) return;
+        const identity = inventoryIdentity();
+        if (!debtPaymentUsable()) {
+          showToast("Account or branch changed. Reload before recording a payment.", "warning");
+          return;
+        }
+        if (debtPaymentDraft?.pending || debtPaymentDraft?.uncertain) {
+          if (String(debtPaymentDraft.debtId) === String(debtId) && debtPaymentDraft.identity === identity) {
+            showModalAfterHiding("makePaymentModal");
+          } else {
+            showToast("Finish or retry the retained payment before opening another debt.", "warning");
+          }
+          return;
+        }
+        const attempt = {debtId: String(debtId), identity, loading: true, pending: false,
+          uncertain: false, key: null, payload: null, balance: null};
+        debtPaymentDraft = attempt;
+        updateDebtPaymentControls();
         fetch("/api/debts/" + debtId)
-          .then((response) => response.json())
+          .then((response) => {
+            if (!response.ok) throw new Error("Failed to load debt details");
+            return response.json();
+          })
           .then((debt) => {
+            if (debtPaymentDraft !== attempt) return;
+            if (attempt.identity !== inventoryIdentity() || !debtPaymentUsable()) {
+              debtPaymentDraft = null;
+              updateDebtPaymentControls();
+              showToast("Account or branch changed. Reload before recording a payment.", "warning");
+              return;
+            }
             document.getElementById("payment-debt-id").value = debt.id;
             document.getElementById("payment-customer-name").value = debt.customer_name;
-            document.getElementById("payment-original-amount").value = debt.amount.toFixed(2);
-            document.getElementById("payment-balance").value = debt.balance.toFixed(2);
-            document.getElementById("payment-amount").value = debt.balance.toFixed(2);
+            document.getElementById("payment-original-amount").value = Number(debt.amount).toFixed(2);
+            document.getElementById("payment-balance").value = Number(debt.balance).toFixed(2);
+            document.getElementById("payment-amount").value = Number(debt.balance).toFixed(2);
             document.getElementById("payment-notes").value = "";
-
+            attempt.balance = Number(debt.balance);
+            attempt.loading = false;
+            updateDebtPaymentControls();
             showModalAfterHiding("makePaymentModal");
           })
           .catch((error) => {
+            if (debtPaymentDraft !== attempt) return;
+            debtPaymentDraft = null;
+            updateDebtPaymentControls();
             console.error("Error loading debt details:", error);
             showToast("Failed to load debt details", "error");
           });
       }
 
-      function makePayment() {
-        const debtId = document.getElementById("payment-debt-id").value;
-        const amount = parseFloat(document.getElementById("payment-amount").value);
-        const notes = document.getElementById("payment-notes").value.trim();
-
-        if (!debtId || toCents(amount) <= 0) {
-          showToast("Please enter a valid payment amount", "warning");
+      async function makePayment() {
+        const draft = debtPaymentDraft;
+        if (!draft || draft.loading || draft.pending) return;
+        if (!debtPaymentUsable() || draft.identity !== inventoryIdentity()) {
+          showDebtPaymentStatus("Account or branch changed. Reload before retrying this payment.");
           return;
         }
-
-        const paymentData = {
-          amount: centsToNumber(toCents(amount)),
-          notes: notes || null,
-        };
-
-        fetch("/api/debts/" + debtId + "/payment", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(paymentData),
-        })
-          .then((response) => response.json())
-          .then((data) => {
-            if (data.success) {
-              showToast(`Payment recorded successfully! Remaining balance: ${formatCurrency(data.remaining_balance || 0)}`, "success");
-              const modal = bootstrap.Modal.getInstance(
-                document.getElementById("makePaymentModal")
-              );
-              if (typeof markBranchFormSaved === "function") markBranchFormSaved("makePaymentModal");
-              modal.hide();
-              loadDebts();
-              loadCustomers();
-            } else {
-              showToast("Error recording payment: " + (data.message || "Unknown error"), "error");
-            }
-          })
-          .catch((error) => {
-            console.error("Error making payment:", error);
-            showToast("Error making payment: " + error.message, "error");
+        if (navigator.onLine === false || (typeof checkoutServerUnavailable !== "undefined" && checkoutServerUnavailable)) {
+          showDebtPaymentStatus("Reconnect before recording this payment. Nothing is queued offline.", "warning");
+          return;
+        }
+        if (!draft.uncertain) {
+          const debtId = document.getElementById("payment-debt-id").value;
+          const amount = parseFloat(document.getElementById("payment-amount").value);
+          const notes = document.getElementById("payment-notes").value.trim();
+          if (!debtId || toCents(amount) <= 0) {
+            showDebtPaymentStatus("Enter a valid payment amount.", "warning");
+            return;
+          }
+          if (!globalThis.crypto?.randomUUID) {
+            showDebtPaymentStatus("Secure request keys are unavailable. Use HTTPS or localhost before recording a payment.");
+            return;
+          }
+          draft.key = crypto.randomUUID();
+          draft.payload = {amount: centsToNumber(toCents(amount)), notes: notes || null,
+            idempotency_key: draft.key};
+        }
+        draft.pending = true;
+        showDebtPaymentStatus("Recording payment on the live server…", "info");
+        updateDebtPaymentControls();
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30000);
+        let response = null;
+        let data = null;
+        let transportError = null;
+        try {
+          response = await fetch("/api/debts/" + draft.debtId + "/payment", {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "Accept": "application/json"},
+            body: JSON.stringify(draft.payload),
+            signal: controller.signal,
           });
+          data = await response.json().catch(() => null);
+        } catch (error) {
+          transportError = error;
+        } finally {
+          clearTimeout(timeout);
+        }
+        draft.pending = false;
+        if (!transportError && response.ok && !response.redirected && data?.success) {
+          debtPaymentDraft = null;
+          updateDebtPaymentControls();
+          showToast(`Payment ${data.replayed ? "confirmed" : "recorded"} successfully! Remaining balance: ${formatCurrency(data.remaining_balance || 0)}`, "success");
+          const modal = bootstrap.Modal.getInstance(document.getElementById("makePaymentModal"));
+          if (typeof markBranchFormSaved === "function") markBranchFormSaved("makePaymentModal");
+          modal?.hide();
+          if (debtPaymentUsable()) {
+            Promise.allSettled([loadDebts(), loadCustomers()]);
+          }
+          return;
+        }
+        const definite = !transportError && response.status >= 400 && response.status < 500 &&
+          ![408, 409, 425, 429].includes(response.status);
+        const messageText = data?.message || data?.error ||
+          (transportError ? `The payment outcome is unconfirmed (${transportError.name === "AbortError" ? "timeout" : "network error"}).` : "The payment outcome is unconfirmed.");
+        if (definite) {
+          draft.key = null;
+          draft.payload = null;
+          draft.uncertain = false;
+          showDebtPaymentStatus(`Not saved. ${messageText}`);
+        } else {
+          draft.uncertain = true;
+          showDebtPaymentStatus(`${messageText} The original amount, notes and request key are retained. Use Retry the same payment to confirm this exact request; do not enter it elsewhere.`);
+        }
+        updateDebtPaymentControls();
+        document.getElementById("payment-status").focus({preventScroll: true});
       }
 
       // POS functions for customer selection
@@ -26433,6 +26710,7 @@
       }
     </script>
 
+    <script src="/public/accounting.js"></script>
     <script src="/public/customer-display-publisher.js"></script>
     <script src="/public/myanmyanpay.js"></script>
     <script src="/public/product-import.js?v=branch-scope"></script>

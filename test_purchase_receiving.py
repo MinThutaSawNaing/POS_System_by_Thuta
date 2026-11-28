@@ -82,6 +82,41 @@ class PurchaseReceivingTests(unittest.TestCase):
         data.update(changes)
         return self.client().post(f'/api/purchase_orders/{self.po}/invoice', json=data)
 
+    def test_purchase_order_rejects_fractional_cent_unit_costs(self):
+        client = self.client()
+        with self.m.app.app_context():
+            before = self.m.PurchaseOrder.query.count()
+        rejected = client.post('/api/purchase_orders', json={
+            'supplier_id': self.supplier,
+            'items': [{'product_id': self.product, 'ordered_qty': 2, 'unit_cost': 1.234}],
+        })
+        self.assertEqual(rejected.status_code, 400, rejected.get_json())
+        self.assertIn('two decimal places', rejected.get_json()['message'])
+        with self.m.app.app_context():
+            self.assertEqual(self.m.PurchaseOrder.query.count(), before)
+        accepted = client.post('/api/purchase_orders', json={
+            'supplier_id': self.supplier,
+            'items': [{'product_id': self.product, 'ordered_qty': 2, 'unit_cost': 1.23}],
+        })
+        self.assertEqual(accepted.status_code, 201, accepted.get_json())
+        with self.m.app.app_context():
+            po = self.m.db.session.get(self.m.PurchaseOrder, accepted.get_json()['purchase_order_id'])
+            self.assertEqual(po.total_amount, 2.46)
+
+    def test_legacy_fractional_cost_cannot_create_uninvoiceable_receipt(self):
+        with self.m.app.app_context():
+            item = self.m.db.session.get(self.m.PurchaseOrderItem, self.item)
+            item.ordered_qty, item.unit_cost = 2, 1.234
+            po = self.m.db.session.get(self.m.PurchaseOrder, self.po)
+            po.total_amount = 2.468
+            self.m.db.session.commit()
+        response = self.receive(2)
+        self.assertEqual(response.status_code, 409, response.get_json())
+        self.assertIn('two decimal places', response.get_json()['message'])
+        with self.m.app.app_context():
+            self.assertEqual(self.m.GoodsReceipt.query.filter_by(purchase_order_id=self.po).count(), 0)
+            self.assertEqual(self.m.db.session.get(self.m.PurchaseOrderItem, self.item).received_qty, 0)
+
     def test_verification_prints_are_scoped_and_pdf(self):
         client = self.client()
         inventory = client.get(f'/api/branch_inventory/print?location_id={self.foreign}&q=RECEIVE')
@@ -395,7 +430,7 @@ class PurchaseReceivingTests(unittest.TestCase):
             self.assertEqual(result['status'], 'partially_received')
             self.assertEqual(loaded.count(m.PurchaseOrderItem), 3)
             self.assertEqual(loaded.count(m.Product), 3)
-            self.assertLessEqual(len(statements), 6)
+            self.assertLessEqual(len(statements), 6, "\n".join(statements))
             self.assertGreaterEqual(sum('EXISTS' in sql.upper() for sql in statements), 2)
             # The first received lines need not be in the next receipt's selection.
             next_item = m.PurchaseOrderItem.query.filter(

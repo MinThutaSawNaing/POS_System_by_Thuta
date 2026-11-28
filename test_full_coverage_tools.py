@@ -250,7 +250,7 @@ class ReceivePurchaseOrderTests(FullCoverageToolsTestBase):
     def test_partial_then_full_receive_updates_status_and_warehouse(self):
         po_id, item_id, product_id = self._approved_po()
 
-        partial = self.tools.receive_purchase_order(po_id)
+        partial = self.tools.receive_purchase_order(po_id, idempotency_key='full-receive')
         self.assertTrue(partial["success"])
         self.assertEqual(partial["status"], "received")  # default = receive all
 
@@ -262,13 +262,14 @@ class ReceivePurchaseOrderTests(FullCoverageToolsTestBase):
                 product_id=product_id, batch_number=po.po_number).all()
             self.assertEqual(sum(w.quantity for w in warehouse), 10)
 
-        again = self.tools.receive_purchase_order(po_id)
+        again = self.tools.receive_purchase_order(po_id, idempotency_key='full-receive-again')
         self.assertIn("Cannot receive", again.get("error", ""))
 
     def test_receive_rejects_over_receipt(self):
         po_id, item_id, _ = self._approved_po(ordered=5)
         result = self.tools.receive_purchase_order(
-            po_id, items=[{"purchase_order_item_id": item_id, "received_qty": 6}])
+            po_id, items=[{"purchase_order_item_id": item_id, "received_qty": 6}],
+            idempotency_key='over-receipt')
         self.assertIn("exceeds remaining", result.get("error", ""))
 
 

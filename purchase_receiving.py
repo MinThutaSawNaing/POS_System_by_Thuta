@@ -9,6 +9,8 @@ from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import joinedload
 
+from purchase_invoicing import parse_unit_cost
+
 
 MAX_RECEIPT_ITEMS = 500
 
@@ -109,8 +111,9 @@ def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False,
         db.session.execute(text('BEGIN IMMEDIATE'))
         ReceiptRequest = None
         fingerprint = None
+        accounting = getattr(db, 'accounting', None)
         if idempotency_key is not None:
-            ReceiptRequest = models['ReceiptRequest']
+            ReceiptRequest = purchasing_model(models, 'ReceiptRequest')
             fingerprint = hashlib.sha256(json.dumps({
                 'actor_id': actor_id, 'po_id': po_id, 'receive_all': receive_all,
                 'quantities': sorted(requested.items()),
@@ -163,6 +166,11 @@ def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False,
             remaining = item.ordered_qty - (item.received_qty or 0)
             if quantity > remaining:
                 return fail(f'Receive qty exceeds remaining for {item.product.name}. Remaining: {remaining}')
+            if quantity > 0:
+                try:
+                    parse_unit_cost(item.unit_cost)
+                except ValueError:
+                    return fail('Purchase order unit costs must have at most two decimal places before receiving', 409)
         if not any(requested.values()):
             return fail('At least one received quantity must be positive')
 
@@ -172,6 +180,8 @@ def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False,
             if quantity == 0:
                 continue
             item = item_map[item_id]
+            if accounting is not None:
+                accounting.mark_receiving_change(item, {'received_qty'})
             item.received_qty = (item.received_qty or 0) + quantity
             batch = WarehouseInventory(
                 product_id=item.product_id, quantity=quantity,
@@ -190,6 +200,8 @@ def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False,
         db.session.flush()
         for snapshot_line, batch in zip(snapshot_lines, batches):
             snapshot_line['warehouse_inventory_id'] = batch.id
+        if accounting is not None:
+            accounting.mark_receiving_change(po, {'status', 'updated_at'})
         po.status = ('partially_received' if has_lines(
             lines.filter(received < PurchaseOrderItem.ordered_qty)) else 'received')
         if not previously_received and po.supplier:
@@ -199,16 +211,19 @@ def receive_purchase_order(db, models, po_id, items=None, *, receive_all=False,
                   'replayed': False}
         GoodsReceipt = purchasing_model(models, 'GoodsReceipt')
         number = f'GRN-{uuid4().hex.upper()}'
-        db.session.add(GoodsReceipt(number=number, purchase_order_id=po.id,
+        receipt = GoodsReceipt(number=number, purchase_order_id=po.id,
             actor_id=actor_id, created_at=receipt_time,
             snapshot={'po_number': po.po_number, 'supplier_id': po.supplier_id,
                       'supplier_name': po.supplier.name if po.supplier else None,
-                      'status': po.status, 'items': snapshot_lines}))
+                      'status': po.status, 'items': snapshot_lines})
+        db.session.add(receipt)
         result['grn_number'] = number
         if ReceiptRequest is not None:
             db.session.add(ReceiptRequest(
                 key=idempotency_key, fingerprint=fingerprint,
                 response_json=json.dumps(result, sort_keys=True, separators=(',', ':'))))
+        if accounting is not None:
+            accounting.post_receipt(receipt)
         db.session.commit()
         return result, 200
     except (OperationalError, IntegrityError):

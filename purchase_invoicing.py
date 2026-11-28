@@ -9,6 +9,19 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import joinedload
 
 
+def parse_unit_cost(value):
+    if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
+        raise ValueError('Unit cost must be a finite non-negative number with up to two decimal places')
+    try:
+        cost = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise ValueError('Unit cost must be a finite non-negative number with up to two decimal places') from None
+    if (not cost.is_finite() or cost < 0 or cost > Decimal('999999999999.99')
+            or cost != cost.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)):
+        raise ValueError('Unit cost must be between 0 and 999999999999.99 with up to two decimal places')
+    return cost
+
+
 def invoice_payload(invoice, *, include_items=False):
     payload = {
         'supplier_reference': invoice.supplier_reference,
@@ -75,6 +88,8 @@ def create_purchase_invoice(db, models, po_id, data, *, actor_id, get_currency):
             cost = Decimal(str(line.unit_cost))
             if not cost.is_finite() or cost < 0:
                 return fail('The purchase order contains an invalid cost', 409)
+            if cost != cost.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):
+                return fail('Purchase order unit costs must have at most two decimal places before invoicing', 409)
             total += cost * line.received_qty
             items.append({'product_id': line.product_id, 'product_name': line.product.name,
                           'sku': line.product.sku, 'branch_id': line.product.branch_id,
@@ -90,6 +105,9 @@ def create_purchase_invoice(db, models, po_id, data, *, actor_id, get_currency):
                           'supplier_name': po.supplier.name, 'items': items})
         db.session.add(invoice)
         result = invoice_payload(invoice)
+        accounting = getattr(db, 'accounting', None)
+        if accounting is not None:
+            accounting.post_invoice(invoice)
         db.session.commit()
         return {'success': True, 'invoice': result, 'replayed': False}, 201
     except (InvalidOperation, ValueError):

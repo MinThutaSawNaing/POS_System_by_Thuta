@@ -520,11 +520,16 @@ Transfer shared warehouse stock to a branch (defaults to the active branch). Sou
     "target_branch_id": {
       "type": "integer",
       "description": "Optional active destination branch ID; defaults to the trusted active branch."
+    },
+    "idempotency_key": {
+      "type": "string",
+      "description": "Required stable request key. Reuse it only to retry this exact transfer."
     }
   },
   "required": [
     "product_id",
-    "quantity"
+    "quantity",
+    "idempotency_key"
   ]
 }
 ```
@@ -1471,11 +1476,28 @@ Process a return (refund) or exchange against an original sale transaction. Retu
     },
     "settlement_method": {
       "type": "string",
-      "description": "How the difference settles: cash, bank, etc. Default cash."
+      "enum": [
+        "cash",
+        "credit_card",
+        "debit_card",
+        "mobile_payment"
+      ],
+      "description": "How the difference settles. Default cash."
     },
     "notes": {
       "type": "string",
       "description": "Optional notes recorded on the workflow."
+    },
+    "idempotency_key": {
+      "type": "string",
+      "description": "Retry-safe operation key. Reuse the same key only when retrying this exact request."
+    },
+    "legacy_costs": {
+      "type": "object",
+      "description": "Reviewed recovery unit costs for pre-accounting sale items, keyed by original sale item ID. Required only when the ledger requests legacy cost review.",
+      "additionalProperties": {
+        "type": "string"
+      }
     }
   },
   "required": [
@@ -1502,6 +1524,10 @@ Record received quantities against a purchase order. Goods go to warehouse stock
       "type": "integer",
       "description": "The purchase order to receive."
     },
+    "idempotency_key": {
+      "type": "string",
+      "description": "Required stable request key. Reuse it only to retry this exact receipt."
+    },
     "items": {
       "type": "array",
       "description": "Optional per-line received quantities. Omit to receive all remaining quantities.",
@@ -1525,14 +1551,15 @@ Record received quantities against a purchase order. Goods go to warehouse stock
     }
   },
   "required": [
-    "po_id"
+    "po_id",
+    "idempotency_key"
   ]
 }
 ```
 
 ## `record_debt_payment`
 
-Record a payment against a customer debt. Uses exact decimal math; rejects amounts <= 0 or exceeding balance; marks debt paid at zero balance.
+Record a payment against an active-branch customer debt. Uses exact decimal math; rejects amounts <= 0 or exceeding balance; marks debt paid at zero balance. Reuse the same idempotency key and payload after an uncertain result.
 
 - Category: `debts`
 - Mutates data: `True`
@@ -1553,7 +1580,11 @@ Record a payment against a customer debt. Uses exact decimal math; rejects amoun
     },
     "notes": {
       "type": "string",
-      "description": "Optional payment notes."
+      "description": "Optional payment notes, at most 500 characters."
+    },
+    "idempotency_key": {
+      "type": "string",
+      "description": "Optional 1–128 character request key. Reuse it only with the same debt, amount and notes; active-ledger retries replay without a second collection."
     }
   },
   "required": [
@@ -2525,7 +2556,7 @@ Create a product or update an existing product's price, cost, tax rate, stock, c
     },
     "stock": {
       "type": "integer",
-      "description": "Initial/updated stock level, >= 0. Default 0."
+      "description": "Optional stock level, >= 0. Omission preserves stock on update and defaults to 0 on create."
     },
     "category": {
       "type": "string",

@@ -112,6 +112,7 @@ class ReturnExchangeRouteTests(unittest.TestCase):
         self.created_workflows = []
         self.created_sales = []
         self.created_products = []
+        self.created_users = []
         self._build_fixtures()
 
     def _product(self, name):
@@ -169,7 +170,7 @@ class ReturnExchangeRouteTests(unittest.TestCase):
             adjustment_sale=self.adjustment_sale, product=self.product)
 
     def tearDown(self):
-        from app import Product, ReturnExchange, ReturnExchangeItem, Sale, SaleItem
+        from app import Product, ReturnExchange, ReturnExchangeItem, Sale, SaleItem, User
         db = self.db
         workflow_ids = [w.id for w in self.created_workflows] or [0]
         ReturnExchangeItem.query.filter(
@@ -180,14 +181,16 @@ class ReturnExchangeRouteTests(unittest.TestCase):
         Sale.query.filter(Sale.id.in_(sale_ids)).delete(synchronize_session=False)
         product_ids = [p.id for p in self.created_products] or [0]
         Product.query.filter(Product.id.in_(product_ids)).delete(synchronize_session=False)
+        user_ids = [user.id for user in self.created_users] or [0]
+        User.query.filter(User.id.in_(user_ids)).delete(synchronize_session=False)
         db.session.commit()
         self.context.pop()
 
-    def client(self, authenticated=True, role='manager'):
+    def client(self, authenticated=True, role='manager', user_id=None):
         client = self.app.test_client()
         if authenticated:
             with client.session_transaction() as session:
-                session['user_id'] = self.user.id
+                session['user_id'] = user_id or self.user.id
                 session['role'] = role
                 session['branch_id'] = self.branch_id
         return client
@@ -321,6 +324,56 @@ class ReturnExchangeRouteTests(unittest.TestCase):
     def test_print_unknown_workflow_is_404(self):
         self.assertEqual(
             self.client().get('/api/returns_exchanges/does-not-exist/print').status_code, 404)
+
+    def test_cashier_cannot_approve_legacy_recovery_costs(self):
+        from app import ReturnExchange, SaleItem, User
+        cashier = User(username='rx-cashier-' + uuid.uuid4().hex[:10], password='disabled-login',
+                       role='cashier', branch_id=self.branch_id)
+        self.db.session.add(cashier)
+        self.db.session.commit()
+        self.created_users.append(cashier)
+        sale = self._sale()
+        sale.user_id = cashier.id
+        sale_item = SaleItem(sale_id=sale.id, product_id=self.product.id,
+                             quantity=1, price=1000, tax=0)
+        self.db.session.add(sale_item)
+        self.db.session.commit()
+        stock_before = self.product.stock
+
+        response = self.client(role='cashier', user_id=cashier.id).post('/api/returns_exchanges', json={
+            'original_transaction_id': sale.transaction_id,
+            'return_items': [{'sale_item_id': sale_item.id, 'quantity': 1}],
+            'legacy_costs': {str(sale_item.id): '100.00'},
+        })
+        self.assertEqual(response.status_code, 403)
+        self.assertIn('manager or boss', response.get_json()['message'])
+        self.assertEqual(self.product.stock, stock_before)
+        self.assertEqual(ReturnExchange.query.filter_by(original_sale_id=sale.id).count(), 0)
+
+    def test_exchange_tax_uses_full_rate_and_rounds_only_final_amount(self):
+        from app import ReturnExchange, Sale, SaleItem
+        self.product.tax_rate = 7.125
+        self.db.session.commit()
+        sale = self._sale()
+        sale_item = SaleItem(sale_id=sale.id, product_id=self.product.id,
+                             quantity=1, price=1000, tax=0)
+        self.db.session.add(sale_item)
+        self.db.session.commit()
+
+        response = self.client().post('/api/returns_exchanges', json={
+            'original_transaction_id': sale.transaction_id,
+            'return_items': [{'sale_item_id': sale_item.id, 'quantity': 1}],
+            'exchange_items': [{'product_id': self.product.id, 'quantity': 1, 'price': 1000}],
+            'settlement_method': 'cash',
+        })
+        self.assertEqual(response.status_code, 201, response.get_data(as_text=True))
+        workflow = ReturnExchange.query.filter_by(workflow_id=response.get_json()['workflow_id']).one()
+        adjustment = self.db.session.get(Sale, workflow.adjustment_sale_id)
+        self.assertEqual(adjustment.tax, 71.25)
+        self.assertEqual(adjustment.total, 1071.25)
+        self.assertEqual(workflow.collected_amount, 71.25)
+        self.created_workflows.append(workflow)
+        self.created_sales.append(adjustment)
 
     def test_post_then_list_and_print_round_trip(self):
         from app import ReturnExchange, Sale, SaleItem

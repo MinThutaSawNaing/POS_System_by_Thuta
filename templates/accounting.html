@@ -1,0 +1,103 @@
+<section id="accounting-section" data-capability="admin" style="display: none" aria-labelledby="accounting-title">
+  <style>
+    #accounting-section .btn, #accounting-section .form-control, #accounting-section .form-select { min-height: 44px; }
+    #accounting-section .table { font-variant-numeric: tabular-nums; }
+    #accounting-section .table th { white-space: nowrap; }
+    #accounting-section .accounting-money { text-align: right; white-space: nowrap; }
+    #accounting-section .accounting-lines > fieldset { min-width: 0; }
+    #accounting-section [hidden] { display: none !important; }
+  </style>
+  <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
+    <div>
+      <h2 id="accounting-title"><i class="bi bi-journal-bookmark me-2" aria-hidden="true"></i>Accounting</h2>
+      <p class="text-muted mb-1">Live books, reviewed opening balances and FIFO inventory.</p>
+      <p id="accounting-book-status" class="small text-muted mb-0"></p>
+    </div>
+    <button id="accounting-refresh" type="button" class="btn btn-outline-primary"><i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Refresh live data</button>
+  </div>
+  <div id="accounting-error" class="alert alert-danger" role="alert" tabindex="-1" hidden></div>
+  <div id="accounting-notice" class="alert alert-info" role="status" aria-live="polite" hidden></div>
+  <div id="accounting-loading" class="text-muted py-3" role="status" hidden>Loading live accounting data…</div>
+  <p class="small text-muted">Online only. Financial data is never saved for offline use. The central warehouse owns supplier payables; shops own their sales and receivables.</p>
+
+  <div id="accounting-setup" class="card" hidden>
+    <div class="card-body">
+      <h3 class="h5">Review before activating accounting</h3>
+      <p>Activation starts today. Review existing product catalog and warehouse batch costs first: these become the opening FIFO costs. Zero-cost stock may prevent activation until corrected in the existing inventory workflows. This screen does not change those costs.</p>
+      <div id="accounting-opening-summary"></div>
+      <div id="accounting-opening-warnings" class="alert alert-warning" hidden></div>
+      <form id="accounting-setup-form" autocomplete="off">
+        <fieldset id="accounting-setup-fields">
+          <legend class="h6 mt-3">Actual opening balances</legend>
+          <p class="small text-muted">Enter actual cash, bank and other non-control balances for each location. Stock and existing customer receivables are brought in from the review above; do not enter them twice. Opening equity is computed from reviewed net assets, not entered manually.</p>
+          <div id="accounting-opening-lines" class="accounting-lines"></div>
+          <button id="accounting-add-opening" type="button" class="btn btn-outline-secondary mb-3">Add opening balance</button>
+          <h4 class="h6">Opening supplier balances (central warehouse)</h4>
+          <p class="small text-muted">Enter unpaid supplier balances with a supplier ID and reference. These create central payables, not new stock. Additional non-stock supplier bills can also be entered after activation.</p>
+          <div id="accounting-opening-payables" class="accounting-lines"></div>
+          <button id="accounting-add-opening-payable" type="button" class="btn btn-outline-secondary mb-3">Add opening supplier balance</button>
+          <div id="accounting-opening-equity" class="alert alert-light border" role="status" aria-live="polite"></div>
+          <div class="form-check mb-3">
+            <input id="accounting-costs-reviewed" type="checkbox" class="form-check-input" required>
+            <label for="accounting-costs-reviewed" class="form-check-label">I reviewed the existing catalog and batch costs used for opening FIFO valuation.</label>
+          </div>
+          <div class="form-check mb-3">
+            <input id="accounting-setup-confirm" type="checkbox" class="form-check-input" required>
+            <label for="accounting-setup-confirm" class="form-check-label">I confirm the reviewed opening balances and want to activate accounting today. Nothing is activated automatically.</label>
+          </div>
+        </fieldset>
+        <div id="accounting-setup-error" class="alert alert-danger" role="alert" tabindex="-1" hidden></div>
+        <p id="accounting-setup-progress" role="status" aria-live="polite"></p>
+        <button id="accounting-activate" type="submit" class="btn btn-primary">Activate with reviewed balances</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="accounting-workspace" hidden>
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="row g-3 align-items-end">
+          <div class="col-12 col-md-5">
+            <label for="accounting-location" class="form-label">Accounting location</label>
+            <select id="accounting-location" class="form-select" aria-describedby="accounting-location-help"></select>
+            <div id="accounting-location-help" class="form-text">All locations is for reports only. Choose a specific location before writing.</div>
+          </div>
+          <div class="col-12 col-md-7"><p id="accounting-scope-note" class="small text-muted mb-0"></p></div>
+        </div>
+      </div>
+    </div>
+    <div id="accounting-tabs" class="nav nav-tabs flex-wrap mb-3" role="tablist" aria-label="Accounting workspace">
+      {% for key, label in [('statements', 'Statements'), ('journals', 'Journals'), ('expenses', 'Expenses'), ('assets', 'Assets'), ('receivables', 'Receivables'), ('payables', 'Payables'), ('inventory', 'Inventory'), ('invoices', 'Invoices')] %}
+      <button type="button" id="accounting-tab-{{ key }}" class="nav-link{% if loop.first %} active{% endif %}" role="tab" aria-selected="{{ 'true' if loop.first else 'false' }}" aria-controls="accounting-panel" tabindex="{{ '0' if loop.first else '-1' }}" data-accounting-tab="{{ key }}">{{ label }}</button>
+      {% endfor %}
+    </div>
+    <div id="accounting-panel" role="tabpanel" aria-labelledby="accounting-tab-statements" tabindex="0">
+      <div class="card mb-3">
+        <div class="card-body">
+          <h3 id="accounting-panel-title" class="h5">Statements</h3>
+          <p id="accounting-panel-help" class="text-muted"></p>
+          <form id="accounting-filter-form" class="row g-3 align-items-end mb-3">
+            <div id="accounting-kind-group" class="col-12 col-sm-6 col-lg-4">
+              <label for="accounting-kind" class="form-label">Report type</label>
+              <select id="accounting-kind" class="form-select"></select>
+            </div>
+            <div id="accounting-start-group" class="col-6 col-lg-3">
+              <label for="accounting-start" class="form-label">From</label>
+              <input id="accounting-start" type="date" class="form-control" required>
+            </div>
+            <div id="accounting-end-group" class="col-6 col-lg-3">
+              <label for="accounting-end" class="form-label">Through</label>
+              <input id="accounting-end" type="date" class="form-control" required>
+            </div>
+            <div class="col-auto"><button type="submit" class="btn btn-outline-primary">Apply filters</button></div>
+          </form>
+          <div id="accounting-toolbar" class="d-flex flex-wrap gap-2"></div>
+        </div>
+      </div>
+      <div id="accounting-editor" class="card border-primary mb-3" hidden></div>
+      <div id="accounting-results" aria-live="polite"></div>
+      <nav id="accounting-pagination" class="d-flex flex-wrap gap-2 align-items-center my-3" aria-label="Accounting results pages" hidden></nav>
+      <div id="accounting-document" class="card mt-3" hidden></div>
+    </div>
+  </div>
+</section>

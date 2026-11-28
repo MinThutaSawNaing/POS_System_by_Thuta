@@ -61,7 +61,18 @@ def world(backend):
         m.db.session.remove()
         # Reset rows, not ~50 tables and their indexes, for every permission
         # parameter. Keep the real startup schema/indexes under test too.
+        accounting = m.accounting
+        protected = {model.__tablename__ for model in (
+            accounting.Config, accounting.Location, accounting.Journal, accounting.Line,
+            accounting.Asset, accounting.Payable, accounting.Document, accounting.Command,
+            accounting.Layer, accounting.Allocation, accounting.Operation,
+        )}
         for table in reversed(m.db.metadata.sorted_tables):
+            if table.name in protected:
+                # These permission scenarios never activate accounting; retain the
+                # production immutability guard instead of bypassing it for cleanup.
+                assert m.db.session.execute(table.select().limit(1)).first() is None, table.name
+                continue
             m.db.session.execute(table.delete())
         m.db.session.commit()
         branches = [m.Branch(name='Local', code='LOCAL', is_default=True),

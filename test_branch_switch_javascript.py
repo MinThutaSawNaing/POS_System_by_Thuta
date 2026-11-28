@@ -112,6 +112,32 @@ console.log(JSON.stringify({passed:true}));
         pytest.fail(error.stdout + error.stderr)
 
 
+def test_branch_binding_reloads_accounting_after_identity_is_ready():
+    helpers = _function(SOURCE, 'bindCurrentBranchUI')
+    script = r"""
+const assert = require('node:assert/strict');
+let currentSection = 'accounting', reloads = 0, posLoads = 0;
+const fields = {'branch-selector': {value: ''}, 'report-branch-selector': {value: ''}};
+const document = {getElementById: id => fields[id] || null};
+const window = {loadAccounting() { reloads++; }};
+function hasCapability() { return false; }
+function loadCategoryDropdowns() { throw Error('unexpected catalog load'); }
+function checkOfflineProductCatalog() { posLoads++; }
+function updateBranchIndicators() {}
+function toggleReportScopeControls() {}
+function updateBranchSaveButton() {}
+""" + helpers + r"""
+bindCurrentBranchUI({id: 2, name: 'Ready'});
+assert.equal(reloads, 1);
+currentSection = 'pos';
+bindCurrentBranchUI({id: 2, name: 'Ready'});
+assert.equal(reloads, 1);
+assert.equal(posLoads, 1);
+console.log(JSON.stringify({passed: true}));
+"""
+    assert _run_node_script(script)['passed']
+
+
 def test_clean_same_branch_and_queued_only_do_not_nag_or_destroy_queue():
     run_js(r"""
 setPendingSales([{transaction_id:'retained'}]);

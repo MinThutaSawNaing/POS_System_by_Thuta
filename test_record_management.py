@@ -54,6 +54,7 @@ class RecordManagementTests(unittest.TestCase):
                [{'product_id': self.product, 'quantity': 2.5, 'unit_cost': 2}],
                [{'product_id': self.product, 'quantity': True, 'unit_cost': 2}],
                [{'product_id': self.product, 'quantity': 2, 'unit_cost': 'NaN'}],
+               [{'product_id': self.product, 'quantity': 2, 'unit_cost': 1.234}],
                [{'id': 9999, 'product_id': self.product, 'quantity': 2, 'unit_cost': 2}],
                [{'product_id': 9999, 'quantity': 2, 'unit_cost': 2}]]
         for items in bad:

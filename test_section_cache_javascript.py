@@ -414,7 +414,7 @@ def test_every_tab_keeps_fresh_content_and_reloads_after_expiry_or_invalidation(
     SECTION_LOADERS[section] = () => { loads++; };
     check(section + ' loads on first visit', sectionNeedsRender(section));
     renderSection(section);
-    check(section + ' preserves fresh content', !sectionNeedsRender(section));
+    check(section + ' preserves fresh content', !sectionNeedsRender(section) === Boolean(sectionResourcesOf(section).length));
     sectionStateOf(section).renderedAt = Date.now() - sectionFreshWindow(section) - 1;
     check(section + ' expires', sectionNeedsRender(section));
     renderSection(section);
@@ -434,7 +434,7 @@ def test_offline_revisits_preserve_expired_content_without_hiding_mutations():
     SECTION_LOADERS[section] = () => {};
     renderSection(section);
     sectionStateOf(section).renderedAt = Date.now() - 3600000;
-    check(section + ' keeps offline content', !sectionNeedsRender(section));
+    check(section + ' keeps offline content', !sectionNeedsRender(section) === Boolean(sectionResourcesOf(section).length));
     invalidateCacheGroups(sectionResourcesOf(section));
     check(section + ' still reflects local invalidation', sectionNeedsRender(section));
   }

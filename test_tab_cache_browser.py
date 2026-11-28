@@ -52,7 +52,9 @@ try {
   for (let visit = 0; visit < 2; visit++) {
     for (const section of Object.keys(SECTION_LOADERS)) showSection(section);
   }
-  check(Object.values(loads).every(count => count === 1), 'Every fresh tab must load once');
+  const cachedSections = Object.keys(loads).filter(section => section !== 'accounting');
+  check(cachedSections.every(section => loads[section] === 1), 'Every cached tab must load once');
+  check(loads.accounting === 2, 'Live-only accounting must reload on every visit');
   const originalDashboard = dashboardChart, originalSales = salesChart;
   showSection('dashboard');
   check(dashboardChart === originalDashboard && dashboardChart.width > 0, 'Dashboard chart must resize without rebuilding');
@@ -63,7 +65,8 @@ try {
     sectionStateOf(section).renderedAt = Date.now() - 3600000;
     showSection(section);
   }
-  check(Object.values(loads).every(count => count === 1), 'Offline expiry must preserve every loaded tab');
+  check(cachedSections.every(section => loads[section] === 1), 'Offline expiry must preserve every cached tab');
+  check(loads.accounting === 3, 'Live-only accounting must also reload when offline');
   initOfflineNavigationProtection();
   const reload = new KeyboardEvent('keydown', {key:'r',ctrlKey:true,cancelable:true,bubbles:true});
   window.dispatchEvent(reload);

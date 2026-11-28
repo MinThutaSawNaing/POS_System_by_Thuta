@@ -2762,11 +2762,10 @@ def _collect_audit_changes(db_session, flush_context, instances):
 @event.listens_for(SQLAlchemySession, 'do_orm_execute', retval=True)
 def _audit_bulk_orm_write(execute_state):
     """Leave evidence for Query.update/delete paths that bypass object history."""
-    if not (execute_state.is_update or execute_state.is_delete):
+    if not (execute_state.is_update or execute_state.is_delete) or execute_state.bind_mapper is None:
         return execute_state.invoke_statement()
     context = _audit_request_context()
-    mapper = execute_state.bind_mapper
-    entity_type = mapper.class_.__name__ if mapper is not None else 'Database records'
+    entity_type = execute_state.bind_mapper.class_.__name__
     if entity_type == 'AuditLog':
         if not execute_state.session.info.get('_allow_audit_log_maintenance'):
             raise ValueError('System audit logs are append-only')
@@ -3107,6 +3106,14 @@ report_scheduler = register_report_scheduler(app, db, globals())
 # new, so create_all below provisions it without an ALTER-TABLE migration.
 from inventory_reminders import register_inventory_reminders, ReminderError
 inventory_reminders = register_inventory_reminders(app, db, globals())
+
+# Accounting and return retry tables are additive and registered before create_all.
+# Activation remains an explicit manager-reviewed operation, never a startup side effect.
+from return_operations import register_return_operations
+register_return_operations(db)
+
+from accounting import register_accounting, AccountingError
+accounting = register_accounting(app, db, globals())
 
 # Create database tables and admin user
 with app.app_context():
@@ -4626,20 +4633,35 @@ def api_branch(branch_id):
         return jsonify({'success': True, 'branch': branch.to_dict()})
     
     # DELETE - Deactivate branch (soft delete)
+    db.session.rollback()
+    accounting = getattr(db, 'accounting', None)
+    try:
+        if accounting is not None:
+            accounting.write_lock()
+        else:
+            db.session.execute(text('BEGIN IMMEDIATE'))
+    except OperationalError:
+        db.session.rollback()
+        return jsonify(success=False, message='Branch changes are busy. Reload before retrying.'), 409
+    accounting_active = accounting is not None and accounting.config() is not None
+    branch = db.session.get(Branch, branch_id)
+    if not branch:
+        db.session.rollback()
+        return jsonify({'success': False, 'message': 'Branch not found'}), 404
     if branch.is_default:
+        db.session.rollback()
         return jsonify({'success': False, 'message': 'Cannot delete the default branch'}), 400
-    
-    # Check if branch has data
+
     has_products = Product.query.filter_by(branch_id=branch_id).count() > 0
     has_sales = Sale.query.filter_by(branch_id=branch_id).count() > 0
     has_users = User.query.filter_by(branch_id=branch_id).count() > 0
-    
-    if has_products or has_sales or has_users:
-        # Soft delete - just deactivate
+    has_accounting_location = accounting_active and accounting.Location.query.filter_by(branch_id=branch_id).first() is not None
+
+    if has_products or has_sales or has_users or has_accounting_location:
         branch.is_active = False
         db.session.commit()
         return jsonify({'success': True, 'message': 'Branch deactivated (has associated data)'})
-    
+
     db.session.delete(branch)
     db.session.commit()
     return jsonify({'success': True, 'message': 'Branch deleted'})
@@ -4745,7 +4767,7 @@ def api_inventory_suggested_purchase_order():
             if not product:
                 continue
             ordered_qty = max(int(item.get('suggested_qty') or 0), 1)
-            unit_cost = float(product.cost or 0)
+            unit_cost = float(round_money(product.cost or 0))
             db.session.add(PurchaseOrderItem(
                 purchase_order_id=po.id,
                 product_id=product.id,
@@ -5608,6 +5630,14 @@ def api_branch_inventory():
         low_stock_threshold=LOW_STOCK_THRESHOLD)
 
 
+def begin_product_accounting_write():
+    accounting = getattr(db, 'accounting', None)
+    if accounting is None:
+        return False
+    accounting.write_lock()
+    return accounting.config() is not None
+
+
 @app.route('/api/products', methods=['GET', 'POST'])
 def api_products():
     if 'user_id' not in session:
@@ -5791,6 +5821,8 @@ def api_products():
             return jsonify({'success': False, 'message': 'Price cannot be negative'}), 400
         if cost < 0 or tax_rate < 0:
             return jsonify({'success': False, 'message': 'Cost cannot be negative'}), 400
+        if stock < 0:
+            return jsonify({'success': False, 'message': 'Stock cannot be negative'}), 400
 
         reorder_enabled = to_bool(data.get('reorder_enabled'), True)
         
@@ -5833,13 +5865,26 @@ def api_products():
         if unit_error:
             return jsonify({'success': False, 'message': unit_error}), 400
 
+        try:
+            accounting_active = begin_product_accounting_write()
+        except AccountingError as error:
+            db.session.rollback()
+            if photo_filename:
+                delete_product_image(photo_filename)
+            return jsonify(success=False, message=error.message), error.status
+        except OperationalError:
+            db.session.rollback()
+            if photo_filename:
+                delete_product_image(photo_filename)
+            return jsonify(success=False, message='Product changes are busy. Reload before retrying.'), 409
+
         product = Product(
             barcode=barcode,
             sku=sku,
             name=name,
             price=price,
             cost=cost,
-            stock=stock,
+            stock=0 if accounting_active else stock,
             category_id=category.id if category else None,
             unit_id=unit_id,
             tax_rate=tax_rate,
@@ -5854,10 +5899,33 @@ def api_products():
             product.category = category.name
         db.session.add(product)
         try:
+            db.session.flush()
+            if accounting_active and stock:
+                db.accounting.adjust_inventory({
+                    'key': 'product-create:' + uuid.uuid4().hex,
+                    'location_id': db.accounting.location(branch_id).id,
+                    'product_id': product.id,
+                    'quantity': stock,
+                    'unit_cost': str(cost),
+                    'date': datetime.now(AUDIT_TIMEZONE).date().isoformat(),
+                    'reason': 'Initial stock from product creation',
+                })
             db.session.commit()
+        except AccountingError as error:
+            db.session.rollback()
+            if photo_filename:
+                delete_product_image(photo_filename)
+            return jsonify(success=False, message=error.message), error.status
         except IntegrityError:
             db.session.rollback()
+            if photo_filename:
+                delete_product_image(photo_filename)
             return jsonify(success=False, message='Barcode or SKU already in use in this branch'), 409
+        except OperationalError:
+            db.session.rollback()
+            if photo_filename:
+                delete_product_image(photo_filename)
+            return jsonify(success=False, message='Product changes are busy. Reload before retrying.'), 409
         return jsonify({'success': True, 'message': 'Product added'}), 201
 
 def parse_compared_branch(value, names):
@@ -6256,6 +6324,15 @@ def api_single_product(product_id):
         if not data:
             return jsonify({'success': False, 'message': 'No data provided'}), 400
 
+        try:
+            accounting_active = begin_product_accounting_write()
+        except AccountingError as error:
+            db.session.rollback()
+            return jsonify(success=False, message=error.message), error.status
+        except OperationalError:
+            db.session.rollback()
+            return jsonify(success=False, message='Product changes are busy. Reload before retrying.'), 409
+
         if 'sku' in data:
             try:
                 product.sku = validated_product_sku(data.get('sku'), branch_id, product_id)
@@ -6293,11 +6370,16 @@ def api_single_product(product_id):
             if new_cost < 0:
                 return jsonify({'success': False, 'message': 'Cost cannot be negative'}), 400
             product.cost = new_cost
+        new_stock = None
         if 'stock' in data:
             try:
-                product.stock = int(data.get('stock'))
+                new_stock = int(data.get('stock'))
             except (ValueError, TypeError):
                 return jsonify({'success': False, 'message': 'Invalid stock value'}), 400
+            if new_stock < 0:
+                return jsonify({'success': False, 'message': 'Stock cannot be negative'}), 400
+            if not accounting_active:
+                product.stock = new_stock
 
         if 'category_id' in data:
             category_id = data.get('category_id')
@@ -6365,12 +6447,33 @@ def api_single_product(product_id):
                 return jsonify({'success': False, 'message': str(e)}), 400
 
         try:
+            db.session.flush()
+            if accounting_active and new_stock is not None and new_stock != product.stock:
+                db.accounting.adjust_inventory({
+                    'key': 'product-edit:' + uuid.uuid4().hex,
+                    'location_id': db.accounting.location(branch_id).id,
+                    'product_id': product.id,
+                    'quantity': new_stock - product.stock,
+                    'unit_cost': str(product.cost) if new_stock > product.stock else None,
+                    'date': datetime.now(AUDIT_TIMEZONE).date().isoformat(),
+                    'reason': 'Stock level updated through product edit',
+                })
             db.session.commit()
+        except AccountingError as error:
+            db.session.rollback()
+            if new_photo:
+                delete_product_image(new_photo)
+            return jsonify(success=False, message=error.message), error.status
         except IntegrityError:
             db.session.rollback()
             if new_photo:
                 delete_product_image(new_photo)
             return jsonify(success=False, message='Barcode or SKU already in use in this branch'), 409
+        except OperationalError:
+            db.session.rollback()
+            if new_photo:
+                delete_product_image(new_photo)
+            return jsonify(success=False, message='Product changes are busy. Reload before retrying.'), 409
         if previous_photo and previous_photo != product.photo_filename:
             delete_product_image(previous_photo)
         return jsonify({'success': True, 'message': 'Product updated'})
@@ -6406,6 +6509,15 @@ def api_single_product(product_id):
         product = Product.query.filter_by(id=product_id, branch_id=branch_id).first()
         if not product:
             return jsonify(success=False, message='Product not found'), 404
+        accounting = getattr(db, 'accounting', None)
+        if (accounting is not None and accounting.config() and (
+                accounting.Layer.query.filter_by(product_id=product.id).first()
+                or SaleItem.query.filter_by(product_id=product.id).first()
+                or ReturnExchangeItem.query.filter_by(product_id=product.id).first())):
+            db.session.rollback()
+            return jsonify(success=False, message=(
+                'This product is linked to accounting or retained financial history and cannot be deleted. '
+                'Deactivate it or retain it for audit history.')), 409
         summary = get_product_dependency_summary(product)
 
         if summary['blocked_by']:
@@ -7391,12 +7503,16 @@ def _create_sale_transaction(data, quote_only=False, verified_payment_id=None):
                 changes={'device_id': {'before': None, 'after': context.get('device_id')},
                          'occurred_at': {'before': None, 'after': context.get('occurred_at')}},
             )
+        db.accounting.post_sale(sale)
         db.session.commit()
         return jsonify(response), 201
 
     except CheckoutValidationError as error:
         db.session.rollback()
         return jsonify(success=False, code='invalid_checkout', message=str(error)), 400
+    except AccountingError as error:
+        db.session.rollback()
+        return jsonify(success=False, message=error.message), error.status
     except OperationalError:
         db.session.rollback()
         raise
@@ -7679,212 +7795,11 @@ def api_returns_exchanges():
         records = query.all()
         return jsonify([serialize_return_exchange(record) for record in records])
 
-    data = request.get_json() or {}
-    original_transaction_id = (data.get('original_transaction_id') or '').strip()
-    if not original_transaction_id:
-        return jsonify({'success': False, 'message': 'Original transaction ID is required'}), 400
-
-    original_sale = Sale.query.filter_by(transaction_id=original_transaction_id, branch_id=get_current_branch_id()).first()
-    if not cashier_can_access_sale(original_sale):
-        return jsonify({'success': False, 'message': 'Original sale not found'}), 404
-
-    original_sale_items = SaleItem.query.filter_by(sale_id=original_sale.id).all()
-    sale_item_map = {item.id: item for item in original_sale_items}
-    returned_qty_map = get_returned_quantity_map_for_sale(original_sale.id)
-
-    return_items_payload = data.get('return_items') or []
-    exchange_items_payload = data.get('exchange_items') or []
-
-    if not return_items_payload:
-        return jsonify({'success': False, 'message': 'At least one return item is required'}), 400
-
-    return_lines = []
-    return_total = Decimal('0.00')
-    return_tax_total = Decimal('0.00')
-
-    try:
-        for row in return_items_payload:
-            sale_item_id = int(row.get('sale_item_id', 0) or 0)
-            quantity = int(row.get('quantity', 0) or 0)
-            if sale_item_id <= 0 or quantity <= 0:
-                return jsonify({'success': False, 'message': 'Invalid return item values'}), 400
-
-            sale_item = sale_item_map.get(sale_item_id)
-            if not sale_item:
-                return jsonify({'success': False, 'message': f'Return item {sale_item_id} not found in original sale'}), 400
-
-            already_returned = returned_qty_map.get(sale_item_id, 0)
-            available_qty = max(int(sale_item.quantity) - already_returned, 0)
-            if quantity > available_qty:
-                return jsonify({'success': False, 'message': f'Return qty exceeds available qty for item #{sale_item_id}. Available: {available_qty}'}), 400
-
-            product = Product.query.filter_by(id=sale_item.product_id, branch_id=original_sale.branch_id).first()
-            if not product:
-                return jsonify({'success': False, 'message': 'Product not found for return item'}), 404
-
-            unit_price = to_decimal(sale_item.price)
-            unit_tax = calculate_sale_item_unit_tax(sale_item)
-            line_total = (unit_price * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-            line_tax = (unit_tax * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-
-            return_total += line_total + line_tax
-            return_tax_total += line_tax
-            return_lines.append({
-                'sale_item': sale_item,
-                'product': product,
-                'quantity': quantity,
-                'unit_price': unit_price,
-                'tax_rate': float(product.tax_rate or 0),
-                'line_total': line_total,
-                'line_tax': line_tax
-            })
-    except (TypeError, ValueError):
-        return jsonify({'success': False, 'message': 'Invalid return item values'}), 400
-
-    exchange_lines = []
-    exchange_total = Decimal('0.00')
-    exchange_tax_total = Decimal('0.00')
-
-    try:
-        for row in exchange_items_payload:
-            product_id = int(row.get('product_id', 0) or 0)
-            quantity = int(row.get('quantity', 0) or 0)
-            if product_id <= 0 or quantity <= 0:
-                return jsonify({'success': False, 'message': 'Invalid exchange item values'}), 400
-
-            product = Product.query.filter_by(id=product_id, branch_id=original_sale.branch_id).first()
-            if not product:
-                return jsonify({'success': False, 'message': f'Exchange product {product_id} not found'}), 404
-
-            if quantity > int(product.stock or 0):
-                return jsonify({'success': False, 'message': f'Insufficient stock for exchange product {product.name}. Available: {product.stock}'}), 400
-
-            raw_price = row.get('price', product.price)
-            unit_price = to_decimal(raw_price)
-            if unit_price < 0:
-                return jsonify({'success': False, 'message': 'Exchange item price cannot be negative'}), 400
-            if session.get('role') == 'cashier' and unit_price != to_decimal(product.price):
-                if not any(abs(unit_price - price) <= Decimal('0.01') for price in active_promotion_prices(product)):
-                    return jsonify({'success': False, 'message': 'Invalid price or expired promotion'}), 400
-
-            line_total = (unit_price * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-            line_tax = (line_total * to_decimal(product.tax_rate or 0) / Decimal('100')).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-
-            exchange_total += line_total + line_tax
-            exchange_tax_total += line_tax
-            exchange_lines.append({
-                'product': product,
-                'quantity': quantity,
-                'unit_price': unit_price,
-                'tax_rate': float(product.tax_rate or 0),
-                'line_total': line_total,
-                'line_tax': line_tax
-            })
-    except (TypeError, ValueError):
-        return jsonify({'success': False, 'message': 'Invalid exchange item values'}), 400
-
-    mode = 'exchange' if exchange_lines else 'return'
-    net_total = (exchange_total - return_total).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-    refund_amount = abs(net_total) if net_total < 0 else Decimal('0.00')
-    collected_amount = net_total if net_total > 0 else Decimal('0.00')
-    settlement_method = (data.get('settlement_method') or 'cash').strip().lower()
-
-    try:
-        adjustment_sale = None
-        if exchange_lines:
-            myanmar_tz = pytz.timezone('Asia/Yangon')
-            adjustment_sale = Sale(
-                transaction_id=str(uuid.uuid4()),
-                date=datetime.now(myanmar_tz),
-                total=round_money(exchange_total),
-                tax=round_money(exchange_tax_total),
-                cash_received=round_money(collected_amount) if collected_amount > 0 else None,
-                refund_amount=0.0,
-                payment_method='exchange',
-                user_id=session['user_id']
-            )
-            db.session.add(adjustment_sale)
-            db.session.flush()
-
-            for line in exchange_lines:
-                sale_item = SaleItem(
-                    sale_id=adjustment_sale.id,
-                    product_id=line['product'].id,
-                    quantity=line['quantity'],
-                    price=round_money(line['unit_price']),
-                    tax=round_money(line['line_tax'])
-                )
-                db.session.add(sale_item)
-                line['product'].stock -= line['quantity']
-
-        workflow = ReturnExchange(
-            workflow_id=str(uuid.uuid4()),
-            mode=mode,
-            original_sale_id=original_sale.id,
-            adjustment_sale_id=adjustment_sale.id if adjustment_sale else None,
-            return_total=round_money(return_total),
-            exchange_total=round_money(exchange_total),
-            net_total=round_money(net_total),
-            refund_amount=round_money(refund_amount),
-            collected_amount=round_money(collected_amount),
-            settlement_method=settlement_method,
-            notes=(data.get('notes') or '').strip() or None,
-            user_id=session['user_id']
-        )
-        db.session.add(workflow)
-        db.session.flush()
-
-        for line in return_lines:
-            line['product'].stock += line['quantity']
-            item = ReturnExchangeItem(
-                return_exchange_id=workflow.id,
-                original_sale_item_id=line['sale_item'].id,
-                product_id=line['product'].id,
-                movement='return',
-                quantity=line['quantity'],
-                unit_price=round_money(line['unit_price']),
-                tax_rate=line['tax_rate'],
-                line_total=round_money(line['line_total']),
-                line_tax=round_money(line['line_tax'])
-            )
-            db.session.add(item)
-
-        for line in exchange_lines:
-            item = ReturnExchangeItem(
-                return_exchange_id=workflow.id,
-                original_sale_item_id=None,
-                product_id=line['product'].id,
-                movement='exchange',
-                quantity=line['quantity'],
-                unit_price=round_money(line['unit_price']),
-                tax_rate=line['tax_rate'],
-                line_total=round_money(line['line_total']),
-                line_tax=round_money(line['line_tax'])
-            )
-            db.session.add(item)
-
-        db.session.commit()
-        return jsonify({
-            'success': True,
-            'message': 'Return/exchange processed successfully',
-            'workflow_id': workflow.workflow_id,
-            'mode': workflow.mode,
-            'original_transaction_id': original_transaction_id,
-            'adjustment_transaction_id': adjustment_sale.transaction_id if adjustment_sale else None,
-            'return_total': workflow.return_total,
-            'exchange_total': workflow.exchange_total,
-            'net_total': workflow.net_total,
-            'refund_amount': workflow.refund_amount,
-            'collected_amount': workflow.collected_amount
-        }), 201
-    except Exception as e:
-        db.session.rollback()
-        # Expire all in-memory ORM instances (including product.stock values mutated
-        # before the failed commit) so they are reloaded from the DB on next access
-        # instead of serving stale in-memory state.
-        db.session.expire_all()
-        app.logger.error(f"Error processing return/exchange: {str(e)}")
-        return jsonify({'success': False, 'message': 'Failed to process return/exchange'}), 500
+    from return_operations import process_return_exchange
+    result, status = process_return_exchange(
+        db, globals(), request.get_json(silent=True),
+        actor_id=session['user_id'], branch_id=get_current_branch_id(), role=session.get('role'))
+    return jsonify(result), status
 
 @app.route('/api/returns_exchanges/<string:workflow_id>', methods=['GET'])
 def api_single_return_exchange(workflow_id):
@@ -9725,11 +9640,30 @@ def api_purchase_orders():
         db.session.add(po)
         db.session.flush()
 
-        total_amount = 0.0
+        from purchase_invoicing import parse_unit_cost
+        total_amount = Decimal('0.00')
         for item in items:
+            if not isinstance(item, dict):
+                db.session.rollback()
+                return jsonify({'success': False, 'message': 'Each order item must be an object'}), 400
             product_id = item.get('product_id')
-            ordered_qty = int(item.get('ordered_qty', 0) or 0)
-            unit_cost = float(item.get('unit_cost', 0) or 0)
+            raw_quantity = item.get('ordered_qty', 0)
+            try:
+                if isinstance(raw_quantity, bool):
+                    raise ValueError
+                ordered_qty = int(raw_quantity)
+                if isinstance(raw_quantity, float) and not raw_quantity.is_integer():
+                    raise ValueError
+                if isinstance(raw_quantity, str) and str(ordered_qty) != raw_quantity.strip():
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError):
+                db.session.rollback()
+                return jsonify({'success': False, 'message': 'Ordered quantity must be a positive whole number'}), 400
+            try:
+                unit_cost = parse_unit_cost(item.get('unit_cost', 0) or 0)
+            except ValueError as error:
+                db.session.rollback()
+                return jsonify({'success': False, 'message': str(error)}), 400
 
             if ordered_qty <= 0:
                 db.session.rollback()
@@ -9745,12 +9679,15 @@ def api_purchase_orders():
                 product_id=product_id,
                 ordered_qty=ordered_qty,
                 received_qty=0,
-                unit_cost=unit_cost
+                unit_cost=float(unit_cost)
             )
             db.session.add(po_item)
             total_amount += ordered_qty * unit_cost
 
-        po.total_amount = total_amount
+        if total_amount > Decimal('999999999999.99'):
+            db.session.rollback()
+            return jsonify({'success': False, 'message': 'Purchase order total is too large'}), 400
+        po.total_amount = float(total_amount)
         db.session.commit()
         return jsonify({'success': True, 'message': 'Purchase order created', 'purchase_order_id': po.id, 'po_number': po.po_number}), 201
     except Exception as e:
@@ -10811,9 +10748,10 @@ def api_warehouse_transfer():
                     db.session.rollback()
                     return jsonify(success=False, message='Transfer spans more than 500 batches. Transfer a smaller quantity.'), 400
                 take = min(item.quantity, remaining)
-                changed = WarehouseInventory.query.filter(
-                    WarehouseInventory.id == item.id, WarehouseInventory.quantity >= take
-                ).update({WarehouseInventory.quantity: WarehouseInventory.quantity - take}, synchronize_session=False)
+                with db.accounting.stock_mutation():
+                    changed = WarehouseInventory.query.filter(
+                        WarehouseInventory.id == item.id, WarehouseInventory.quantity >= take
+                    ).update({WarehouseInventory.quantity: WarehouseInventory.quantity - take}, synchronize_session=False)
                 if changed != 1:
                     raise RuntimeError('Warehouse stock changed during transfer')
                 remaining -= take
@@ -10860,15 +10798,19 @@ def api_warehouse_transfer():
             idempotency_key=key, request_fingerprint=fingerprint,
             target_product_id=target_product.id, resulting_stock=target_product.stock)
         db.session.add(transfer)
+        db.session.flush()
         if key:
-            db.session.flush()
             db.session.add(TransferRequest(key=key, fingerprint=fingerprint,
                 target_product_id=target_product.id, resulting_stock=target_product.stock,
                 transfer_id=transfer.id))
+        db.accounting.post_transfer(transfer)
         db.session.commit()
         return jsonify(success=True, transfer_id=transfer.id, target_product_id=target_product.id,
             new_main_stock=target_product.stock,
             message=f'Transferred {quantity} units to {target_branch.name}')
+    except AccountingError as error:
+        db.session.rollback()
+        return jsonify(success=False, message=error.message), error.status
     except (OperationalError, IntegrityError):
         db.session.rollback()
         return jsonify(success=False, message='Inventory changed or is busy. Retry with the same idempotency key.'), 409
@@ -10944,10 +10886,29 @@ def api_single_customer(customer_id):
         return jsonify({'success': True, 'message': 'Customer updated'})
     
     elif request.method == 'DELETE':
-        # Check if customer has outstanding debts
+        db.session.rollback()
+        accounting = getattr(db, 'accounting', None)
+        try:
+            if accounting is not None:
+                accounting.write_lock()
+            else:
+                db.session.execute(text('BEGIN IMMEDIATE'))
+        except OperationalError:
+            db.session.rollback()
+            return jsonify(success=False, message='Customer changes are busy. Reload before retrying.'), 409
+        customer = Customer.query.filter_by(id=customer_id, branch_id=branch_id).first()
+        if not customer:
+            db.session.rollback()
+            return jsonify({'success': False, 'message': 'Customer not found'}), 404
+
         total_debt = sum(d.balance for d in customer.debts if d.balance > 0)
         if total_debt > 0:
+            db.session.rollback()
             return jsonify({'success': False, 'message': 'Cannot delete customer with outstanding debts'}), 400
+        if (Debt.query.filter_by(customer_id=customer_id).first()
+                or DebtPayment.query.filter_by(customer_id=customer_id).first()):
+            db.session.rollback()
+            return jsonify({'success': False, 'message': 'Customer has debt or payment history and must be retained'}), 409
 
         # Receipts stay valid after the customer record goes: unlink the sales
         # instead of cascading a delete into financial history.
@@ -11073,7 +11034,32 @@ def api_debts():
             except ValueError:
                 pass
 
+        db.session.rollback()
+        accounting = getattr(db, 'accounting', None)
         try:
+            if accounting is not None:
+                accounting.write_lock()
+            else:
+                db.session.execute(text('BEGIN IMMEDIATE'))
+        except AccountingError as error:
+            db.session.rollback()
+            return jsonify(success=False, message=error.message), error.status
+        except OperationalError:
+            db.session.rollback()
+            return jsonify(success=False, message='Debt changes are busy. Reload before retrying.'), 409
+        customer = Customer.query.filter_by(id=data['customer_id'], branch_id=branch_id).first()
+        if not customer:
+            db.session.rollback()
+            return jsonify({'success': False, 'message': 'Customer not found'}), 404
+        if sale_id:
+            sale = Sale.query.filter_by(id=sale_id, branch_id=branch_id).first()
+            if not sale:
+                db.session.rollback()
+                return jsonify({'success': False, 'message': 'Referenced sale not found'}), 404
+
+        try:
+            if accounting is not None and accounting.config():
+                raise AccountingError('Create receivables through a credit sale so the AR journal and customer balance post together', 409)
             debt = Debt(
                 customer_id=customer.id,
                 sale_id=sale_id,
@@ -11088,6 +11074,9 @@ def api_debts():
             db.session.add(debt)
             db.session.commit()
             return jsonify({'success': True, 'message': 'Debt record added', 'debt': serialize_debt(debt)}), 201
+        except AccountingError as error:
+            db.session.rollback()
+            return jsonify({'success': False, 'message': error.message}), error.status
         except Exception as e:
             db.session.rollback()
             app.logger.error(f"Error creating debt: {str(e)}")
@@ -11456,84 +11445,19 @@ def api_customer_purchase_history(customer_id):
 @app.route('/api/debts/<int:debt_id>/payment', methods=['POST'])
 @manager_required
 def make_debt_payment(debt_id):
-    debt = Debt.query.filter_by(id=debt_id, branch_id=get_current_branch_id()).first()
-    if not debt:
-        return jsonify({'success': False, 'message': 'Debt record not found'}), 404
-
-    current_balance = to_decimal(debt.balance)
-    if current_balance <= 0:
-        return jsonify({'success': False, 'message': 'This debt is already fully paid'}), 400
-    
-    data = request.get_json()
-    if not data or 'amount' not in data:
+    from debt_payments import record_debt_payment
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or 'amount' not in data:
         return jsonify({'success': False, 'message': 'Payment amount is required'}), 400
-
     try:
-        payment_amount = to_decimal(data['amount'])
-    except Exception:
-        return jsonify({'success': False, 'message': 'Invalid payment amount'}), 400
-
-    if payment_amount <= 0:
-        return jsonify({'success': False, 'message': 'Payment amount must be greater than 0'}), 400
-
-    if payment_amount > current_balance:
-        return jsonify({'success': False, 'message': 'Payment amount exceeds remaining balance'}), 400
-
-    try:
-        # Calculate new balance
-        remaining_balance = (current_balance - payment_amount).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-        
-        # Get notes safely - handle None values
-        payment_notes = data.get('notes')
-        if payment_notes is not None:
-            payment_notes = str(payment_notes).strip() or None
-        
-        # Create a payment record for tracking
-        payment = DebtPayment(
-            debt_id=debt.id,
-            customer_id=debt.customer_id,
-            amount=round_money(payment_amount),
-            notes=payment_notes,
-            processed_by=session.get('user_id'),
-            branch_id=debt.branch_id
-        )
-        db.session.add(payment)
-        
-        # Update the original debt balance.
-        # remaining_balance is already a Decimal quantized to MONEY_QUANT, so
-        # money_float() stores it as a plain float consistent with the Float
-        # column type (see round_money()/money_float() docstrings).
-        debt.balance = money_float(remaining_balance)
-        debt.status = calculate_debt_status(debt)
-        
-        # Track payment in communication notes
-        payment_note = f"Payment of {format_currency(payment_amount)} received"
-        if payment_notes:
-            payment_note += f" - {payment_notes}"
-        
-        existing_notes = debt.communication_notes or ''
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
-        if existing_notes:
-            debt.communication_notes = f"{existing_notes}\n[{timestamp}] {payment_note}"
-        else:
-            debt.communication_notes = f"[{timestamp}] {payment_note}"
-
-        db.session.commit()
-        
-        # Calculate total paid from payment records
-        total_paid = sum(p.amount for p in debt.payments) if debt.payments else 0
-        
-        # Return payment confirmation
-        return jsonify({
-            'success': True, 
-            'message': f'Payment of {format_currency(payment_amount)} recorded successfully',
-            'remaining_balance': debt.balance,
-            'total_paid': total_paid,
-            'debt_status': debt.status
-        })
-    except Exception as e:
+        payload, status = record_debt_payment(
+            db, AI_MODELS, debt_id, data['amount'], notes=data.get('notes'),
+            idempotency_key=data.get('idempotency_key'), actor_id=session.get('user_id'),
+            branch_id=get_current_branch_id())
+        return jsonify(payload), status
+    except Exception as error:
         db.session.rollback()
-        app.logger.error(f"Error recording debt payment: {str(e)}")
+        app.logger.error(f"Error recording debt payment: {str(error)}")
         return jsonify({'success': False, 'message': 'Failed to record payment'}), 500
 
 @app.route('/api/debts/<int:debt_id>/print', methods=['GET'])
@@ -11606,11 +11530,13 @@ AI_MODELS = {
     'PurchaseOrder': PurchaseOrder,
     'PurchaseOrderItem': PurchaseOrderItem,
     'GoodsReceipt': GoodsReceipt,
+    'ReceiptRequest': ReceiptRequest,
     'PurchaseInvoice': PurchaseInvoice,
     'SupplierCommunication': SupplierCommunication,
     'SupplierPriceAgreement': SupplierPriceAgreement,
     'WarehouseInventory': WarehouseInventory,
     'WarehouseTransfer': WarehouseTransfer,
+    'TransferRequest': TransferRequest,
     'Sale': Sale,
     'SaleItem': SaleItem,
     'Promotion': Promotion,

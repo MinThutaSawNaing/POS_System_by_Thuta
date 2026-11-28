@@ -32,16 +32,20 @@ Safety rails every WRITE tool (mutates=True) must follow:
       money_plain(); never return raw floats for money in NEW tools.
 """
 
+import hashlib
 import json
 import re
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from decimal import Decimal, ROUND_HALF_UP
 
 import pytz
 from sqlalchemy import and_, or_, text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
+
+from accounting import AccountingError
 
 MONEY_QUANT = Decimal('0.01')
 
@@ -414,9 +418,13 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "target_branch_id": {
                     "type": "integer",
                     "description": "Optional active destination branch ID; defaults to the trusted active branch."
+                },
+                "idempotency_key": {
+                    "type": "string",
+                    "description": "Required stable request key. Reuse it only to retry this exact transfer."
                 }
             },
-            "required": ["product_id", "quantity"]
+            "required": ["product_id", "quantity", "idempotency_key"]
         }
     },
     "get_sales_trends": {
@@ -543,7 +551,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                 "price": {"type": "number", "description": "Selling price, >= 0 (required)."},
                 "cost": {"type": "number", "description": "Unit cost, >= 0. Optional."},
                 "tax_rate": {"type": "number", "description": "Tax rate percent between 0 and 100. Default 0."},
-                "stock": {"type": "integer", "description": "Initial/updated stock level, >= 0. Default 0."},
+                "stock": {"type": "integer", "description": "Optional stock level, >= 0. Omission preserves stock on update and defaults to 0 on create."},
                 "category": {"type": "string", "description": "Optional category name."},
                 "reorder_point": {"type": "integer", "description": "Reorder point, >= 0. Default 10."},
                 "reorder_quantity": {"type": "integer", "description": "Reorder quantity, >= 0. Default 50."},
@@ -730,13 +738,14 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
     },
     "record_debt_payment": {
         "name": "record_debt_payment",
-        "description": "Record a payment against a customer debt. Uses exact decimal math; rejects amounts <= 0 or exceeding balance; marks debt paid at zero balance.",
+        "description": "Record a payment against an active-branch customer debt. Uses exact decimal math; rejects amounts <= 0 or exceeding balance; marks debt paid at zero balance. Reuse the same idempotency key and payload after an uncertain result.",
         "parameters": {
             "type": "object",
             "properties": {
                 "debt_id": {"type": "integer", "description": "The debt record to pay."},
                 "amount": {"type": "number", "description": "Payment amount, > 0 and <= remaining balance."},
-                "notes": {"type": "string", "description": "Optional payment notes."}
+                "notes": {"type": "string", "description": "Optional payment notes, at most 500 characters."},
+                "idempotency_key": {"type": "string", "description": "Optional 1–128 character request key. Reuse it only with the same debt, amount and notes; active-ledger retries replay without a second collection."}
             },
             "required": ["debt_id", "amount"]
         }
@@ -892,6 +901,10 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
             "type": "object",
             "properties": {
                 "po_id": {"type": "integer", "description": "The purchase order to receive."},
+                "idempotency_key": {
+                    "type": "string",
+                    "description": "Required stable request key. Reuse it only to retry this exact receipt."
+                },
                 "items": {
                     "type": "array",
                     "description": "Optional per-line received quantities. Omit to receive all remaining quantities.",
@@ -905,7 +918,7 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                     }
                 }
             },
-            "required": ["po_id"]
+            "required": ["po_id", "idempotency_key"]
         }
     },
     "process_return_exchange": {
@@ -940,8 +953,10 @@ _BASE_TOOL_PARAMETER_SCHEMAS: Dict[str, Dict] = {
                         "required": ["product_id", "quantity"]
                     }
                 },
-                "settlement_method": {"type": "string", "description": "How the difference settles: cash, bank, etc. Default cash."},
-                "notes": {"type": "string", "description": "Optional notes recorded on the workflow."}
+                "settlement_method": {"type": "string", "enum": ["cash", "credit_card", "debit_card", "mobile_payment"], "description": "How the difference settles. Default cash."},
+                "notes": {"type": "string", "description": "Optional notes recorded on the workflow."},
+                "idempotency_key": {"type": "string", "description": "Retry-safe operation key. Reuse the same key only when retrying this exact request."},
+                "legacy_costs": {"type": "object", "description": "Reviewed recovery unit costs for pre-accounting sale items, keyed by original sale item ID. Required only when the ledger requests legacy cost review.", "additionalProperties": {"type": "string"}}
             },
             "required": ["original_transaction_id", "return_items"]
         }
@@ -1728,6 +1743,7 @@ class AITools:
     def create_purchase_order(self, supplier_id: int, items: List[Dict], 
                              expected_delivery_date: str = None, notes: str = None) -> Dict[str, Any]:
         """Create a new purchase order"""
+        from purchase_invoicing import parse_unit_cost
         Supplier = self._get_model('Supplier')
         Product = self._get_model('Product')
         PurchaseOrder = self._get_model('PurchaseOrder')
@@ -1775,18 +1791,20 @@ class AITools:
             # Use product cost if unit_cost not provided
             if unit_cost is None:
                 unit_cost = product.cost or 0
-            if money_dec(unit_cost) < 0:
+            try:
+                unit_cost = parse_unit_cost(unit_cost)
+            except ValueError as exc:
                 self.db.session.rollback()
-                return {"error": f"Unit cost cannot be negative for product {product.name}"}
-                
+                return {"error": f"Invalid unit cost for product {product.name}: {exc}"}
+
             po_item = PurchaseOrderItem(
                 purchase_order_id=po.id,
                 product_id=product_id,
                 ordered_qty=quantity,
-                unit_cost=unit_cost
+                unit_cost=float(unit_cost)
             )
             self.db.session.add(po_item)
-            total_amount += money_dec(quantity) * money_dec(unit_cost)
+            total_amount += quantity * unit_cost
             
             created_items.append({
                 "product_id": product_id,
@@ -1796,6 +1814,9 @@ class AITools:
                 "unit_cost": money_str(unit_cost)
             })
             
+        if total_amount > Decimal('999999999999.99'):
+            self.db.session.rollback()
+            return {"error": "Purchase order total is too large"}
         po.total_amount = float(total_amount.quantize(MONEY_QUANT, rounding=ROUND_HALF_UP))
         try:
             self.db.session.commit()
@@ -1876,7 +1897,7 @@ class AITools:
         }
         
     def create_warehouse_transfer(self, product_id: int, quantity: int, notes: str = None,
-                                  target_branch_id: int = None) -> Dict[str, Any]:
+                                  target_branch_id: int = None, *, idempotency_key: str) -> Dict[str, Any]:
         """Transfer shared warehouse stock using branch-local destination identity."""
         WarehouseInventory = self._get_model('WarehouseInventory')
         WarehouseTransfer = self._get_model('WarehouseTransfer')
@@ -1890,11 +1911,28 @@ class AITools:
         product_id, quantity, target_branch_id = map(int, (product_id, quantity, target_branch_id))
         if notes is not None and not isinstance(notes, str):
             return {"error": "Transfer notes must be a string"}
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 128:
+            return {"error": "Idempotency key must be a non-empty string of at most 128 characters"}
+        notes = notes.strip() if notes else None
+        actor_id = trusted_tool_context(self.context).get('user_id')
+        fingerprint = hashlib.sha256(json.dumps(
+            [product_id, quantity, target_branch_id, notes, actor_id],
+            separators=(',', ':')).encode()).hexdigest()
         try:
             # Match the dashboard's SQLite writer transaction before reading
             # FIFO stock or destination identity, not merely before updating it.
             self.db.session.rollback()
             self.db.session.execute(text('BEGIN IMMEDIATE'))
+            previous = self.db.session.get(self._get_model('TransferRequest'), idempotency_key)
+            if previous is not None:
+                if previous.fingerprint != fingerprint:
+                    self.db.session.rollback()
+                    return {"error": "Idempotency key already used for another transfer"}
+                result = {"success": True, "replayed": True, "transfer_id": previous.transfer_id,
+                    "target_product_id": previous.target_product_id, "quantity_transferred": quantity,
+                    "new_stock_level": previous.resulting_stock, "message": "Transfer already completed"}
+                self.db.session.rollback()
+                return result
             product = Product.query.filter_by(id=product_id).first()
             branch = Branch.query.filter_by(id=target_branch_id, is_active=True).first()
             if not product or not branch:
@@ -1912,10 +1950,12 @@ class AITools:
                 if remaining <= 0:
                     break
                 deduct = min(item.quantity, remaining)
-                changed = WarehouseInventory.query.filter(
-                    WarehouseInventory.id == item.id, WarehouseInventory.quantity >= deduct
-                ).update({WarehouseInventory.quantity: WarehouseInventory.quantity - deduct},
-                         synchronize_session=False)
+                accounting = getattr(self.db, 'accounting', None)
+                with accounting.stock_mutation() if accounting is not None else nullcontext():
+                    changed = WarehouseInventory.query.filter(
+                        WarehouseInventory.id == item.id, WarehouseInventory.quantity >= deduct
+                    ).update({WarehouseInventory.quantity: WarehouseInventory.quantity - deduct},
+                             synchronize_session=False)
                 if changed != 1:
                     raise RuntimeError('Warehouse stock changed; retry the transfer')
                 remaining -= deduct
@@ -1960,9 +2000,16 @@ class AITools:
             self.db.session.refresh(target)
             transfer = WarehouseTransfer(product_id=product_id, quantity=quantity, from_warehouse=True,
                 branch_id=target_branch_id, target_product_id=target.id, resulting_stock=target.stock,
-                performed_by=trusted_tool_context(self.context).get('user_id'),
-                notes=notes or 'AI Agent transfer')
+                performed_by=actor_id, notes=notes or 'AI Agent transfer',
+                idempotency_key=idempotency_key, request_fingerprint=fingerprint)
             self.db.session.add(transfer)
+            self.db.session.flush()
+            self.db.session.add(self._get_model('TransferRequest')(key=idempotency_key,
+                fingerprint=fingerprint, target_product_id=target.id,
+                resulting_stock=target.stock, transfer_id=transfer.id))
+            accounting = getattr(self.db, 'accounting', None)
+            if accounting is not None:
+                accounting.post_transfer(transfer)
             self.db.session.commit()
             self.db.session.expire_all()
             return {"success": True, "transfer_id": transfer.id, "product_id": product_id,
@@ -1973,7 +2020,10 @@ class AITools:
                 "new_stock_level": target.stock, "transferred_from": transferred_from}
         except Exception as exc:
             self.db.session.rollback()
-            return {"error": f"Failed to transfer warehouse stock: {exc}"}
+            from accounting import AccountingError
+            if isinstance(exc, AccountingError):
+                return {"error": exc.message}
+            return {"error": "Failed to transfer warehouse stock"}
         
     def get_sales_trends(self, days: int = 30, product_id: int = None, top_n: int = 10,
                          all_time: bool = False) -> Dict[str, Any]:
@@ -2580,7 +2630,7 @@ class AITools:
         except Exception as exc:
             return {"error": self._report_error(exc)}
 
-    def upsert_product(self, name: str, price, cost=None, tax_rate=0.0, stock: int = 0,
+    def upsert_product(self, name: str, price, cost=None, tax_rate=0.0, stock: int = None,
                        category: str = None, reorder_point: int = 10,
                        reorder_quantity: int = 50, barcode: str = None,
                        product_id: int = None, sku: str = None) -> Dict[str, Any]:
@@ -2606,12 +2656,13 @@ class AITools:
         if not (0 <= tax_rate_val <= 100):
             return {"error": "tax_rate must be between 0 and 100"}
         try:
-            stock_val = int(stock)
+            stock_val = int(stock) if stock is not None else None
             reorder_point_val = int(reorder_point)
             reorder_quantity_val = int(reorder_quantity)
         except (TypeError, ValueError):
             return {"error": "stock, reorder_point and reorder_quantity must be integers"}
-        if stock_val < 0 or reorder_point_val < 0 or reorder_quantity_val < 0:
+        if ((stock_val is not None and stock_val < 0)
+                or reorder_point_val < 0 or reorder_quantity_val < 0):
             return {"error": "stock, reorder_point and reorder_quantity must be >= 0"}
 
         if barcode is not None:
@@ -2633,17 +2684,42 @@ class AITools:
             if not category_record:
                 return {"error": f"Category '{category}' not found in the active branch"}
 
-        changed_fields = ["name", "price", "cost", "tax_rate", "stock", "category",
+        changed_fields = ["name", "price", "cost", "tax_rate", "category",
                           "reorder_point", "reorder_quantity", "barcode"]
+        product = None
         if product_id is not None:
             product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
             if not product:
                 return {"error": f"Product with ID {product_id} not found in the active branch"}
+        else:
+            duplicate = self._branch_filter(Product.query.filter_by(name=name), Product).first()
+            if duplicate:
+                return {"error": f"A product named '{name}' already exists in the active branch (ID {duplicate.id})"}
+
+        accounting = getattr(self.db, 'accounting', None)
+        accounting_active = False
+        if accounting is not None:
+            try:
+                accounting.write_lock()
+                accounting_active = accounting.config() is not None
+            except AccountingError as exc:
+                self.db.session.rollback()
+                return {"error": str(exc)}
+            except OperationalError:
+                self.db.session.rollback()
+                return {"error": "Product changes are busy. Reload before retrying."}
+        previous_stock = int(product.stock or 0) if product is not None else 0
+        target_stock = stock_val if stock_val is not None else previous_stock
+        if stock_val is not None:
+            changed_fields.append("stock")
+
+        if product is not None:
             product.name = name
             product.price = float(price_dec)
             product.cost = float(cost_dec) if cost_dec is not None else product.cost
             product.tax_rate = tax_rate_val
-            product.stock = stock_val
+            if not accounting_active:
+                product.stock = target_stock
             if category is not None:
                 product.category_id = category_record.id if category_record else None
                 product.category = category_record.name if category_record else None
@@ -2652,15 +2728,12 @@ class AITools:
             product.barcode = barcode if barcode is not None else product.barcode
             created = False
         else:
-            duplicate = self._branch_filter(Product.query.filter_by(name=name), Product).first()
-            if duplicate:
-                return {"error": f"A product named '{name}' already exists in the active branch (ID {duplicate.id})"}
             product = Product(
                 name=name,
                 price=float(price_dec),
                 cost=float(cost_dec) if cost_dec is not None else None,
                 tax_rate=tax_rate_val,
-                stock=stock_val,
+                stock=0 if accounting_active else target_stock,
                 category=category_record.name if category_record else None,
                 category_id=category_record.id if category_record else None,
                 reorder_point=reorder_point_val,
@@ -2674,10 +2747,30 @@ class AITools:
             product.sku = normalized_sku
             changed_fields.append("sku")
         try:
+            self.db.session.flush()
+            if accounting_active and target_stock != previous_stock:
+                accounting.adjust_inventory({
+                    'key': 'ai-product-upsert:' + uuid.uuid4().hex,
+                    'location_id': accounting.location(product.branch_id).id,
+                    'product_id': product.id,
+                    'quantity': target_stock - previous_stock,
+                    'unit_cost': str(product.cost) if target_stock > previous_stock else None,
+                    'date': datetime.now(pytz.timezone('Asia/Yangon')).date().isoformat(),
+                    'reason': 'AI product stock level update',
+                })
             self.db.session.commit()
-        except Exception:
+        except AccountingError as exc:
+            self.db.session.rollback()
+            return {"error": str(exc)}
+        except IntegrityError:
             self.db.session.rollback()
             return {"error": "Failed to save product; check for a duplicate barcode or SKU in the active branch"}
+        except OperationalError:
+            self.db.session.rollback()
+            return {"error": "Product changes are busy. Reload before retrying."}
+        except Exception as exc:
+            self.db.session.rollback()
+            return {"error": f"Failed to save product: {exc}"}
         return {
             "success": True,
             "created": created,
@@ -2838,12 +2931,46 @@ class AITools:
         product = self._branch_filter(Product.query.filter_by(id=product_id), Product).first()
         if not product:
             return {"error": f"Product with ID {product_id} not found in the active branch"}
+        accounting = getattr(self.db, 'accounting', None)
+        accounting_active = False
+        if accounting is not None:
+            try:
+                accounting.write_lock()
+                accounting_active = accounting.config() is not None
+            except AccountingError as exc:
+                self.db.session.rollback()
+                return {"error": str(exc)}
+            except OperationalError:
+                self.db.session.rollback()
+                return {"error": "Product changes are busy. Reload before retrying."}
         old_stock = int(product.stock or 0)
         new_stock = old_stock + delta_val
         if new_stock < 0:
             return {"error": f"Adjustment would result in negative stock ({new_stock}). Current stock: {old_stock}, delta: {delta_val}"}
-        product.stock = new_stock
-        self.db.session.commit()
+        try:
+            if accounting_active:
+                result = accounting.adjust_inventory({
+                    'key': 'ai-stock-adjustment:' + uuid.uuid4().hex,
+                    'location_id': accounting.location(product.branch_id).id,
+                    'product_id': product.id,
+                    'quantity': delta_val,
+                    'unit_cost': str(product.cost) if delta_val > 0 else None,
+                    'date': datetime.now(pytz.timezone('Asia/Yangon')).date().isoformat(),
+                    'reason': reason.strip(),
+                })
+                new_stock = int(result['quantity'])
+            else:
+                product.stock = new_stock
+            self.db.session.commit()
+        except AccountingError as exc:
+            self.db.session.rollback()
+            return {"error": str(exc)}
+        except OperationalError:
+            self.db.session.rollback()
+            return {"error": "Product changes are busy. Reload before retrying."}
+        except Exception as exc:
+            self.db.session.rollback()
+            return {"error": f"Failed to adjust product stock: {exc}"}
         return {
             "success": True,
             "product_id": product.id,
@@ -2927,71 +3054,20 @@ class AITools:
             "branch_id": self._branch_id()
         }
 
-    def record_debt_payment(self, debt_id: int, amount, notes: str = None) -> Dict[str, Any]:
-        """Record a payment against a debt using Decimal-safe math (any role).
-
-        Mirrors app.py's /api/debts/<id>/payment route: validates amount > 0
-        and <= balance, creates a DebtPayment record, updates balance and
-        status, and appends a communication note."""
-        Debt = self._get_model('Debt')
-        DebtPayment = self._get_model('DebtPayment')
-        payment_amount = money_dec(amount).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-        if payment_amount <= 0:
-            return {"error": "Payment amount must be greater than 0"}
-        debt = self._branch_filter(Debt.query.filter_by(id=debt_id), Debt).first()
-        if not debt:
-            return {"error": f"Debt with ID {debt_id} not found in the active branch"}
-        current_balance = money_dec(debt.balance).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-        if current_balance <= 0:
-            return {"error": "This debt is already fully paid"}
-        if payment_amount > current_balance:
-            return {"error": f"Payment amount {money_plain(payment_amount)} exceeds remaining balance {money_plain(current_balance)}"}
-
-        remaining_balance = (current_balance - payment_amount).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-        payment_notes = str(notes).strip() if notes is not None else None
-
-        payment = DebtPayment(
-            debt_id=debt.id,
-            customer_id=debt.customer_id,
-            amount=float(payment_amount),
-            notes=payment_notes,
-            branch_id=debt.branch_id
-        )
-        self.db.session.add(payment)
-
-        # Update balance and status (mirrors calculate_debt_status in app.py)
-        debt.balance = float(remaining_balance)
-        if remaining_balance <= 0:
-            debt.status = 'paid'
-        elif debt.due_date and datetime.utcnow() > debt.due_date:
-            debt.status = 'overdue'
-        elif remaining_balance < money_dec(debt.amount):
-            debt.status = 'partial'
-        else:
-            debt.status = 'pending'
-
-        # Track payment in communication notes like app.py does
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M')
-        payment_note = f"Payment of {money_plain(payment_amount)} received (AI agent)"
-        if payment_notes:
-            payment_note += f" - {payment_notes}"
-        existing_notes = debt.communication_notes or ''
-        debt.communication_notes = (
-            f"{existing_notes}\n[{timestamp}] {payment_note}" if existing_notes
-            else f"[{timestamp}] {payment_note}"
-        )
-        self.db.session.commit()
-
-        return {
-            "success": True,
-            "debt_id": debt.id,
-            "customer_id": debt.customer_id,
-            "payment_id": payment.id,
-            "amount_paid": money_plain(payment_amount),
-            "remaining_balance": money_plain(debt.balance),
-            "debt_status": debt.status,
-            "changed_fields": ["balance", "status", "communication_notes"]
-        }
+    def record_debt_payment(self, debt_id: int, amount, notes: str = None,
+                            idempotency_key: str = None) -> Dict[str, Any]:
+        """Collect an active-branch debt through the shared atomic transaction."""
+        from debt_payments import record_debt_payment
+        scope = trusted_tool_context(self.context)
+        if not scope.get('user_id') or scope.get('branch_id') is None:
+            return {"success": False, "error": "Authenticated user and active branch required"}
+        payload, status = record_debt_payment(
+            self.db, self.models, debt_id, amount, notes=notes,
+            idempotency_key=idempotency_key, actor_id=scope['user_id'],
+            branch_id=scope['branch_id'])
+        if status != 200:
+            return {"success": False, "error": payload['message'], "status_code": status}
+        return payload
 
     def update_delivery_stage(self, delivery_id: int, stage: str) -> Dict[str, Any]:
         """Use the same authorized stage transition as the delivery UI."""
@@ -3361,21 +3437,48 @@ class AITools:
         }
 
     def delete_customer(self, customer_id: int) -> Dict[str, Any]:
-        """Delete a customer unless outstanding debt remains (manager only)."""
+        """Delete a customer while retaining posted financial history."""
         Customer = self._get_model('Customer')
         Debt = self._get_model('Debt')
+        DebtPayment = self._get_model('DebtPayment')
+        Sale = self._get_model('Sale')
+        self.db.session.rollback()
+        try:
+            accounting = getattr(self.db, 'accounting', None)
+            if accounting is not None:
+                accounting.write_lock()
+            else:
+                self.db.session.execute(text('BEGIN IMMEDIATE'))
+        except AccountingError as exc:
+            self.db.session.rollback()
+            return {"error": exc.message}
+        except OperationalError:
+            self.db.session.rollback()
+            return {"error": "Customer changes are busy. Reload before retrying."}
         customer = self._branch_filter(Customer.query.filter_by(id=customer_id), Customer).first()
         if not customer:
+            self.db.session.rollback()
             return {"error": f"Customer with ID {customer_id} not found in the active branch"}
         outstanding = Debt.query.filter(
             Debt.customer_id == customer.id,
             Debt.balance > 0
         ).count()
         if outstanding:
+            self.db.session.rollback()
             return {"error": f"Cannot delete customer '{customer.name}' (ID {customer.id}): {outstanding} debt(s) with positive balance exist"}
+        if (Debt.query.filter_by(customer_id=customer.id).first()
+                or DebtPayment.query.filter_by(customer_id=customer.id).first()):
+            self.db.session.rollback()
+            return {"error": f"Cannot delete customer '{customer.name}' (ID {customer.id}): debt or payment history must be retained"}
         customer_name = customer.name
-        self.db.session.delete(customer)
-        self.db.session.commit()
+        try:
+            Sale.query.filter_by(customer_id=customer.id).update(
+                {'customer_id': None}, synchronize_session=False)
+            self.db.session.delete(customer)
+            self.db.session.commit()
+        except Exception as exc:
+            self.db.session.rollback()
+            return {"error": f"Could not delete customer: {exc}"}
         return {
             "success": True,
             "deleted_customer_id": customer_id,
@@ -3414,6 +3517,8 @@ class AITools:
         if not isinstance(reason, str) or not reason.strip():
             return {"error": "A non-empty reason is required to write off a debt"}
         reason = reason.strip()
+        self.db.session.rollback()
+        self.db.session.execute(text('BEGIN IMMEDIATE'))
         debt = self._branch_filter(Debt.query.filter_by(id=debt_id), Debt).first()
         if not debt:
             return {"error": f"Debt with ID {debt_id} not found in the active branch"}
@@ -3422,6 +3527,21 @@ class AITools:
             return {"error": "This debt is already fully paid and cannot be written off"}
 
         written_off_amount = current_balance
+        accounting = getattr(self.db, 'accounting', None)
+        if accounting is not None and accounting.config():
+            from accounting import AccountingError
+            try:
+                amount_minor = int(written_off_amount * 100)
+                location = accounting.location(debt.branch_id)
+                accounting.post('debt-write-off:' + uuid.uuid4().hex, 'bad-debt', accounting.today(),
+                    'Written-off receivable: ' + reason, [
+                        {'location_id': location.id, 'account_code': 'GENERAL_EXPENSE',
+                         'amount_minor': amount_minor, 'reference': f'debt:{debt.id}'},
+                        {'location_id': location.id, 'account_code': 'AR',
+                         'amount_minor': -amount_minor, 'reference': f'debt:{debt.id}'}])
+            except AccountingError as exc:
+                self.db.session.rollback()
+                return {"error": exc.message}
         debt.balance = 0.0
         debt.status = 'written_off'
 
@@ -3454,12 +3574,14 @@ class AITools:
     # Full-feature coverage tools
     # ==================================================================
 
-    def receive_purchase_order(self, po_id: int, items: List[Dict] = None) -> Dict[str, Any]:
+    def receive_purchase_order(self, po_id: int, items: List[Dict] = None, *,
+                               idempotency_key: str) -> Dict[str, Any]:
         """Authorized shared receiving; use the same atomic service as the API."""
         from purchase_receiving import receive_purchase_order
         try:
             result, status = receive_purchase_order(
                 self.db, self.models, po_id, items, receive_all=items is None,
+                idempotency_key=idempotency_key,
                 actor_id=trusted_tool_context(self.context).get('user_id'))
             if status != 200:
                 return {"error": result['message']}
@@ -3521,219 +3643,29 @@ class AITools:
             self.db.session.rollback()
             return {"success": False, "error": "Unable to delete sale history"}
 
-    def _returned_qty_map(self, sale_id):
-        """Quantities already returned per sale_item_id across all workflows."""
-        ReturnExchange = self._get_model('ReturnExchange')
-        ReturnExchangeItem = self._get_model('ReturnExchangeItem')
-        rows = (self.db.session.query(
-                    ReturnExchangeItem.original_sale_item_id,
-                    self.db.func.sum(ReturnExchangeItem.quantity))
-                .join(ReturnExchange, ReturnExchange.id == ReturnExchangeItem.return_exchange_id)
-                .filter(ReturnExchange.original_sale_id == sale_id,
-                        ReturnExchangeItem.movement == 'return',
-                        ReturnExchangeItem.original_sale_item_id.isnot(None))
-                .group_by(ReturnExchangeItem.original_sale_item_id).all())
-        return {row[0]: int(row[1] or 0) for row in rows}
-
     def process_return_exchange(self, original_transaction_id: str, return_items: List[Dict],
                                 exchange_items: List[Dict] = None,
                                 settlement_method: str = 'cash',
-                                notes: str = None) -> Dict[str, Any]:
-        """Process a return/refund or exchange against an original sale."""
-        Sale = self._get_model('Sale')
-        SaleItem = self._get_model('SaleItem')
-        Product = self._get_model('Product')
+                                notes: str = None,
+                                idempotency_key: str = None,
+                                legacy_costs: Dict[str, str] = None) -> Dict[str, Any]:
+        """Process a return/refund or exchange through the shared transaction."""
+        from return_operations import process_return_exchange
 
-        transaction_id = str(original_transaction_id or '').strip()
-        if not transaction_id:
-            return {"error": "Original transaction ID is required"}
-        sale = Sale.query.filter_by(transaction_id=transaction_id).first()
-        if not sale:
-            return {"error": f"Original sale '{transaction_id}' not found"}
-        if self._branch_id() is not None and getattr(sale, 'branch_id', None) not in (None, self._branch_id()):
-            return {"error": "This sale belongs to a different branch"}
-        if not isinstance(return_items, list) or not return_items:
-            return {"error": "At least one return item is required"}
-
-        sale_items = SaleItem.query.filter_by(sale_id=sale.id).all()
-        sale_item_map = {item.id: item for item in sale_items}
-        returned_qty_map = self._returned_qty_map(sale.id)
-
-        def _unit_tax(item):
-            qty = int(item.quantity or 0)
-            if qty <= 0:
-                return Decimal('0.00')
-            return (money_dec(item.tax or 0) / Decimal(qty)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-
-        try:
-            return_lines, return_total = [], Decimal('0.00')
-            for row in return_items:
-                sale_item_id = int(row.get('sale_item_id', 0) or 0)
-                quantity = int(row.get('quantity', 0) or 0)
-                if sale_item_id <= 0 or quantity <= 0:
-                    return {"error": "Invalid return item values"}
-                sale_item = sale_item_map.get(sale_item_id)
-                if not sale_item:
-                    return {"error": f"Return item {sale_item_id} not found in original sale"}
-                available = max(int(sale_item.quantity or 0) - returned_qty_map.get(sale_item_id, 0), 0)
-                if quantity > available:
-                    return {"error": f"Return qty exceeds available qty for item #{sale_item_id}. Available: {available}"}
-                product = Product.query.get(sale_item.product_id)
-                if not product:
-                    return {"error": "Product not found for return item"}
-
-                unit_price = money_dec(sale_item.price)
-                line_total = (unit_price * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-                line_tax = (_unit_tax(sale_item) * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-                return_total += line_total + line_tax
-                return_lines.append({'sale_item': sale_item, 'product': product,
-                                     'quantity': quantity, 'unit_price': unit_price,
-                                     'tax_rate': float(product.tax_rate or 0),
-                                     'line_total': line_total, 'line_tax': line_tax})
-
-            exchange_lines, exchange_total = [], Decimal('0.00')
-            for row in (exchange_items or []):
-                product_id = int(row.get('product_id', 0) or 0)
-                quantity = int(row.get('quantity', 0) or 0)
-                if product_id <= 0 or quantity <= 0:
-                    return {"error": "Invalid exchange item values"}
-                product = Product.query.get(product_id)
-                if not product:
-                    return {"error": f"Exchange product {product_id} not found"}
-                if self._branch_id() is not None and product.branch_id not in (None, self._branch_id()):
-                    return {"error": f"Exchange product {product.name} belongs to a different branch"}
-                if quantity > int(product.stock or 0):
-                    return {"error": f"Insufficient stock for exchange product {product.name}. Available: {product.stock}"}
-
-                unit_price = money_dec(row.get('price', product.price))
-                if unit_price < 0:
-                    return {"error": "Exchange item price cannot be negative"}
-                line_total = (unit_price * Decimal(quantity)).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-                line_tax = (line_total * money_dec(product.tax_rate or 0) / Decimal('100')).quantize(
-                    MONEY_QUANT, rounding=ROUND_HALF_UP)
-                exchange_total += line_total + line_tax
-                exchange_lines.append({'product': product, 'quantity': quantity,
-                                       'unit_price': unit_price,
-                                       'tax_rate': float(product.tax_rate or 0),
-                                       'line_total': line_total, 'line_tax': line_tax})
-        except (TypeError, ValueError):
-            return {"error": "Invalid return/exchange item values"}
-
-        mode = 'exchange' if exchange_lines else 'return'
-        net_total = (exchange_total - return_total).quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
-        refund_amount = abs(net_total) if net_total < 0 else Decimal('0.00')
-        collected_amount = net_total if net_total > 0 else Decimal('0.00')
-        method = str(settlement_method or 'cash').strip().lower()
-        return self._commit_return_exchange(
-            mode, sale, transaction_id, return_lines, exchange_lines,
-            return_total, exchange_total, net_total, refund_amount,
-            collected_amount, method, notes)
-
-    def _commit_return_exchange(self, mode, sale, transaction_id, return_lines,
-                                exchange_lines, return_total, exchange_total,
-                                net_total, refund_amount, collected_amount,
-                                method, notes):
-        """Persist a validated return/exchange workflow atomically."""
-        ReturnExchange = self._get_model('ReturnExchange')
-        ReturnExchangeItem = self._get_model('ReturnExchangeItem')
-        Sale = self._get_model('Sale')
-        SaleItem = self._get_model('SaleItem')
-        myanmar_tz = pytz.timezone('Asia/Yangon')
-        try:
-            adjustment_sale = None
-            if exchange_lines:
-                adjustment_sale = Sale(
-                    transaction_id=str(uuid.uuid4()),
-                    date=datetime.now(myanmar_tz),
-                    total=float(round_money(exchange_total)),
-                    tax=float(round_money(sum(l['line_tax'] for l in exchange_lines))),
-                    cash_received=float(round_money(collected_amount)) if collected_amount > 0 else None,
-                    refund_amount=0.0,
-                    payment_method='exchange',
-                    user_id=self.context.get('user_id'),
-                    branch_id=getattr(sale, 'branch_id', None) or self._branch_id(),
-                )
-                self.db.session.add(adjustment_sale)
-                self.db.session.flush()
-                for line in exchange_lines:
-                    self.db.session.add(SaleItem(
-                        sale_id=adjustment_sale.id,
-                        product_id=line['product'].id,
-                        quantity=line['quantity'],
-                        price=float(round_money(line['unit_price'])),
-                        tax=float(round_money(line['line_tax'])),
-                    ))
-                    line['product'].stock -= line['quantity']
-
-            workflow = ReturnExchange(
-                workflow_id=str(uuid.uuid4()),
-                mode=mode,
-                original_sale_id=sale.id,
-                adjustment_sale_id=adjustment_sale.id if adjustment_sale else None,
-                return_total=float(round_money(return_total)),
-                exchange_total=float(round_money(exchange_total)),
-                net_total=float(round_money(net_total)),
-                refund_amount=float(round_money(refund_amount)),
-                collected_amount=float(round_money(collected_amount)),
-                settlement_method=method,
-                notes=(notes or '').strip() or None,
-                user_id=self.context.get('user_id'),
-            )
-            self.db.session.add(workflow)
-            self.db.session.flush()
-
-            for line in return_lines:
-                line['product'].stock += line['quantity']
-                self.db.session.add(ReturnExchangeItem(
-                    return_exchange_id=workflow.id,
-                    original_sale_item_id=line['sale_item'].id,
-                    product_id=line['product'].id,
-                    movement='return',
-                    quantity=line['quantity'],
-                    unit_price=float(round_money(line['unit_price'])),
-                    tax_rate=line['tax_rate'],
-                    line_total=float(round_money(line['line_total'])),
-                    line_tax=float(round_money(line['line_tax'])),
-                ))
-            for line in exchange_lines:
-                self.db.session.add(ReturnExchangeItem(
-                    return_exchange_id=workflow.id,
-                    original_sale_item_id=None,
-                    product_id=line['product'].id,
-                    movement='exchange',
-                    quantity=line['quantity'],
-                    unit_price=float(round_money(line['unit_price'])),
-                    tax_rate=line['tax_rate'],
-                    line_total=float(round_money(line['line_total'])),
-                    line_tax=float(round_money(line['line_tax'])),
-                ))
-
-            self.db.session.commit()
-            result = {
-                "success": True,
-                "workflow_id": workflow.workflow_id,
-                "mode": mode,
-                "original_transaction_id": transaction_id,
-                "return_total": money_plain(return_total),
-                "exchange_total": money_plain(exchange_total),
-                "net_total": money_plain(net_total),
-                "refund_amount": money_plain(refund_amount),
-                "collected_amount": money_plain(collected_amount),
-                "settlement_method": method,
-            }
-            if refund_amount > 0:
-                result["message"] = f"{mode.capitalize()} processed. Refund due: {money_plain(refund_amount)}."
-            elif collected_amount > 0:
-                result["message"] = f"{mode.capitalize()} processed. Amount to collect: {money_plain(collected_amount)}."
-            else:
-                result["message"] = f"{mode.capitalize()} processed. Even exchange - nothing to settle."
-            if adjustment_sale:
-                result["adjustment_transaction_id"] = adjustment_sale.transaction_id
-            return result
-        except Exception as exc:
-            self.db.session.rollback()
-            self.db.session.expire_all()
-            return {"error": f"Failed to process return/exchange: {exc}"}
+        scope = trusted_tool_context(self.context)
+        result, status = process_return_exchange(
+            self.db, self.models, {
+                'original_transaction_id': original_transaction_id,
+                'return_items': return_items,
+                'exchange_items': exchange_items or [],
+                'settlement_method': settlement_method,
+                'notes': notes,
+                **({'idempotency_key': idempotency_key} if idempotency_key is not None else {}),
+                **({'legacy_costs': legacy_costs} if legacy_costs is not None else {}),
+            }, actor_id=scope.get('user_id'), branch_id=scope.get('branch_id'), role=scope.get('role'))
+        if not result.get('success'):
+            result['error'] = result.get('error') or result.get('message')
+        return result
 
     def update_category(self, category_id: int, name: str, description: str = None,
                         color: str = None, sort_order: int = None,
@@ -4076,16 +4008,34 @@ class AITools:
         Branch = self._get_model('Branch')
         Product = self._get_model('Product')
         Sale = self._get_model('Sale')
-
+        user_model = self._get_model('User')
+        self.db.session.rollback()
+        try:
+            accounting = getattr(self.db, 'accounting', None)
+            if accounting is not None:
+                accounting.write_lock()
+            else:
+                self.db.session.execute(text('BEGIN IMMEDIATE'))
+        except AccountingError as exc:
+            self.db.session.rollback()
+            return {"error": exc.message}
+        except OperationalError:
+            self.db.session.rollback()
+            return {"error": "Branch changes are busy. Reload before retrying."}
         branch = Branch.query.get(branch_id)
         if not branch:
+            self.db.session.rollback()
             return {"error": f"Branch with ID {branch_id} not found"}
         if branch.is_default:
+            self.db.session.rollback()
             return {"error": "Cannot deactivate the default branch. Set another branch as default first."}
 
         has_products = Product.query.filter_by(branch_id=branch_id).count() > 0
         has_sales = Sale.query.filter_by(branch_id=branch_id).count() > 0
-        if has_products or has_sales:
+        has_users = user_model.query.filter_by(branch_id=branch_id).count() > 0
+        has_accounting_location = (accounting is not None and accounting.config() is not None
+            and accounting.Location.query.filter_by(branch_id=branch_id).first() is not None)
+        if has_products or has_sales or has_users or has_accounting_location:
             branch.is_active = False
             self.db.session.commit()
             return {"success": True, "branch_id": branch.id, "deactivated": True,
@@ -4097,10 +4047,7 @@ class AITools:
             self.db.session.commit()
         except Exception as exc:
             self.db.session.rollback()
-            branch.is_active = False
-            self.db.session.commit()
-            return {"success": True, "branch_id": branch_id, "deactivated": True,
-                    "message": f"Branch '{name}' deactivated (delete failed: {exc})."}
+            return {"error": f"Could not delete empty branch '{name}': {exc}"}
         return {"success": True, "deleted_branch": name,
                 "message": f"Empty branch '{name}' deleted."}
 

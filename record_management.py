@@ -11,12 +11,14 @@ cannot bypass financial safety checks.
 """
 
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 import re
 
 from sqlalchemy import or_, text
 from sqlalchemy.exc import SQLAlchemyError
 from flask import has_request_context, request
+
+from purchase_invoicing import parse_unit_cost
 
 
 class _Failure(Exception):
@@ -164,11 +166,9 @@ def edit_purchase_order(db, models, po_id, data, *, actor_id):
                     raise _Failure('Conflicting quantity fields')
                 qty = _integer(row.get('ordered_qty', row.get('quantity')), 'Ordered quantity')
                 try:
-                    cost = Decimal(str(row.get('unit_cost')))
-                except (InvalidOperation, ValueError):
-                    raise _Failure('Unit cost must be a finite non-negative number')
-                if not cost.is_finite() or cost < 0 or cost > Decimal('999999999999.99'):
-                    raise _Failure('Unit cost must be finite and between 0 and 999999999999.99')
+                    cost = parse_unit_cost(row.get('unit_cost'))
+                except ValueError as exc:
+                    raise _Failure(str(exc))
                 line_id = row.get('id', row.get('purchase_order_item_id'))
                 if 'id' in row and 'purchase_order_item_id' in row and row['id'] != row['purchase_order_item_id']:
                     raise _Failure('Conflicting item IDs')
